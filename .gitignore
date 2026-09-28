@@ -1,0 +1,46 @@
+# Go
+backend/bin/
+bin/
+*.test
+*.out
+
+# Web UI build output — only the placeholder index.html is tracked; the real
+# `npm run build` (local or Docker) overwrites it with the compiled bundle,
+# which stays out of git. See backend/internal/webui/embed.go.
+backend/internal/webui/dist/*
+!backend/internal/webui/dist/index.html
+
+# Node (webui/)
+webui/node_modules/
+
+# Flutter / Dart
+client/.dart_tool/
+client/.flutter-plugins
+client/.flutter-plugins-dependencies
+client/.pub-cache/
+client/.pub/
+client/build/
+client/**/generated_plugin_registrant.dart
+*.g.dart
+*.freezed.dart
+
+# Database
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/
+
+# Env
+.env
+.env.*
+!.env.example
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Browser automation artifacts
+.playwright-mcp/

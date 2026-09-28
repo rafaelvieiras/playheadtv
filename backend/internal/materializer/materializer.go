@@ -1,0 +1,369 @@
+// Package materializer expands schedule_entry + block/block_item +
+// filler_rule/filler_pool_item into flat epg_entry rows, asynchronously and
+// ahead of "now" — see docs/ARCHITECTURE.md "EPG materialization". It never
+// runs on an HTTP request path: internal/api only triggers it (Trigger) after
+// a write to a scheduling table, and cmd/server/main.go rolls it forward on a
+// timer (Start).
+//
+// This package does not import internal/api: it discovers tenants generically
+// from the tenant table rather than assuming api.DefaultTenantID, so it keeps
+// working unchanged once real multi-tenancy (the Auth roadmap item) exists.
+package materializer
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"strings"
+	"time"
+
+	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
+)
+
+// scanLookback is how far behind "now" Run scans schedule_entry for
+// occurrences that might still be on the air (e.g. a long block that started
+// yesterday). Fixed rather than configurable — see docs/ROADMAP.md.
+const scanLookback = 24 * time.Hour
+
+// triggerDebounce coalesces a burst of Trigger() calls (e.g. adding several
+// block_item rows back to back) into a single regeneration.
+const triggerDebounce = 200 * time.Millisecond
+
+// tickInterval is the periodic "rolling timer" that keeps window ahead of
+// "now" even with no writes at all.
+const tickInterval = 5 * time.Minute
+
+// runTimeout bounds each Run() invoked from Start's loop, so a stuck query
+// can't wedge the background worker forever.
+const runTimeout = 30 * time.Second
+
+// scheduleEntryColumns/fillerRuleColumns alias columns whose DB name doesn't
+// spell out to the domain struct's field name, same pattern (and same
+// underlying columns) as internal/api/schedules.go and internal/api/filler.go
+// — duplicated here (rather than imported) because this package must not
+// depend on internal/api.
+const scheduleEntryColumns = "id, tenant_id, channel_id, block_id, recurrence_type AS recurrence, day_of_week, start_time_local, start_at, active, created_at, updated_at"
+const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, filler_pool_id, selection_strategy AS selection, position, created_at"
+const blockItemColumns = "id, block_id, position, catalog_item_id, trim_duration_ms"
+const fillerPoolItemColumns = "id, filler_pool_id, catalog_item_id, weight"
+const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, created_at, updated_at"
+
+// Materializer owns the background EPG regeneration loop.
+type Materializer struct {
+	db      storage.DB
+	window  time.Duration
+	trigger chan struct{}
+}
+
+// New creates a Materializer. window is how far ahead of "now" epg_entry is
+// kept populated (docs/ROADMAP.md suggests 48h for cmd/server/main.go);
+// callers pass it explicitly rather than relying on a package default.
+func New(db storage.DB, window time.Duration) *Materializer {
+	return &Materializer{
+		db:      db,
+		window:  window,
+		trigger: make(chan struct{}, 1),
+	}
+}
+
+// Trigger asks for a regeneration as soon as possible, without blocking the
+// caller. Safe to call before Start (e.g. from tests that only exercise Run
+// directly) — it just leaves a signal sitting in the buffered channel that
+// nothing will ever drain, which is harmless.
+func (m *Materializer) Trigger() {
+	select {
+	case m.trigger <- struct{}{}:
+	default:
+	}
+}
+
+// Start runs Run() once immediately, then again on every debounced Trigger()
+// and on a periodic ticker, until ctx is canceled. It always runs in its own
+// goroutine and never panics or calls log.Fatal — this is a background
+// worker, not something that's allowed to take the server down with it.
+func (m *Materializer) Start(ctx context.Context) {
+	go func() {
+		m.runLogged(ctx)
+
+		ticker := time.NewTicker(tickInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-m.trigger:
+				select {
+				case <-time.After(triggerDebounce):
+				case <-ctx.Done():
+					return
+				}
+				m.drainTrigger()
+				m.runLogged(ctx)
+			case <-ticker.C:
+				m.runLogged(ctx)
+			}
+		}
+	}()
+}
+
+// drainTrigger discards any Trigger() signals that arrived during the
+// debounce wait, so a burst of writes collapses into the one Run() that
+// follows instead of one per signal.
+func (m *Materializer) drainTrigger() {
+	for {
+		select {
+		case <-m.trigger:
+		default:
+			return
+		}
+	}
+}
+
+func (m *Materializer) runLogged(ctx context.Context) {
+	runCtx, cancel := context.WithTimeout(ctx, runTimeout)
+	defer cancel()
+	if err := m.Run(runCtx); err != nil {
+		log.Printf("materializer: run failed: %v", err)
+	}
+}
+
+// Run performs one full, synchronous regeneration of every tenant/channel's
+// epg_entry rows for the window ahead of "now" (plus the fixed lookback
+// behind it), and bumps epg_revision once per tenant. It is idempotent: for
+// the same schedule_entry/block/filler_rule/filler_pool_item state and the
+// same instant "now", it always produces the same epg_entry rows.
+//
+// Only a failure to even list tenants is returned as an error; a failure
+// processing one tenant or one channel is logged and does not stop the rest
+// (see docs/ROADMAP.md's EPG materializer note on this being an accepted v1
+// tradeoff, not silent data loss — the previous materialization for that
+// channel is left untouched until the next successful Run()).
+func (m *Materializer) Run(ctx context.Context) error {
+	now := time.Now().UTC()
+	windowEnd := now.Add(m.window)
+	scanFrom := now.Add(-scanLookback)
+
+	var tenantIDs []string
+	if err := m.db.Query(ctx, &tenantIDs, "SELECT id FROM tenant"); err != nil {
+		return fmt.Errorf("materializer: list tenants: %w", err)
+	}
+
+	cache := newCatalogDurationCache(m.db)
+	state := newSelectionState()
+
+	for _, tenantID := range tenantIDs {
+		m.runTenant(ctx, tenantID, now, scanFrom, windowEnd, cache, state)
+	}
+	return nil
+}
+
+func (m *Materializer) runTenant(ctx context.Context, tenantID string, now, scanFrom, windowEnd time.Time, cache *catalogDurationCache, state *selectionState) {
+	var channels []domain.Channel
+	if err := m.db.Query(ctx, &channels,
+		"SELECT "+channelColumns+" FROM channel WHERE tenant_id = ?", tenantID,
+	); err != nil {
+		log.Printf("materializer: tenant %s: list channels: %v", tenantID, err)
+		return
+	}
+
+	for _, ch := range channels {
+		if err := m.materializeChannel(ctx, ch, tenantID, now, scanFrom, windowEnd, cache, state); err != nil {
+			log.Printf("materializer: channel %s: %v", ch.ID, err)
+		}
+	}
+
+	if err := m.bumpRevision(ctx, tenantID, now, windowEnd); err != nil {
+		log.Printf("materializer: tenant %s: bump epg_revision: %v", tenantID, err)
+	}
+}
+
+func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel, tenantID string, now, scanFrom, windowEnd time.Time, cache *catalogDurationCache, state *selectionState) error {
+	var scheduleEntries []domain.ScheduleEntry
+	if err := m.db.Query(ctx, &scheduleEntries,
+		"SELECT "+scheduleEntryColumns+" FROM schedule_entry WHERE tenant_id = ? AND channel_id = ? AND active = 1",
+		tenantID, ch.ID,
+	); err != nil {
+		return fmt.Errorf("list schedule entries: %w", err)
+	}
+
+	blockIDs := make(map[string]struct{}, len(scheduleEntries))
+	for _, se := range scheduleEntries {
+		blockIDs[se.BlockID] = struct{}{}
+	}
+
+	blockItems := make(map[string][]domain.BlockItem, len(blockIDs))
+	for blockID := range blockIDs {
+		var items []domain.BlockItem
+		if err := m.db.Query(ctx, &items,
+			"SELECT "+blockItemColumns+" FROM block_item WHERE block_id = ? ORDER BY position",
+			blockID,
+		); err != nil {
+			return fmt.Errorf("list block_item for block %s: %w", blockID, err)
+		}
+		blockItems[blockID] = items
+	}
+
+	dynamicBlockIDs := make(map[string]bool, len(blockIDs))
+	if len(blockIDs) > 0 {
+		ids := make([]string, 0, len(blockIDs))
+		for id := range blockIDs {
+			ids = append(ids, id)
+		}
+		placeholders := strings.Repeat("?,", len(ids))
+		placeholders = strings.TrimSuffix(placeholders, ",")
+		args := make([]any, 0, len(ids)+1)
+		args = append(args, tenantID)
+		for _, id := range ids {
+			args = append(args, id)
+		}
+		var dynIDs []string
+		query := fmt.Sprintf("SELECT id FROM block WHERE tenant_id = ? AND criteria IS NOT NULL AND id IN (%s)", placeholders)
+		if err := m.db.Query(ctx, &dynIDs, query, args...); err != nil {
+			return fmt.Errorf("list dynamic block ids: %w", err)
+		}
+		for _, id := range dynIDs {
+			dynamicBlockIDs[id] = true
+		}
+	}
+
+	// filler_rule scoped to this channel, or to any block this channel
+	// actually schedules.
+	query := "SELECT " + fillerRuleColumns + " FROM filler_rule WHERE tenant_id = ? AND ((scope_type = 'channel' AND scope_id = ?)"
+	args := []any{tenantID, ch.ID}
+	for blockID := range blockIDs {
+		query += " OR (scope_type = 'block' AND scope_id = ?)"
+		args = append(args, blockID)
+	}
+	query += ")"
+	var fillerRules []domain.FillerRule
+	if err := m.db.Query(ctx, &fillerRules, query, args...); err != nil {
+		return fmt.Errorf("list filler_rule: %w", err)
+	}
+
+	poolIDs := make(map[string]struct{}, len(fillerRules))
+	for _, fr := range fillerRules {
+		poolIDs[fr.FillerPoolID] = struct{}{}
+	}
+	poolItems := make(map[string][]domain.FillerPoolItem, len(poolIDs))
+	for poolID := range poolIDs {
+		var items []domain.FillerPoolItem
+		// filler_pool_item has no explicit position column (unlike
+		// block_item.position) — ORDER BY rowid is what "sequential"
+		// selection means: the order rows were inserted in.
+		if err := m.db.Query(ctx, &items,
+			"SELECT "+fillerPoolItemColumns+" FROM filler_pool_item WHERE filler_pool_id = ? ORDER BY rowid",
+			poolID,
+		); err != nil {
+			return fmt.Errorf("list filler_pool_item for pool %s: %w", poolID, err)
+		}
+		poolItems[poolID] = items
+	}
+
+	catalogDuration := make(map[string]int64)
+	collect := func(catalogItemID string) error {
+		if _, ok := catalogDuration[catalogItemID]; ok {
+			return nil
+		}
+		d, err := cache.Get(ctx, catalogItemID)
+		if err != nil {
+			return err
+		}
+		catalogDuration[catalogItemID] = d
+		return nil
+	}
+	for _, items := range blockItems {
+		for _, it := range items {
+			if err := collect(it.CatalogItemID); err != nil {
+				return fmt.Errorf("catalog_item %s: %w", it.CatalogItemID, err)
+			}
+		}
+	}
+	for _, items := range poolItems {
+		for _, it := range items {
+			if err := collect(it.CatalogItemID); err != nil {
+				return fmt.Errorf("catalog_item %s: %w", it.CatalogItemID, err)
+			}
+		}
+	}
+
+	in := channelInput{
+		ChannelID:       ch.ID,
+		TenantID:        tenantID,
+		Timezone:        ch.Timezone,
+		ScheduleEntries: scheduleEntries,
+		BlockItems:      blockItems,
+		FillerRules:     fillerRules,
+		PoolItems:       poolItems,
+		CatalogDuration: catalogDuration,
+		DynamicBlockIDs: dynamicBlockIDs,
+	}
+	generated := expandChannel(in, now, scanFrom, windowEnd, state)
+
+	nowMs := now.UnixMilli()
+	toInsert := make([]domain.EpgEntry, 0, len(generated))
+	for _, e := range generated {
+		// Entries entirely in the past only exist because of the lookback
+		// window (Passo A); silently drop them rather than writing rows
+		// GET /epg would never return anyway.
+		if e.EndAt > nowMs {
+			toInsert = append(toInsert, e)
+		}
+	}
+
+	// Deleting only end_at > now preserves history (anything fully in the
+	// past) while safely regenerating everything still relevant, including
+	// whatever is airing right now.
+	if err := m.db.Exec(ctx, "DELETE FROM epg_entry WHERE channel_id = ? AND end_at > ?", ch.ID, nowMs); err != nil {
+		return fmt.Errorf("delete stale epg_entry: %w", err)
+	}
+	for _, e := range toInsert {
+		if err := m.db.Exec(ctx,
+			`INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_entry_id, generated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			e.ID, e.TenantID, e.ChannelID, string(e.Kind), e.CatalogItemID, e.StartAt, e.EndAt, e.SourceScheduleEntryID, e.GeneratedAt,
+		); err != nil {
+			return fmt.Errorf("insert epg_entry: %w", err)
+		}
+	}
+	return nil
+}
+
+// bumpRevision upserts the tenant's epg_revision row, same ON CONFLICT
+// pattern as the catalog-sync upsert in internal/api/media_sources.go.
+func (m *Materializer) bumpRevision(ctx context.Context, tenantID string, now, windowEnd time.Time) error {
+	return m.db.Exec(ctx,
+		`INSERT INTO epg_revision (tenant_id, revision, valid_until, updated_at) VALUES (?, 1, ?, ?)
+		 ON CONFLICT(tenant_id) DO UPDATE SET revision = revision + 1, valid_until = excluded.valid_until, updated_at = excluded.updated_at`,
+		tenantID, windowEnd.UnixMilli(), now.UnixMilli(),
+	)
+}
+
+// catalogDurationCache memoizes catalog_item.duration_ms lookups for the
+// lifetime of one Run() call — shared across every tenant/channel it
+// processes, per docs comment in the task brief ("simple map[string]int64,
+// no need for more optimization than that").
+type catalogDurationCache struct {
+	db    storage.DB
+	cache map[string]int64
+}
+
+func newCatalogDurationCache(db storage.DB) *catalogDurationCache {
+	return &catalogDurationCache{db: db, cache: make(map[string]int64)}
+}
+
+func (c *catalogDurationCache) Get(ctx context.Context, catalogItemID string) (int64, error) {
+	if d, ok := c.cache[catalogItemID]; ok {
+		return d, nil
+	}
+	var durations []int64
+	if err := c.db.Query(ctx, &durations, "SELECT duration_ms FROM catalog_item WHERE id = ?", catalogItemID); err != nil {
+		return 0, err
+	}
+	if len(durations) == 0 {
+		return 0, fmt.Errorf("catalog_item %s not found", catalogItemID)
+	}
+	c.cache[catalogItemID] = durations[0]
+	return durations[0], nil
+}

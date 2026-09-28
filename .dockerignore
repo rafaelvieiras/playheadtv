@@ -1,0 +1,11 @@
+.git
+node_modules
+webui/node_modules
+webui/dist
+backend/internal/webui/dist/*
+!backend/internal/webui/dist/index.html
+client
+docs
+*.db
+*.db-shm
+*.db-wal

@@ -1,0 +1,22 @@
+services:
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    ports:
+      - "9394:9394"
+    environment:
+      # Fixed, development-only admin credentials: they let a developer log
+      # back in after a `docker compose down -v` reset without a manual
+      # bootstrap step. Never use them in a real deployment: see
+      # api.SeedAdminUser's doc comment for why it's safe here specifically
+      # (opt-in, and this compose file is never what a cloud-sync tenant
+      # runs).
+      - PLAYHEADTV_SEED_ADMIN_EMAIL=admin@example.com
+      - PLAYHEADTV_SEED_ADMIN_PASSWORD=admin
+    volumes:
+      - playheadtv-data:/data
+    restart: unless-stopped
+
+volumes:
+  playheadtv-data:

@@ -1,0 +1,159 @@
+# Playhead TV client
+
+Flutter client for Playhead TV, a self-hosted simulated linear TV app. The client
+does the actual "TV" work: it fetches the materialized schedule (EPG) for a channel
+from the Playhead TV backend, then plays the programs and commercials straight from
+your Jellyfin server, stitching them together on-device with a dual-controller
+preload + crossfade. The backend never touches video, and there is no server-side
+transcoding. See the [root README](../README.md) and
+[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) for the full design.
+
+## What it does today
+
+- **Channel playback**: for the current channel it loads `GET /epg`, resolves each
+  item via `GET /catalog-items/{id}` to a Jellyfin item, joins the first program
+  mid-way if it is already on air, preloads the next item shortly before the current
+  one ends and crossfades video and audio between the two `VideoPlayerController`s.
+  It keeps pulling further EPG windows in the background so playback never runs out.
+- **Mosaic home**: a frame of channel tiles around a live preview of the featured
+  channel. Shown on first run and when pressing Home from the player; later boots go
+  straight to the last watched channel.
+- **Channel navigation**: up/down switches channel by `number`, and typing digits
+  jumps directly to a channel number, like a real remote control.
+- **On-screen guide (OSD)**: channel number and name, current item with real playback
+  position, and the next item.
+- **Full-screen EPG**: a schedule grid for all channels, with the live video shrunk
+  into a corner thumbnail. Holding Enter on a program expands its details.
+- **Settings**: currently one section, **Remap controls**, to rebind every key.
+- **Debug overlay** (`D`): decoder, FPS/jank, CPU/memory, buffer state and detected
+  video freezes.
+
+## Platforms
+
+- **Linux desktop**: the only platform that is built and tested today.
+- **Windows desktop**: planned. There is no `windows/` runner in this directory yet.
+- **Android / Android TV**: planned. Only the default Flutter `android/` scaffold
+  exists. It has not been built or tested against this app.
+
+The video engine is [`fvp`](https://github.com/wang-bin/fvp) (libmdk) behind
+`video_player`.
+
+## Prerequisites
+
+- [FVM](https://fvm.app) with the Flutter SDK pinned in [`.fvmrc`](.fvmrc) (the
+  `stable` channel). Run `fvm install` in this directory, then use `fvm flutter ...`
+  for every command below. Avoid a snap-installed Flutter: it exports variables that
+  break the C++ toolchain `fvp` needs.
+- The standard Flutter Linux desktop toolchain (clang, cmake, ninja, pkg-config, GTK 3
+  development headers). `fvm flutter doctor` tells you what is missing. `fvp`
+  fetches the libmdk SDK during the build, so the first build needs network access.
+- A running Playhead TV backend (see the root README), and a Jellyfin server that
+  holds the media the schedule refers to.
+- A device token for the client (see [Configuration](#configuration)).
+
+`pubspec.yaml` carries a `dependency_overrides` entry that pins `fvp` to a git
+branch. `fvp` 0.38.1 on pub.dev has a lifecycle race
+([wang-bin/fvp#390](https://github.com/wang-bin/fvp/issues/390)) that breaks the
+dual-instance preload/crossfade, and the fix
+([#391](https://github.com/wang-bin/fvp/pull/391)) has not shipped in a release yet.
+Do not drop the override before checking that it has.
+
+## Configuration
+
+Configuration is compile-time only, through `--dart-define`. There is no runtime
+setting for these values yet.
+
+| Define | Required | Meaning |
+| --- | --- | --- |
+| `JELLYFIN_URL` | yes | Base URL of your Jellyfin server, e.g. `https://jellyfin.example.com`. Videos are streamed from `<url>/Videos/<id>/stream?Static=true`. |
+| `JELLYFIN_API_KEY` | yes | A Jellyfin API key, sent as the `api_key` query parameter of the stream URL. |
+| `PLAYHEADTV_BASE_URL` | yes | Base URL of the Playhead TV backend, e.g. `http://localhost:9394`. |
+| `PLAYHEADTV_DEVICE_TOKEN` | in practice | Device API token, sent as `Authorization: Bearer <token>`. Create a device in the backend's admin web UI to get one. If empty no header is sent, and a backend with auth on will reject the requests. |
+| `PLAYHEADTV_CHANNEL_ID` | no | Channel id to start on, only used when the player is opened without an explicit channel. The normal flow (last watched channel, or a mosaic selection) always supplies one, so this currently has little effect. When no channel matches, the player falls back to the channel with the lowest `number`. |
+
+If any of the three required values is empty the player screen shows an `ERROR:`
+message telling you which defines to pass.
+
+The client also persists, in `shared_preferences`: the last watched channel, a short
+list of recently watched channels (used by the mosaic) and your key binding overrides.
+
+## Run
+
+```sh
+fvm flutter pub get
+fvm flutter run -d linux \
+  --dart-define=JELLYFIN_URL=https://jellyfin.example.com \
+  --dart-define=JELLYFIN_API_KEY=<jellyfin-api-key> \
+  --dart-define=PLAYHEADTV_BASE_URL=http://localhost:9394 \
+  --dart-define=PLAYHEADTV_DEVICE_TOKEN=<device-token>
+```
+
+## Controls
+
+Defaults (`defaultKeyBindings` in `lib/input/input_action.dart`); all of them can be
+rebound from **Settings > Remap controls** (mosaic Settings tile), with a "Restore
+defaults" button.
+
+| Action | Default key |
+| --- | --- |
+| Next channel / previous channel | Arrow Up / Arrow Down |
+| Jump to channel number | `0`-`9` (commits after ~1.5 s, or immediately at 3 digits) |
+| Select | Enter: shows the OSD; pressed again with the OSD visible, opens the EPG |
+| Back | Esc: closes the EPG, otherwise returns to the mosaic |
+| Home | Home: returns to the mosaic |
+| Debug overlay | `D` |
+
+Inside the EPG, the channel-next/previous keys move between channel rows, Arrow
+Left/Right move through time, Enter on a live program tunes it, and holding Enter
+(over 500 ms) expands the program details. The mosaic uses the raw arrow keys and
+Enter. Arrow Up/Down toggles between the featured video and the surrounding tiles,
+Left/Right walks the tiles. Grid navigation is deliberately not remappable.
+
+## Project structure
+
+```
+lib/
+  main.dart                     app entry, AppConfig, channel player (preload + crossfade), OSD
+  playhead_api.dart             HTTP client for the backend (channels, EPG, catalog items)
+  input/input_action.dart       InputAction enum, default key bindings, KeyBindingsService
+  pages/                        mosaic home, settings, "Remap controls"
+  services/settings_service.dart   shared_preferences persistence
+  services/perf_stats.dart      FPS/jank, process CPU/memory and video freeze detection
+  widgets/epg_overlay.dart      full-screen EPG (an overlay inside the player page)
+  widgets/debug_overlay.dart    debug overlay
+test/                           unit/integration test of the API client (real backend)
+integration_test/               end-to-end suites and their fixtures (support/)
+linux/                          Linux desktop runner
+```
+
+## Testing
+
+```sh
+fvm flutter analyze
+fvm flutter test                                   # needs Go: starts a real backend
+fvm flutter test integration_test/<file>.dart -d linux
+```
+
+`fvm flutter test` (`test/playhead_api_test.dart`) runs `go run ./cmd/server` from
+`../backend` on a free port with a temporary SQLite database.
+
+The suites in `integration_test/` run the real app on the Linux desktop. Each suite
+starts its own isolated backend (temporary database, free port) and a small fixture
+HTTP server that plays the role of Jellyfin, so no real Jellyfin is needed, and
+populates the data through the real REST API (`integration_test/support/`). Key
+events are sent through Flutter's test binding rather than the OS. Never point them
+at a backend you actually use. The fixture video is generated with `ffmpeg`, found
+via the `FFMPEG_PATH` environment variable or, failing that, `ffmpeg` on your `PATH`.
+
+`shared_preferences` is the real, file-backed store during these runs (it cannot be
+mocked with `integration_test -d linux`), so each suite clears or seeds it in `setUp`.
+
+## Gotchas
+
+Details are in [`AGENTS.md`](../AGENTS.md); the short version:
+
+- The Linux runner deliberately disables Impeller (it corrupts the `fvp` video
+  texture under real playback). Do not re-enable it without re-testing playback.
+- Never call `setState` on the player page for video-adjacent UI state (OSD, EPG,
+  debug overlay) while the two crossfade controllers exist. Use a `ValueNotifier` with
+  a `ValueListenableBuilder` instead.
