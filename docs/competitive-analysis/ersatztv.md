@@ -138,7 +138,7 @@ granularity in the guide).
 
 - Search → Smart Collection is the most direct differentiator to compare
   against Playhead TV — but it is not greenfield: `filler_pool.criteria` and
-  `block.criteria` (commits `a467cd8`/`1093734`) already implement the same
+  `block.criteria` (the dynamic filler pools and dynamic blocks) already implement the same
   core mechanism (a saved criterion that automatically re-evaluates against
   the catalog, with no manual re-curation). The real gap is that today this
   is a fixed 4-column field (kind/genres/year_from/year_to) duplicated across
