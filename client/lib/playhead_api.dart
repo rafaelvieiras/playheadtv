@@ -50,6 +50,58 @@ class EpgEntry {
       );
 }
 
+/// One ordered fallback step of a stream (audio/subtitle) selection cascade
+/// — mirrors backend/internal/domain.StreamRuleStep. Audio+subtitle are
+/// meant to be resolved together from the same step (see
+/// services/stream_selection_resolver.dart).
+class StreamRuleStep {
+  final String audioLanguage; // wildcard, e.g. "pt*"; "" matches any language
+  final String? subtitleLanguage; // null = no subtitle preference at this step
+  final List<String> titleBlocklist;
+  final List<String> titleAllowlist;
+
+  const StreamRuleStep({
+    required this.audioLanguage,
+    required this.subtitleLanguage,
+    required this.titleBlocklist,
+    required this.titleAllowlist,
+  });
+
+  factory StreamRuleStep.fromJson(Map<String, dynamic> json) => StreamRuleStep(
+        audioLanguage: json['audio_language'] as String? ?? '',
+        subtitleLanguage: json['subtitle_language'] as String?,
+        titleBlocklist: (json['title_blocklist'] as List<dynamic>? ?? const []).cast<String>(),
+        titleAllowlist: (json['title_allowlist'] as List<dynamic>? ?? const []).cast<String>(),
+      );
+}
+
+/// The ordered cascade itself — mirrors
+/// backend/internal/domain.StreamRuleCascade. Returned (wrapped in a
+/// `rules` field) by GET /stream-preferences/me and
+/// GET /stream-preferences/config.
+class StreamRuleCascade {
+  final List<StreamRuleStep> steps;
+
+  const StreamRuleCascade({required this.steps});
+
+  static const empty = StreamRuleCascade(steps: []);
+
+  factory StreamRuleCascade.fromJson(Map<String, dynamic> json) {
+    final raw = json['steps'] as List<dynamic>?;
+    return StreamRuleCascade(
+      steps: raw == null ? const [] : raw.map((e) => StreamRuleStep.fromJson(e as Map<String, dynamic>)).toList(),
+    );
+  }
+}
+
+class StreamPreferencesMeta {
+  final int revision;
+  const StreamPreferencesMeta({required this.revision});
+
+  factory StreamPreferencesMeta.fromJson(Map<String, dynamic> json) =>
+      StreamPreferencesMeta(revision: json['revision'] as int? ?? 0);
+}
+
 class CatalogItemInfo {
   final String id;
   final String externalId; // Native ID of the item in the source (currently always a Jellyfin item)
@@ -134,5 +186,47 @@ class PlayheadApi {
       throw Exception('GET /catalog-items/$id: expected an object, got ${data.runtimeType}');
     }
     return CatalogItemInfo.fromJson(data);
+  }
+
+  // --- Stream (audio/subtitle) selection preferences (tiers 2-4) ---
+  //
+  // These three endpoints are session-authenticated on the backend (see
+  // backend/internal/api/stream_preferences.go), same tier as other
+  // authoring endpoints (unlike /epg, /channels, /catalog-items/{id}, which
+  // also accept a plain device token) — [deviceToken] above must hold a
+  // real app_user session token (from POST /sessions) for these three calls
+  // to succeed, not just a paired device token. See
+  // services/stream_preferences_service.dart for how a fetch failure here
+  // (e.g. a deployment only configured with a device token) degrades to an
+  // empty cascade instead of disrupting playback.
+
+  Future<StreamRuleCascade> getMyStreamPreference() async {
+    final data = await _getJson(Uri.parse('$_normalizedBaseUrl/stream-preferences/me'));
+    if (data is! Map<String, dynamic>) {
+      throw Exception('GET /stream-preferences/me: expected an object, got ${data.runtimeType}');
+    }
+    return StreamRuleCascade.fromJson(data['rules'] as Map<String, dynamic>? ?? const {});
+  }
+
+  /// scopeType is "global" or "channel"; scopeId is required (and only
+  /// meaningful) for "channel".
+  Future<StreamRuleCascade> getStreamPreferenceConfig({required String scopeType, String? scopeId}) async {
+    final uri = Uri.parse('$_normalizedBaseUrl/stream-preferences/config').replace(queryParameters: {
+      'scope_type': scopeType,
+      'scope_id': ?scopeId,
+    });
+    final data = await _getJson(uri);
+    if (data is! Map<String, dynamic>) {
+      throw Exception('GET /stream-preferences/config: expected an object, got ${data.runtimeType}');
+    }
+    return StreamRuleCascade.fromJson(data['rules'] as Map<String, dynamic>? ?? const {});
+  }
+
+  Future<StreamPreferencesMeta> getStreamPreferencesMeta() async {
+    final data = await _getJson(Uri.parse('$_normalizedBaseUrl/stream-preferences/meta'));
+    if (data is! Map<String, dynamic>) {
+      throw Exception('GET /stream-preferences/meta: expected an object, got ${data.runtimeType}');
+    }
+    return StreamPreferencesMeta.fromJson(data);
   }
 }

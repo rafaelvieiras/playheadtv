@@ -27,6 +27,8 @@ import 'package:fvp/fvp.dart' as fvp;
 
 import 'playhead_api.dart';
 import 'services/settings_service.dart';
+import 'services/stream_preferences_service.dart';
+import 'services/stream_selection_resolver.dart';
 import 'input/input_action.dart';
 import 'pages/mosaic_page.dart';
 import 'widgets/epg_overlay.dart';
@@ -301,6 +303,17 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
 
   late final SettingsService _settings;
   late final KeyBindingsService _keyBindings;
+  late final StreamPreferencesService _streamPrefs;
+  // Guards dispose() against the early-return error path in initState (bad
+  // --dart-define config): _streamPrefs is only ever assigned inside
+  // _bootstrapChannels, which that path never reaches.
+  bool _streamPrefsReady = false;
+  // Tier 3 (channel admin) rules for the currently loaded channel, resolved
+  // by _loadAndPlayChannel (already async / already doing network I/O)
+  // ahead of _createController, which only ever reads this field
+  // synchronously — see StreamPreferencesService's doc comment for why no
+  // network call happens on the playback hot path.
+  StreamRuleCascade _currentChannelRules = StreamRuleCascade.empty;
 
   @override
   void initState() {
@@ -326,7 +339,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     try {
       _settings = await SettingsService.create();
       _keyBindings = KeyBindingsService(_settings);
+      _streamPrefs = await StreamPreferencesService.create(_api);
+      _streamPrefsReady = true;
+      // Initial fetch at boot, concurrently with the channel list (both are
+      // independent network calls) — awaited before the first
+      // _loadAndPlayChannel below, so the very first playback decision
+      // already has a populated cache instead of racing it.
+      final streamPrefsRefresh = _streamPrefs.refreshAll();
       final channels = await _api.listChannels();
+      await streamPrefsRefresh;
+      _streamPrefs.startPolling();
       if (channels.isEmpty) {
         if (!mounted) return;
         setState(() => _status = 'ERROR: no channels configured on the backend (GET /channels is empty)');
@@ -413,6 +435,13 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   Future<void> _loadAndPlayChannel(PlayheadChannel target, {required int generation}) async {
     try {
       final now = DateTime.now().toUtc();
+      // Kicked off in parallel with GET /epg + GET /catalog-items/{id}
+      // below (never awaited until just before it's needed) so resolving
+      // tier 3 (channel admin) rules never adds latency to the channel-load
+      // path on top of the network calls it already has to make — it just
+      // rides alongside them. _createController itself never awaits
+      // anything for this; see _currentChannelRules' doc comment.
+      final channelRulesFuture = _streamPrefs.ensureChannelRules(target.id);
       final entries = await _api.getEpg(target.id, now, now.add(epgWindow));
       if (generation != _loadGeneration) return;
 
@@ -427,6 +456,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       }
 
       final catalogItems = await Future.wait(upcoming.map((e) => _api.getCatalogItem(e.catalogItemId)));
+      if (generation != _loadGeneration) return;
+
+      _currentChannelRules = await channelRulesFuture;
       if (generation != _loadGeneration) return;
 
       final loaded = <ChannelEntry>[
@@ -473,10 +505,47 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       // always starts from zero.
       await controller.seekTo(seekTo);
     }
-    // fvp/libmdk enables the first embedded subtitle track of an MKV by
-    // default. In a simulated TV schedule that shouldn't turn on by itself —
-    // disabled here; it can become a per-channel/per-item option later.
-    controller.setSubtitleTracks([]);
+    // Resolve the stream (audio/subtitle) selection cascade (tiers 2-4 —
+    // see services/stream_selection_resolver.dart and AGENTS.md "Client app
+    // structure") against this item's real tracks. Track candidates are
+    // built from the SAME list position setAudioTracks/setSubtitleTracks
+    // expect (the mdk API takes a 0-based index within that media type, not
+    // StreamInfo.index, which is the demuxer's absolute stream number) —
+    // see debug_overlay.dart for another read of this same getMediaInfo()
+    // data. `selection.audioTracks == null` (no cascade step matched
+    // anything, across every tier) leaves the player's own default alone;
+    // `selection.subtitleTracks` is never null — an empty list is what
+    // disables fvp/libmdk's default-enabled first MKV subtitle track when
+    // no step matched, same as the unconditional setSubtitleTracks([]) this
+    // replaced.
+    final info = controller.getMediaInfo();
+    final audioStreams = info?.audio ?? const [];
+    final subtitleStreams = info?.subtitle ?? const [];
+    final selection = StreamSelectionResolver.resolve(
+      audioTracks: [
+        for (var i = 0; i < audioStreams.length; i++)
+          TrackCandidate(
+            index: i,
+            language: _metadataValue(audioStreams[i].metadata, 'language'),
+            title: _metadataValue(audioStreams[i].metadata, 'title'),
+          ),
+      ],
+      subtitleTracks: [
+        for (var i = 0; i < subtitleStreams.length; i++)
+          TrackCandidate(
+            index: i,
+            language: _metadataValue(subtitleStreams[i].metadata, 'language'),
+            title: _metadataValue(subtitleStreams[i].metadata, 'title'),
+          ),
+      ],
+      userRules: _streamPrefs.userRules,
+      channelRules: _currentChannelRules,
+      globalRules: _streamPrefs.globalRules,
+    );
+    if (selection.audioTracks != null) {
+      controller.setAudioTracks(selection.audioTracks!);
+    }
+    controller.setSubtitleTracks(selection.subtitleTracks);
     // By default mdk syncs video frame presentation to the AUDIO clock — when
     // that sync stalls (same mechanism reported in wang-bin/mdk-sdk#179, root
     // cause confirmed by the maintainer: "bug comes from the audio
@@ -835,6 +904,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     _debugOverlayVisibleNotifier.dispose();
     _gapRetryTimer?.cancel();
     _channelInputCommitTimer?.cancel();
+    if (_streamPrefsReady) _streamPrefs.dispose();
     _controllerA?.dispose();
     _controllerB?.dispose();
     _focusNode.dispose();
@@ -1146,6 +1216,18 @@ String _fmtDuration(Duration d) {
   final minutes = d.inMinutes.remainder(60);
   final seconds = d.inSeconds.remainder(60);
   return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
+}
+
+// Case-insensitive lookup into a track's ffmpeg-style metadata map (used by
+// _createController to read "language"/"title" for the stream selection
+// cascade) — real-world containers aren't fully consistent about casing,
+// and StreamInfo.metadata (see fvp's media_info.dart) is a plain
+// Map<String, String> with no dedicated accessor.
+String? _metadataValue(Map<String, String> metadata, String key) {
+  for (final entry in metadata.entries) {
+    if (entry.key.toLowerCase() == key) return entry.value;
+  }
+  return null;
 }
 
 // On-screen channel guide: channel number + name, the current item's title
