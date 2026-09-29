@@ -10,8 +10,10 @@ owns scheduling metadata — it never touches video. See `README.md` and
 ## Layout
 
 - `client/` — Flutter, desktop-first (Linux/Windows) today, then
-  Android/Android TV. Video engine: `fvp` (libmdk), behind a playback
-  abstraction.
+  Android/Android TV. Video engine: `fvp` (libmdk), coupled directly today
+  (3 call sites: `main.dart`, `mosaic_page.dart`, `debug_overlay.dart`) —
+  see issue #12 for extracting it behind a playback abstraction; don't
+  assume that abstraction exists yet.
 - `backend/` — Go.
   - `internal/domain` — plain domain types, no logic.
   - `internal/storage` — the `storage.DB` abstraction (SQLite implemented;
@@ -106,6 +108,38 @@ or LLM, and to every artifact in the repo:
   navigation is a different concept from the player's repurposed
   up/down-as-channel-switch semantics and isn't something a user would
   sensibly remap.
+- **6-button baseline**: every user-facing flow in the client (not the web
+  UI, which is desktop/mouse admin tooling by nature) must be fully
+  operable with exactly six inputs — Up, Down, Left, Right, Select, Back —
+  the common baseline of any D-pad remote (Mi Box, Android TV, Fire TV,
+  Roku all ship this same minimal set). No action may *require* a key
+  outside that set by default; on-screen icons/hints and toast feedback are
+  affordances/confirmation only, never the only way to trigger something.
+  Remapping an `InputAction` to an extra key (`KeyBindingsService`) is how a
+  user with a richer input device (a keyboard, a remote with extra buttons,
+  e.g. an old set-top-box remote with a dedicated subtitle/audio button)
+  gets a shortcut — always optional convenience layered on top of the
+  6-button path, never a substitute for it.
+  - **Accelerator exception**: an action that only shortcuts an outcome
+    already fully reachable via the 6-button path doesn't need a
+    6-button-only UI of its own. `InputAction.digit0`-`digit9` (typing a
+    channel number) is the reference case: no on-screen numeric keypad
+    exists, and none is needed, because channel-by-channel switching
+    (`channelNext`/`channelPrevious`) or opening the EPG and selecting a
+    channel already reaches the exact same outcome with just the 6 buttons
+    — digits are a bonus for desktop keyboards, remotes with a keypad on
+    the back, or old remotes with number buttons, never a requirement. An
+    accelerator exception only holds when (1) a 6-button-only path to the
+    *exact same outcome* already exists and isn't itself broken, and (2)
+    nothing is lost by never using it — no screen, feature or configuration
+    becomes unreachable without it. If either condition doesn't hold, it's
+    not an accelerator, it's a 6-button gap — fix the gap, don't document
+    an exception around it.
+  - **Definition of done** for any new client feature: before calling it
+    complete, verify it's operable start-to-finish using only the 6
+    buttons, with zero remapping — unless it's a declared accelerator per
+    the exception above, in which case verify the *non-accelerator*
+    equivalent path is the one actually exercised in testing.
 - `select`'s default binding is `Enter` (not `I`) with two stages, read off
   `_osdVisibleNotifier`/`_epgOpenNotifier`: OSD hidden → show OSD; OSD
   already visible → open the EPG. `back` (`Esc` by default) closes the EPG
