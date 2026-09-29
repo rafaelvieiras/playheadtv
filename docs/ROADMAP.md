@@ -563,6 +563,56 @@ actionable checklist.
       could race a second, unguarded fetch of the same cursor and duplicate
       content in `channel` — fixed by coalescing every caller onto one
       shared in-flight fetch (`_pendingExtend`, described above).
+- [x] Custom stream (audio/subtitle) selector: the 4-tier cascade from the
+      competitive-analysis synthesis (`docs/competitive-analysis/ersatztv.md`
+      section 6/7) — tier 1 (item/channel local override) stays client-local
+      and unbuilt (no UI designed yet, explicitly out of scope), tiers 2-4
+      (user profile, channel admin, global admin) are backed by the
+      backend and resolved client-side, most-specific tier first.
+      Backend: `domain.UserStreamPreference` (one row per `app_user`) and
+      `domain.StreamPreferenceRule` (`scope_type` global|channel, reusing
+      `FillerRule`'s shape with its own enum — `backend/internal/domain/
+      stream_preference.go`), migration `0005_stream_preference.sql`,
+      `GET`/`PUT /stream-preferences/me` (session-scoped to the caller),
+      `GET`/`PUT /stream-preferences/config` (scope_type+scope_id), and
+      `GET /stream-preferences/meta` (an updated_at-derived revision —
+      deliberately not a counter table like `epg_revision`, since that
+      exists for full-window regeneration, which doesn't apply to plain
+      CRUD config rows) — `backend/internal/api/stream_preferences.go`.
+      Client: `StreamPreferencesService` caches tiers 2+4 in
+      `shared_preferences` (fetched at boot, polled via `/meta` every 5
+      minutes) and tier 3 lazily per channel;
+      `StreamSelectionResolver` is a pure function matching the cascade
+      against the real track list from `getMediaInfo()`; `_createController`
+      (`client/lib/main.dart`) applies the result via
+      `setAudioTracks`/`setSubtitleTracks`, replacing the old unconditional
+      `setSubtitleTracks([])`. Known gap: the three new endpoints are
+      session-authenticated (same tier as other authoring endpoints), but
+      the playback client currently only holds a device token (no login
+      flow exists) — a device-token-only deployment gets a 401 on every
+      fetch, which the caching service treats as "no preference configured"
+      rather than a hard failure, so playback is unaffected but the feature
+      is inert until the client is configured with a session token instead
+      (or a future client login flow exists). Not resolved in this slice —
+      flagged rather than worked around, since changing the endpoints'
+      auth tier would contradict the issue's own explicit design.
+      Verified: `cd backend && go build ./... && go vet ./... && go test
+      ./...` clean; a real, isolated `go run ./cmd/server` instance
+      (own temp SQLite file and port) exercised end to end via `curl`
+      (bootstrap, login, GET/PUT tier 2, GET/PUT tier 3 and 4, upsert
+      idempotency, validation errors, meta revision bump) — all behaved as
+      designed. Client: `fvm flutter analyze lib/` clean; a real
+      `fvm flutter test integration_test/channel_navigation_test.dart -d
+      linux` pass (own isolated backend + fixture video server, device
+      token only, confirming the graceful-degradation path above) plus
+      `mosaic_test.dart` and `epg_overlay_test.dart`, all green. One case
+      in `channel_navigation_test.dart` ("typing an existing channel number
+      switches channel") failed intermittently — reproduced against a clean
+      stash of this same commit too (2 of 3 baseline runs), confirming the
+      pre-existing flakiness already documented in `AGENTS.md`'s gotchas,
+      not a regression from this slice. No dedicated unit test coverage was
+      added for `StreamSelectionResolver` itself (pure-function logic would
+      benefit from one — left as a follow-up, not silently skipped).
 
 ## Phase 6 — Platforms
 
