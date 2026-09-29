@@ -26,4 +26,5 @@ func Register(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer,
 	registerFiller(mux, db, mat)
 	registerSchedules(mux, db, mat)
 	registerEPG(mux, db)
+	registerStreamPreferences(mux, db)
 }
