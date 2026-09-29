@@ -645,6 +645,72 @@ actionable checklist.
       edited it back open to confirm the pre-fill matched what was saved,
       cleared it, and confirmed both the page and a direct `curl` reflected
       the empty cascade after a full page reload.
+      Tier 1 (client-local item/channel override, the one piece explicitly
+      left unbuilt above) is now implemented, following the "6-button
+      baseline" principle added to `AGENTS.md`: a required, 6-button-only
+      on-screen track picker overlay (`InputAction.trackSelector`, default
+      `arrowRight`, opened from the base player state with the OSD visible —
+      `client/lib/widgets/track_selector_overlay.dart`, wired into
+      `_ChannelPlayerPageState` in `client/lib/main.dart` the same
+      `ValueNotifier<bool>` + `ValueListenableBuilder` way as the EPG
+      overlay) lists the real, current Audio/Subtitle tracks from
+      `getMediaInfo()`, applies the focused choice live via
+      `setAudioTracks`/`setSubtitleTracks` on the controller already
+      playing, and persists it in `shared_preferences` keyed by channel id
+      (`SettingsService.get/setAudioTrackOverride`,
+      `get/setSubtitleTrackOverride` — client-local only, never sent to the
+      backend, per the issue's original design). Two optional power-user
+      accelerators (`InputAction.cycleAudioTrack`/`cycleSubtitleTrack`, no
+      default binding — the first `InputAction`s to have none, which made
+      `KeyBindingsService.effectiveBindings`/`resolve` need to treat "no
+      binding at all" as a supported state instead of asserting a default
+      always exists) cycle to the next track and converge on the exact same
+      apply/persist/toast path as the picker, per the accelerator exception
+      in `AGENTS.md` — both listed in `controls_mapping_page.dart` under a
+      new "Shortcuts (optional)" group. `StreamSelectionResolver.resolve`
+      gained a `TierOneOverride` parameter, tried first and per-axis (an
+      audio-only override doesn't force subtitles to fall back to "none" —
+      the untouched axis still falls through to tiers 2-4), replacing the
+      `TODO(tier 1)` that used to start the cascade at tier 2.
+      Verified: `fvm flutter analyze` clean (lib + integration_test);
+      `go build`/`go vet`/`go test` clean in `backend/` (no backend files
+      touched by this slice, run anyway per the checklist). The e2e coverage
+      (opening the picker with `arrowRight` while the OSD is visible;
+      `arrowUp`/`arrowDown` moving focus within the panel without switching
+      channel; `Back` closing without persisting; `Select` applying live and
+      persisting with a toast; revisiting the channel later showing the
+      persisted choice pre-focused; a real channel switch right after a live
+      `Select` not stalling) passes reliably, but split across two files —
+      `track_selector_test.dart` (3 tests) and
+      `track_selector_persistence_test.dart` (2 tests) — each re-run twice
+      clean. That split is load-bearing, not organizational: several real
+      `PlayheadSpikeApp` boots (real dual crossfade `VideoPlayerController`s,
+      real GL textures) in ONE `flutter test` process intermittently stall a
+      later boot's rendering pipeline indefinitely — reproduced at a
+      different boot count each time (3rd, 4th, 5th), and confirmed during
+      this slice's own validation to also happen on a clean, unmodified
+      stash of `main` under the same loaded machine, so it's a pre-existing
+      `flutter_tester`/mdk resource-pressure gotcha (see `AGENTS.md`'s
+      GL-texture-under-load entry), not something this slice introduced.
+      Confirmed separately, as a real single-session e2e check (not just
+      code review), that the production scenario this could plausibly affect
+      — a live `setAudioTracks` call followed by a real channel switch in
+      the SAME app session — works correctly and fast; only *separate app
+      boots in one test process* are at risk. `video_fixture.dart`'s 2nd
+      audio track (needed for the picker's real navigation tests) was made
+      opt-in (`start({int audioTracks = 1})`) rather than the suite's new
+      default, after it briefly regressed `controls_mapping_test.dart`'s
+      reliability too; that file's own new "accelerators are listed unbound"
+      test also had 2 real bugs fixed (an unscoped `find.byType(ListView)`
+      matching both the pushed page and the Settings page still in the tree,
+      and a lazy-sliver visibility gap between two list items), unrelated to
+      the boot-stacking issue. `channel_navigation_test.dart`,
+      `epg_overlay_test.dart`, and `mosaic_test.dart` re-run clean (no
+      regression); the pre-existing intermittent flake in
+      `channel_navigation_test.dart`'s "typing an existing channel number
+      switches channel" (documented in `AGENTS.md`'s gotchas) recurred during
+      this validation, including once against unmodified `main` — confirmed
+      pre-existing, not chased.
 
 ## Phase 6 — Platforms
 

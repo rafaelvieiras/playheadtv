@@ -251,5 +251,75 @@ void main() {
             '"${bindingLabelText(tester, 'channelNext')}")',
       );
     });
+
+    // Path 2 accelerators (cycleAudioTrack/cycleSubtitleTrack — see
+    // input/input_action.dart and AGENTS.md's "6-button baseline"): neither
+    // has a default binding, so they must still be listed (as "Not set") and
+    // remappable like every other action.
+    testWidgets('the optional track accelerators are listed unbound and can be assigned a key', (tester) async {
+      await tester.pumpWidget(const PlayheadSpikeApp());
+      await pumpUntil(
+        tester,
+        () => find.byKey(const Key('mosaic-page')).evaluate().isNotEmpty,
+        failMessage: 'mosaic did not appear on boot with no history',
+      );
+
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      await pumpUntil(
+        tester,
+        () => find.byKey(const Key('settings-page')).evaluate().isNotEmpty,
+        failMessage: 'Settings screen did not open from the Settings tile',
+      );
+
+      await tester.tap(find.byKey(const Key('settings-controls-tile')));
+      await tester.pump();
+      await pumpUntil(
+        tester,
+        () => find.byKey(const Key('controls-mapping-page')).evaluate().isNotEmpty,
+        failMessage: 'Remap controls screen did not open from the Settings tile',
+      );
+
+      // Both accelerators are listed, with no default binding. Scoped to
+      // THIS page's ListView, not a bare find.byType(ListView) — the
+      // Settings page underneath (also a ListView, see settings_page.dart)
+      // is still in the tree right after the push (this suite never calls
+      // pumpAndSettle, see the file-level doc comment), so an unscoped
+      // finder matches 2 widgets and dragUntilVisible throws. Two separate
+      // dragUntilVisible calls, one per action — it's a lazy sliver, so
+      // scrolling cycleAudioTrack into view doesn't necessarily also build
+      // cycleSubtitleTrack's tile (the next one down).
+      final listFinder =
+          find.descendant(of: find.byKey(const Key('controls-mapping-page')), matching: find.byType(ListView));
+      await tester.dragUntilVisible(
+        find.byKey(const Key('remap-button-cycleAudioTrack')),
+        listFinder,
+        const Offset(0, -200),
+      );
+      expect(bindingLabelText(tester, 'cycleAudioTrack'), 'Not set');
+
+      await tester.dragUntilVisible(
+        find.byKey(const Key('remap-button-cycleSubtitleTrack')),
+        listFinder,
+        const Offset(0, -200),
+      );
+      expect(bindingLabelText(tester, 'cycleSubtitleTrack'), 'Not set');
+
+      // Assign a key to cycleAudioTrack, same capture flow as any other action.
+      await tester.tap(find.byKey(const Key('remap-button-cycleAudioTrack')));
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
+      await tester.pump();
+      await pumpUntil(
+        tester,
+        () => (bindingLabelText(tester, 'cycleAudioTrack') ?? 'Not set') != 'Not set',
+        failMessage: 'cycleAudioTrack label did not update after assigning a key (stayed on '
+            '"${bindingLabelText(tester, 'cycleAudioTrack')}")',
+      );
+    });
   });
 }

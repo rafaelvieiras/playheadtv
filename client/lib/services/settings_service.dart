@@ -3,13 +3,20 @@ import 'package:shared_preferences/shared_preferences.dart';
 /// Simple local persistence for the client — no code generation, same style
 /// as the rest of the project (see playhead_api.dart). Stores: the last
 /// watched channel (so boot can skip the mosaic and go straight to the player
-/// when there's history), a short history of recent channels, and key binding
-/// overrides (set from Settings -> "Remap controls").
+/// when there's history), a short history of recent channels, key binding
+/// overrides (set from Settings -> "Remap controls"), and tier 1 stream
+/// (audio/subtitle) track overrides (set from the player's track selector —
+/// see widgets/track_selector_overlay.dart and
+/// services/stream_selection_resolver.dart's TierOneOverride). Tier 1 is
+/// explicitly client-local only (issue #3's design) — never sent to or
+/// stored by the backend, unlike tiers 2-4 (StreamPreferencesService).
 class SettingsService {
   static const _lastWatchedKey = 'last_watched_channel_id';
   static const _recentChannelsKey = 'recent_channel_ids';
   static const _maxRecentChannels = 6;
   static const _keyBindingPrefix = 'key_binding_'; // + InputAction name
+  static const _audioTrackOverridePrefix = 'track_override_audio_'; // + channel id
+  static const _subtitleTrackOverridePrefix = 'track_override_subtitle_'; // + channel id
 
   final SharedPreferences _prefs;
 
@@ -49,4 +56,23 @@ class SettingsService {
       await _prefs.remove('$_keyBindingPrefix$name');
     }
   }
+
+  /// Tier 1 audio track override for `channelId`: the literal index into
+  /// `MediaInfo.audio` the user picked (track selector or the
+  /// `cycleAudioTrack` accelerator) for what's currently showing on that
+  /// channel. Null means "never overridden here" — falls through to tiers
+  /// 2-4 (see StreamSelectionResolver.resolve).
+  int? getAudioTrackOverride(String channelId) => _prefs.getInt('$_audioTrackOverridePrefix$channelId');
+
+  Future<void> setAudioTrackOverride(String channelId, int trackIndex) =>
+      _prefs.setInt('$_audioTrackOverridePrefix$channelId', trackIndex);
+
+  /// Tier 1 subtitle track override for `channelId`: the literal index into
+  /// `MediaInfo.subtitle`, or `-1` for the picker's explicit "None" choice
+  /// (disables subtitles, distinct from null — "never overridden", which
+  /// falls through to tiers 2-4).
+  int? getSubtitleTrackOverride(String channelId) => _prefs.getInt('$_subtitleTrackOverridePrefix$channelId');
+
+  Future<void> setSubtitleTrackOverride(String channelId, int trackIndex) =>
+      _prefs.setInt('$_subtitleTrackOverridePrefix$channelId', trackIndex);
 }

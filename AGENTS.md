@@ -265,3 +265,23 @@ or LLM, and to every artifact in the repo:
   intermittent on a clean checkout (5s window after the 1.5s digit debounce
   is tight). Not caused by client changes — verify against a clean stash
   before chasing it.
+- Several real `PlayheadSpikeApp` boots (`tester.pumpWidget`, each with real
+  dual crossfade `VideoPlayerController`s and real GL textures) in ONE
+  `flutter test` process — i.e. several `testWidgets` in one
+  `integration_test/*.dart` file — can intermittently stall a *later* boot's
+  rendering pipeline indefinitely (same GL-texture/mdk-under-load class as
+  the gotchas above, not a logic bug: reproduced 2026-09-29 at a different
+  boot count each time — the 3rd, 4th and 5th real boot in one process each
+  stalled at least once — and confirmed to also happen on a clean,
+  unmodified stash of `main` when the machine is already under load from
+  repeated test runs, e.g. heavy swap usage). A single isolated test (or a
+  single real app session doing the same actions back-to-back, e.g. a live
+  `setAudioTracks` call followed by a real channel switch) is NOT at risk —
+  this is specific to tearing down and rebuilding the whole Flutter
+  engine/app several times in one OS process, which never happens for a real
+  user (the app only boots once per process lifetime). Keeping each
+  integration test file to 2-3 real app boots has kept it reliable in
+  practice (see `track_selector_test.dart`/
+  `track_selector_persistence_test.dart`, split for exactly this reason);
+  don't chase this as an application bug, and don't grow one file's real-boot
+  count without budgeting for it.

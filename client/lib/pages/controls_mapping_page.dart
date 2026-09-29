@@ -38,10 +38,20 @@ const _groups = [
   _ActionGroup('Playback', [
     InputAction.select,
     InputAction.back,
+    InputAction.trackSelector,
   ]),
   _ActionGroup('General', [
     InputAction.home,
     InputAction.debugOverlay,
+  ]),
+  // Path 2 accelerators (see AGENTS.md's "6-button baseline" / accelerator
+  // exception, and input/input_action.dart): neither has a default binding —
+  // they only exist here, unbound, until the user picks one. The
+  // 6-button-only equivalent (the track selector overlay, InputAction.
+  // trackSelector above) always works with zero remapping.
+  _ActionGroup('Shortcuts (optional)', [
+    InputAction.cycleAudioTrack,
+    InputAction.cycleSubtitleTrack,
   ]),
 ];
 
@@ -61,6 +71,12 @@ String _actionLabel(InputAction action) {
       return 'Home';
     case InputAction.debugOverlay:
       return 'Debug overlay (FPS/CPU/video)';
+    case InputAction.trackSelector:
+      return 'Track selector (audio/subtitle)';
+    case InputAction.cycleAudioTrack:
+      return 'Cycle audio track (accelerator)';
+    case InputAction.cycleSubtitleTrack:
+      return 'Cycle subtitle track (accelerator)';
     default:
       return action.name;
   }
@@ -129,12 +145,17 @@ class _ControlsMappingPageState extends State<ControlsMappingPage> {
 
   Widget _buildActionTile(InputAction action) {
     final capturing = _capturingAction == action;
+    final boundKey = _bindings[action];
     return ListTile(
       title: Text(_actionLabel(action)),
       subtitle: capturing
           ? const Text('Press a key...', key: Key('capturing-label'))
           : Text(
-              _keyLabel(_bindings[action]!),
+              // An accelerator (cycleAudioTrack/cycleSubtitleTrack) has no
+              // default — until the user assigns one via "Change" below, it
+              // simply isn't in `_bindings` (see KeyBindingsService.
+              // effectiveBindings' doc comment).
+              boundKey != null ? _keyLabel(boundKey) : 'Not set',
               key: Key('binding-label-${action.name}'),
             ),
       trailing: ElevatedButton(

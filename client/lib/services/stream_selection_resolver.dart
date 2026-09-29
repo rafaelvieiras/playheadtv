@@ -43,33 +43,86 @@ class StreamSelection {
   static const none = StreamSelection(audioTracks: null, subtitleTracks: []);
 }
 
-/// Resolves which audio/subtitle tracks to select, applying tiers 2-4 in
-/// most-specific-first order (tier 2: user profile, tier 3: channel admin,
-/// tier 4: global admin), first matching cascade step wins. Each tier's
-/// cascade is tried whole before falling through to the next tier — a tier
-/// with steps that all fail to match doesn't get mixed with the next tier's
-/// steps.
+/// Tier 1 (client-local item/channel override — see AGENTS.md "6-button
+/// baseline" and widgets/track_selector_overlay.dart): the user's own
+/// in-the-moment choice for the channel currently on screen, persisted by
+/// SettingsService keyed by channel id (client-local only, per issue #3's
+/// design — never sent to or stored by the backend, unlike tiers 2-4).
+///
+/// Unlike tiers 2-4 (which match by language/title metadata against a
+/// cascade authored ahead of time), tier 1 is index-based: it's the literal
+/// position the user picked in the SAME list `getMediaInfo()` returns (the
+/// same contract TrackCandidate.index and setAudioTracks/setSubtitleTracks
+/// already use) — simpler, and correct for its purpose: it's a choice made
+/// by looking at THIS item's real track list, not a policy authored against
+/// tracks that might not exist yet.
+///
+/// `audioIndex`/`subtitleIndex` are independent: an override on one axis
+/// doesn't force the other to fall back to "none" — see `resolve` below for
+/// why a tier 1 override is deliberately NOT atomic across both axes the way
+/// a tiers 2-4 cascade step is.
+class TierOneOverride {
+  final int? audioIndex;
+  final int? subtitleIndex; // -1 == the picker's explicit "no subtitle" choice
+
+  const TierOneOverride({this.audioIndex, this.subtitleIndex});
+
+  bool get isEmpty => audioIndex == null && subtitleIndex == null;
+}
+
+/// Resolves which audio/subtitle tracks to select. Tier 1 (client-local
+/// override, see TierOneOverride) is consulted first, per axis; whichever
+/// axis it didn't touch (or whose stored index doesn't exist in the
+/// CURRENT item's track list — e.g. a different episode with fewer tracks)
+/// falls through to tiers 2-4 in most-specific-first order (tier 2: user
+/// profile, tier 3: channel admin, tier 4: global admin), first matching
+/// cascade step wins. Each tier 2-4 cascade is tried whole before falling
+/// through to the next tier — a tier with steps that all fail to match
+/// doesn't get mixed with the next tier's steps.
 class StreamSelectionResolver {
   const StreamSelectionResolver._();
 
   static StreamSelection resolve({
     required List<TrackCandidate> audioTracks,
     required List<TrackCandidate> subtitleTracks,
+    TierOneOverride? tierOneOverride, // tier 1, tried first — see its doc comment
     required StreamRuleCascade userRules, // tier 2
     required StreamRuleCascade channelRules, // tier 3
     required StreamRuleCascade globalRules, // tier 4
   }) {
-    // TODO(tier 1): an item/channel local override — an in-the-moment choice
-    // the user makes on the client for what's currently showing — would be
-    // consulted here, before tier 2, once it exists. It's explicitly out of
-    // scope for this slice (client-local only, no UI designed yet — see the
-    // tracking issue's "Open questions"); the cascade below effectively
-    // starts at tier 2 until then.
-    for (final cascade in [userRules, channelRules, globalRules]) {
-      final match = _firstMatch(cascade, audioTracks, subtitleTracks);
-      if (match != null) return match;
+    List<int>? audioSelection;
+    List<int>? subtitleSelection;
+
+    if (tierOneOverride != null) {
+      final audioIndex = tierOneOverride.audioIndex;
+      if (audioIndex != null && audioIndex >= 0 && audioIndex < audioTracks.length) {
+        audioSelection = [audioIndex];
+      }
+      final subtitleIndex = tierOneOverride.subtitleIndex;
+      if (subtitleIndex == -1) {
+        subtitleSelection = const [];
+      } else if (subtitleIndex != null && subtitleIndex >= 0 && subtitleIndex < subtitleTracks.length) {
+        subtitleSelection = [subtitleIndex];
+      }
     }
-    return StreamSelection.none;
+
+    // Tiers 2-4 only fill in whichever axis tier 1 left untouched (or whose
+    // stored index no longer exists in this item's track list) — a step
+    // match is atomic across both axes (see _firstMatch), so the first tier
+    // that matches at all supplies BOTH of whatever is still missing, same
+    // as before tier 1 existed.
+    if (audioSelection == null || subtitleSelection == null) {
+      for (final cascade in [userRules, channelRules, globalRules]) {
+        final match = _firstMatch(cascade, audioTracks, subtitleTracks);
+        if (match != null) {
+          audioSelection ??= match.audioTracks;
+          subtitleSelection ??= match.subtitleTracks;
+          break;
+        }
+      }
+    }
+
+    return StreamSelection(audioTracks: audioSelection, subtitleTracks: subtitleSelection ?? const []);
   }
 
   static StreamSelection? _firstMatch(

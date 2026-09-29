@@ -33,6 +33,7 @@ import 'input/input_action.dart';
 import 'pages/mosaic_page.dart';
 import 'widgets/epg_overlay.dart';
 import 'widgets/debug_overlay.dart';
+import 'widgets/track_selector_overlay.dart';
 
 // AppConfig: in production, every field below is just the --dart-define of the
 // same name (a compile-time constant). The integration tests
@@ -253,6 +254,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   // ValueNotifier pattern as above, for the same reason (never cause a rebuild
   // of the parent/the video tree).
   final ValueNotifier<bool> _debugOverlayVisibleNotifier = ValueNotifier(false);
+
+  // Tier 1 track selector overlay (arrowRight — InputAction.trackSelector):
+  // same isolated ValueNotifier pattern as above, for the same GL-texture
+  // reason. See widgets/track_selector_overlay.dart.
+  final ValueNotifier<bool> _trackPickerOpenNotifier = ValueNotifier(false);
+  final GlobalKey<TrackSelectorOverlayState> _trackSelectorKey = GlobalKey<TrackSelectorOverlayState>();
 
   // The Enter KeyDownEvent that OPENS the EPG is handled outside the overlay
   // (by the switch below, with `_epgOpenNotifier.value` still false); the
@@ -521,6 +528,18 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     final info = controller.getMediaInfo();
     final audioStreams = info?.audio ?? const [];
     final subtitleStreams = info?.subtitle ?? const [];
+    // Tier 1 (client-local override, see SettingsService's doc comment and
+    // TierOneOverride): looked up by the CURRENT channel id — safe to read
+    // here because _createController is only ever called for items of the
+    // channel already loaded into _channelIndex (preload/crossfade never
+    // spans a channel switch).
+    final channelId = (_channelIndex >= 0 && _channelIndex < _channels.length) ? _channels[_channelIndex].id : null;
+    final tierOneOverride = channelId == null
+        ? null
+        : TierOneOverride(
+            audioIndex: _settings.getAudioTrackOverride(channelId),
+            subtitleIndex: _settings.getSubtitleTrackOverride(channelId),
+          );
     final selection = StreamSelectionResolver.resolve(
       audioTracks: [
         for (var i = 0; i < audioStreams.length; i++)
@@ -538,6 +557,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
             title: _metadataValue(subtitleStreams[i].metadata, 'title'),
           ),
       ],
+      tierOneOverride: tierOneOverride,
       userRules: _streamPrefs.userRules,
       channelRules: _currentChannelRules,
       globalRules: _streamPrefs.globalRules,
@@ -894,6 +914,81 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     unawaited(_switchToChannelIndex(index));
   }
 
+  // Human-readable label for a track option in the picker/toast: prefers the
+  // "title" metadata tag (e.g. "Director's Commentary"), falls back to
+  // "language" (e.g. "por"), falls back to a positional placeholder — same
+  // metadata read _createController already does for the tier 2-4 cascade
+  // (see _metadataValue).
+  String _trackLabel(Map<String, String> metadata, int index) {
+    final title = _metadataValue(metadata, 'title');
+    if (title != null && title.isNotEmpty) return title;
+    final language = _metadataValue(metadata, 'language');
+    if (language != null && language.isNotEmpty) return language;
+    return 'Track ${index + 1}';
+  }
+
+  void _showTrackToast(String message) {
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.showSnackBar(
+      SnackBar(key: const Key('track-toast'), content: Text(message), duration: const Duration(seconds: 2)),
+    );
+  }
+
+  // Applies a tier 1 audio choice live on the CURRENTLY PLAYING controller
+  // (no channel reload needed) and persists it, keyed by channel id, so
+  // revisiting this channel later re-applies it (StreamSelectionResolver's
+  // TierOneOverride, consulted by _createController). Shared by both the
+  // picker (TrackSelectorOverlay.onSelect) and the cycleAudioTrack
+  // accelerator (_cycleTrack) — the one convergence point for tier 1 writes.
+  void _applyAudioTrack(VideoPlayerController controller, String channelId, int index, String label) {
+    controller.setAudioTracks([index]);
+    unawaited(_settings.setAudioTrackOverride(channelId, index));
+    _showTrackToast('Audio: $label');
+  }
+
+  // Same as _applyAudioTrack, for subtitles. `index == -1` is the picker's
+  // explicit "None" entry — setSubtitleTracks([]) disables subtitles, and
+  // -1 is the sentinel TierOneOverride.subtitleIndex/StreamSelectionResolver
+  // already understand as "explicit no subtitle" (see their doc comments).
+  void _applySubtitleTrack(VideoPlayerController controller, String channelId, int index, String label) {
+    controller.setSubtitleTracks(index == -1 ? const [] : [index]);
+    unawaited(_settings.setSubtitleTrackOverride(channelId, index));
+    _showTrackToast('Subtitle: $label');
+  }
+
+  // InputAction.cycleAudioTrack/cycleSubtitleTrack (Path 2, power-user
+  // accelerators — no default binding, see input/input_action.dart):
+  // advances to the next track in the REAL current track list (wrapping
+  // around), applying/persisting/confirming through the exact same
+  // _applyAudioTrack/_applySubtitleTrack the picker uses — one storage/
+  // resolver mechanism for both paths, not two parallel ones.
+  void _cycleTrack(TrackSelectorPanel panel) {
+    final controller = _aIsActive ? _controllerA : _controllerB;
+    if (controller == null || _channels.isEmpty || _channelIndex >= _channels.length) return;
+    final info = controller.getMediaInfo();
+    final channelId = _channels[_channelIndex].id;
+    if (panel == TrackSelectorPanel.audio) {
+      final tracks = info?.audio ?? const [];
+      if (tracks.isEmpty) return;
+      final current = _settings.getAudioTrackOverride(channelId);
+      final currentIndex = (current != null && current >= 0 && current < tracks.length) ? current : -1;
+      final nextIndex = (currentIndex + 1) % tracks.length;
+      _applyAudioTrack(controller, channelId, nextIndex, _trackLabel(tracks[nextIndex].metadata, nextIndex));
+    } else {
+      final tracks = info?.subtitle ?? const [];
+      // -1 (the virtual "None" entry) is always part of the cycle, same set
+      // the picker's Subtitle panel offers.
+      final options = <int>[-1, for (var i = 0; i < tracks.length; i++) i];
+      if (options.length <= 1) return; // no real subtitle track to cycle to
+      final current = _settings.getSubtitleTrackOverride(channelId) ?? -1;
+      final currentPosition = options.indexOf(current);
+      final nextPosition = ((currentPosition < 0 ? -1 : currentPosition) + 1) % options.length;
+      final nextIndex = options[nextPosition];
+      final label = nextIndex == -1 ? 'None' : _trackLabel(tracks[nextIndex].metadata, nextIndex);
+      _applySubtitleTrack(controller, channelId, nextIndex, label);
+    }
+  }
+
   @override
   void dispose() {
     _advanceTimer?.cancel();
@@ -902,6 +997,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     _osdVisibleNotifier.dispose();
     _epgOpenNotifier.dispose();
     _debugOverlayVisibleNotifier.dispose();
+    _trackPickerOpenNotifier.dispose();
     _gapRetryTimer?.cancel();
     _channelInputCommitTimer?.cancel();
     if (_streamPrefsReady) _streamPrefs.dispose();
@@ -1005,6 +1101,31 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
           return;
         }
 
+        // Tier 1 track picker (InputAction.trackSelector — arrowRight by
+        // default): same override pattern as the EPG branch above — while
+        // open, channelNext/channelPrevious become focus movement WITHIN the
+        // active panel (captured, never a real channel switch), raw
+        // arrowLeft/arrowRight switch panel, `select` picks and `back`
+        // closes without applying anything.
+        if (_trackPickerOpenNotifier.value) {
+          if (action == InputAction.back) {
+            if (event is KeyDownEvent) _trackPickerOpenNotifier.value = false;
+            return;
+          }
+          if (event is! KeyDownEvent) return;
+          if (action == InputAction.select) {
+            _trackSelectorKey.currentState?.selectFocused();
+          } else if (action == InputAction.channelNext) {
+            _trackSelectorKey.currentState?.moveFocus(1);
+          } else if (action == InputAction.channelPrevious) {
+            _trackSelectorKey.currentState?.moveFocus(-1);
+          } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
+              event.logicalKey == LogicalKeyboardKey.arrowRight) {
+            _trackSelectorKey.currentState?.switchPanel();
+          }
+          return;
+        }
+
         if (event is! KeyDownEvent) return;
         final digit = action?.digitValue;
         if (digit != null) {
@@ -1023,6 +1144,19 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
             } else {
               _showOsd();
             }
+          case InputAction.trackSelector:
+            // Only the required 6-button-only path: OSD visible, EPG not
+            // open (already guaranteed by the branch above) and no
+            // channel-number input in progress (AGENTS.md "6-button
+            // baseline" — verified arrowRight is a genuine no-op outside
+            // this exact state before wiring this binding).
+            if (_osdVisibleNotifier.value && (_channelInputBuffer == null || _channelInputBuffer!.isEmpty)) {
+              _trackPickerOpenNotifier.value = true;
+            }
+          case InputAction.cycleAudioTrack:
+            _cycleTrack(TrackSelectorPanel.audio);
+          case InputAction.cycleSubtitleTrack:
+            _cycleTrack(TrackSelectorPanel.subtitle);
           case InputAction.debugOverlay:
             _debugOverlayVisibleNotifier.value = !_debugOverlayVisibleNotifier.value;
           case InputAction.home:
@@ -1204,12 +1338,73 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
                 );
               },
             ),
+            // Tier 1 track picker (InputAction.trackSelector). Last child of
+            // the Stack — sits on top of everything, including the EPG
+            // (mutually exclusive in practice: trackSelector only opens
+            // when the EPG is closed, see onKeyEvent above). Positioned.fill
+            // in BOTH branches for the same GL-texture-composition reason
+            // documented above the EPG's ValueListenableBuilder — never a
+            // bare Stack child without Positioned.
+            ValueListenableBuilder<bool>(
+              valueListenable: _trackPickerOpenNotifier,
+              builder: (context, open, _) {
+                if (!open) return const Positioned.fill(child: SizedBox.shrink());
+                final controller = _aIsActive ? _controllerA : _controllerB;
+                final info = controller?.getMediaInfo();
+                final audioStreams = info?.audio ?? const [];
+                final subtitleStreams = info?.subtitle ?? const [];
+                final channelId =
+                    (_channelIndex >= 0 && _channelIndex < _channels.length) ? _channels[_channelIndex].id : null;
+
+                final audioOptions = [
+                  for (var i = 0; i < audioStreams.length; i++)
+                    TrackOption(index: i, label: _trackLabel(audioStreams[i].metadata, i)),
+                ];
+                final subtitleOptions = [
+                  const TrackOption(index: -1, label: 'None'),
+                  for (var i = 0; i < subtitleStreams.length; i++)
+                    TrackOption(index: i, label: _trackLabel(subtitleStreams[i].metadata, i)),
+                ];
+
+                final currentAudioIndex = channelId == null ? null : _settings.getAudioTrackOverride(channelId);
+                final currentSubtitleIndex =
+                    (channelId == null ? null : _settings.getSubtitleTrackOverride(channelId)) ?? -1;
+                final audioFocus = currentAudioIndex == null
+                    ? 0
+                    : audioOptions.indexWhere((o) => o.index == currentAudioIndex).clamp(0, _lastIndex(audioOptions));
+                final subtitleFocus =
+                    subtitleOptions.indexWhere((o) => o.index == currentSubtitleIndex).clamp(0, _lastIndex(subtitleOptions));
+
+                return Positioned.fill(
+                  child: TrackSelectorOverlay(
+                    key: _trackSelectorKey,
+                    audioOptions: audioOptions,
+                    subtitleOptions: subtitleOptions,
+                    initialAudioFocusIndex: audioFocus,
+                    initialSubtitleFocusIndex: subtitleFocus,
+                    onSelect: (panel, option) {
+                      final activeController = _aIsActive ? _controllerA : _controllerB;
+                      if (activeController == null || channelId == null) return;
+                      if (panel == TrackSelectorPanel.audio) {
+                        _applyAudioTrack(activeController, channelId, option.index, option.label);
+                      } else {
+                        _applySubtitleTrack(activeController, channelId, option.index, option.label);
+                      }
+                      _trackPickerOpenNotifier.value = false;
+                    },
+                    onClose: () => _trackPickerOpenNotifier.value = false,
+                  ),
+                );
+              },
+            ),
           ],
         ),
       ),
     );
   }
 }
+
+int _lastIndex(List<TrackOption> options) => options.isEmpty ? 0 : options.length - 1;
 
 String _fmtDuration(Duration d) {
   if (d.isNegative) d = Duration.zero;
