@@ -613,6 +613,38 @@ actionable checklist.
       not a regression from this slice. No dedicated unit test coverage was
       added for `StreamSelectionResolver` itself (pure-function logic would
       benefit from one — left as a follow-up, not silently skipped).
+      Admin UI: `webui/src/pages/StreamSelectorPage.tsx` +
+      `webui/src/components/StreamCascadeDialog.tsx` fill the gap noted
+      above — tiers 3-4 (channel/global) can now be viewed and edited from
+      the web UI instead of raw `curl`, following the `FillerRulesPage`/
+      `FillerRuleDialog` precedent. The page shows the always-present global
+      cascade plus a list of configured per-channel overrides (fetched
+      per-channel via `GET /channels` + one `/stream-preferences/config`
+      call each, mirroring `FillerPoolItemsDialog`'s per-id `useQueries`
+      pattern), with a channel picker to add a new override; the dialog
+      edits the ordered step list (add/remove/reorder, audio/subtitle
+      language, title block/allowlist) and `PUT`s to
+      `/stream-preferences/config?scope_type=...&scope_id=...` (query
+      params, not a body field, per that endpoint's actual contract).
+      "Clear" on a channel row `PUT`s an empty cascade rather than deleting
+      the row — there's no DELETE endpoint, and an empty cascade already
+      means "no preference" to the resolver. Tier 2 (a user's own
+      preference) is still out of scope — no logged-in-user concept exists
+      in the client yet. Gotcha hit and fixed: `encoding/json` marshals a
+      nil `[]StreamRuleStep` as `null`, not `[]` — an unconfigured scope's
+      `GET` response is `{"rules":{"steps":null}}`, which crashed the UI
+      until every read site treated `null` the same as an empty list (see
+      `StreamRuleCascade`'s doc comment in `webui/src/lib/types.ts`).
+      Verified: `tsc --noEmit`/`npm run build` clean; a real Playwright pass
+      against an isolated `go run ./cmd/server` instance (own temp SQLite
+      file, port 19394, admin bootstrap via
+      `PLAYHEADTV_SEED_ADMIN_EMAIL`/`_PASSWORD`) — logged in, set a 2-step
+      global cascade (including the null-subtitle-language and
+      wildcard-language cases), reordered steps, added a channel override,
+      confirmed it round-tripped through `curl` against the same instance,
+      edited it back open to confirm the pre-fill matched what was saved,
+      cleared it, and confirmed both the page and a direct `curl` reflected
+      the empty cascade after a full page reload.
 
 ## Phase 6 — Platforms
 

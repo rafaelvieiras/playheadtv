@@ -1,4 +1,15 @@
-import { CalendarClock, CalendarDays, LogOut, Tv, Layers, ListOrdered, Radio, Server, Smartphone } from 'lucide-react'
+import {
+  CalendarClock,
+  CalendarDays,
+  Languages,
+  LogOut,
+  Tv,
+  Layers,
+  ListOrdered,
+  Radio,
+  Server,
+  Smartphone,
+} from 'lucide-react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
@@ -13,6 +24,7 @@ const NAV_ITEMS = [
   { to: '/schedule', label: 'Schedule', icon: CalendarDays, end: false },
   { to: '/filler-pools', label: 'Filler pools', icon: Radio, end: false },
   { to: '/filler-rules', label: 'Filler rules', icon: ListOrdered, end: false },
+  { to: '/stream-selector', label: 'Stream selector', icon: Languages, end: false },
   { to: '/media-sources', label: 'Media sources', icon: Server, end: false },
   { to: '/devices', label: 'Devices', icon: Smartphone, end: false },
 ]

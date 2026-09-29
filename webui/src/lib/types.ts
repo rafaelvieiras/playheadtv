@@ -274,3 +274,50 @@ export interface FillerRuleInput {
   selection_strategy: SelectionStrategy
   position: number
 }
+
+// Mirrors backend/internal/domain.StreamRuleStep. subtitle_language is null
+// for "no subtitle preference at this step" (audio-only match); an empty
+// string means "any subtitle language is fine" once a subtitle IS requested.
+// Same distinction applies to audio_language, minus the null case: "" always
+// means "any audio language". Both are wildcard-capable (e.g. "pt*").
+export interface StreamRuleStep {
+  audio_language: string
+  subtitle_language: string | null
+  title_blocklist: string[]
+  title_allowlist: string[]
+}
+
+// Mirrors backend/internal/domain.StreamRuleCascade: an ordered list of
+// fallback steps, most-preferred first. steps is null (not []) on the wire
+// for an unconfigured scope — Go's encoding/json marshals a nil slice as
+// null — so every reader must treat null the same as an empty list.
+export interface StreamRuleCascade {
+  steps: StreamRuleStep[] | null
+}
+
+// Mirrors backend/internal/domain.PreferenceScope — tier 4 (global, at most
+// one row per tenant) or tier 3 (one channel's admin override) of the stream
+// selection cascade. Tier 2 (a user's own preference, GET/PUT
+// /stream-preferences/me) has no admin-UI shape here: it needs a logged-in
+// end-user concept the client doesn't have yet.
+export type StreamPreferenceScope = 'global' | 'channel'
+
+// Mirrors the GET/PUT /stream-preferences/config response body
+// (backend/internal/api/stream_preferences.go's writeStreamPreferenceRule).
+// A GET for a scope with no row yet still returns 200 with an empty cascade
+// rather than 404 — see that handler's comment.
+export interface StreamPreferenceRule {
+  id: string
+  scope_type: StreamPreferenceScope
+  scope_id: string
+  rules: StreamRuleCascade
+  updated_at: number
+}
+
+// StreamPreferenceRuleInput is the body shape for
+// PUT /stream-preferences/config?scope_type=...&scope_id=... — scope itself
+// is a query param, not part of the body (see parseScopeQuery in
+// backend/internal/api/stream_preferences.go).
+export interface StreamPreferenceRuleInput {
+  rules: StreamRuleCascade
+}

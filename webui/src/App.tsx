@@ -11,6 +11,7 @@ import { FillerRulesPage } from '@/pages/FillerRulesPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { MediaSourcesPage } from '@/pages/MediaSourcesPage'
 import { SchedulePage } from '@/pages/SchedulePage'
+import { StreamSelectorPage } from '@/pages/StreamSelectorPage'
 
 export default function App() {
   return (
@@ -29,6 +30,7 @@ export default function App() {
         <Route path="/schedule" element={<SchedulePage />} />
         <Route path="/filler-pools" element={<FillerPoolsPage />} />
         <Route path="/filler-rules" element={<FillerRulesPage />} />
+        <Route path="/stream-selector" element={<StreamSelectorPage />} />
         <Route path="/media-sources" element={<MediaSourcesPage />} />
         <Route path="/devices" element={<DevicesPage />} />
       </Route>
