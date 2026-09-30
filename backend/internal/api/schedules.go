@@ -10,21 +10,162 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
+// registerSchedules wires both halves of issue #7's Schedule/Playout split:
+// Schedule itself (a reusable, named group of rules — assigning one to a
+// channel is PUT /channels/{id}'s job, see channels.go) and ScheduleItem (one
+// recurrence rule inside it, schedule_entry's old shape minus channel_id).
 func registerSchedules(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer) {
-	mux.HandleFunc("POST /schedule-entries", createScheduleEntry(db, mat))
-	mux.HandleFunc("GET /schedule-entries", listScheduleEntries(db))
-	mux.HandleFunc("GET /schedule-entries/{id}", getScheduleEntry(db))
-	mux.HandleFunc("PUT /schedule-entries/{id}", updateScheduleEntry(db, mat))
-	mux.HandleFunc("DELETE /schedule-entries/{id}", deleteScheduleEntry(db, mat))
+	mux.HandleFunc("POST /schedules", createSchedule(db))
+	mux.HandleFunc("GET /schedules", listSchedules(db))
+	mux.HandleFunc("GET /schedules/{id}", getSchedule(db))
+	mux.HandleFunc("PUT /schedules/{id}", updateSchedule(db))
+	mux.HandleFunc("DELETE /schedules/{id}", deleteSchedule(db, mat))
+
+	mux.HandleFunc("POST /schedules/{id}/items", createScheduleItem(db, mat))
+	mux.HandleFunc("GET /schedules/{id}/items", listScheduleItems(db))
+	mux.HandleFunc("GET /schedule-items/{id}", getScheduleItem(db))
+	mux.HandleFunc("PUT /schedule-items/{id}", updateScheduleItem(db, mat))
+	mux.HandleFunc("DELETE /schedule-items/{id}", deleteScheduleItem(db, mat))
 }
 
-// scheduleEntryColumns aliases recurrence_type to Recurrence, the struct
-// field name domain.ScheduleEntry actually has — see the same note on
-// fillerRuleColumns in filler.go.
-const scheduleEntryColumns = "id, tenant_id, channel_id, block_id, recurrence_type AS recurrence, day_of_week, start_time_local, start_at, active, created_at, updated_at"
+const scheduleColumns = "id, tenant_id, name, description, created_at, updated_at"
 
-type scheduleEntryRequest struct {
-	ChannelID      string  `json:"channel_id"`
+// scheduleItemColumns aliases recurrence_type to Recurrence, the struct field
+// name domain.ScheduleItem actually has — same pattern as fillerRuleColumns
+// in filler.go.
+const scheduleItemColumns = "id, tenant_id, schedule_id, block_id, recurrence_type AS recurrence, day_of_week, start_time_local, start_at, active, created_at, updated_at"
+
+type scheduleRequest struct {
+	Name        string  `json:"name"`
+	Description *string `json:"description"`
+}
+
+func fetchSchedule(db storage.DB, r *http.Request, id string) (domain.Schedule, error) {
+	var s domain.Schedule
+	err := db.Query(r.Context(), &s,
+		"SELECT "+scheduleColumns+" FROM schedule WHERE tenant_id = ? AND id = ?",
+		DefaultTenantID, id,
+	)
+	return s, err
+}
+
+func createSchedule(db storage.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req scheduleRequest
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if req.Name == "" {
+			writeError(w, http.StatusBadRequest, "name is required")
+			return
+		}
+		now := time.Now().UnixMilli()
+		s := domain.Schedule{
+			ID:          uuid.NewString(),
+			TenantID:    DefaultTenantID,
+			Name:        req.Name,
+			Description: req.Description,
+			CreatedAt:   now,
+			UpdatedAt:   now,
+		}
+		err := db.Exec(r.Context(),
+			"INSERT INTO schedule (id, tenant_id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+			s.ID, s.TenantID, s.Name, s.Description, s.CreatedAt, s.UpdatedAt,
+		)
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, s)
+	}
+}
+
+func listSchedules(db storage.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var schedules []domain.Schedule
+		err := db.Query(r.Context(), &schedules,
+			"SELECT "+scheduleColumns+" FROM schedule WHERE tenant_id = ? ORDER BY name",
+			DefaultTenantID,
+		)
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, schedules)
+	}
+}
+
+func getSchedule(db storage.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		s, err := fetchSchedule(db, r, r.PathValue("id"))
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s)
+	}
+}
+
+func updateSchedule(db storage.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if _, err := fetchSchedule(db, r, id); err != nil {
+			handleDBError(w, err)
+			return
+		}
+		var req scheduleRequest
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if req.Name == "" {
+			writeError(w, http.StatusBadRequest, "name is required")
+			return
+		}
+		// A Schedule's own name/description never affects EPG materialization
+		// (only its items and who it's assigned to do), so this never calls
+		// mat.Trigger().
+		err := db.Exec(r.Context(),
+			"UPDATE schedule SET name = ?, description = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+			req.Name, req.Description, time.Now().UnixMilli(), DefaultTenantID, id,
+		)
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		s, err := fetchSchedule(db, r, id)
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, s)
+	}
+}
+
+func deleteSchedule(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if _, err := fetchSchedule(db, r, id); err != nil {
+			handleDBError(w, err)
+			return
+		}
+		// ON DELETE CASCADE drops this Schedule's schedule_item rows;
+		// channel.schedule_id referencing it is NOT ON DELETE SET NULL (SQLite
+		// requires that to be spelled out at creation time, which the initial
+		// migration didn't need), so a channel still pointing at it would
+		// violate the FK — surfaced as a normal handleDBError, same as any
+		// other in-use-reference delete in this codebase.
+		if err := db.Exec(r.Context(), "DELETE FROM schedule WHERE tenant_id = ? AND id = ?", DefaultTenantID, id); err != nil {
+			handleDBError(w, err)
+			return
+		}
+		mat.Trigger()
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+type scheduleItemRequest struct {
 	BlockID        string  `json:"block_id"`
 	RecurrenceType string  `json:"recurrence_type"`
 	DayOfWeek      *int    `json:"day_of_week"`
@@ -33,10 +174,7 @@ type scheduleEntryRequest struct {
 	Active         *bool   `json:"active"`
 }
 
-func validateScheduleEntryRequest(req scheduleEntryRequest) (string, bool) {
-	if req.ChannelID == "" {
-		return "channel_id is required", false
-	}
+func validateScheduleItemRequest(req scheduleItemRequest) (string, bool) {
 	if req.BlockID == "" {
 		return "block_id is required", false
 	}
@@ -61,23 +199,28 @@ func validateScheduleEntryRequest(req scheduleEntryRequest) (string, bool) {
 	return "", true
 }
 
-func fetchScheduleEntry(db storage.DB, r *http.Request, id string) (domain.ScheduleEntry, error) {
-	var se domain.ScheduleEntry
-	err := db.Query(r.Context(), &se,
-		"SELECT "+scheduleEntryColumns+" FROM schedule_entry WHERE tenant_id = ? AND id = ?",
+func fetchScheduleItem(db storage.DB, r *http.Request, id string) (domain.ScheduleItem, error) {
+	var si domain.ScheduleItem
+	err := db.Query(r.Context(), &si,
+		"SELECT "+scheduleItemColumns+" FROM schedule_item WHERE tenant_id = ? AND id = ?",
 		DefaultTenantID, id,
 	)
-	return se, err
+	return si, err
 }
 
-func createScheduleEntry(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
+func createScheduleItem(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req scheduleEntryRequest
+		scheduleID := r.PathValue("id")
+		if _, err := fetchSchedule(db, r, scheduleID); err != nil {
+			handleDBError(w, err)
+			return
+		}
+		var req scheduleItemRequest
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		if msg, ok := validateScheduleEntryRequest(req); !ok {
+		if msg, ok := validateScheduleItemRequest(req); !ok {
 			writeError(w, http.StatusBadRequest, msg)
 			return
 		}
@@ -86,10 +229,10 @@ func createScheduleEntry(db storage.DB, mat *materializer.Materializer) http.Han
 			active = *req.Active
 		}
 		now := time.Now().UnixMilli()
-		se := domain.ScheduleEntry{
+		si := domain.ScheduleItem{
 			ID:             uuid.NewString(),
 			TenantID:       DefaultTenantID,
-			ChannelID:      req.ChannelID,
+			ScheduleID:     scheduleID,
 			BlockID:        req.BlockID,
 			Recurrence:     domain.RecurrenceType(req.RecurrenceType),
 			DayOfWeek:      req.DayOfWeek,
@@ -100,59 +243,64 @@ func createScheduleEntry(db storage.DB, mat *materializer.Materializer) http.Han
 			UpdatedAt:      now,
 		}
 		err := db.Exec(r.Context(),
-			`INSERT INTO schedule_entry (id, tenant_id, channel_id, block_id, recurrence_type, day_of_week, start_time_local, start_at, active, created_at, updated_at)
+			`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, recurrence_type, day_of_week, start_time_local, start_at, active, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			se.ID, se.TenantID, se.ChannelID, se.BlockID, string(se.Recurrence), se.DayOfWeek, se.StartTimeLocal,
-			se.StartAt, se.Active, se.CreatedAt, se.UpdatedAt,
+			si.ID, si.TenantID, si.ScheduleID, si.BlockID, string(si.Recurrence), si.DayOfWeek, si.StartTimeLocal,
+			si.StartAt, si.Active, si.CreatedAt, si.UpdatedAt,
 		)
 		if err != nil {
 			handleDBError(w, err)
 			return
 		}
 		mat.Trigger()
-		writeJSON(w, http.StatusCreated, se)
+		writeJSON(w, http.StatusCreated, si)
 	}
 }
 
-func listScheduleEntries(db storage.DB) http.HandlerFunc {
+func listScheduleItems(db storage.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var entries []domain.ScheduleEntry
-		err := db.Query(r.Context(), &entries,
-			"SELECT "+scheduleEntryColumns+" FROM schedule_entry WHERE tenant_id = ? ORDER BY created_at",
-			DefaultTenantID,
+		scheduleID := r.PathValue("id")
+		if _, err := fetchSchedule(db, r, scheduleID); err != nil {
+			handleDBError(w, err)
+			return
+		}
+		var items []domain.ScheduleItem
+		err := db.Query(r.Context(), &items,
+			"SELECT "+scheduleItemColumns+" FROM schedule_item WHERE tenant_id = ? AND schedule_id = ? ORDER BY created_at",
+			DefaultTenantID, scheduleID,
 		)
 		if err != nil {
 			handleDBError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, entries)
+		writeJSON(w, http.StatusOK, items)
 	}
 }
 
-func getScheduleEntry(db storage.DB) http.HandlerFunc {
+func getScheduleItem(db storage.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		se, err := fetchScheduleEntry(db, r, r.PathValue("id"))
+		si, err := fetchScheduleItem(db, r, r.PathValue("id"))
 		if err != nil {
 			handleDBError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, se)
+		writeJSON(w, http.StatusOK, si)
 	}
 }
 
-func updateScheduleEntry(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
+func updateScheduleItem(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if _, err := fetchScheduleEntry(db, r, id); err != nil {
+		if _, err := fetchScheduleItem(db, r, id); err != nil {
 			handleDBError(w, err)
 			return
 		}
-		var req scheduleEntryRequest
+		var req scheduleItemRequest
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		if msg, ok := validateScheduleEntryRequest(req); !ok {
+		if msg, ok := validateScheduleItemRequest(req); !ok {
 			writeError(w, http.StatusBadRequest, msg)
 			return
 		}
@@ -160,10 +308,11 @@ func updateScheduleEntry(db storage.DB, mat *materializer.Materializer) http.Han
 		if req.Active != nil {
 			active = *req.Active
 		}
+		// scheduleID is immutable via PUT (items don't move between schedules).
 		err := db.Exec(r.Context(),
-			`UPDATE schedule_entry SET channel_id = ?, block_id = ?, recurrence_type = ?, day_of_week = ?,
+			`UPDATE schedule_item SET block_id = ?, recurrence_type = ?, day_of_week = ?,
 			 start_time_local = ?, start_at = ?, active = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`,
-			req.ChannelID, req.BlockID, req.RecurrenceType, req.DayOfWeek, req.StartTimeLocal, req.StartAt,
+			req.BlockID, req.RecurrenceType, req.DayOfWeek, req.StartTimeLocal, req.StartAt,
 			active, time.Now().UnixMilli(), DefaultTenantID, id,
 		)
 		if err != nil {
@@ -171,23 +320,23 @@ func updateScheduleEntry(db storage.DB, mat *materializer.Materializer) http.Han
 			return
 		}
 		mat.Trigger()
-		se, err := fetchScheduleEntry(db, r, id)
+		si, err := fetchScheduleItem(db, r, id)
 		if err != nil {
 			handleDBError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, se)
+		writeJSON(w, http.StatusOK, si)
 	}
 }
 
-func deleteScheduleEntry(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
+func deleteScheduleItem(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if _, err := fetchScheduleEntry(db, r, id); err != nil {
+		if _, err := fetchScheduleItem(db, r, id); err != nil {
 			handleDBError(w, err)
 			return
 		}
-		if err := db.Exec(r.Context(), "DELETE FROM schedule_entry WHERE tenant_id = ? AND id = ?", DefaultTenantID, id); err != nil {
+		if err := db.Exec(r.Context(), "DELETE FROM schedule_item WHERE tenant_id = ? AND id = ?", DefaultTenantID, id); err != nil {
 			handleDBError(w, err)
 			return
 		}

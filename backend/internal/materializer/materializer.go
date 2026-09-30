@@ -1,9 +1,10 @@
-// Package materializer expands schedule_entry + block/block_item +
-// filler_rule/filler_pool_item into flat epg_entry rows, asynchronously and
-// ahead of "now" — see docs/ARCHITECTURE.md "EPG materialization". It never
-// runs on an HTTP request path: internal/api only triggers it (Trigger) after
-// a write to a scheduling table, and cmd/server/main.go rolls it forward on a
-// timer (Start).
+// Package materializer expands a channel's assigned schedule (schedule +
+// schedule_item) + block/block_item + filler_rule/filler_pool_item into flat
+// epg_entry rows, asynchronously and ahead of "now" — see
+// docs/ARCHITECTURE.md "EPG materialization". It never runs on an HTTP
+// request path: internal/api only triggers it (Trigger) after a write to a
+// scheduling table, and cmd/server/main.go rolls it forward on a timer
+// (Start).
 //
 // This package does not import internal/api: it discovers tenants generically
 // from the tenant table rather than assuming api.DefaultTenantID, so it keeps
@@ -21,7 +22,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
-// scanLookback is how far behind "now" Run scans schedule_entry for
+// scanLookback is how far behind "now" Run scans schedule_item for
 // occurrences that might still be on the air (e.g. a long block that started
 // yesterday). Fixed rather than configurable — see docs/ROADMAP.md.
 const scanLookback = 24 * time.Hour
@@ -38,16 +39,16 @@ const tickInterval = 5 * time.Minute
 // can't wedge the background worker forever.
 const runTimeout = 30 * time.Second
 
-// scheduleEntryColumns/fillerRuleColumns alias columns whose DB name doesn't
+// scheduleItemColumns/fillerRuleColumns alias columns whose DB name doesn't
 // spell out to the domain struct's field name, same pattern (and same
 // underlying columns) as internal/api/schedules.go and internal/api/filler.go
 // — duplicated here (rather than imported) because this package must not
 // depend on internal/api.
-const scheduleEntryColumns = "id, tenant_id, channel_id, block_id, recurrence_type AS recurrence, day_of_week, start_time_local, start_at, active, created_at, updated_at"
+const scheduleItemColumns = "id, tenant_id, schedule_id, block_id, recurrence_type AS recurrence, day_of_week, start_time_local, start_at, active, created_at, updated_at"
 const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, filler_pool_id, selection_strategy AS selection, position, created_at"
 const blockItemColumns = "id, block_id, position, catalog_item_id, trim_duration_ms"
 const fillerPoolItemColumns = "id, filler_pool_id, catalog_item_id, weight"
-const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, created_at, updated_at"
+const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, schedule_id, created_at, updated_at"
 
 // Materializer owns the background EPG regeneration loop.
 type Materializer struct {
@@ -132,7 +133,7 @@ func (m *Materializer) runLogged(ctx context.Context) {
 // Run performs one full, synchronous regeneration of every tenant/channel's
 // epg_entry rows for the window ahead of "now" (plus the fixed lookback
 // behind it), and bumps epg_revision once per tenant. It is idempotent: for
-// the same schedule_entry/block/filler_rule/filler_pool_item state and the
+// the same schedule_item/block/filler_rule/filler_pool_item state and the
 // same instant "now", it always produces the same epg_entry rows.
 //
 // Only a failure to even list tenants is returned as an error; a failure
@@ -180,17 +181,23 @@ func (m *Materializer) runTenant(ctx context.Context, tenantID string, now, scan
 }
 
 func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel, tenantID string, now, scanFrom, windowEnd time.Time, cache *catalogDurationCache, state *selectionState) error {
-	var scheduleEntries []domain.ScheduleEntry
-	if err := m.db.Query(ctx, &scheduleEntries,
-		"SELECT "+scheduleEntryColumns+" FROM schedule_entry WHERE tenant_id = ? AND channel_id = ? AND active = 1",
-		tenantID, ch.ID,
-	); err != nil {
-		return fmt.Errorf("list schedule entries: %w", err)
+	// A channel with no Schedule assigned (ch.ScheduleID == nil) has no
+	// schedule_item rows at all — it relies solely on its channel-scoped
+	// fallback filler rule, exactly like today's "24/7 genre loop with no
+	// Schedule at all" case (docs/ARCHITECTURE.md "Scheduling model").
+	var scheduleItems []domain.ScheduleItem
+	if ch.ScheduleID != nil {
+		if err := m.db.Query(ctx, &scheduleItems,
+			"SELECT "+scheduleItemColumns+" FROM schedule_item WHERE tenant_id = ? AND schedule_id = ? AND active = 1",
+			tenantID, *ch.ScheduleID,
+		); err != nil {
+			return fmt.Errorf("list schedule items: %w", err)
+		}
 	}
 
-	blockIDs := make(map[string]struct{}, len(scheduleEntries))
-	for _, se := range scheduleEntries {
-		blockIDs[se.BlockID] = struct{}{}
+	blockIDs := make(map[string]struct{}, len(scheduleItems))
+	for _, si := range scheduleItems {
+		blockIDs[si.BlockID] = struct{}{}
 	}
 
 	blockItems := make(map[string][]domain.BlockItem, len(blockIDs))
@@ -292,7 +299,7 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 		ChannelID:       ch.ID,
 		TenantID:        tenantID,
 		Timezone:        ch.Timezone,
-		ScheduleEntries: scheduleEntries,
+		ScheduleItems:   scheduleItems,
 		BlockItems:      blockItems,
 		FillerRules:     fillerRules,
 		PoolItems:       poolItems,
@@ -320,9 +327,9 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 	}
 	for _, e := range toInsert {
 		if err := m.db.Exec(ctx,
-			`INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_entry_id, generated_at)
+			`INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			e.ID, e.TenantID, e.ChannelID, string(e.Kind), e.CatalogItemID, e.StartAt, e.EndAt, e.SourceScheduleEntryID, e.GeneratedAt,
+			e.ID, e.TenantID, e.ChannelID, string(e.Kind), e.CatalogItemID, e.StartAt, e.EndAt, e.SourceScheduleItemID, e.GeneratedAt,
 		); err != nil {
 			return fmt.Errorf("insert epg_entry: %w", err)
 		}

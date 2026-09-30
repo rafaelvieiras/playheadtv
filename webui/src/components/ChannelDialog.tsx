@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useState } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -13,8 +13,9 @@ import {
 } from '@/components/ui/dialog'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { api } from '@/lib/http'
-import type { Channel, ChannelInput } from '@/lib/types'
+import type { Channel, ChannelInput, Schedule } from '@/lib/types'
 
 interface ChannelDialogProps {
   open: boolean
@@ -23,17 +24,28 @@ interface ChannelDialogProps {
   channel?: Channel
 }
 
+// NONE_VALUE stands in for schedule_id: null — Radix Select can't use an
+// empty string as an item value (reserved to clear/placeholder internally).
+const NONE_VALUE = '__none__'
+
 const emptyForm: ChannelInput = {
   number: 1,
   name: '',
   guide_art_url: null,
   timezone: 'UTC',
+  schedule_id: null,
 }
 
 export function ChannelDialog({ open, onOpenChange, channel }: ChannelDialogProps) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<ChannelInput>(emptyForm)
   const isEditing = channel !== undefined
+
+  const { data: schedules } = useQuery({
+    queryKey: ['schedules'],
+    queryFn: () => api.get<Schedule[]>('/schedules'),
+    enabled: open,
+  })
 
   useEffect(() => {
     if (open) {
@@ -44,6 +56,7 @@ export function ChannelDialog({ open, onOpenChange, channel }: ChannelDialogProp
               name: channel.name,
               guide_art_url: channel.guide_art_url,
               timezone: channel.timezone,
+              schedule_id: channel.schedule_id,
             }
           : emptyForm
       )
@@ -117,6 +130,25 @@ export function ChannelDialog({ open, onOpenChange, channel }: ChannelDialogProp
                 value={form.timezone}
                 onChange={(e) => setForm((f) => ({ ...f, timezone: e.target.value }))}
               />
+            </Field>
+            <Field>
+              <FieldLabel htmlFor="channel-schedule">Schedule (optional)</FieldLabel>
+              <Select
+                value={form.schedule_id ?? NONE_VALUE}
+                onValueChange={(v) => setForm((f) => ({ ...f, schedule_id: v === NONE_VALUE ? null : v }))}
+              >
+                <SelectTrigger id="channel-schedule" className="w-full">
+                  <SelectValue placeholder="No schedule" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NONE_VALUE}>None</SelectItem>
+                  {schedules?.map((schedule) => (
+                    <SelectItem key={schedule.id} value={schedule.id}>
+                      {schedule.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </Field>
           </FieldGroup>
           <DialogFooter>

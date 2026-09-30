@@ -7,13 +7,31 @@ const (
 	RecurrenceOnce   RecurrenceType = "once"
 )
 
-// ScheduleEntry is authoring input, never read directly by a client — the
-// EPG materializer expands it (together with its Block/BlockItems and any
-// FillerRules in scope) into flat EpgEntry rows ahead of time.
-type ScheduleEntry struct {
+// Schedule is a reusable, named group of recurrence rules (its ScheduleItems)
+// — the "Schedule" half of ErsatzTV's Schedule/Playout split (issue #7). It
+// carries no channel of its own: Channel.ScheduleID is what assigns it, and
+// the same Schedule can drive more than one channel at once, each one still
+// materializing (and tracking) its own epg_entry rows independently — the
+// channel itself plays the "Playout" role here, there's no separate entity
+// for it.
+type Schedule struct {
+	ID          string  `json:"id"`
+	TenantID    string  `json:"tenant_id"`
+	Name        string  `json:"name"`
+	Description *string `json:"description"`
+	CreatedAt   int64   `json:"created_at"`
+	UpdatedAt   int64   `json:"updated_at"`
+}
+
+// ScheduleItem is one recurrence rule inside a Schedule — authoring input,
+// never read directly by a client. The EPG materializer expands every active
+// item of the Schedule assigned to a channel (together with its
+// Block/BlockItems and any FillerRules in scope) into flat EpgEntry rows
+// ahead of time.
+type ScheduleItem struct {
 	ID             string         `json:"id"`
 	TenantID       string         `json:"tenant_id"`
-	ChannelID      string         `json:"channel_id"`
+	ScheduleID     string         `json:"schedule_id"`
 	BlockID        string         `json:"block_id"`
 	Recurrence     RecurrenceType `json:"recurrence_type"`
 	DayOfWeek      *int           `json:"day_of_week"`      // 0 (Sunday)..6, set iff Recurrence == RecurrenceWeekly
@@ -39,15 +57,15 @@ const (
 // reads. Regenerated asynchronously on writes to scheduling tables, and
 // rolled forward on a timer so a window stays materialized ahead of "now".
 type EpgEntry struct {
-	ID                    string       `json:"id"`
-	TenantID              string       `json:"tenant_id"`
-	ChannelID             string       `json:"channel_id"`
-	Kind                  EpgEntryKind `json:"kind"`
-	CatalogItemID         string       `json:"catalog_item_id"`
-	StartAt               int64        `json:"start_at"`
-	EndAt                 int64        `json:"end_at"`
-	SourceScheduleEntryID *string      `json:"source_schedule_entry_id"` // nil for fallback entries
-	GeneratedAt           int64        `json:"generated_at"`
+	ID                   string       `json:"id"`
+	TenantID             string       `json:"tenant_id"`
+	ChannelID            string       `json:"channel_id"`
+	Kind                 EpgEntryKind `json:"kind"`
+	CatalogItemID        string       `json:"catalog_item_id"`
+	StartAt              int64        `json:"start_at"`
+	EndAt                int64        `json:"end_at"`
+	SourceScheduleItemID *string      `json:"source_schedule_item_id"` // nil for fallback entries
+	GeneratedAt          int64        `json:"generated_at"`
 }
 
 // EpgRevision is the one-row-per-tenant version marker GET /epg/meta serves,

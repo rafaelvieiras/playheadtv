@@ -244,10 +244,13 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 		t.Fatalf("ListTools: %v", err)
 	}
 	wantTools := []string{
-		"create_channel", "list_channels", "register_media_source", "search_catalog",
-		"create_block", "add_block_item", "list_block_items",
+		// create_block was never a real tool (block creation is REST/web-UI
+		// only) — fixed here while touching this list for issue #7 rather
+		// than leaving TestMCPToolsEndToEnd failing on unmodified main too.
+		"create_channel", "list_channels", "assign_channel_schedule", "register_media_source", "search_catalog",
+		"add_block_item", "list_block_items",
 		"create_filler_pool", "add_filler_pool_item", "create_filler_rule", "list_filler_pools",
-		"create_schedule_entry", "preview_epg",
+		"create_schedule", "create_schedule_item", "preview_epg",
 	}
 	gotTools := map[string]bool{}
 	for _, tl := range tools.Tools {
@@ -390,30 +393,48 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 		t.Fatalf("list_filler_pools: created pool %s not found in %+v", pool.ID, poolsOut.Pools)
 	}
 
-	// create_schedule_entry validation: mirrors
-	// internal/api/schedules.go's validateScheduleEntryRequest — a weekly
-	// entry with start_at set must be rejected.
-	errText := callToolExpectError(t, ctx, session, "create_schedule_entry", map[string]any{
-		"channel_id": ch.ID, "block_id": block.ID, "recurrence_type": "weekly",
+	// 7. create_schedule — issue #7's Schedule/Playout split: a reusable,
+	// named group of rules, not tied to a channel yet.
+	schedule := callTool[domain.Schedule](t, ctx, session, "create_schedule", map[string]any{
+		"name": "MCP Schedule",
+	})
+	if schedule.ID == "" {
+		t.Fatalf("create_schedule: unexpected result %+v", schedule)
+	}
+
+	// create_schedule_item validation: mirrors
+	// internal/api/schedules.go's validateScheduleItemRequest — a weekly
+	// item with start_at set must be rejected.
+	errText := callToolExpectError(t, ctx, session, "create_schedule_item", map[string]any{
+		"schedule_id": schedule.ID, "block_id": block.ID, "recurrence_type": "weekly",
 		"day_of_week": 1, "start_time_local": "08:00", "start_at": 1234,
 	})
 	if !strings.Contains(errText, "start_at") {
-		t.Fatalf("create_schedule_entry validation error = %q, want it to mention start_at", errText)
+		t.Fatalf("create_schedule_item validation error = %q, want it to mention start_at", errText)
 	}
 
-	// 7. create_schedule_entry — a real "once" occurrence a couple seconds
-	// in the past, so the materializer's scanLookback picks it up as
+	// create_schedule_item — a real "once" occurrence a couple seconds in
+	// the past, so the materializer's scanLookback picks it up as
 	// already-on-air and preview_epg can observe it without waiting out a
 	// full future window.
 	startAt := time.Now().Add(-2 * time.Second).UnixMilli()
-	entry := callTool[domain.ScheduleEntry](t, ctx, session, "create_schedule_entry", map[string]any{
-		"channel_id": ch.ID, "block_id": block.ID, "recurrence_type": "once", "start_at": startAt,
+	item := callTool[domain.ScheduleItem](t, ctx, session, "create_schedule_item", map[string]any{
+		"schedule_id": schedule.ID, "block_id": block.ID, "recurrence_type": "once", "start_at": startAt,
 	})
-	if entry.ID == "" {
-		t.Fatalf("create_schedule_entry: unexpected result %+v", entry)
+	if item.ID == "" {
+		t.Fatalf("create_schedule_item: unexpected result %+v", item)
 	}
 
-	// 8. preview_epg — poll briefly for the materializer's debounced,
+	// 8. assign_channel_schedule — the Schedule only drives the channel once
+	// assigned; this is also what makes it EPG-materializer-visible.
+	assigned := callTool[domain.Channel](t, ctx, session, "assign_channel_schedule", map[string]any{
+		"channel_id": ch.ID, "schedule_id": schedule.ID,
+	})
+	if assigned.ScheduleID == nil || *assigned.ScheduleID != schedule.ID {
+		t.Fatalf("assign_channel_schedule: unexpected result %+v", assigned)
+	}
+
+	// 9. preview_epg — poll briefly for the materializer's debounced,
 	// asynchronous run (internal/materializer's triggerDebounce is 200ms) to
 	// land, exactly like the Phase 3 web UI verification in
 	// docs/ROADMAP.md did against the REST API.
@@ -435,15 +456,15 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	if len(epgOut.Entries) == 0 {
-		t.Fatal("preview_epg: materializer never produced an epg_entry for the schedule entry within the deadline")
+		t.Fatal("preview_epg: materializer never produced an epg_entry for the schedule item within the deadline")
 	}
 	entryFound := false
 	for _, e := range epgOut.Entries {
-		if e.SourceScheduleEntryID != nil && *e.SourceScheduleEntryID == entry.ID && e.CatalogItemID == movieItemID {
+		if e.SourceScheduleItemID != nil && *e.SourceScheduleItemID == item.ID && e.CatalogItemID == movieItemID {
 			entryFound = true
 		}
 	}
 	if !entryFound {
-		t.Fatalf("preview_epg: no entry sourced from schedule entry %s / catalog item %s, got %+v", entry.ID, movieItemID, epgOut.Entries)
+		t.Fatalf("preview_epg: no entry sourced from schedule item %s / catalog item %s, got %+v", item.ID, movieItemID, epgOut.Entries)
 	}
 }

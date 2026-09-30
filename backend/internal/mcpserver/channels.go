@@ -7,14 +7,15 @@ import (
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
 // channelColumns mirrors internal/api/channels.go's channelColumns constant
 // — duplicated rather than imported, see mcpserver.go's package comment.
-const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, created_at, updated_at"
+const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, schedule_id, created_at, updated_at"
 
-func registerChannelTools(s *mcp.Server, db storage.DB) {
+func registerChannelTools(s *mcp.Server, db storage.DB, mat *materializer.Materializer) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "create_channel",
 		Description: "Create a new linear TV channel (the numbered entry that appears in the " +
@@ -25,6 +26,13 @@ func registerChannelTools(s *mcp.Server, db storage.DB) {
 		Name:        "list_channels",
 		Description: "List every channel for this tenant, ordered by channel number. Mirrors GET /channels.",
 	}, listChannelsHandler(db))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "assign_channel_schedule",
+		Description: "Assign a Schedule to a channel (or clear it, by omitting schedule_id), driving " +
+			"what that channel airs — issue #7's Schedule/Playout split. Triggers EPG regeneration. " +
+			"Mirrors the schedule_id field of PUT /channels/{id}.",
+	}, assignChannelScheduleHandler(db, mat))
 }
 
 type createChannelInput struct {
@@ -84,5 +92,34 @@ func listChannelsHandler(db storage.DB) mcp.ToolHandlerFor[listChannelsInput, li
 			return nil, listChannelsOutput{}, err
 		}
 		return nil, listChannelsOutput{Channels: channels}, nil
+	}
+}
+
+type assignChannelScheduleInput struct {
+	ChannelID  string  `json:"channel_id" jsonschema:"the channel to assign a Schedule to"`
+	ScheduleID *string `json:"schedule_id,omitempty" jsonschema:"the Schedule to assign; omit/null to clear it"`
+}
+
+func assignChannelScheduleHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[assignChannelScheduleInput, domain.Channel] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in assignChannelScheduleInput) (*mcp.CallToolResult, domain.Channel, error) {
+		if in.ChannelID == "" {
+			return nil, domain.Channel{}, errors.New("channel_id is required")
+		}
+		err := db.Exec(ctx,
+			"UPDATE channel SET schedule_id = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+			in.ScheduleID, nowMillis(), defaultTenantID, in.ChannelID,
+		)
+		if err != nil {
+			return nil, domain.Channel{}, err
+		}
+		var ch domain.Channel
+		if err := db.Query(ctx, &ch,
+			"SELECT "+channelColumns+" FROM channel WHERE tenant_id = ? AND id = ?",
+			defaultTenantID, in.ChannelID,
+		); err != nil {
+			return nil, domain.Channel{}, err
+		}
+		mat.Trigger()
+		return nil, ch, nil
 	}
 }

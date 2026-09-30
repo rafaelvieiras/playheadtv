@@ -22,6 +22,10 @@ export interface Channel {
   name: string
   guide_art_url: string | null
   timezone: string
+  // schedule_id is which Schedule (if any) drives this channel — issue #7's
+  // Schedule/Playout split. null means no schedule assigned (e.g. a channel
+  // relying only on a channel-scoped fallback filler rule).
+  schedule_id: string | null
   created_at: number
   updated_at: number
 }
@@ -32,6 +36,7 @@ export interface ChannelInput {
   name: string
   guide_art_url: string | null
   timezone: string
+  schedule_id: string | null
 }
 
 // Mirrors backend/internal/domain.EpgEntryKind.
@@ -46,7 +51,7 @@ export interface EpgEntry {
   catalog_item_id: string
   start_at: number
   end_at: number
-  source_schedule_entry_id: string | null
+  source_schedule_item_id: string | null
   generated_at: number
 }
 
@@ -110,11 +115,34 @@ export interface BlockItemInput {
 // Mirrors backend/internal/domain.RecurrenceType.
 export type RecurrenceType = 'weekly' | 'once'
 
-// Mirrors backend/internal/domain.ScheduleEntry (backend/internal/api/schedules.go).
-export interface ScheduleEntry {
+// Mirrors backend/internal/domain.Schedule (backend/internal/api/schedules.go)
+// — a reusable, named group of ScheduleItems, not tied to a channel. Issue
+// #7's Schedule/Playout split: a Channel is assigned one via
+// Channel.schedule_id, and the same Schedule can drive more than one
+// channel.
+export interface Schedule {
   id: string
   tenant_id: string
-  channel_id: string
+  name: string
+  description: string | null
+  created_at: number
+  updated_at: number
+}
+
+// ScheduleInput is the body shape for POST /schedules and
+// PUT /schedules/{id}.
+export interface ScheduleInput {
+  name: string
+  description: string | null
+}
+
+// Mirrors backend/internal/domain.ScheduleItem — one recurrence rule inside
+// a Schedule (schedule_entry's old shape, before issue #7's split, minus the
+// channel_id it used to carry directly).
+export interface ScheduleItem {
+  id: string
+  tenant_id: string
+  schedule_id: string
   block_id: string
   recurrence_type: RecurrenceType
   day_of_week: number | null
@@ -125,10 +153,9 @@ export interface ScheduleEntry {
   updated_at: number
 }
 
-// ScheduleEntryInput is the body shape for POST /schedule-entries and
-// PUT /schedule-entries/{id}.
-export interface ScheduleEntryInput {
-  channel_id: string
+// ScheduleItemInput is the body shape for POST /schedules/{id}/items and
+// PUT /schedule-items/{id} (schedule_id is the URL path, not a body field).
+export interface ScheduleItemInput {
   block_id: string
   recurrence_type: RecurrenceType
   day_of_week: number | null

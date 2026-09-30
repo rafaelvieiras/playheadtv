@@ -15,7 +15,7 @@ func registerEPG(mux *http.ServeMux, db storage.DB) {
 	mux.HandleFunc("GET /epg/meta", getEPGMeta(db))
 }
 
-const epgEntryColumns = "id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_entry_id, generated_at"
+const epgEntryColumns = "id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at"
 
 // getEPG only reads epg_entry as it stands today — there is no materializer
 // yet (separate roadmap item), so this is expected to return an empty list

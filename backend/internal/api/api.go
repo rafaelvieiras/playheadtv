@@ -19,7 +19,7 @@ import (
 // internal/crypto.LoadOrGenerateKey for how callers should obtain it.
 func Register(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer, sync *pullsync.Syncer, encKey [32]byte) {
 	registerAuth(mux, db)
-	registerChannels(mux, db)
+	registerChannels(mux, db, mat)
 	registerMediaSources(mux, db, mat, sync, encKey)
 	registerCatalogItems(mux, db)
 	registerBlocks(mux, db, mat)

@@ -16,13 +16,14 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { api } from '@/lib/http'
-import type { Block, Channel, RecurrenceType, ScheduleEntry, ScheduleEntryInput } from '@/lib/types'
+import type { Block, RecurrenceType, ScheduleItem, ScheduleItemInput } from '@/lib/types'
 
-interface ScheduleEntryDialogProps {
+interface ScheduleItemDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  // Present when editing an existing entry, absent when creating one.
-  entry?: ScheduleEntry
+  scheduleId: string
+  // Present when editing an existing item, absent when creating one.
+  item?: ScheduleItem
 }
 
 const DAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -31,7 +32,6 @@ const DAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Fri
 // so the toggle doesn't lose what the user typed, and only one branch is
 // sent to the API on submit (see buildPayload).
 interface FormState {
-  channel_id: string
   block_id: string
   recurrence_type: RecurrenceType
   day_of_week: number
@@ -42,7 +42,6 @@ interface FormState {
 }
 
 const emptyForm: FormState = {
-  channel_id: '',
   block_id: '',
   recurrence_type: 'weekly',
   day_of_week: 0,
@@ -57,23 +56,21 @@ function epochToDatetimeLocalInput(ms: number): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
 }
 
-function entryToForm(entry: ScheduleEntry): FormState {
+function itemToForm(item: ScheduleItem): FormState {
   return {
-    channel_id: entry.channel_id,
-    block_id: entry.block_id,
-    recurrence_type: entry.recurrence_type,
-    day_of_week: entry.day_of_week ?? 0,
-    start_time_local: entry.start_time_local ?? '',
-    start_at_local: entry.start_at !== null ? epochToDatetimeLocalInput(entry.start_at) : '',
-    active: entry.active,
+    block_id: item.block_id,
+    recurrence_type: item.recurrence_type,
+    day_of_week: item.day_of_week ?? 0,
+    start_time_local: item.start_time_local ?? '',
+    start_at_local: item.start_at !== null ? epochToDatetimeLocalInput(item.start_at) : '',
+    active: item.active,
   }
 }
 
-// Mirrors validateScheduleEntryRequest in backend/internal/api/schedules.go —
-// keep in sync so the client rejects the same invalid combinations before
-// a round trip to the API.
+// Mirrors validateScheduleItemRequest in backend/internal/api/schedules.go —
+// keep in sync so the client rejects the same invalid combinations before a
+// round trip to the API.
 function validate(form: FormState): string | undefined {
-  if (!form.channel_id) return 'Select a channel.'
   if (!form.block_id) return 'Select a block.'
   if (form.recurrence_type === 'weekly') {
     if (form.day_of_week < 0 || form.day_of_week > 6) return 'Invalid day of the week.'
@@ -84,10 +81,9 @@ function validate(form: FormState): string | undefined {
   return undefined
 }
 
-function buildPayload(form: FormState): ScheduleEntryInput {
+function buildPayload(form: FormState): ScheduleItemInput {
   if (form.recurrence_type === 'weekly') {
     return {
-      channel_id: form.channel_id,
       block_id: form.block_id,
       recurrence_type: 'weekly',
       day_of_week: form.day_of_week,
@@ -97,7 +93,6 @@ function buildPayload(form: FormState): ScheduleEntryInput {
     }
   }
   return {
-    channel_id: form.channel_id,
     block_id: form.block_id,
     recurrence_type: 'once',
     day_of_week: null,
@@ -107,24 +102,19 @@ function buildPayload(form: FormState): ScheduleEntryInput {
   }
 }
 
-export function ScheduleEntryDialog({ open, onOpenChange, entry }: ScheduleEntryDialogProps) {
+export function ScheduleItemDialog({ open, onOpenChange, scheduleId, item }: ScheduleItemDialogProps) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<FormState>(emptyForm)
   const [error, setError] = useState<string | undefined>(undefined)
-  const isEditing = entry !== undefined
+  const isEditing = item !== undefined
 
   useEffect(() => {
     if (open) {
-      setForm(entry ? entryToForm(entry) : emptyForm)
+      setForm(item ? itemToForm(item) : emptyForm)
       setError(undefined)
     }
-  }, [open, entry])
+  }, [open, item])
 
-  const { data: channels } = useQuery({
-    queryKey: ['channels'],
-    queryFn: () => api.get<Channel[]>('/channels'),
-    enabled: open,
-  })
   const { data: blocks } = useQuery({
     queryKey: ['blocks'],
     queryFn: () => api.get<Block[]>('/blocks'),
@@ -132,17 +122,17 @@ export function ScheduleEntryDialog({ open, onOpenChange, entry }: ScheduleEntry
   })
 
   const mutation = useMutation({
-    mutationFn: (payload: ScheduleEntryInput) =>
+    mutationFn: (payload: ScheduleItemInput) =>
       isEditing
-        ? api.put<ScheduleEntry>(`/schedule-entries/${entry.id}`, payload)
-        : api.post<ScheduleEntry>('/schedule-entries', payload),
+        ? api.put<ScheduleItem>(`/schedule-items/${item.id}`, payload)
+        : api.post<ScheduleItem>(`/schedules/${scheduleId}/items`, payload),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['schedule-entries'] })
-      toast.success(isEditing ? 'Schedule entry updated.' : 'Schedule entry created.')
+      queryClient.invalidateQueries({ queryKey: ['schedule-items', scheduleId] })
+      toast.success(isEditing ? 'Schedule item updated.' : 'Schedule item created.')
       onOpenChange(false)
     },
     onError: () => {
-      toast.error(isEditing ? 'Could not update the schedule entry.' : 'Could not create the schedule entry.')
+      toast.error(isEditing ? 'Could not update the schedule item.' : 'Could not create the schedule item.')
     },
   })
 
@@ -162,31 +152,16 @@ export function ScheduleEntryDialog({ open, onOpenChange, entry }: ScheduleEntry
       <DialogContent className="sm:max-w-md">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>{isEditing ? 'Edit schedule entry' : 'New schedule entry'}</DialogTitle>
+            <DialogTitle>{isEditing ? 'Edit schedule item' : 'New schedule item'}</DialogTitle>
             <DialogDescription>
-              {isEditing ? 'Update the channel programming.' : 'Link a block to a channel at a given time.'}
+              {isEditing ? 'Update this recurrence rule.' : 'Add a block airing at a given time to this schedule.'}
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
             <Field>
-              <FieldLabel htmlFor="schedule-channel">Channel</FieldLabel>
-              <Select value={form.channel_id} onValueChange={(v) => setForm((f) => ({ ...f, channel_id: v }))}>
-                <SelectTrigger id="schedule-channel" className="w-full">
-                  <SelectValue placeholder="Select a channel" />
-                </SelectTrigger>
-                <SelectContent>
-                  {channels?.map((channel) => (
-                    <SelectItem key={channel.id} value={channel.id}>
-                      {channel.number} — {channel.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="schedule-block">Block</FieldLabel>
+              <FieldLabel htmlFor="schedule-item-block">Block</FieldLabel>
               <Select value={form.block_id} onValueChange={(v) => setForm((f) => ({ ...f, block_id: v }))}>
-                <SelectTrigger id="schedule-block" className="w-full">
+                <SelectTrigger id="schedule-item-block" className="w-full">
                   <SelectValue placeholder="Select a block" />
                 </SelectTrigger>
                 <SelectContent>
@@ -226,12 +201,12 @@ export function ScheduleEntryDialog({ open, onOpenChange, entry }: ScheduleEntry
             {form.recurrence_type === 'weekly' ? (
               <>
                 <Field>
-                  <FieldLabel htmlFor="schedule-day">Day of the week</FieldLabel>
+                  <FieldLabel htmlFor="schedule-item-day">Day of the week</FieldLabel>
                   <Select
                     value={String(form.day_of_week)}
                     onValueChange={(v) => setForm((f) => ({ ...f, day_of_week: Number(v) }))}
                   >
-                    <SelectTrigger id="schedule-day" className="w-full">
+                    <SelectTrigger id="schedule-item-day" className="w-full">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -244,9 +219,9 @@ export function ScheduleEntryDialog({ open, onOpenChange, entry }: ScheduleEntry
                   </Select>
                 </Field>
                 <Field>
-                  <FieldLabel htmlFor="schedule-time">Time (HH:MM)</FieldLabel>
+                  <FieldLabel htmlFor="schedule-item-time">Time (HH:MM)</FieldLabel>
                   <Input
-                    id="schedule-time"
+                    id="schedule-item-time"
                     type="time"
                     required
                     value={form.start_time_local}
@@ -256,9 +231,9 @@ export function ScheduleEntryDialog({ open, onOpenChange, entry }: ScheduleEntry
               </>
             ) : (
               <Field>
-                <FieldLabel htmlFor="schedule-start-at">Date and time</FieldLabel>
+                <FieldLabel htmlFor="schedule-item-start-at">Date and time</FieldLabel>
                 <Input
-                  id="schedule-start-at"
+                  id="schedule-item-start-at"
                   type="datetime-local"
                   required
                   value={form.start_at_local}
@@ -268,9 +243,9 @@ export function ScheduleEntryDialog({ open, onOpenChange, entry }: ScheduleEntry
             )}
 
             <Field orientation="horizontal">
-              <FieldLabel htmlFor="schedule-active">Active</FieldLabel>
+              <FieldLabel htmlFor="schedule-item-active">Active</FieldLabel>
               <Switch
-                id="schedule-active"
+                id="schedule-item-active"
                 checked={form.active}
                 onCheckedChange={(checked) => setForm((f) => ({ ...f, active: checked }))}
               />

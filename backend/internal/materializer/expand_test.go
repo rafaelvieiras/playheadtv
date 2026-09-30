@@ -242,8 +242,8 @@ func TestFillGap_ItemsThatFitAreInserted(t *testing.T) {
 		if e.TenantID != "tenant1" || e.ChannelID != "chan1" || e.Kind != domain.EpgFallback {
 			t.Errorf("unexpected entry metadata: %+v", e)
 		}
-		if e.SourceScheduleEntryID != nil {
-			t.Errorf("expected nil SourceScheduleEntryID for a gap-fill entry, got %v", *e.SourceScheduleEntryID)
+		if e.SourceScheduleItemID != nil {
+			t.Errorf("expected nil SourceScheduleItemID for a gap-fill entry, got %v", *e.SourceScheduleItemID)
 		}
 	}
 }
@@ -294,14 +294,14 @@ func TestExpandChannel_OverlapPushesSecondOccurrenceLater(t *testing.T) {
 	// Both occurrences use block "long" (60 min) so we can predict the
 	// overlap precisely; a real schedule would normally use different
 	// blocks, but nothing in the algorithm assumes that.
-	scheduleEntries := []domain.ScheduleEntry{
+	scheduleItems := []domain.ScheduleItem{
 		{
-			ID: "se1", ChannelID: channelID, BlockID: "long",
+			ID: "se1", ScheduleID: "sched1", BlockID: "long",
 			Recurrence: domain.RecurrenceWeekly,
 			DayOfWeek:  intPtr(3), StartTimeLocal: strPtr("20:00"), Active: true,
 		},
 		{
-			ID: "se2", ChannelID: channelID, BlockID: "long",
+			ID: "se2", ScheduleID: "sched1", BlockID: "long",
 			Recurrence: domain.RecurrenceWeekly,
 			DayOfWeek:  intPtr(3), StartTimeLocal: strPtr("20:30"), Active: true,
 		},
@@ -311,7 +311,7 @@ func TestExpandChannel_OverlapPushesSecondOccurrenceLater(t *testing.T) {
 		ChannelID:       channelID,
 		TenantID:        tenantID,
 		Timezone:        "UTC",
-		ScheduleEntries: scheduleEntries,
+		ScheduleItems:   scheduleItems,
 		BlockItems: map[string][]domain.BlockItem{
 			"long": {{ID: "bi1", BlockID: "long", Position: 0, CatalogItemID: "cat-movie"}},
 		},
@@ -351,9 +351,9 @@ func TestExpandChannel_PrerollAppearsBeforeFirstProgram(t *testing.T) {
 	channelID := "chan1"
 	tenantID := "tenant1"
 
-	scheduleEntries := []domain.ScheduleEntry{
+	scheduleItems := []domain.ScheduleItem{
 		{
-			ID: "se1", ChannelID: channelID, BlockID: "blk1",
+			ID: "se1", ScheduleID: "sched1", BlockID: "blk1",
 			Recurrence: domain.RecurrenceOnce,
 			StartAt:    int64Ptr(time.Date(2026, 9, 28, 12, 0, 0, 0, time.UTC).UnixMilli()),
 			Active:     true,
@@ -364,7 +364,7 @@ func TestExpandChannel_PrerollAppearsBeforeFirstProgram(t *testing.T) {
 		ChannelID:       channelID,
 		TenantID:        tenantID,
 		Timezone:        "UTC",
-		ScheduleEntries: scheduleEntries,
+		ScheduleItems:   scheduleItems,
 		BlockItems: map[string][]domain.BlockItem{
 			"blk1": {{ID: "bi1", BlockID: "blk1", Position: 0, CatalogItemID: "cat-show"}},
 		},
@@ -424,14 +424,14 @@ func TestExpandChannel_DynamicBlockLoopsAsProgram(t *testing.T) {
 
 	// Two weekly occurrences of the same dynamic block, a day apart, so the
 	// loop must fill a whole day's worth of programming per occurrence.
-	scheduleEntries := []domain.ScheduleEntry{
+	scheduleItems := []domain.ScheduleItem{
 		{
-			ID: "se1", ChannelID: channelID, BlockID: blockID,
+			ID: "se1", ScheduleID: "sched1", BlockID: blockID,
 			Recurrence: domain.RecurrenceWeekly,
 			DayOfWeek:  intPtr(1), StartTimeLocal: strPtr("00:00"), Active: true,
 		},
 		{
-			ID: "se2", ChannelID: channelID, BlockID: blockID,
+			ID: "se2", ScheduleID: "sched1", BlockID: blockID,
 			Recurrence: domain.RecurrenceWeekly,
 			DayOfWeek:  intPtr(2), StartTimeLocal: strPtr("00:00"), Active: true,
 		},
@@ -447,7 +447,7 @@ func TestExpandChannel_DynamicBlockLoopsAsProgram(t *testing.T) {
 		ChannelID:       channelID,
 		TenantID:        tenantID,
 		Timezone:        "UTC",
-		ScheduleEntries: scheduleEntries,
+		ScheduleItems:   scheduleItems,
 		BlockItems:      map[string][]domain.BlockItem{blockID: items},
 		DynamicBlockIDs: map[string]bool{blockID: true},
 		CatalogDuration: map[string]int64{

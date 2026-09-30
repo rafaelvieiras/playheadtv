@@ -6,24 +6,31 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
-func registerChannels(mux *http.ServeMux, db storage.DB) {
-	mux.HandleFunc("POST /channels", createChannel(db))
+// mat is only needed because a channel's own ScheduleID assignment affects
+// EPG materialization (create/update trigger it) — issue #7's
+// Schedule/Playout split. Nothing else about a channel does.
+func registerChannels(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer) {
+	mux.HandleFunc("POST /channels", createChannel(db, mat))
 	mux.HandleFunc("GET /channels", listChannels(db))
 	mux.HandleFunc("GET /channels/{id}", getChannel(db))
-	mux.HandleFunc("PUT /channels/{id}", updateChannel(db))
+	mux.HandleFunc("PUT /channels/{id}", updateChannel(db, mat))
 	mux.HandleFunc("DELETE /channels/{id}", deleteChannel(db))
 }
 
-const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, created_at, updated_at"
+const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, schedule_id, created_at, updated_at"
 
 type channelRequest struct {
 	Number      int     `json:"number"`
 	Name        string  `json:"name"`
 	GuideArtURL *string `json:"guide_art_url"`
 	Timezone    string  `json:"timezone"`
+	// ScheduleID assigns a Schedule to this channel (issue #7); nil/omitted
+	// means no schedule (e.g. a pure dynamic-filler-pool channel).
+	ScheduleID *string `json:"schedule_id"`
 }
 
 func fetchChannel(db storage.DB, r *http.Request, id string) (domain.Channel, error) {
@@ -35,7 +42,7 @@ func fetchChannel(db storage.DB, r *http.Request, id string) (domain.Channel, er
 	return ch, err
 }
 
-func createChannel(db storage.DB) http.HandlerFunc {
+func createChannel(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req channelRequest
 		if err := decodeJSON(r, &req); err != nil {
@@ -58,17 +65,21 @@ func createChannel(db storage.DB) http.HandlerFunc {
 			Name:        req.Name,
 			GuideArtURL: req.GuideArtURL,
 			Timezone:    req.Timezone,
+			ScheduleID:  req.ScheduleID,
 			CreatedAt:   now,
 			UpdatedAt:   now,
 		}
 		err := db.Exec(r.Context(),
-			`INSERT INTO channel (id, tenant_id, number, name, guide_art_url, timezone, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			ch.ID, ch.TenantID, ch.Number, ch.Name, ch.GuideArtURL, ch.Timezone, ch.CreatedAt, ch.UpdatedAt,
+			`INSERT INTO channel (id, tenant_id, number, name, guide_art_url, timezone, schedule_id, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ch.ID, ch.TenantID, ch.Number, ch.Name, ch.GuideArtURL, ch.Timezone, ch.ScheduleID, ch.CreatedAt, ch.UpdatedAt,
 		)
 		if err != nil {
 			handleDBError(w, err)
 			return
+		}
+		if ch.ScheduleID != nil {
+			mat.Trigger()
 		}
 		writeJSON(w, http.StatusCreated, ch)
 	}
@@ -100,10 +111,11 @@ func getChannel(db storage.DB) http.HandlerFunc {
 	}
 }
 
-func updateChannel(db storage.DB) http.HandlerFunc {
+func updateChannel(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if _, err := fetchChannel(db, r, id); err != nil {
+		before, err := fetchChannel(db, r, id)
+		if err != nil {
 			handleDBError(w, err)
 			return
 		}
@@ -121,10 +133,10 @@ func updateChannel(db storage.DB) http.HandlerFunc {
 			req.Timezone = "UTC"
 		}
 
-		err := db.Exec(r.Context(),
-			`UPDATE channel SET number = ?, name = ?, guide_art_url = ?, timezone = ?, updated_at = ?
+		err = db.Exec(r.Context(),
+			`UPDATE channel SET number = ?, name = ?, guide_art_url = ?, timezone = ?, schedule_id = ?, updated_at = ?
 			 WHERE tenant_id = ? AND id = ?`,
-			req.Number, req.Name, req.GuideArtURL, req.Timezone, time.Now().UnixMilli(), DefaultTenantID, id,
+			req.Number, req.Name, req.GuideArtURL, req.Timezone, req.ScheduleID, time.Now().UnixMilli(), DefaultTenantID, id,
 		)
 		if err != nil {
 			handleDBError(w, err)
@@ -135,6 +147,16 @@ func updateChannel(db storage.DB) http.HandlerFunc {
 		if err != nil {
 			handleDBError(w, err)
 			return
+		}
+		// PUT is a full replace (same semantics createChannel/updateBlock
+		// already have) — a schedule_id change either way (assigned, cleared,
+		// or swapped) needs a regeneration; comparing before/after avoids
+		// triggering one on every unrelated field edit (e.g. renaming a
+		// channel that has no schedule at all).
+		scheduleChanged := (before.ScheduleID == nil) != (ch.ScheduleID == nil) ||
+			(before.ScheduleID != nil && ch.ScheduleID != nil && *before.ScheduleID != *ch.ScheduleID)
+		if scheduleChanged {
+			mat.Trigger()
 		}
 		writeJSON(w, http.StatusOK, ch)
 	}

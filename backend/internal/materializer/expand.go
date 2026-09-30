@@ -10,12 +10,12 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 )
 
-// occurrence is one nominal airing of a schedule_entry's block, resolved to
+// occurrence is one nominal airing of a schedule_item's block, resolved to
 // an absolute UTC instant (see buildOccurrences).
 type occurrence struct {
-	ScheduleEntryID string
-	BlockID         string
-	NominalStart    time.Time
+	ScheduleItemID string
+	BlockID        string
+	NominalStart   time.Time
 }
 
 // channelInput bundles everything expandChannel needs for one channel,
@@ -25,7 +25,7 @@ type channelInput struct {
 	ChannelID       string
 	TenantID        string
 	Timezone        string // IANA name; see domain.Channel.Timezone
-	ScheduleEntries []domain.ScheduleEntry
+	ScheduleItems   []domain.ScheduleItem
 	BlockItems      map[string][]domain.BlockItem      // blockID -> ordered by position
 	FillerRules     []domain.FillerRule                // every rule scoped to this channel or one of its blocks
 	PoolItems       map[string][]domain.FillerPoolItem // filler_pool_id -> ordered by rowid (insertion order)
@@ -46,7 +46,7 @@ func newSelectionState() *selectionState {
 	return &selectionState{seqCursor: make(map[string]int)}
 }
 
-// parseHHMM parses a "HH:MM" string (the format schedule_entry.start_time_local
+// parseHHMM parses a "HH:MM" string (the format schedule_item.start_time_local
 // is validated against by the API layer) into hour/minute components.
 func parseHHMM(s string) (hour, minute int, err error) {
 	t, err := time.Parse("15:04", s)
@@ -56,7 +56,7 @@ func parseHHMM(s string) (hour, minute int, err error) {
 	return t.Hour(), t.Minute(), nil
 }
 
-// onceOccurrenceTime resolves a RecurrenceOnce schedule_entry's single
+// onceOccurrenceTime resolves a RecurrenceOnce schedule_item's single
 // occurrence, reporting whether it lands inside [scanFrom, windowEnd).
 func onceOccurrenceTime(startAtMs int64, scanFrom, windowEnd time.Time) (time.Time, bool) {
 	t := time.UnixMilli(startAtMs).UTC()
@@ -67,7 +67,7 @@ func onceOccurrenceTime(startAtMs int64, scanFrom, windowEnd time.Time) (time.Ti
 }
 
 // weeklyOccurrenceTimes resolves every UTC instant, within [scanFrom,
-// windowEnd), at which a RecurrenceWeekly schedule_entry (dayOfWeek 0=Sunday,
+// windowEnd), at which a RecurrenceWeekly schedule_item (dayOfWeek 0=Sunday,
 // startTimeLocal "HH:MM") nominally starts, per loc (channel.timezone).
 //
 // It walks every calendar day (in loc) touching the window, padded by one day
@@ -98,19 +98,20 @@ func weeklyOccurrenceTimes(dayOfWeek int, startTimeLocal string, loc *time.Locat
 	return out, nil
 }
 
-// buildOccurrences expands every schedule entry into its nominal occurrences
+// buildOccurrences expands every schedule item into its nominal occurrences
 // within [scanFrom, windowEnd), sorted ascending by NominalStart. Callers are
-// expected to have already filtered entries to active=1 for this channel.
-func buildOccurrences(entries []domain.ScheduleEntry, loc *time.Location, scanFrom, windowEnd time.Time) []occurrence {
+// expected to have already filtered items to active=1 for this channel's
+// assigned schedule.
+func buildOccurrences(items []domain.ScheduleItem, loc *time.Location, scanFrom, windowEnd time.Time) []occurrence {
 	var out []occurrence
-	for _, e := range entries {
+	for _, e := range items {
 		switch e.Recurrence {
 		case domain.RecurrenceOnce:
 			if e.StartAt == nil {
 				continue
 			}
 			if t, ok := onceOccurrenceTime(*e.StartAt, scanFrom, windowEnd); ok {
-				out = append(out, occurrence{ScheduleEntryID: e.ID, BlockID: e.BlockID, NominalStart: t})
+				out = append(out, occurrence{ScheduleItemID: e.ID, BlockID: e.BlockID, NominalStart: t})
 			}
 		case domain.RecurrenceWeekly:
 			if e.DayOfWeek == nil || e.StartTimeLocal == nil {
@@ -120,11 +121,11 @@ func buildOccurrences(entries []domain.ScheduleEntry, loc *time.Location, scanFr
 			if err != nil {
 				// The API layer already validates start_time_local as HH:MM;
 				// this only defends against bad data written some other way.
-				log.Printf("materializer: schedule_entry %s: invalid start_time_local %q: %v", e.ID, *e.StartTimeLocal, err)
+				log.Printf("materializer: schedule_item %s: invalid start_time_local %q: %v", e.ID, *e.StartTimeLocal, err)
 				continue
 			}
 			for _, t := range times {
-				out = append(out, occurrence{ScheduleEntryID: e.ID, BlockID: e.BlockID, NominalStart: t})
+				out = append(out, occurrence{ScheduleItemID: e.ID, BlockID: e.BlockID, NominalStart: t})
 			}
 		}
 	}
@@ -230,7 +231,7 @@ func fillGap(
 	kind domain.EpgEntryKind,
 	tenantID, channelID string,
 	generatedAt int64,
-	sourceScheduleEntryID *string,
+	sourceScheduleItemID *string,
 	state *selectionState,
 ) ([]domain.EpgEntry, time.Time) {
 	if rule == nil {
@@ -257,15 +258,15 @@ func fillGap(
 			break
 		}
 		entries = append(entries, domain.EpgEntry{
-			ID:                    uuid.NewString(),
-			TenantID:              tenantID,
-			ChannelID:             channelID,
-			Kind:                  kind,
-			CatalogItemID:         item.CatalogItemID,
-			StartAt:               cursor.UnixMilli(),
-			EndAt:                 end.UnixMilli(),
-			SourceScheduleEntryID: sourceScheduleEntryID,
-			GeneratedAt:           generatedAt,
+			ID:                   uuid.NewString(),
+			TenantID:             tenantID,
+			ChannelID:            channelID,
+			Kind:                 kind,
+			CatalogItemID:        item.CatalogItemID,
+			StartAt:              cursor.UnixMilli(),
+			EndAt:                end.UnixMilli(),
+			SourceScheduleItemID: sourceScheduleItemID,
+			GeneratedAt:          generatedAt,
 		})
 		cursor = end
 	}
@@ -275,13 +276,19 @@ func fillGap(
 // fillLoopingBlock inserts, starting at cursor, entries drawn from a
 // continuous, wrapping walk over items (a dynamic block's block_item list)
 // until target — same "whole items only, never cut short" contract as
-// fillGap, but keyed by cursorKey (the block's own ID) in state instead of a
-// filler_rule's ID, and always sequential: a dynamic block has no
-// selection_strategy of its own, it just rotates through everything
-// currently matching its criteria, in order, forever. This is what makes a
-// "genre channel" real programming (kind=program) instead of filler: a
-// dynamic block occurrence never really "ends" until the next
-// schedule_entry occurrence (or the end of the materialized window).
+// fillGap, but keyed by cursorKey in state instead of a filler_rule's ID, and
+// always sequential: a dynamic block has no selection_strategy of its own, it
+// just rotates through everything currently matching its criteria, in order,
+// forever. This is what makes a "genre channel" real programming
+// (kind=program) instead of filler: a dynamic block occurrence never really
+// "ends" until the next schedule_item occurrence (or the end of the
+// materialized window).
+//
+// cursorKey must be scoped by channelID, not just blockID (issue #7's
+// point 2): a Schedule (and any dynamic Block it schedules) can be assigned
+// to more than one channel, and each channel's loop position must be
+// independent — two channels airing the same dynamic block must not silently
+// share (and race on) one rotation cursor within a single Run().
 func fillLoopingBlock(
 	items []domain.BlockItem,
 	catalogDuration map[string]int64,
@@ -289,7 +296,7 @@ func fillLoopingBlock(
 	kind domain.EpgEntryKind,
 	tenantID, channelID string,
 	generatedAt int64,
-	sourceScheduleEntryID *string,
+	sourceScheduleItemID *string,
 	cursorKey string,
 	state *selectionState,
 ) ([]domain.EpgEntry, time.Time) {
@@ -309,15 +316,15 @@ func fillLoopingBlock(
 			break
 		}
 		entries = append(entries, domain.EpgEntry{
-			ID:                    uuid.NewString(),
-			TenantID:              tenantID,
-			ChannelID:             channelID,
-			Kind:                  kind,
-			CatalogItemID:         bi.CatalogItemID,
-			StartAt:               cursor.UnixMilli(),
-			EndAt:                 end.UnixMilli(),
-			SourceScheduleEntryID: sourceScheduleEntryID,
-			GeneratedAt:           generatedAt,
+			ID:                   uuid.NewString(),
+			TenantID:             tenantID,
+			ChannelID:            channelID,
+			Kind:                 kind,
+			CatalogItemID:        bi.CatalogItemID,
+			StartAt:              cursor.UnixMilli(),
+			EndAt:                end.UnixMilli(),
+			SourceScheduleItemID: sourceScheduleItemID,
+			GeneratedAt:          generatedAt,
 		})
 		cursor = end
 		state.seqCursor[cursorKey] = idx + 1
@@ -325,7 +332,7 @@ func fillLoopingBlock(
 	return entries, cursor
 }
 
-// expandChannel is the core of the materializer: schedule_entry occurrences
+// expandChannel is the core of the materializer: schedule_item occurrences
 // plus block/filler data in, a flat, gap-free (where filler rules allow),
 // non-overlapping list of epg_entry rows out. It never touches storage.DB —
 // all inputs are pre-fetched by the orchestrator — which is what makes it
@@ -342,7 +349,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		loc = time.UTC
 	}
 
-	occurrences := buildOccurrences(in.ScheduleEntries, loc, scanFrom, windowEnd)
+	occurrences := buildOccurrences(in.ScheduleItems, loc, scanFrom, windowEnd)
 	generatedAt := now.UnixMilli()
 
 	var entries []domain.EpgEntry
@@ -362,12 +369,12 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		if actualStart.After(cursor) {
 			// A gap with nothing scheduled: [cursor, actualStart). Only a
 			// channel-scoped fallback rule fills this (Passo B.2) — no
-			// schedule_entry owns it, so SourceScheduleEntryID stays nil.
+			// schedule_item owns it, so SourceScheduleItemID stays nil.
 			fillFallbackGap(cursor, actualStart)
 		}
 		cursor = actualStart
 
-		scheduleEntryID := occ.ScheduleEntryID
+		scheduleItemID := occ.ScheduleItemID
 		items := in.BlockItems[occ.BlockID]
 		preroll := resolveFillerRule(in.FillerRules, domain.FillerPreRoll, occ.BlockID, in.ChannelID)
 		midroll := resolveFillerRule(in.FillerRules, domain.FillerMidRoll, occ.BlockID, in.ChannelID)
@@ -388,15 +395,15 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			}
 			end := cursor.Add(time.Duration(dur) * time.Millisecond)
 			entries = append(entries, domain.EpgEntry{
-				ID:                    uuid.NewString(),
-				TenantID:              in.TenantID,
-				ChannelID:             in.ChannelID,
-				Kind:                  kind,
-				CatalogItemID:         item.CatalogItemID,
-				StartAt:               cursor.UnixMilli(),
-				EndAt:                 end.UnixMilli(),
-				SourceScheduleEntryID: &scheduleEntryID,
-				GeneratedAt:           generatedAt,
+				ID:                   uuid.NewString(),
+				TenantID:             in.TenantID,
+				ChannelID:            in.ChannelID,
+				Kind:                 kind,
+				CatalogItemID:        item.CatalogItemID,
+				StartAt:              cursor.UnixMilli(),
+				EndAt:                end.UnixMilli(),
+				SourceScheduleItemID: &scheduleItemID,
+				GeneratedAt:          generatedAt,
 			})
 			cursor = end
 		}
@@ -415,7 +422,11 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			if i+1 < len(occurrences) {
 				target = occurrences[i+1].NominalStart
 			}
-			loopEntries, newCursor := fillLoopingBlock(items, in.CatalogDuration, cursor, target, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleEntryID, occ.BlockID, state)
+			// cursorKey includes ChannelID (see fillLoopingBlock's doc comment)
+			// so two channels sharing this dynamic block via the same Schedule
+			// don't share loop position.
+			cursorKey := in.ChannelID + "|" + occ.BlockID
+			loopEntries, newCursor := fillLoopingBlock(items, in.CatalogDuration, cursor, target, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, cursorKey, state)
 			entries = append(entries, loopEntries...)
 			cursor = newCursor
 			continue
@@ -425,15 +436,15 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			dur := effectiveDuration(bi, in.CatalogDuration)
 			end := cursor.Add(time.Duration(dur) * time.Millisecond)
 			entries = append(entries, domain.EpgEntry{
-				ID:                    uuid.NewString(),
-				TenantID:              in.TenantID,
-				ChannelID:             in.ChannelID,
-				Kind:                  domain.EpgProgram,
-				CatalogItemID:         bi.CatalogItemID,
-				StartAt:               cursor.UnixMilli(),
-				EndAt:                 end.UnixMilli(),
-				SourceScheduleEntryID: &scheduleEntryID,
-				GeneratedAt:           generatedAt,
+				ID:                   uuid.NewString(),
+				TenantID:             in.TenantID,
+				ChannelID:            in.ChannelID,
+				Kind:                 domain.EpgProgram,
+				CatalogItemID:        bi.CatalogItemID,
+				StartAt:              cursor.UnixMilli(),
+				EndAt:                end.UnixMilli(),
+				SourceScheduleItemID: &scheduleItemID,
+				GeneratedAt:          generatedAt,
 			})
 			cursor = end
 			if idx != len(items)-1 {
@@ -450,7 +461,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		}
 
 		if postActualEnd.Before(nominalNextStart) && tailRule != nil {
-			tailEntries, tailEnd := fillGap(tailRule, in.PoolItems, in.CatalogDuration, postActualEnd, nominalNextStart, domain.EpgTail, in.TenantID, in.ChannelID, generatedAt, &scheduleEntryID, state)
+			tailEntries, tailEnd := fillGap(tailRule, in.PoolItems, in.CatalogDuration, postActualEnd, nominalNextStart, domain.EpgTail, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, state)
 			entries = append(entries, tailEntries...)
 			cursor = tailEnd
 		} else {

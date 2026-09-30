@@ -144,10 +144,10 @@ edges):
   sharing the matching query with `ResolveDynamicPools` (both call the same
   `matchCriteria` helper). This is how a real 24/7 genre channel (e.g.
   "Comedy Movies") gets built: a dynamic `block` scheduled via one
-  `schedule_entry`, not a `filler_pool`/`filler_rule` misuse — `filler_pool`
+  `schedule_item`, not a `filler_pool`/`filler_rule` misuse — `filler_pool`
   stays reserved for commercials/bumpers/station IDs (see below). The
   materializer treats a dynamic block differently from a manual one: instead
-  of airing its item list once per `schedule_entry` occurrence, it loops
+  of airing its item list once per `schedule_item` occurrence, it loops
   that list continuously (`internal/materializer/expand.go`'s
   `fillLoopingBlock`) to fill the entire window up to the next occurrence
   (or the materialized window's end for the last one), and every entry it
@@ -168,22 +168,42 @@ edges):
   (both push's `catalog-sync` handler and pull's `SyncOne` call it right after
   their own upserts/deletes), so a "genre X" pool always reflects whatever
   currently matches, with no manual re-run. A channel that should just be a
-  24/7 loop of one genre needs no `block`/`schedule_entry` at all — a dynamic
+  24/7 loop of one genre needs no `block`/schedule at all — a dynamic
   `filler_pool` plus one `filler_rule` (`kind=fallback`, `scope_type=channel`)
   is enough, since `internal/materializer/expand.go`'s `fillFallbackGap`
   already drains a channel's fallback pool continuously to fill any window
-  with no `schedule_entry` covering it.
-- **`schedule_entry`**: when a block airs on a channel — either weekly
-  recurring (`day_of_week` + `start_time_local`, resolved against
-  `channel.timezone`) or a one-off absolute `start_at`.
+  with no schedule covering it.
+- **`schedule`** / **`schedule_item`** / **`channel.schedule_id`** (issue #7,
+  the ErsatzTV Schedule/Playout split — see
+  `docs/competitive-analysis/ersatztv.md` section 4): `schedule` is a
+  reusable, named group of rules, not tied to any channel. `schedule_item` is
+  one rule inside it — when a block airs, either weekly recurring
+  (`day_of_week` + `start_time_local`, resolved against `channel.timezone`)
+  or a one-off absolute `start_at` (this is `schedule_entry`'s old shape,
+  before this split, minus the `channel_id` it used to carry directly).
+  `channel.schedule_id` is which `schedule` (if any) drives a channel; the
+  same `schedule` can be assigned to more than one channel — each one still
+  materializes (and tracks) its own `epg_entry` rows independently, playing
+  the "Playout" role ErsatzTV gives a separate entity (not needed here: the
+  materializer's per-channel, fully-regenerated-window design already covers
+  it — see "EPG materialization" below). A channel with no `schedule_id` at
+  all relies solely on its channel-scoped fallback filler rule, same as
+  today. The one piece of per-`Run()` bookkeeping the materializer keeps
+  in-memory (`fillLoopingBlock`'s dynamic-block rotation cursor,
+  `internal/materializer/expand.go`) is keyed by `channelID + "|" + blockID`,
+  not just `blockID`, specifically so two channels sharing one `schedule`
+  (and therefore one dynamic block) don't silently share loop position —
+  the concrete instance of ErsatzTV's "channels may not have the same
+  content playing at the same time" guarantee this project actually needed.
 
 None of the above is ever read directly by a client. It's authoring input to
 EPG materialization.
 
 ## EPG materialization
 
-`schedule_entry` + `block`/`block_item` + `filler_rule`/`filler_pool_item`
-are expanded asynchronously into flat `epg_entry` rows — concrete
+A channel's assigned `schedule` (its `schedule_item` rows) + `block`/
+`block_item` + `filler_rule`/`filler_pool_item` are expanded asynchronously
+into flat `epg_entry` rows — concrete
 `catalog_item` + `start_at`/`end_at` pairs — by a background process:
 
 - Triggered immediately on any write to a scheduling table (schedule

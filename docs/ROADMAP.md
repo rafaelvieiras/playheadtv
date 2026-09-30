@@ -153,6 +153,68 @@ actionable checklist.
       loop). `catalogsync.Delete` also removes any orphaned `block_item`
       before deleting a `catalog_item`, for the same FK reason as
       `filler_pool_item`.
+- [x] Issue #7 — Schedule/Playout split (`schedule_entry` decoupled into a
+      reusable `schedule` + `schedule_item`, plus `channel.schedule_id`):
+      migration `0006_schedule_playout_split.sql` drops `schedule_entry` and
+      rebuilds `epg_entry` (SQLite can't repoint a FK's target table via
+      `ALTER`), auto-creating one `schedule` per channel that already had
+      `schedule_entry` rows (named `"<channel name> schedule"`) and carrying
+      its rows over as `schedule_item` under the same ids — no id remapping
+      needed, since `epg_entry.source_schedule_item_id` (renamed from
+      `source_schedule_entry_id`) keeps resolving correctly. `internal/api`:
+      `schedules.go` now serves `schedule` CRUD (`/schedules`) and
+      `schedule_item` CRUD (`/schedules/{id}/items`,
+      `/schedule-items/{id}`); `channels.go` gained `schedule_id` on
+      `channelRequest` (create/update), triggering the materializer only
+      when it actually changes (not on every unrelated field edit).
+      `internal/materializer`: `materializeChannel` now looks up a channel's
+      `schedule_item` rows via its `schedule_id` instead of a direct
+      `channel_id` column; also fixed the issue's point 2 — the dynamic-block
+      loop cursor (`fillLoopingBlock`'s `state.seqCursor`) was keyed only by
+      `blockID`, so two channels sharing one dynamic block via the same
+      `schedule` would silently share (and race on) rotation position within
+      one `Run()`, the opposite of ErsatzTV's "channels may not have the
+      same content playing at the same time" guarantee the issue quoted; the
+      key is now `channelID + "|" + blockID`. `internal/mcpserver`:
+      `create_schedule_entry` replaced by `create_schedule` +
+      `create_schedule_item`, plus a new `assign_channel_schedule` tool
+      (channel had no `update_channel` MCP tool at all before this — adding
+      one field's worth of narrow-purpose tool matched the existing
+      single-job-per-tool pattern better than a full generic `update_channel`).
+      Design decisions (surfaced to and made with the user, not assumed):
+      chose the full named-`schedule`-entity model over the minimal
+      "just a join table on the old `schedule_entry` shape" alternative, for
+      the "assign a whole named grid to a channel at once" UX closer to
+      ErsatzTV's own; left `FillerRule` scoping untouched (still `channel`/
+      `block` only, no `schedule` scope) since filler divergence across
+      channels sharing a `schedule` was already solved by that existing
+      per-channel/per-block scoping, consistent with issue #4 (Deco layer)
+      already treating filler as a separate concern from scheduling.
+      Verified: `go build ./... && go vet ./... && go test ./...` clean,
+      including a new `TestMigration0006_MigratesScheduleEntryData`
+      (`internal/storage`) that seeds real pre-0006-shape data (two
+      `schedule_entry` rows on one channel, one `epg_entry` sourced from one
+      of them, a second channel with no scheduling at all) against a
+      from-scratch 0001-0005 schema and applies 0006 for real, asserting the
+      auto-created `schedule`'s name, both `schedule_item` ids surviving
+      unchanged, the untouched channel's `schedule_id` staying `NULL`, and
+      `epg_entry.source_schedule_item_id` resolving correctly after the
+      table rebuild — the standard always-empty-database migration test
+      never would have caught a mistake in the data-carryover logic itself.
+      Also added `TestMaterializer_EndToEnd_DynamicBlockLoopCursorIsPerChannel`
+      as the regression test for the cursor fix (two channels on one
+      `schedule` airing one dynamic block; a window sized so only the first
+      item fits proves neither channel's result depends on materialization
+      order). Incidentally fixed `TestMCPToolsEndToEnd`, which asserted a
+      `"create_block"` MCP tool that was never actually registered (block
+      creation is REST/web-UI only) — pre-existing on unmodified `main`,
+      caught while touching that test's tool list for this slice's renames,
+      not introduced by it. Also exercised the real binary end to end
+      (`go run ./cmd/server` against an isolated temp SQLite file): admin
+      bootstrap, login, create channel/block/schedule/schedule-item, assign
+      the schedule to the channel, confirm `schedule_id` round-trips on
+      `GET /channels`, `GET /epg` still responds `200` — all behaved as
+      designed.
 
 ## Phase 2 — MCP surface
 

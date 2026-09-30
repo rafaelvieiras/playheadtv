@@ -14,123 +14,120 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { ScheduleEntryDialog } from '@/components/ScheduleEntryDialog'
+import { ScheduleDialog } from '@/components/ScheduleDialog'
+import { ScheduleItemsDialog } from '@/components/ScheduleItemsDialog'
 import { api } from '@/lib/http'
-import type { Block, Channel, ScheduleEntry } from '@/lib/types'
-
-const DAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-
-function summarizeRecurrence(entry: ScheduleEntry): string {
-  if (entry.recurrence_type === 'weekly') {
-    const day = entry.day_of_week !== null ? DAY_LABELS[entry.day_of_week] : '?'
-    return `Every ${day} at ${entry.start_time_local ?? '?'}`
-  }
-  if (entry.start_at === null) return 'Once (no date set)'
-  const date = new Date(entry.start_at)
-  return `Once on ${date.toLocaleDateString('en-US')} ${date.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-  })}`
-}
+import type { Channel, Schedule } from '@/lib/types'
 
 export function SchedulePage() {
   const queryClient = useQueryClient()
-  const { data: entries, isLoading, isError } = useQuery({
-    queryKey: ['schedule-entries'],
-    queryFn: () => api.get<ScheduleEntry[]>('/schedule-entries'),
+  const { data: schedules, isLoading, isError } = useQuery({
+    queryKey: ['schedules'],
+    queryFn: () => api.get<Schedule[]>('/schedules'),
   })
+  // Only needed to show which channels a schedule currently drives — a
+  // schedule itself carries no channel reference (issue #7's split put that
+  // on channel.schedule_id instead).
   const { data: channels } = useQuery({
     queryKey: ['channels'],
     queryFn: () => api.get<Channel[]>('/channels'),
   })
-  const { data: blocks } = useQuery({
-    queryKey: ['blocks'],
-    queryFn: () => api.get<Block[]>('/blocks'),
-  })
 
-  const channelsById = useMemo(() => new Map((channels ?? []).map((c) => [c.id, c])), [channels])
-  const blocksById = useMemo(() => new Map((blocks ?? []).map((b) => [b.id, b])), [blocks])
+  const channelsBySchedule = useMemo(() => {
+    const map = new Map<string, Channel[]>()
+    for (const channel of channels ?? []) {
+      if (!channel.schedule_id) continue
+      const list = map.get(channel.schedule_id) ?? []
+      list.push(channel)
+      map.set(channel.schedule_id, list)
+    }
+    return map
+  }, [channels])
 
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [editingEntry, setEditingEntry] = useState<ScheduleEntry | undefined>(undefined)
-  const [deletingEntry, setDeletingEntry] = useState<ScheduleEntry | undefined>(undefined)
+  const [editingSchedule, setEditingSchedule] = useState<Schedule | undefined>(undefined)
+  const [deletingSchedule, setDeletingSchedule] = useState<Schedule | undefined>(undefined)
+  const [itemsDialogOpen, setItemsDialogOpen] = useState(false)
+  const [selectedSchedule, setSelectedSchedule] = useState<Schedule | undefined>(undefined)
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => api.delete(`/schedule-entries/${id}`),
+    mutationFn: (id: string) => api.delete(`/schedules/${id}`),
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['schedule-entries'] })
-      toast.success('Schedule entry deleted.')
-      setDeletingEntry(undefined)
+      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      toast.success('Schedule deleted.')
+      setDeletingSchedule(undefined)
     },
     onError: () => {
-      toast.error('Could not delete the schedule entry.')
+      toast.error('Could not delete the schedule. Unassign it from every channel first.')
     },
   })
 
   function openCreateDialog() {
-    setEditingEntry(undefined)
+    setEditingSchedule(undefined)
     setDialogOpen(true)
   }
 
-  function openEditDialog(entry: ScheduleEntry) {
-    setEditingEntry(entry)
+  function openEditDialog(schedule: Schedule) {
+    setEditingSchedule(schedule)
     setDialogOpen(true)
   }
 
-  const sortedEntries = useMemo(
-    () => [...(entries ?? [])].sort((a, b) => b.created_at - a.created_at),
-    [entries],
-  )
+  function openItemsDialog(schedule: Schedule) {
+    setSelectedSchedule(schedule)
+    setItemsDialogOpen(true)
+  }
+
+  const sortedSchedules = useMemo(() => [...(schedules ?? [])].sort((a, b) => a.name.localeCompare(b.name)), [schedules])
 
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Schedule</h1>
-        <Button onClick={openCreateDialog}>New schedule entry</Button>
+        <Button onClick={openCreateDialog}>New schedule</Button>
       </div>
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Could not load the schedule.</p>}
+      {isError && <p className="text-sm text-destructive">Could not load schedules.</p>}
 
-      {entries && (
+      {schedules && (
         <Table>
           <TableHeader>
             <TableRow>
-              <TableHead>Channel</TableHead>
-              <TableHead>Block</TableHead>
-              <TableHead>Recurrence</TableHead>
-              <TableHead>Status</TableHead>
+              <TableHead>Name</TableHead>
+              <TableHead>Description</TableHead>
+              <TableHead>Channels</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {sortedEntries.length === 0 && (
+            {sortedSchedules.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="text-center text-muted-foreground">
-                  No schedule entries yet.
+                <TableCell colSpan={4} className="text-center text-muted-foreground">
+                  No schedules yet.
                 </TableCell>
               </TableRow>
             )}
-            {sortedEntries.map((entry) => {
-              const channel = channelsById.get(entry.channel_id)
-              const block = blocksById.get(entry.block_id)
+            {sortedSchedules.map((schedule) => {
+              const drivenChannels = channelsBySchedule.get(schedule.id) ?? []
               return (
-                <TableRow key={entry.id}>
-                  <TableCell>{channel ? `${channel.number} — ${channel.name}` : entry.channel_id}</TableCell>
-                  <TableCell>{block?.name ?? entry.block_id}</TableCell>
-                  <TableCell>{summarizeRecurrence(entry)}</TableCell>
-                  <TableCell>
-                    {entry.active ? (
-                      <span className="text-sm text-primary">Active</span>
-                    ) : (
-                      <span className="text-sm text-muted-foreground">Inactive</span>
-                    )}
+                <TableRow key={schedule.id}>
+                  <TableCell>{schedule.name}</TableCell>
+                  <TableCell className="max-w-64 truncate text-muted-foreground">
+                    {schedule.description ?? '—'}
+                  </TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {drivenChannels.length === 0
+                      ? 'None'
+                      : drivenChannels.map((c) => `${c.number} — ${c.name}`).join(', ')}
                   </TableCell>
                   <TableCell className="flex justify-end gap-2 text-right">
-                    <Button variant="outline" size="sm" onClick={() => openEditDialog(entry)}>
+                    <Button variant="outline" size="sm" onClick={() => openItemsDialog(schedule)}>
+                      Items
+                    </Button>
+                    <Button variant="outline" size="sm" onClick={() => openEditDialog(schedule)}>
                       Edit
                     </Button>
-                    <Button variant="destructive" size="sm" onClick={() => setDeletingEntry(entry)}>
+                    <Button variant="destructive" size="sm" onClick={() => setDeletingSchedule(schedule)}>
                       Delete
                     </Button>
                   </TableCell>
@@ -141,20 +138,23 @@ export function SchedulePage() {
         </Table>
       )}
 
-      <ScheduleEntryDialog open={dialogOpen} onOpenChange={setDialogOpen} entry={editingEntry} />
+      <ScheduleDialog open={dialogOpen} onOpenChange={setDialogOpen} schedule={editingSchedule} />
 
-      <AlertDialog open={deletingEntry !== undefined} onOpenChange={(open) => !open && setDeletingEntry(undefined)}>
+      <ScheduleItemsDialog open={itemsDialogOpen} onOpenChange={setItemsDialogOpen} schedule={selectedSchedule} />
+
+      <AlertDialog open={deletingSchedule !== undefined} onOpenChange={(open) => !open && setDeletingSchedule(undefined)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete schedule entry?</AlertDialogTitle>
+            <AlertDialogTitle>Delete schedule?</AlertDialogTitle>
             <AlertDialogDescription>
-              This will permanently delete this schedule entry. This action cannot be undone.
+              This will permanently delete the schedule "{deletingSchedule?.name}" and its items. This action cannot
+              be undone.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>Cancel</AlertDialogCancel>
             <AlertDialogAction
-              onClick={() => deletingEntry && deleteMutation.mutate(deletingEntry.id)}
+              onClick={() => deletingSchedule && deleteMutation.mutate(deletingSchedule.id)}
               disabled={deleteMutation.isPending}
             >
               Delete

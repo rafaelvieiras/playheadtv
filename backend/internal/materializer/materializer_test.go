@@ -69,12 +69,41 @@ func (f *testFixture) createCatalogItem(t *testing.T, id string, durationMs int6
 
 func (f *testFixture) createChannel(t *testing.T, id string, timezone string) {
 	t.Helper()
+	f.createChannelWithNumber(t, id, 1, timezone)
+}
+
+func (f *testFixture) createChannelWithNumber(t *testing.T, id string, number int, timezone string) {
+	t.Helper()
 	now := time.Now().UnixMilli()
 	if err := f.db.Exec(context.Background(),
 		"INSERT INTO channel (id, tenant_id, number, name, timezone, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-		id, f.tenantID, 1, "Channel "+id, timezone, now, now,
+		id, f.tenantID, number, "Channel "+id, timezone, now, now,
 	); err != nil {
 		t.Fatalf("seed channel %s: %v", id, err)
+	}
+}
+
+// createSchedule + assignChannelSchedule are separate steps (matching the
+// real Schedule/Playout split, issue #7) rather than one combined helper, so
+// a test that assigns the SAME schedule to two channels (proving the loop
+// cursor fix) doesn't need to duplicate schedule creation.
+func (f *testFixture) createSchedule(t *testing.T, id string) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	if err := f.db.Exec(context.Background(),
+		"INSERT INTO schedule (id, tenant_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+		id, f.tenantID, "Schedule "+id, now, now,
+	); err != nil {
+		t.Fatalf("seed schedule %s: %v", id, err)
+	}
+}
+
+func (f *testFixture) assignChannelSchedule(t *testing.T, channelID, scheduleID string) {
+	t.Helper()
+	if err := f.db.Exec(context.Background(),
+		"UPDATE channel SET schedule_id = ? WHERE id = ?", scheduleID, channelID,
+	); err != nil {
+		t.Fatalf("assign schedule %s to channel %s: %v", scheduleID, channelID, err)
 	}
 }
 
@@ -89,6 +118,23 @@ func (f *testFixture) createBlock(t *testing.T, id string) {
 	}
 }
 
+// createDynamicBlock seeds a block with non-NULL criteria — the materializer
+// only loops a block's items (fillLoopingBlock) instead of airing them once
+// when block.criteria IS NOT NULL (see materializeChannel's dynIDs query);
+// the actual criteria content is never read by the materializer itself
+// (catalogsync.ResolveDynamicBlocks owns that), so any non-NULL value works
+// here.
+func (f *testFixture) createDynamicBlock(t *testing.T, id string) {
+	t.Helper()
+	now := time.Now().UnixMilli()
+	if err := f.db.Exec(context.Background(),
+		"INSERT INTO block (id, tenant_id, name, criteria, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+		id, f.tenantID, "Block "+id, "{}", now, now,
+	); err != nil {
+		t.Fatalf("seed dynamic block %s: %v", id, err)
+	}
+}
+
 func (f *testFixture) addBlockItem(t *testing.T, id, blockID string, position int, catalogItemID string) {
 	t.Helper()
 	if err := f.db.Exec(context.Background(),
@@ -99,15 +145,18 @@ func (f *testFixture) addBlockItem(t *testing.T, id, blockID string, position in
 	}
 }
 
-func (f *testFixture) createWeeklyScheduleEntry(t *testing.T, id, channelID, blockID string, dayOfWeek int, startTimeLocal string) {
+// createWeeklyScheduleItem seeds a schedule_item under scheduleID — callers
+// createSchedule + assignChannelSchedule it to whichever channel(s) should
+// air it first.
+func (f *testFixture) createWeeklyScheduleItem(t *testing.T, id, scheduleID, blockID string, dayOfWeek int, startTimeLocal string) {
 	t.Helper()
 	now := time.Now().UnixMilli()
 	if err := f.db.Exec(context.Background(),
-		`INSERT INTO schedule_entry (id, tenant_id, channel_id, block_id, recurrence_type, day_of_week, start_time_local, active, created_at, updated_at)
+		`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, recurrence_type, day_of_week, start_time_local, active, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, 'weekly', ?, ?, 1, ?, ?)`,
-		id, f.tenantID, channelID, blockID, dayOfWeek, startTimeLocal, now, now,
+		id, f.tenantID, scheduleID, blockID, dayOfWeek, startTimeLocal, now, now,
 	); err != nil {
-		t.Fatalf("seed schedule_entry %s: %v", id, err)
+		t.Fatalf("seed schedule_item %s: %v", id, err)
 	}
 }
 
@@ -162,9 +211,11 @@ func TestMaterializer_EndToEnd_WeeklyScheduleProducesEpgEntries(t *testing.T) {
 	f.createBlock(t, "block1")
 	f.addBlockItem(t, "bi1", "block1", 0, "item1")
 	f.addBlockItem(t, "bi2", "block1", 1, "item2")
+	f.createSchedule(t, "sched1")
+	f.assignChannelSchedule(t, "chan1", "sched1")
 
 	dayOfWeek, startTimeLocal, occ := nearFutureWeeklySlot()
-	f.createWeeklyScheduleEntry(t, "se1", "chan1", "block1", dayOfWeek, startTimeLocal)
+	f.createWeeklyScheduleItem(t, "se1", "sched1", "block1", dayOfWeek, startTimeLocal)
 
 	mat := New(f.db, 2*time.Hour)
 	if err := mat.Run(ctx); err != nil {
@@ -197,8 +248,8 @@ func TestMaterializer_EndToEnd_WeeklyScheduleProducesEpgEntries(t *testing.T) {
 	if entries[1].StartAt != wantMid {
 		t.Errorf("entries[1].StartAt = %d, want %d", entries[1].StartAt, wantMid)
 	}
-	if entries[0].SourceScheduleEntryID == nil || *entries[0].SourceScheduleEntryID != "se1" {
-		t.Errorf("entries[0].SourceScheduleEntryID = %v, want se1", entries[0].SourceScheduleEntryID)
+	if entries[0].SourceScheduleItemID == nil || *entries[0].SourceScheduleItemID != "se1" {
+		t.Errorf("entries[0].SourceScheduleItemID = %v, want se1", entries[0].SourceScheduleItemID)
 	}
 
 	var rev domain.EpgRevision
@@ -236,6 +287,61 @@ func TestMaterializer_EndToEnd_WeeklyScheduleProducesEpgEntries(t *testing.T) {
 	}
 }
 
+// TestMaterializer_EndToEnd_DynamicBlockLoopCursorIsPerChannel is the
+// regression test for issue #7's point 2: two channels assigned the SAME
+// Schedule (and therefore airing the same dynamic block) must each start
+// their loop at the block's first item, not share one rotation cursor within
+// a single Run() — a real user with "channels may not have the same content
+// playing at the same time" (ErsatzTV's own guarantee, quoted in the issue)
+// would otherwise see the 2nd channel start mid-rotation depending purely on
+// which channel the materializer happened to process first.
+func TestMaterializer_EndToEnd_DynamicBlockLoopCursorIsPerChannel(t *testing.T) {
+	f := newFixture(t)
+	ctx := context.Background()
+
+	f.createCatalogItem(t, "item-a", 5*60*1000)  // 5 min
+	f.createCatalogItem(t, "item-b", 20*60*1000) // 20 min
+	f.createDynamicBlock(t, "dynblock")
+	f.addBlockItem(t, "bi1", "dynblock", 0, "item-a")
+	f.addBlockItem(t, "bi2", "dynblock", 1, "item-b")
+
+	f.createSchedule(t, "sched1")
+	dayOfWeek, startTimeLocal, _ := nearFutureWeeklySlot()
+	f.createWeeklyScheduleItem(t, "se1", "sched1", "dynblock", dayOfWeek, startTimeLocal)
+
+	f.createChannelWithNumber(t, "chanA", 1, "UTC")
+	f.createChannelWithNumber(t, "chanB", 2, "UTC")
+	f.assignChannelSchedule(t, "chanA", "sched1")
+	f.assignChannelSchedule(t, "chanB", "sched1")
+
+	// A 15-minute window leaves just enough room, after the occurrence
+	// starts, for item-a (5 min) to fit but not item-a+item-b (25 min) — so
+	// each channel should independently produce exactly one program entry,
+	// item-a. With the pre-fix shared-by-BlockID cursor, whichever channel
+	// the materializer processes 2nd would instead see item-b (index 1),
+	// since the 1st channel's loop would have already advanced the shared
+	// cursor past index 0.
+	mat := New(f.db, 15*time.Minute)
+	if err := mat.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for _, chanID := range []string{"chanA", "chanB"} {
+		var entries []domain.EpgEntry
+		if err := f.db.Query(ctx, &entries,
+			"SELECT "+epgEntryColumnsForTest+" FROM epg_entry WHERE channel_id = ? ORDER BY start_at", chanID,
+		); err != nil {
+			t.Fatalf("query epg_entry for %s: %v", chanID, err)
+		}
+		if len(entries) != 1 {
+			t.Fatalf("%s: expected exactly 1 program entry, got %d: %+v", chanID, len(entries), entries)
+		}
+		if entries[0].CatalogItemID != "item-a" {
+			t.Errorf("%s: entries[0].CatalogItemID = %q, want item-a (loop cursor leaked across channels)", chanID, entries[0].CatalogItemID)
+		}
+	}
+}
+
 func TestMaterializer_EndToEnd_PrerollAppearsBeforeFirstProgram(t *testing.T) {
 	f := newFixture(t)
 	ctx := context.Background()
@@ -245,13 +351,15 @@ func TestMaterializer_EndToEnd_PrerollAppearsBeforeFirstProgram(t *testing.T) {
 	f.createChannel(t, "chan1", "UTC")
 	f.createBlock(t, "block1")
 	f.addBlockItem(t, "bi1", "block1", 0, "item1")
+	f.createSchedule(t, "sched1")
+	f.assignChannelSchedule(t, "chan1", "sched1")
 
 	f.createFillerPool(t, "pool1")
 	f.addFillerPoolItem(t, "pi1", "pool1", "bumper1")
 	f.createFillerRule(t, "fr1", "channel", "chan1", "preroll", "pool1", "sequential")
 
 	dayOfWeek, startTimeLocal, occ := nearFutureWeeklySlot()
-	f.createWeeklyScheduleEntry(t, "se1", "chan1", "block1", dayOfWeek, startTimeLocal)
+	f.createWeeklyScheduleItem(t, "se1", "sched1", "block1", dayOfWeek, startTimeLocal)
 
 	mat := New(f.db, 2*time.Hour)
 	if err := mat.Run(ctx); err != nil {
@@ -290,4 +398,4 @@ func TestMaterializer_EndToEnd_PrerollAppearsBeforeFirstProgram(t *testing.T) {
 
 // epgEntryColumnsForTest mirrors internal/api/epg.go's epgEntryColumns; kept
 // as its own copy since this package must not import internal/api.
-const epgEntryColumnsForTest = "id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_entry_id, generated_at"
+const epgEntryColumnsForTest = "id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at"

@@ -24,10 +24,13 @@
 // v1 scope is intentionally partial, matching the exact parenthetical list
 // in docs/ROADMAP.md's Phase 2 bullet: create/list channel, register media
 // source, search catalog, build block, manage filler, create schedule
-// entry, preview EPG. Full CRUD (update/delete) on media_source, filler_pool,
-// and filler_rule; catalog-sync; devices/pairing; and any
-// auth/session-issuing tool are out of scope — see the roadmap entry for the
-// full list of what was deliberately left out and why.
+// entry, preview EPG — issue #7's Schedule/Playout split (create_schedule,
+// create_schedule_item, assign_channel_schedule) extends that same "create
+// schedule entry" slice rather than widening scope. Full CRUD (update/delete)
+// on media_source, filler_pool, and filler_rule; catalog-sync;
+// devices/pairing; and any auth/session-issuing tool are out of scope — see
+// the roadmap entry for the full list of what was deliberately left out and
+// why.
 package mcpserver
 
 import (
@@ -52,7 +55,7 @@ func nowMillis() int64 {
 	return time.Now().UnixMilli()
 }
 
-// Register builds the MCP server for the 8 tools documented in the package
+// Register builds the MCP server for the tools documented in the package
 // comment and mounts it at /mcp on mux, using the streamable-HTTP transport
 // (the SDK's recommended in-binary HTTP transport). Called once from
 // cmd/server/main.go, right after api.Register — same db/mat/encKey the REST
@@ -64,7 +67,7 @@ func Register(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer,
 		Version: "1.0.0",
 	}, nil)
 
-	registerChannelTools(server, db)
+	registerChannelTools(server, db, mat)
 	registerMediaSourceTools(server, db, encKey)
 	registerCatalogTools(server, db)
 	registerBlockTools(server, db, mat)

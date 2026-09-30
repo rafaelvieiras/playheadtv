@@ -10,7 +10,7 @@ import (
 
 // epgEntryColumns mirrors internal/api/epg.go's epgEntryColumns constant —
 // duplicated rather than imported, see mcpserver.go's package comment.
-const epgEntryColumns = "id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_entry_id, generated_at"
+const epgEntryColumns = "id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at"
 
 func registerEPGTools(s *mcp.Server, db storage.DB) {
 	mcp.AddTool(s, &mcp.Tool{
