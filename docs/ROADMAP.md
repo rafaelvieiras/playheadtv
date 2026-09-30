@@ -236,16 +236,65 @@ actionable checklist.
       the next schedule_item" job) — fine for a short bump, not for hours,
       and this project's "Up Next" content is specifically supposed to
       reflect the *actual* next scheduled item rather than loop a small
-      generic pool; no design for that yet (see the new "first N episodes of
-      a series" issue below for a related, but distinct, curation gap — this
-      one is about content-aware `tail` selection, not something an issue
-      was opened for yet).
+      generic pool; no design for that yet — folded into issue #4 (Deco) as
+      a "base programming" requirement (see below), distinct from the "first
+      N episodes of a series" curation gap this also surfaced.
 - [ ] Curated `block`/`filler_pool` items currently have no way to express
       "the first N episodes of a series" (or any other ordinal slice) —
       only "every episode matching criteria" (dynamic) or "this exact,
       hand-picked list of catalog_item ids" (manual, one
       `POST .../items` call per item). A themed block built from a
       long-running series' original run needs this. See issue #13.
+- [ ] Issue #4 (Deco) expanded, not implemented yet: dead-air fallback needs
+      to support real programming (a low-priority "base" schedule, with its
+      own filler chain) resuming in the gaps a channel's pinned schedule
+      doesn't cover, not just short filler_pool clips — see the issue for
+      the full writeup and open questions (how a channel references a base
+      schedule, priority resolution at materialization time).
+- [x] Issue #10 — overrun policy: "stop before end" replaces "delay the next
+      occurrence" as the *only* behavior (no per-block/per-channel
+      configuration — the user's own working example decided this: a
+      schedule_item's nominal start is never delayed, full stop).
+      `internal/materializer/expand.go`'s `expandChannel`: `pickFiller`
+      extracted from the old `insertFiller` closure (selects a filler item
+      without emitting it yet) so `postroll` can be picked *before* the
+      item loop runs — its duration is reserved out of the budget
+      (`itemsCutoff = nominalNextStart - postrollDuration`), and program
+      items (plus any `midroll` between them) are dropped in order, starting
+      from the first one that doesn't fit before that cutoff, down to zero
+      items if even the first one alone doesn't fit — there's no
+      client-side support for trimming a single item mid-playback, so
+      dropping whole trailing items is the only lever (per the issue's own
+      "Open questions"). This only engages when a real next occurrence
+      exists in the current window (`hasNextOccurrence`) — the window's own
+      end is just how far this `Run()` happened to compute, not a real
+      commitment, so the last occurrence in a window is unconstrained
+      exactly as before, and picks up naturally on the next `Run()`. A
+      dynamic (looping) block was already exempt (`fillLoopingBlock` stops
+      exactly at the boundary by construction). Design decisions made with
+      the user (not assumed): no configurable policy at all (contradicted an
+      earlier "per block" answer mid-conversation — resolved by the user's
+      own worked example, which only makes sense under an unconditional
+      rule); `postroll` counts toward the cutoff and always plays in full
+      (items stop earlier to make room, per the user's own 17:00/90min-block
+      + 5min-postroll/18:00-next-occurrence example); a UI warning for
+      "this block is longer than its slot" stays backlog, superseded by the
+      user's own, more concrete ask (see the issue #4 update above).
+      Verified: `go build ./... && go vet ./... && go test ./...` clean.
+      Rewrote `TestExpandChannel_OverlapPushesSecondOccurrenceLater` (tested
+      the old, now-removed "delay" behavior) into
+      `TestExpandChannel_OverrunDropsWholeItemAndRespectsNextStart`; added
+      `TestExpandChannel_OverrunDropsTrailingItemsOnly` (partial drop: 2 of
+      3 items fit, the 3rd doesn't) and
+      `TestExpandChannel_OverrunReservesPostrollBeforeNextStart` (the exact
+      17:00/90min/postroll-5min/18:00 scenario from the design conversation,
+      asserting the program ends at 17:55, postroll runs 17:55-18:00, and
+      the next occurrence starts at exactly 18:00). The pre-existing
+      `TestMCPToolsEndToEnd` initially broke on this change (a `once`
+      schedule_item near "now" with a 90-minute movie and a 1-hour preview
+      window, no real next occurrence — the movie was being dropped against
+      the *window's* end) — this is exactly what `hasNextOccurrence` fixes;
+      confirmed the fix rather than loosening the test.
 
 ## Phase 2 — MCP surface
 

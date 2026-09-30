@@ -287,12 +287,17 @@ func TestFillGap_NilRuleOrEmptyPoolIsNoop(t *testing.T) {
 // block runs a full hour — the second occurrence must be pushed to start
 // right when the first one's content (plus any filler) actually ends, never
 // overlapping it.
-func TestExpandChannel_OverlapPushesSecondOccurrenceLater(t *testing.T) {
+// TestExpandChannel_OverrunDropsWholeItemAndRespectsNextStart is issue #10's
+// core guarantee in its starkest form: a single 60-minute item can't be
+// trimmed (no client-side support for cutting mid-item), so when it alone
+// doesn't fit the 30-minute gap to the next occurrence, it is dropped
+// entirely rather than delaying that next occurrence by even one second.
+func TestExpandChannel_OverrunDropsWholeItemAndRespectsNextStart(t *testing.T) {
 	channelID := "chan1"
 	tenantID := "tenant1"
 
 	// Both occurrences use block "long" (60 min) so we can predict the
-	// overlap precisely; a real schedule would normally use different
+	// overrun precisely; a real schedule would normally use different
 	// blocks, but nothing in the algorithm assumes that.
 	scheduleItems := []domain.ScheduleItem{
 		{
@@ -308,10 +313,10 @@ func TestExpandChannel_OverlapPushesSecondOccurrenceLater(t *testing.T) {
 	}
 
 	in := channelInput{
-		ChannelID:       channelID,
-		TenantID:        tenantID,
-		Timezone:        "UTC",
-		ScheduleItems:   scheduleItems,
+		ChannelID:     channelID,
+		TenantID:      tenantID,
+		Timezone:      "UTC",
+		ScheduleItems: scheduleItems,
 		BlockItems: map[string][]domain.BlockItem{
 			"long": {{ID: "bi1", BlockID: "long", Position: 0, CatalogItemID: "cat-movie"}},
 		},
@@ -319,31 +324,180 @@ func TestExpandChannel_OverlapPushesSecondOccurrenceLater(t *testing.T) {
 	}
 
 	scanFrom := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC) // Monday
-	windowEnd := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
+	// Far enough past 20:30 + 60 min that the second occurrence's own item
+	// fits fine — only the first occurrence's item is expected to be
+	// dropped, for not fitting *its* 30-minute gap to the second occurrence.
+	windowEnd := time.Date(2026, 9, 30, 22, 0, 0, 0, time.UTC)
 	now := scanFrom
 
 	entries := expandChannel(in, now, scanFrom, windowEnd, newSelectionState())
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 program entry (the 20:30 occurrence's item, dropped by the 20:00 one not fitting), got %d: %+v", len(entries), entries)
+	}
+
+	want := time.Date(2026, 9, 30, 20, 30, 0, 0, time.UTC).UnixMilli()
+	if entries[0].StartAt != want {
+		t.Fatalf("second occurrence StartAt = %d, want exactly its nominal start %d (never delayed)", entries[0].StartAt, want)
+	}
+}
+
+// TestExpandChannel_OverrunDropsTrailingItemsOnly proves items that DO fit
+// still air, and only the trailing ones that don't are dropped.
+func TestExpandChannel_OverrunDropsTrailingItemsOnly(t *testing.T) {
+	channelID := "chan1"
+	tenantID := "tenant1"
+
+	scheduleItems := []domain.ScheduleItem{
+		{
+			ID: "se1", ScheduleID: "sched1", BlockID: "three-items",
+			Recurrence: domain.RecurrenceOnce,
+			StartAt:    int64Ptr(time.Date(2026, 9, 28, 17, 0, 0, 0, time.UTC).UnixMilli()),
+			Active:     true,
+		},
+		{
+			ID: "se2", ScheduleID: "sched1", BlockID: "three-items",
+			Recurrence: domain.RecurrenceOnce,
+			StartAt:    int64Ptr(time.Date(2026, 9, 28, 18, 0, 0, 0, time.UTC).UnixMilli()),
+			Active:     true,
+		},
+	}
+
+	// Three 25-minute items: the first two (50 min) fit in the 60-minute
+	// gap, the third (which would end at 75 min) does not.
+	in := channelInput{
+		ChannelID:     channelID,
+		TenantID:      tenantID,
+		Timezone:      "UTC",
+		ScheduleItems: scheduleItems,
+		BlockItems: map[string][]domain.BlockItem{
+			"three-items": {
+				{ID: "bi1", BlockID: "three-items", Position: 0, CatalogItemID: "cat-a"},
+				{ID: "bi2", BlockID: "three-items", Position: 1, CatalogItemID: "cat-b"},
+				{ID: "bi3", BlockID: "three-items", Position: 2, CatalogItemID: "cat-c"},
+			},
+		},
+		CatalogDuration: map[string]int64{
+			"cat-a": int64(25 * time.Minute / time.Millisecond),
+			"cat-b": int64(25 * time.Minute / time.Millisecond),
+			"cat-c": int64(25 * time.Minute / time.Millisecond),
+		},
+	}
+
+	scanFrom := time.Date(2026, 9, 28, 17, 0, 0, 0, time.UTC)
+	// Well past the second occurrence's own (unconstrained, it's last in the
+	// window) full item list, so only the first occurrence's cutoff is under
+	// test here.
+	windowEnd := time.Date(2026, 9, 28, 20, 0, 0, 0, time.UTC)
+	now := scanFrom
+
+	boundary := time.Date(2026, 9, 28, 18, 0, 0, 0, time.UTC).UnixMilli()
+	all := expandChannel(in, now, scanFrom, windowEnd, newSelectionState())
+	var entries []domain.EpgEntry
+	for _, e := range all {
+		if e.StartAt < boundary {
+			entries = append(entries, e)
+		}
+	}
 	if len(entries) != 2 {
-		t.Fatalf("expected 2 program entries (no filler configured), got %d: %+v", len(entries), entries)
+		t.Fatalf("expected 2 program entries before 18:00 (cat-a, cat-b; cat-c dropped), got %d: %+v", len(entries), entries)
+	}
+	if entries[0].CatalogItemID != "cat-a" || entries[1].CatalogItemID != "cat-b" {
+		t.Fatalf("entries = %+v, want cat-a then cat-b (cat-c dropped, it doesn't fit)", entries)
+	}
+	wantSecondEnd := time.Date(2026, 9, 28, 17, 50, 0, 0, time.UTC).UnixMilli()
+	if entries[1].EndAt != wantSecondEnd {
+		t.Fatalf("second item EndAt = %d, want %d", entries[1].EndAt, wantSecondEnd)
+	}
+}
+
+// TestExpandChannel_OverrunReservesPostrollBeforeNextStart is the exact
+// scenario issue #10 was closed on: a block at 17:00 whose programming would
+// otherwise run past 17:55, plus a 5-minute postroll, with another
+// occurrence at 18:00. Programming must stop by 17:55 so the postroll can
+// run in full and still land the next occurrence exactly on time.
+func TestExpandChannel_OverrunReservesPostrollBeforeNextStart(t *testing.T) {
+	channelID := "chan1"
+	tenantID := "tenant1"
+
+	scheduleItems := []domain.ScheduleItem{
+		{
+			ID: "se1", ScheduleID: "sched1", BlockID: "long",
+			Recurrence: domain.RecurrenceOnce,
+			StartAt:    int64Ptr(time.Date(2026, 9, 28, 17, 0, 0, 0, time.UTC).UnixMilli()),
+			Active:     true,
+		},
+		{
+			ID: "se2", ScheduleID: "sched1", BlockID: "next",
+			Recurrence: domain.RecurrenceOnce,
+			StartAt:    int64Ptr(time.Date(2026, 9, 28, 18, 0, 0, 0, time.UTC).UnixMilli()),
+			Active:     true,
+		},
 	}
 
-	first, second := entries[0], entries[1]
-	if first.StartAt > second.StartAt {
-		first, second = second, first
+	in := channelInput{
+		ChannelID:     channelID,
+		TenantID:      tenantID,
+		Timezone:      "UTC",
+		ScheduleItems: scheduleItems,
+		BlockItems: map[string][]domain.BlockItem{
+			// cat-show-1 (55 min) fits exactly up to the 17:55 cutoff;
+			// cat-show-2 (35 min) would end at 18:30 and is dropped.
+			"long": {
+				{ID: "bi1", BlockID: "long", Position: 0, CatalogItemID: "cat-show-1"},
+				{ID: "bi2", BlockID: "long", Position: 1, CatalogItemID: "cat-show-2"},
+			},
+			"next": {{ID: "bi3", BlockID: "next", Position: 0, CatalogItemID: "cat-next"}},
+		},
+		FillerRules: []domain.FillerRule{
+			{ID: "fr1", Kind: domain.FillerPostRoll, Scope: domain.ScopeBlock, ScopeID: "long", FillerPoolID: "pool1", Selection: domain.SelectionSequential},
+		},
+		PoolItems: map[string][]domain.FillerPoolItem{
+			"pool1": {{ID: "pi1", FillerPoolID: "pool1", CatalogItemID: "cat-post"}},
+		},
+		CatalogDuration: map[string]int64{
+			"cat-show-1": int64(55 * time.Minute / time.Millisecond),
+			"cat-show-2": int64(35 * time.Minute / time.Millisecond),
+			"cat-post":   int64(5 * time.Minute / time.Millisecond),
+			"cat-next":   int64(30 * time.Minute / time.Millisecond),
+		},
 	}
 
-	wantFirstStart := time.Date(2026, 9, 30, 20, 0, 0, 0, time.UTC).UnixMilli()
-	if first.StartAt != wantFirstStart {
-		t.Fatalf("first occurrence StartAt = %d, want %d", first.StartAt, wantFirstStart)
+	scanFrom := time.Date(2026, 9, 28, 17, 0, 0, 0, time.UTC)
+	windowEnd := time.Date(2026, 9, 28, 18, 30, 0, 0, time.UTC)
+	now := scanFrom
+
+	entries := expandChannel(in, now, scanFrom, windowEnd, newSelectionState())
+
+	var program, postroll, next *domain.EpgEntry
+	for i := range entries {
+		switch {
+		case entries[i].Kind == domain.EpgProgram && entries[i].CatalogItemID == "cat-show-1":
+			program = &entries[i]
+		case entries[i].CatalogItemID == "cat-show-2":
+			t.Fatalf("cat-show-2 should have been dropped (doesn't fit before the 17:55 cutoff), got %+v", entries[i])
+		case entries[i].Kind == domain.EpgPostRoll:
+			postroll = &entries[i]
+		case entries[i].CatalogItemID == "cat-next":
+			next = &entries[i]
+		}
 	}
-	wantFirstEnd := time.Date(2026, 9, 30, 21, 0, 0, 0, time.UTC).UnixMilli()
-	if first.EndAt != wantFirstEnd {
-		t.Fatalf("first occurrence EndAt = %d, want %d", first.EndAt, wantFirstEnd)
+	if program == nil || postroll == nil || next == nil {
+		t.Fatalf("expected a program, a postroll and the next occurrence's item, got %+v", entries)
 	}
-	// The second occurrence's nominal start (20:30) is inside the first
-	// occurrence's real airtime (20:00-21:00), so it must be pushed to 21:00.
-	if second.StartAt != first.EndAt {
-		t.Fatalf("second occurrence StartAt = %d, want it pushed to first's EndAt %d (no overlap)", second.StartAt, first.EndAt)
+
+	wantProgramEnd := time.Date(2026, 9, 28, 17, 55, 0, 0, time.UTC).UnixMilli()
+	if program.EndAt != wantProgramEnd {
+		t.Fatalf("program EndAt = %d, want 17:55 (%d) so the 5-minute postroll still fits before 18:00", program.EndAt, wantProgramEnd)
+	}
+	if postroll.StartAt != program.EndAt {
+		t.Fatalf("postroll StartAt = %d, want it to start exactly when the program stops (%d)", postroll.StartAt, program.EndAt)
+	}
+	wantNextStart := time.Date(2026, 9, 28, 18, 0, 0, 0, time.UTC).UnixMilli()
+	if postroll.EndAt != wantNextStart {
+		t.Fatalf("postroll EndAt = %d, want exactly 18:00 (%d)", postroll.EndAt, wantNextStart)
+	}
+	if next.StartAt != wantNextStart {
+		t.Fatalf("next occurrence StartAt = %d, want exactly its nominal start %d (never delayed)", next.StartAt, wantNextStart)
 	}
 }
 

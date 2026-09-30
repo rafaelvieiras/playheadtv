@@ -222,6 +222,28 @@ into flat `epg_entry` rows — concrete
 This is the one non-trivial computation in the whole backend, and it never
 runs on a request path.
 
+### Overrun policy (issue #10)
+
+A `schedule_item` occurrence's nominal start is a hard boundary the
+*previous* occurrence's content is never allowed to push past — the
+"delay the next occurrence" behavior this project started with was replaced
+by "stop before end": a manual block's program items (and any `midroll`
+between them) that don't fit before the next occurrence's nominal start are
+dropped, in playback order, down to zero items if even the first one alone
+doesn't fit — there's no client-side support for trimming a single item
+mid-playback, so dropping whole trailing items is the only lever available.
+`postroll` (the block's sign-off) always plays in full and is reserved for
+up front: its duration is picked before the item loop runs, so items stop
+early enough to leave it room, rather than being computed after and
+potentially pushed past the boundary itself. This only applies when a real
+next occurrence exists in the current materialization window — the window's
+own end (`windowEnd`) is just how far this particular run happened to
+compute ahead to, not a commitment the schedule made, so the last occurrence
+in a window plays out in full exactly as before (the next `Run()` picks up
+the continuation). A dynamic (looping) block never had this problem to begin
+with — `fillLoopingBlock` already stops exactly at the boundary by
+construction.
+
 ### API
 
 - `GET /epg`: the full materialized schedule for every channel in the

@@ -218,6 +218,27 @@ func selectFillerItem(rule domain.FillerRule, pool []domain.FillerPoolItem, stat
 	}
 }
 
+// pickFiller selects the item a filler rule would insert next, without
+// emitting an entry — split out from insertFiller (expandChannel) so
+// postroll can be picked once, up front, to learn its duration before
+// deciding where program items must stop (issue #10's overrun policy).
+// ok is false for exactly the same reasons insertFiller used to silently
+// no-op: a nil rule, an empty pool, or a non-positive duration.
+func pickFiller(rule *domain.FillerRule, poolItems map[string][]domain.FillerPoolItem, catalogDuration map[string]int64, state *selectionState) (domain.FillerPoolItem, int64, bool) {
+	if rule == nil {
+		return domain.FillerPoolItem{}, 0, false
+	}
+	item, ok := selectFillerItem(*rule, poolItems[rule.FillerPoolID], state)
+	if !ok {
+		return domain.FillerPoolItem{}, 0, false
+	}
+	dur := catalogDuration[item.CatalogItemID]
+	if dur <= 0 {
+		return domain.FillerPoolItem{}, 0, false
+	}
+	return item, dur, true
+}
+
 // fillGap inserts, starting at cursor, as many whole items selected from
 // rule's pool as fit before target, advancing the cursor after each one. It
 // never cuts an item short: the residual space smaller than the next
@@ -381,84 +402,134 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		postroll := resolveFillerRule(in.FillerRules, domain.FillerPostRoll, occ.BlockID, in.ChannelID)
 		tailRule := resolveFillerRule(in.FillerRules, domain.FillerTail, occ.BlockID, in.ChannelID)
 
-		insertFiller := func(rule *domain.FillerRule, kind domain.EpgEntryKind) {
-			if rule == nil {
-				return
-			}
-			item, ok := selectFillerItem(*rule, in.PoolItems[rule.FillerPoolID], state)
-			if !ok {
-				return
-			}
-			dur := in.CatalogDuration[item.CatalogItemID]
-			if dur <= 0 {
-				return
-			}
+		// nominalNextStart is the hard boundary this occurrence must never
+		// cross (issue #10: a schedule_item's nominal start is always
+		// honored, never delayed by a previous occurrence running long) —
+		// but only when there IS a next occurrence. windowEnd is just how
+		// far this particular materializer Run() happened to compute ahead
+		// to, not a real commitment the schedule made; the last occurrence
+		// in a window is free to run past it exactly as before (the next
+		// Run() picks up the continuation), see hasNextOccurrence below.
+		hasNextOccurrence := i+1 < len(occurrences)
+		nominalNextStart := windowEnd
+		if hasNextOccurrence {
+			nominalNextStart = occurrences[i+1].NominalStart
+		}
+
+		// emit appends one entry starting at cursor and advances cursor past
+		// it. Every insertion in this occurrence (preroll/program/midroll/
+		// postroll) goes through this so cursor is always the single source
+		// of truth for "what time is it now".
+		emit := func(catalogItemID string, dur int64, kind domain.EpgEntryKind) {
 			end := cursor.Add(time.Duration(dur) * time.Millisecond)
 			entries = append(entries, domain.EpgEntry{
 				ID:                   uuid.NewString(),
 				TenantID:             in.TenantID,
 				ChannelID:            in.ChannelID,
 				Kind:                 kind,
-				CatalogItemID:        item.CatalogItemID,
+				CatalogItemID:        catalogItemID,
 				StartAt:              cursor.UnixMilli(),
 				EndAt:                end.UnixMilli(),
 				SourceScheduleItemID: &scheduleItemID,
 				GeneratedAt:          generatedAt,
 			})
 			cursor = end
+		}
+
+		insertFiller := func(rule *domain.FillerRule, kind domain.EpgEntryKind) {
+			item, dur, ok := pickFiller(rule, in.PoolItems, in.CatalogDuration, state)
+			if !ok {
+				return
+			}
+			emit(item.CatalogItemID, dur, kind)
 		}
 
 		insertFiller(preroll, domain.EpgPreRoll)
 
 		if in.DynamicBlockIDs[occ.BlockID] {
 			// A dynamic block has no fixed end — it loops its (dynamically
-			// resolved) item list to fill every instant up to the next
-			// occurrence's nominal start (or windowEnd for the last one),
-			// tagged as real programming. midroll/postroll/tail don't apply to
-			// an endless loop (there's no single "end" to hang them off); only
-			// preroll (already inserted above) still fires once, at the top of
-			// this occurrence.
-			target := windowEnd
-			if i+1 < len(occurrences) {
-				target = occurrences[i+1].NominalStart
-			}
+			// resolved) item list to fill every instant up to
+			// nominalNextStart, tagged as real programming. It already never
+			// crosses that boundary by construction, so it needs no overrun
+			// handling of its own. midroll/postroll/tail don't apply to an
+			// endless loop (there's no single "end" to hang them off); only
+			// preroll (already inserted above) still fires once, at the top
+			// of this occurrence.
 			// cursorKey includes ChannelID (see fillLoopingBlock's doc comment)
 			// so two channels sharing this dynamic block via the same Schedule
 			// don't share loop position.
 			cursorKey := in.ChannelID + "|" + occ.BlockID
-			loopEntries, newCursor := fillLoopingBlock(items, in.CatalogDuration, cursor, target, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, cursorKey, state)
+			loopEntries, newCursor := fillLoopingBlock(items, in.CatalogDuration, cursor, nominalNextStart, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, cursorKey, state)
 			entries = append(entries, loopEntries...)
 			cursor = newCursor
 			continue
 		}
 
-		for idx, bi := range items {
-			dur := effectiveDuration(bi, in.CatalogDuration)
-			end := cursor.Add(time.Duration(dur) * time.Millisecond)
-			entries = append(entries, domain.EpgEntry{
-				ID:                   uuid.NewString(),
-				TenantID:             in.TenantID,
-				ChannelID:            in.ChannelID,
-				Kind:                 domain.EpgProgram,
-				CatalogItemID:        bi.CatalogItemID,
-				StartAt:              cursor.UnixMilli(),
-				EndAt:                end.UnixMilli(),
-				SourceScheduleItemID: &scheduleItemID,
-				GeneratedAt:          generatedAt,
-			})
-			cursor = end
-			if idx != len(items)-1 {
-				insertFiller(midroll, domain.EpgMidRoll)
+		// Overrun policy (issue #10): "stop before end", but only when
+		// hasNextOccurrence — a manual block's own nominal start is never
+		// delayed by the previous one running long, so its content must
+		// stop in time to let nominalNextStart happen on schedule. postroll
+		// counts toward that budget (it's the block's sign-off, always
+		// played in full) and is reserved for up front, which is why it's
+		// picked here rather than after the items loop like preroll/midroll
+		// are: program items (and any midroll between them) that don't fit
+		// before nominalNextStart once postroll's own time is set aside are
+		// simply dropped, in order, starting from the first one that
+		// doesn't fit — down to zero items if even the first one alone
+		// doesn't fit. This can end a block earlier than its full item list
+		// would otherwise call for; there's no client-side support for
+		// trimming a single item mid-playback, so "drop whole trailing
+		// items" is the only available lever (see the issue's "Open
+		// questions"). Without a next occurrence, there's nothing to
+		// protect: items and postroll play in full, exactly as before this
+		// issue.
+		var postrollItem domain.FillerPoolItem
+		var postrollDur int64
+		var hasPostroll bool
+		itemsCutoff := nominalNextStart
+		if hasNextOccurrence {
+			postrollItem, postrollDur, hasPostroll = pickFiller(postroll, in.PoolItems, in.CatalogDuration, state)
+			if hasPostroll {
+				itemsCutoff = nominalNextStart.Add(-time.Duration(postrollDur) * time.Millisecond)
 			}
 		}
+		fits := func(dur int64) bool {
+			if !hasNextOccurrence {
+				return true
+			}
+			return !cursor.Add(time.Duration(dur) * time.Millisecond).After(itemsCutoff)
+		}
 
-		insertFiller(postroll, domain.EpgPostRoll)
+		for idx, bi := range items {
+			dur := effectiveDuration(bi, in.CatalogDuration)
+			if !fits(dur) {
+				break
+			}
+			emit(bi.CatalogItemID, dur, domain.EpgProgram)
+			if idx == len(items)-1 {
+				continue
+			}
+			midItem, midDur, ok := pickFiller(midroll, in.PoolItems, in.CatalogDuration, state)
+			if !ok {
+				continue
+			}
+			if !fits(midDur) {
+				break
+			}
+			emit(midItem.CatalogItemID, midDur, domain.EpgMidRoll)
+		}
+
+		if hasNextOccurrence {
+			if hasPostroll {
+				emit(postrollItem.CatalogItemID, postrollDur, domain.EpgPostRoll)
+			}
+		} else {
+			// No cutoff was reserved for this one, so pick it fresh — same
+			// as preroll/midroll above.
+			insertFiller(postroll, domain.EpgPostRoll)
+		}
 
 		postActualEnd := cursor
-		nominalNextStart := windowEnd
-		if i+1 < len(occurrences) {
-			nominalNextStart = occurrences[i+1].NominalStart
-		}
 
 		if postActualEnd.Before(nominalNextStart) && tailRule != nil {
 			tailEntries, tailEnd := fillGap(tailRule, in.PoolItems, in.CatalogDuration, postActualEnd, nominalNextStart, domain.EpgTail, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, state)
