@@ -100,10 +100,15 @@ Pull sync is the mirror image, and the backend does all of it itself:
 `internal/pullsync.Syncer` (structurally the same background-worker shape as
 `internal/materializer` — `Trigger`/`Start`/`Run`, plus a synchronous
 `SyncOne` for the manual path) calls the real Jellyfin API
-(`GET {base_url}/Items?Recursive=true&IncludeItemTypes=Movie,Episode`,
+(`GET {base_url}/Items?Recursive=true&IncludeItemTypes=Movie,Episode,Video`,
 paginated, authenticated via the `X-Emby-Token` header with the source's
 decrypted credential), maps `Movie`/`Episode` items into `catalog_item`
-(`RunTimeTicks / 10_000 = duration_ms`; `SeriesName` only on episodes), and
+(`RunTimeTicks / 10_000 = duration_ms`; `SeriesName` only on episodes).
+`Video` is what Jellyfin tags every item in a `homevideos`-type library
+(no dedicated item type for that kind of clip) — mapped to
+`CatalogOther`, with no genre/series metadata to speak of, good enough for
+curating into a `filler_pool` by hand (e.g. a network's bumpers/
+interstitials/promos). Pull sync also
 deletes any `catalog_item` row whose `external_id` no longer appears in the
 response — no incremental checkpoint like push's `DateModified` diffing, a
 self-hosted library is small enough that a full re-list every sync is

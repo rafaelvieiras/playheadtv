@@ -130,6 +130,24 @@ func TestMapJellyfinItem_EpisodeSeriesNotInMapNoPanic(t *testing.T) {
 	}
 }
 
+func TestMapJellyfinItem_Video(t *testing.T) {
+	item, ok := mapJellyfinItem(jellyfinItem{
+		Id:           "video-1",
+		Name:         "Fox Kids - Bumper - 2002 - Logo Girando",
+		Type:         "Video",
+		RunTimeTicks: 51_000_000, // 5.1s
+	}, nil)
+	if !ok {
+		t.Fatal("mapJellyfinItem(Video) ok = false, want true")
+	}
+	if item.Kind != domain.CatalogOther {
+		t.Errorf("Kind = %q, want %q", item.Kind, domain.CatalogOther)
+	}
+	if item.DurationMs != 5_100 {
+		t.Errorf("DurationMs = %d, want 5100", item.DurationMs)
+	}
+}
+
 func TestMapJellyfinItem_UnknownTypeSkipped(t *testing.T) {
 	_, ok := mapJellyfinItem(jellyfinItem{Id: "s-1", Name: "Some Show", Type: "Series"}, nil)
 	if ok {

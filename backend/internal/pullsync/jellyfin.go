@@ -83,7 +83,11 @@ func fetchItemsPage(ctx context.Context, client *http.Client, baseURL, apiKey st
 	}
 	q := req.URL.Query()
 	q.Set("Recursive", "true")
-	q.Set("IncludeItemTypes", "Movie,Episode")
+	// Video covers a homevideos-type library (e.g. a "TV" library of
+	// bumpers/interstitials/promos used as filler content) — Jellyfin has no
+	// dedicated item type for that kind of clip, it just tags it "Video".
+	// mapJellyfinItem below maps it to domain.CatalogOther.
+	q.Set("IncludeItemTypes", "Movie,Episode,Video")
 	q.Set("Fields", "SeriesName,DateCreated,DateLastSaved,RunTimeTicks,Genres,ProductionYear,SeriesId")
 	q.Set("StartIndex", strconv.Itoa(startIndex))
 	q.Set("Limit", strconv.Itoa(limit))
@@ -122,6 +126,11 @@ func mapJellyfinItem(ri jellyfinItem, seriesGenres map[string][]string) (catalog
 		kind = domain.CatalogMovie
 	case "Episode":
 		kind = domain.CatalogEpisode
+	case "Video":
+		// A homevideos-type library's clips (bumpers, interstitials, promos,
+		// station IDs) — no series/genre metadata to speak of, just
+		// duration/title, good enough for filler_pool curation.
+		kind = domain.CatalogOther
 	default:
 		return catalogsync.Item{}, false
 	}

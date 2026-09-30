@@ -215,6 +215,37 @@ actionable checklist.
       the schedule to the channel, confirm `schedule_id` round-trips on
       `GET /channels`, `GET /epg` still responds `200` — all behaved as
       designed.
+- [x] Pull sync ingests filler content from a `homevideos`-type Jellyfin
+      library: `internal/pullsync/jellyfin.go` adds `Video` to
+      `IncludeItemTypes` (Jellyfin has no dedicated item type for a bumper/
+      interstitial/promo clip in that kind of library — everything comes
+      back tagged `Video`) and maps it to `domain.CatalogOther` in
+      `mapJellyfinItem`. Verified end to end against a real Jellyfin library
+      structured `<Network>/<Category>/<clip>` (categories: Bumper,
+      Interstitial, Promo, Up Next) and a real test channel built on top of
+      it: 4 `filler_pool`s (one per category, hand-curated — these clips
+      carry no genre/tag metadata, so dynamic `criteria` pools don't apply),
+      4 channel-scoped `filler_rule`s (`preroll`→Bumper, `midroll`→
+      Interstitial, `postroll`→Promo, `tail`→Up Next), a curated
+      programming `block`, a daily `schedule`, materialized `GET /epg`
+      confirmed every kind (`preroll`/`midroll`/`postroll`/`tail`) resolving
+      to the right pool. Known limitation this surfaced, not fixed here: a
+      manual block that doesn't fill its whole occurrence-to-occurrence gap
+      leaves `tail` responsible for the entire leftover window (materializer
+      loops that pool until the next occurrence, per its documented "pad to
+      the next schedule_item" job) — fine for a short bump, not for hours,
+      and this project's "Up Next" content is specifically supposed to
+      reflect the *actual* next scheduled item rather than loop a small
+      generic pool; no design for that yet (see the new "first N episodes of
+      a series" issue below for a related, but distinct, curation gap — this
+      one is about content-aware `tail` selection, not something an issue
+      was opened for yet).
+- [ ] Curated `block`/`filler_pool` items currently have no way to express
+      "the first N episodes of a series" (or any other ordinal slice) —
+      only "every episode matching criteria" (dynamic) or "this exact,
+      hand-picked list of catalog_item ids" (manual, one
+      `POST .../items` call per item). A themed block built from a
+      long-running series' original run needs this. See issue #13.
 
 ## Phase 2 — MCP surface
 
