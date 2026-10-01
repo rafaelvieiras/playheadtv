@@ -127,10 +127,10 @@ void main() {
       );
     }
 
-    // Ensures the OSD is visible (required for arrowRight/trackSelector to
-    // open the picker — see AGENTS.md's "6-button baseline"): waits for the
-    // boot auto-show to hide first, then presses Enter once (stage 1: OSD
-    // hidden -> show OSD), same building block as
+    // Ensures the OSD is visible in focus mode (the 6-button path to the
+    // audio/CC buttons, see AGENTS.md's "6-button baseline"): waits for the
+    // boot auto-show to hide first, then presses Enter once (OSD hidden ->
+    // show OSD with the first control focused), same building block as
     // epg_overlay_test.dart's openEpg helper.
     Future<void> showOsd(WidgetTester tester) async {
       await pumpUntil(
@@ -146,12 +146,12 @@ void main() {
 
     Future<void> openTrackSelector(WidgetTester tester) async {
       await showOsd(tester);
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter); // OSD focus mode starts on the audio button
       await tester.pump();
       await pumpUntil(
         tester,
         () => find.byKey(const Key('track-selector-overlay')).evaluate().isNotEmpty,
-        failMessage: 'arrowRight (OSD visible) did not open the track selector',
+        failMessage: 'Select on the OSD audio button did not open the track selector',
       );
       // Both real audio tracks (eng/por) must have loaded before any
       // navigation/selection is sent.
@@ -162,7 +162,7 @@ void main() {
       );
     }
 
-    testWidgets('arrowRight opens the track selector while the OSD is visible, listing the real audio tracks', (tester) async {
+    testWidgets('Select on the OSD audio button opens the track selector, listing the real audio tracks', (tester) async {
       await tester.pumpWidget(const PlayheadSpikeApp());
       await waitForChannelNumber(tester, 4);
 

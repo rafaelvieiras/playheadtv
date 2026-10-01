@@ -38,6 +38,7 @@ class TrackSelectorOverlay extends StatefulWidget {
   final List<TrackOption> subtitleOptions;
   final int initialAudioFocusIndex;
   final int initialSubtitleFocusIndex;
+  final TrackSelectorPanel initialPanel;
   final void Function(TrackSelectorPanel panel, TrackOption option) onSelect;
   final VoidCallback onClose;
 
@@ -47,6 +48,7 @@ class TrackSelectorOverlay extends StatefulWidget {
     required this.subtitleOptions,
     this.initialAudioFocusIndex = 0,
     this.initialSubtitleFocusIndex = 0,
+    this.initialPanel = TrackSelectorPanel.audio,
     required this.onSelect,
     required this.onClose,
   }) : super(key: key);
@@ -56,13 +58,14 @@ class TrackSelectorOverlay extends StatefulWidget {
 }
 
 class TrackSelectorOverlayState extends State<TrackSelectorOverlay> {
-  TrackSelectorPanel _activePanel = TrackSelectorPanel.audio;
+  late TrackSelectorPanel _activePanel;
   late int _focusedAudio;
   late int _focusedSubtitle;
 
   @override
   void initState() {
     super.initState();
+    _activePanel = widget.initialPanel;
     _focusedAudio = widget.initialAudioFocusIndex.clamp(0, _lastIndex(widget.audioOptions));
     _focusedSubtitle = widget.initialSubtitleFocusIndex.clamp(0, _lastIndex(widget.subtitleOptions));
   }

@@ -83,7 +83,6 @@ const Map<InputAction, LogicalKeyboardKey> defaultKeyBindings = {
   InputAction.digit8: LogicalKeyboardKey.digit8,
   InputAction.digit9: LogicalKeyboardKey.digit9,
   InputAction.debugOverlay: LogicalKeyboardKey.keyD,
-  InputAction.trackSelector: LogicalKeyboardKey.arrowRight,
 };
 
 /// Resolves LogicalKeyboardKey -> InputAction by combining the default +

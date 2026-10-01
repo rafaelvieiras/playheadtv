@@ -148,6 +148,8 @@ void main() {
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Enter (OSD hidden) did not show the OSD');
 
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown); // focus "Channels" in the OSD
+      await tester.pump();
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(
@@ -194,6 +196,8 @@ void main() {
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Enter (OSD hidden) did not show the OSD');
 
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown); // focus "Channels" in the OSD
+      await tester.pump();
       await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(

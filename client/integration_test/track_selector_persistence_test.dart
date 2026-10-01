@@ -138,12 +138,12 @@ void main() {
 
     Future<void> openTrackSelector(WidgetTester tester) async {
       await showOsd(tester);
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter); // OSD focus mode starts on the audio button
       await tester.pump();
       await pumpUntil(
         tester,
         () => find.byKey(const Key('track-selector-overlay')).evaluate().isNotEmpty,
-        failMessage: 'arrowRight (OSD visible) did not open the track selector',
+        failMessage: 'Select on the OSD audio button did not open the track selector',
       );
       await pumpUntil(
         tester,

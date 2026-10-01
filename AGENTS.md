@@ -140,10 +140,18 @@ or LLM, and to every artifact in the repo:
     buttons, with zero remapping — unless it's a declared accelerator per
     the exception above, in which case verify the *non-accelerator*
     equivalent path is the one actually exercised in testing.
-- `select`'s default binding is `Enter` (not `I`) with two stages, read off
-  `_osdVisibleNotifier`/`_epgOpenNotifier`: OSD hidden → show OSD; OSD
-  already visible → open the EPG. `back` (`Esc` by default) closes the EPG
-  if open.
+- `select`'s default binding is `Enter` (not `I`). The channel OSD
+  (`lib/widgets/osd_overlay.dart`) has two states, read off
+  `_osdVisibleNotifier`/`_osdFocusNotifier`: merely *displayed* (auto-show at
+  channel start/switch — Up/Down still switch channel) and *focus mode*
+  (entered with `select`, whether the OSD was hidden or only displayed): the
+  raw arrows move focus across its controls (not remappable), `select`
+  activates the focused one — CC and audio open the track picker on their own
+  panel, "Channels" opens the EPG — and `back` hides the OSD. Controls with
+  no behavior yet are dimmed and skipped by focus. Focus mode ends whenever
+  the OSD hides. `back` (`Esc` by default) closes the EPG if open, and with
+  the OSD hidden goes to the mosaic. `InputAction.trackSelector` has no
+  default binding anymore (optional accelerator).
 - The full-screen EPG (`lib/widgets/epg_overlay.dart`) is a `Stack` overlay
   inside the player's own `build()`, gated by `_epgOpenNotifier` — never a
   separate route. This is what lets the active channel's video thumbnail

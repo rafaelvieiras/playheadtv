@@ -32,8 +32,8 @@ import 'services/stream_selection_resolver.dart';
 import 'input/input_action.dart';
 import 'pages/mosaic_page.dart';
 import 'util/gl_serial.dart';
-import 'widgets/app_icons.dart';
 import 'widgets/epg_overlay.dart';
+import 'widgets/osd_overlay.dart';
 import 'widgets/debug_overlay.dart';
 import 'widgets/track_selector_overlay.dart';
 
@@ -257,7 +257,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   // OSD (on-screen channel guide): shown on every item change (channel start
   // or end of a crossfade), stays visible for ~5s and fades out. The ~2x/s
   // ticker that re-reads the video's real position for the progress bar lives
-  // inside `_OsdOverlay` (its own widget, see below) — isolated there so its
+  // inside `ChannelOsd` (its own widget, see below) — isolated there so its
   // rebuild doesn't force a rebuild of the whole page (and, in turn, of the
   // two `VideoPlayer`/`_videoFor` widgets in the Stack). Showing/hiding the
   // OSD (`_osdVisibleNotifier` below, not a State `bool`) also never calls
@@ -273,6 +273,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   // involved.
   final ValueNotifier<bool> _osdVisibleNotifier = ValueNotifier(false);
   Timer? _osdHideTimer;
+
+  // Focus mode of the OSD (see widgets/osd_overlay.dart): off while the OSD is
+  // just displayed (auto-show), on once the user pressed Select to interact
+  // with its controls. Always turned off when the OSD hides.
+  final ValueNotifier<bool> _osdFocusNotifier = ValueNotifier(false);
+  final GlobalKey<ChannelOsdState> _osdKey = GlobalKey<ChannelOsdState>();
 
   // Full-screen EPG: state plus the open/close flow. Same pattern as
   // `_osdVisibleNotifier` above: never a State `bool`/setState, only
@@ -376,6 +382,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   @override
   void initState() {
     super.initState();
+    _osdVisibleNotifier.addListener(() {
+      if (!_osdVisibleNotifier.value) _osdFocusNotifier.value = false;
+    });
     if (AppConfig.jellyfinUrl.isEmpty || AppConfig.jellyfinApiKey.isEmpty || AppConfig.playheadBaseUrl.isEmpty) {
       _status = 'ERROR: run with --dart-define=JELLYFIN_URL=... --dart-define=JELLYFIN_API_KEY=... '
           '--dart-define=PLAYHEADTV_BASE_URL=...';
@@ -1111,7 +1120,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   }
 
   // Shows the OSD (or restarts the countdown if it was already visible). The
-  // progress bar ticker lives inside `_OsdOverlay` — this only controls
+  // progress bar ticker lives inside `ChannelOsd` — this only controls
   // visibility/auto-hide. Called at channel start (_startChannel) and at the
   // end of each crossfade (_crossfadeTo) — never at the start of the
   // crossfade, only once the new item is officially the current one.
@@ -1210,6 +1219,22 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     _showTrackToast('Subtitle: $label');
   }
 
+  TrackSelectorPanel _trackPickerInitialPanel = TrackSelectorPanel.audio;
+
+  void _openTrackPicker(TrackSelectorPanel panel) {
+    _trackPickerInitialPanel = panel;
+    _osdHideTimer?.cancel();
+    _osdVisibleNotifier.value = false;
+    _trackPickerOpenNotifier.value = true;
+  }
+
+  void _openEpgFromOsd() {
+    _osdHideTimer?.cancel();
+    _osdVisibleNotifier.value = false;
+    _suppressNextEpgSelectUp = true;
+    _epgOpenNotifier.value = true;
+  }
+
   // InputAction.cycleAudioTrack/cycleSubtitleTrack (Path 2, power-user
   // accelerators — no default binding, see input/input_action.dart):
   // advances to the next track in the REAL current track list (wrapping
@@ -1249,6 +1274,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     _volumeRampTimer?.cancel();
     _osdHideTimer?.cancel();
     _osdVisibleNotifier.dispose();
+    _osdFocusNotifier.dispose();
     _epgOpenNotifier.dispose();
     _debugOverlayVisibleNotifier.dispose();
     _trackPickerOpenNotifier.dispose();
@@ -1394,26 +1420,49 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
           _onDigitKey(digit);
           return;
         }
+
+        // OSD focus mode: raw arrows (never remappable, same as the other 2D
+        // navigations) move focus across the OSD controls, Select activates
+        // the focused one and Back hides the OSD. Every key press restarts
+        // the auto-hide countdown.
+        if (_osdVisibleNotifier.value && _osdFocusNotifier.value) {
+          final key = event.logicalKey;
+          if (key == LogicalKeyboardKey.arrowLeft) {
+            _osdKey.currentState?.move(-1, 0);
+          } else if (key == LogicalKeyboardKey.arrowRight) {
+            _osdKey.currentState?.move(1, 0);
+          } else if (key == LogicalKeyboardKey.arrowUp) {
+            _osdKey.currentState?.move(0, -1);
+          } else if (key == LogicalKeyboardKey.arrowDown) {
+            _osdKey.currentState?.move(0, 1);
+          } else if (action == InputAction.select) {
+            _osdKey.currentState?.activateFocused();
+          } else if (action == InputAction.back) {
+            _osdHideTimer?.cancel();
+            _osdVisibleNotifier.value = false;
+            return;
+          } else {
+            return;
+          }
+          if (_osdVisibleNotifier.value) _showOsd();
+          return;
+        }
+
         switch (action) {
           case InputAction.channelNext:
             _switchChannel(1);
           case InputAction.channelPrevious:
             _switchChannel(-1);
           case InputAction.select:
-            if (_osdVisibleNotifier.value) {
-              _suppressNextEpgSelectUp = true;
-              _epgOpenNotifier.value = true;
-            } else {
-              _showOsd();
-            }
+            // OSD hidden or merely displayed (auto-show): Select shows it in
+            // focus mode so the user can reach its controls.
+            _showOsd();
+            _osdFocusNotifier.value = true;
           case InputAction.trackSelector:
-            // Only the required 6-button-only path: OSD visible, EPG not
-            // open (already guaranteed by the branch above) and no
-            // channel-number input in progress (AGENTS.md "6-button
-            // baseline" — verified arrowRight is a genuine no-op outside
-            // this exact state before wiring this binding).
-            if (_osdVisibleNotifier.value && (_channelInputBuffer == null || _channelInputBuffer!.isEmpty)) {
-              _trackPickerOpenNotifier.value = true;
+            // Optional accelerator (no default binding): opens the picker
+            // directly. The 6-button path is the OSD's CC/audio buttons.
+            if (_channelInputBuffer == null || _channelInputBuffer!.isEmpty) {
+              _openTrackPicker(TrackSelectorPanel.audio);
             }
           case InputAction.cycleAudioTrack:
             _cycleTrack(TrackSelectorPanel.audio);
@@ -1481,33 +1530,40 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
                 ),
               ),
             if (hasContent)
-              Positioned(
-                left: 24,
-                bottom: 24,
-                // ValueListenableBuilder (not an AnimatedOpacity reading a
-                // State bool directly): showing/hiding the OSD must not call
-                // setState on the parent at all — not even once. `child` is
-                // the already-built `_OsdOverlay`, passed in from outside the
-                // `builder`, so it isn't rebuilt for nothing on each
-                // visibility toggle either. See the `_osdVisibleNotifier`
-                // comment for why this really matters (a real texture
-                // artifact on 1080p+ video).
+              // Full-screen so the clock (top-right) and the bar (bottom) share
+              // one fade. ValueListenableBuilder (not an AnimatedOpacity
+              // reading a State bool directly): showing/hiding the OSD must
+              // not call setState on the parent at all — not even once.
+              // `child` is the already-built ChannelOsd, passed in from
+              // outside the `builder`, so it isn't rebuilt for nothing on each
+              // visibility toggle either. See the `_osdVisibleNotifier`
+              // comment for why this really matters (a real texture artifact
+              // on 1080p+ video).
+              Positioned.fill(
                 child: ValueListenableBuilder<bool>(
                   valueListenable: _osdVisibleNotifier,
-                  builder: (context, visible, child) => AnimatedOpacity(
-                    opacity: visible ? 1 : 0,
-                    duration: const Duration(milliseconds: 300),
-                    child: child,
-                  ),
-                  child: IgnorePointer(
-                    child: _OsdOverlay(
-                      channelNumber: _channels[_channelIndex].number,
-                      channelName: _channels[_channelIndex].name,
-                      itemLabel: channel[_currentIndex].label,
-                      nextItemLabel:
-                          _currentIndex + 1 < channel.length ? channel[_currentIndex + 1].label : null,
-                      controller: _aIsActive ? _controllerA : _controllerB,
+                  builder: (context, visible, child) => IgnorePointer(
+                    ignoring: !visible,
+                    child: AnimatedOpacity(
+                      opacity: visible ? 1 : 0,
+                      duration: const Duration(milliseconds: 300),
+                      child: child,
                     ),
+                  ),
+                  child: ChannelOsd(
+                    key: _osdKey,
+                    channelNumber: _channels[_channelIndex].number,
+                    channelName: _channels[_channelIndex].name,
+                    channelArtUrl: _channels[_channelIndex].guideArtUrl,
+                    itemLabel: channel[_currentIndex].label,
+                    nextItemLabel: _currentIndex + 1 < channel.length ? channel[_currentIndex + 1].label : null,
+                    startAt: channel[_currentIndex].startAt,
+                    endAt: channel[_currentIndex].startAt.add(channel[_currentIndex].clipDuration),
+                    controller: _aIsActive ? _controllerA : _controllerB,
+                    focusMode: _osdFocusNotifier,
+                    onOpenSubtitles: () => _openTrackPicker(TrackSelectorPanel.subtitle),
+                    onOpenAudio: () => _openTrackPicker(TrackSelectorPanel.audio),
+                    onOpenChannels: _openEpgFromOsd,
                   ),
                 ),
               ),
@@ -1640,6 +1696,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
                 return Positioned.fill(
                   child: TrackSelectorOverlay(
                     key: _trackSelectorKey,
+                    initialPanel: _trackPickerInitialPanel,
                     audioOptions: audioOptions,
                     subtitleOptions: subtitleOptions,
                     initialAudioFocusIndex: audioFocus,
@@ -1668,13 +1725,6 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
 
 int _lastIndex(List<TrackOption> options) => options.isEmpty ? 0 : options.length - 1;
 
-String _fmtDuration(Duration d) {
-  if (d.isNegative) d = Duration.zero;
-  final minutes = d.inMinutes.remainder(60);
-  final seconds = d.inSeconds.remainder(60);
-  return '${minutes.toString().padLeft(2, '0')}:${seconds.toString().padLeft(2, '0')}';
-}
-
 // Case-insensitive lookup into a track's ffmpeg-style metadata map (used by
 // _createController to read "language"/"title" for the stream selection
 // cascade) — real-world containers aren't fully consistent about casing,
@@ -1687,155 +1737,3 @@ String? _metadataValue(Map<String, String> metadata, String key) {
   return null;
 }
 
-// On-screen channel guide: channel number + name, the current item's title
-// (with the player's real position, not the clipDuration/scheduled time, so it
-// doesn't drift out of sync with buffering/seek) and the next item in the
-// schedule, if any. Its own Widget/State (not a method of
-// `_ChannelPlayerPageState`) on purpose: the ~500ms ticker that re-reads
-// `controller.value.position` only rebuilds THIS widget, never the whole page
-// — isolating that here fixed a real artifact seen in manual testing:
-// pressing the Info key (`I`), which only toggles OSD visibility and shouldn't
-// touch anything video-related, caused a black/stale frame in `fvp` (the
-// video's GL texture was recreated on every page rebuild, see AGENTS.md about
-// the `fvp` pin). Passing the controller by reference (not the already-read
-// values) is what lets this widget have its own ticker without depending on
-// the parent's setState.
-class _OsdOverlay extends StatefulWidget {
-  final int channelNumber;
-  final String channelName;
-  final String itemLabel;
-  final String? nextItemLabel;
-  final VideoPlayerController? controller;
-
-  const _OsdOverlay({
-    required this.channelNumber,
-    required this.channelName,
-    required this.itemLabel,
-    required this.nextItemLabel,
-    required this.controller,
-  });
-
-  @override
-  State<_OsdOverlay> createState() => _OsdOverlayState();
-}
-
-class _OsdOverlayState extends State<_OsdOverlay> {
-  Timer? _tickTimer;
-
-  @override
-  void initState() {
-    super.initState();
-    _tickTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
-      if (mounted) setState(() {});
-    });
-  }
-
-  @override
-  void dispose() {
-    _tickTimer?.cancel();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final position = widget.controller?.value.position ?? Duration.zero;
-    final duration = widget.controller?.value.duration ?? Duration.zero;
-    final progress =
-        duration.inMilliseconds > 0 ? (position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0) : 0.0;
-
-    return ConstrainedBox(
-      key: const Key('channel-osd'),
-      constraints: const BoxConstraints(maxWidth: 480),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 16),
-        decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.78),
-          borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.white24),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  child: Text(
-                    key: const Key('osd-channel-number'),
-                    '${widget.channelNumber}',
-                    style: const TextStyle(color: Colors.black, fontSize: 18, fontWeight: FontWeight.bold),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    key: const Key('osd-channel-name'),
-                    widget.channelName.toUpperCase(),
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.5,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.center,
-              children: [
-                const Icon(AppIcons.play, color: Colors.white, size: 20),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    key: const Key('osd-item-title'),
-                    widget.itemLabel,
-                    style: const TextStyle(color: Colors.white, fontSize: 16),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 8),
-            Row(
-              children: [
-                Expanded(
-                  child: ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: LinearProgressIndicator(
-                      value: progress,
-                      minHeight: 6,
-                      backgroundColor: Colors.white24,
-                      valueColor: const AlwaysStoppedAnimation<Color>(Colors.redAccent),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Text(
-                  '${_fmtDuration(position)} / ${_fmtDuration(duration)}',
-                  style: const TextStyle(color: Colors.white70, fontSize: 13),
-                ),
-              ],
-            ),
-            if (widget.nextItemLabel != null) ...[
-              const SizedBox(height: 10),
-              Text(
-                'Up next: ${widget.nextItemLabel}',
-                style: const TextStyle(color: Colors.white60, fontSize: 13, fontStyle: FontStyle.italic),
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
