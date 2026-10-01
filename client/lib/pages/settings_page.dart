@@ -4,6 +4,7 @@
 import 'package:flutter/material.dart';
 
 import 'controls_mapping_page.dart';
+import '../widgets/app_icons.dart';
 
 class SettingsPage extends StatelessWidget {
   const SettingsPage({super.key});
@@ -17,7 +18,7 @@ class SettingsPage extends StatelessWidget {
         children: [
           ListTile(
             key: const Key('settings-controls-tile'),
-            leading: const Icon(Icons.gamepad),
+            leading: const Icon(AppIcons.controls),
             title: const Text('Remap controls'),
             onTap: () {
               Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ControlsMappingPage()));

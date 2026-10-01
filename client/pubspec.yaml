@@ -38,6 +38,7 @@ dependencies:
   video_player: ^2.14.0
   fvp: ^0.38.1
   shared_preferences: ^2.5.5
+  material_symbols_icons: ^4.2960.0
 
 dev_dependencies:
   flutter_test:

@@ -32,6 +32,7 @@ import 'services/stream_selection_resolver.dart';
 import 'input/input_action.dart';
 import 'pages/mosaic_page.dart';
 import 'util/gl_serial.dart';
+import 'widgets/app_icons.dart';
 import 'widgets/epg_overlay.dart';
 import 'widgets/debug_overlay.dart';
 import 'widgets/track_selector_overlay.dart';
@@ -1791,7 +1792,7 @@ class _OsdOverlayState extends State<_OsdOverlay> {
             Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: [
-                const Icon(Icons.play_arrow, color: Colors.white, size: 20),
+                const Icon(AppIcons.play, color: Colors.white, size: 20),
                 const SizedBox(width: 6),
                 Expanded(
                   child: Text(

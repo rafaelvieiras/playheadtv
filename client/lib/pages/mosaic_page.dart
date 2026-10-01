@@ -25,6 +25,7 @@ import 'package:fvp/fvp.dart'; // extension setSubtitleTracks on VideoPlayerCont
 
 import '../main.dart';
 import '../playhead_api.dart';
+import '../widgets/app_icons.dart';
 import '../services/settings_service.dart';
 import '../util/gl_serial.dart';
 import 'settings_page.dart';
@@ -381,7 +382,7 @@ class _MosaicPageState extends State<MosaicPage> {
           child: const Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(Icons.settings, color: Colors.white, size: 28),
+              Icon(AppIcons.settings, color: Colors.white, size: 28),
               SizedBox(height: 4),
               Text('Settings', style: TextStyle(color: Colors.white, fontSize: 12)),
             ],
