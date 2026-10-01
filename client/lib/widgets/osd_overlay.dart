@@ -1,7 +1,7 @@
 // Channel OSD: the info bar shown over the video — channel logo, program
 // title, `number · name · start–end`, stream chips, the transport control
-// row, a progress bar, the CC / audio-track buttons and the "Channels" entry
-// to the EPG. Clock (local time + when the current program ends) sits in the
+// row, a progress bar, the CC / audio-track buttons and a "Channels" section
+// with the most recently watched channels for quick access. Clock (local time + when the current program ends) sits in the
 // top-right corner.
 //
 // Same non-setState convention as widgets/epg_overlay.dart: the parent
@@ -12,8 +12,10 @@
 //
 // Focus mode (6-button baseline): while the OSD is merely displayed (auto-show
 // at channel start/switch) it is passive and Up/Down still switch channel.
-// Select turns on `focusMode`; then the parent relays the raw arrows to
-// `move` and Select to `activate`, and the focused control is outlined.
+// Select shows it and arms it; the first arrow after that turns on `focusMode`
+// (a second Select instead opens the full EPG). In focus mode the parent
+// relays the raw arrows to `move` and Select to `activateFocused`, and the
+// focused control is outlined.
 // Controls that do nothing yet (play/pause, previous/next, rewind/fast-
 // forward) are rendered dimmed and skipped by focus.
 import 'dart:async';
@@ -25,7 +27,20 @@ import 'package:fvp/fvp.dart'; // getMediaInfo() on VideoPlayerController
 
 import 'app_icons.dart';
 
-enum _OsdItem { captions, audio, channels }
+/// A recently watched channel offered in the OSD's "Channels" section.
+class OsdChannelShortcut {
+  final String id;
+  final int number;
+  final String name;
+  final String? artUrl;
+  const OsdChannelShortcut({required this.id, required this.number, required this.name, this.artUrl});
+}
+
+// Focus items are plain strings: the two track buttons, then one entry per
+// recent channel (`channel:<id>`).
+const _captions = 'captions';
+const _audio = 'audio';
+const _channelPrefix = 'channel:';
 
 class ChannelOsd extends StatefulWidget {
   final int channelNumber;
@@ -39,7 +54,8 @@ class ChannelOsd extends StatefulWidget {
   final ValueListenable<bool> focusMode;
   final VoidCallback onOpenSubtitles;
   final VoidCallback onOpenAudio;
-  final VoidCallback onOpenChannels;
+  final List<OsdChannelShortcut> recentChannels;
+  final void Function(String channelId) onSelectChannel;
 
   const ChannelOsd({
     required Key key,
@@ -54,7 +70,8 @@ class ChannelOsd extends StatefulWidget {
     required this.focusMode,
     required this.onOpenSubtitles,
     required this.onOpenAudio,
-    required this.onOpenChannels,
+    required this.recentChannels,
+    required this.onSelectChannel,
   }) : super(key: key);
 
   @override
@@ -63,7 +80,7 @@ class ChannelOsd extends StatefulWidget {
 
 class ChannelOsdState extends State<ChannelOsd> {
   Timer? _tickTimer;
-  _OsdItem? _focused;
+  String? _focused;
 
   @override
   void initState() {
@@ -96,15 +113,15 @@ class ChannelOsdState extends State<ChannelOsd> {
     setState(() => _focused = widget.focusMode.value ? _rows().firstOrNull?.firstOrNull : null);
   }
 
-  // Focusable rows, top to bottom: [CC, audio] then [Channels]. CC needs a
-  // real subtitle track and audio needs a real choice (>1 track).
-  List<List<_OsdItem>> _rows() {
+  // Focusable rows, top to bottom: [CC, audio] then the recent channels. CC
+  // needs a real subtitle track and audio needs a real choice (>1 track).
+  List<List<String>> _rows() {
     final info = widget.controller?.getMediaInfo();
     final hasSubtitles = (info?.subtitle ?? const []).isNotEmpty;
     final hasAudioChoice = (info?.audio ?? const []).length > 1;
     return [
-      [if (hasSubtitles) _OsdItem.captions, if (hasAudioChoice) _OsdItem.audio],
-      [_OsdItem.channels],
+      [if (hasSubtitles) _captions, if (hasAudioChoice) _audio],
+      [for (final c in widget.recentChannels) '$_channelPrefix${c.id}'],
     ].where((r) => r.isNotEmpty).toList();
   }
 
@@ -127,15 +144,13 @@ class ChannelOsdState extends State<ChannelOsd> {
 
   /// Relayed by the parent on Select while in focus mode.
   void activateFocused() {
-    switch (_focused) {
-      case _OsdItem.captions:
-        widget.onOpenSubtitles();
-      case _OsdItem.audio:
-        widget.onOpenAudio();
-      case _OsdItem.channels:
-        widget.onOpenChannels();
-      case null:
-        break;
+    final focused = _focused;
+    if (focused == _captions) {
+      widget.onOpenSubtitles();
+    } else if (focused == _audio) {
+      widget.onOpenAudio();
+    } else if (focused != null && focused.startsWith(_channelPrefix)) {
+      widget.onSelectChannel(focused.substring(_channelPrefix.length));
     }
   }
 
@@ -212,6 +227,49 @@ class ChannelOsdState extends State<ChannelOsd> {
     );
   }
 
+  Widget _channelCard(OsdChannelShortcut c, {required bool focused}) {
+    final url = c.artUrl;
+    Widget fallback() => const Icon(AppIcons.channels, color: Colors.white, size: 20);
+    return Container(
+      key: Key('osd-recent-${c.id}'),
+      width: 170,
+      margin: const EdgeInsets.only(right: 12),
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: focused ? Colors.white24 : Colors.white10,
+        border: Border.all(color: focused ? Colors.white : Colors.transparent, width: 2),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: const BoxDecoration(color: Colors.white12, shape: BoxShape.circle),
+            clipBehavior: Clip.antiAlias,
+            alignment: Alignment.center,
+            child: url == null ? fallback() : Image.network(url, fit: BoxFit.cover, errorBuilder: (_, _, _) => fallback()),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('${c.number}', style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+                Text(
+                  c.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _logo() {
     Widget fallback() => const Icon(AppIcons.channels, color: Colors.white, size: 32);
     final url = widget.channelArtUrl;
@@ -233,7 +291,7 @@ class ChannelOsdState extends State<ChannelOsd> {
     final progress =
         duration.inMilliseconds > 0 ? (position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0) : 0.0;
     final rows = _rows();
-    bool has(_OsdItem i) => rows.any((r) => r.contains(i));
+    bool has(String i) => rows.any((r) => r.contains(i));
 
     return Stack(
       key: const Key('channel-osd'),
@@ -357,10 +415,10 @@ class ChannelOsdState extends State<ChannelOsd> {
                 const SizedBox(height: 8),
                 Row(
                   children: [
-                    if (has(_OsdItem.captions))
-                      _button(const Key('osd-btn-captions'), AppIcons.captions, focused: _focused == _OsdItem.captions),
-                    if (has(_OsdItem.audio))
-                      _button(const Key('osd-btn-audio'), AppIcons.audioTrack, focused: _focused == _OsdItem.audio),
+                    if (has(_captions))
+                      _button(const Key('osd-btn-captions'), AppIcons.captions, focused: _focused == _captions),
+                    if (has(_audio))
+                      _button(const Key('osd-btn-audio'), AppIcons.audioTrack, focused: _focused == _audio),
                     if (widget.nextItemLabel != null) ...[
                       const SizedBox(width: 16),
                       Flexible(
@@ -374,12 +432,24 @@ class ChannelOsdState extends State<ChannelOsd> {
                     ],
                   ],
                 ),
-                _button(
-                  const Key('osd-btn-channels'),
-                  AppIcons.channels,
-                  label: 'Channels',
-                  focused: _focused == _OsdItem.channels,
-                ),
+                if (widget.recentChannels.isNotEmpty) ...[
+                  const SizedBox(height: 12),
+                  const Text(
+                    'Channels',
+                    key: Key('osd-channels-title'),
+                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                  ),
+                  const SizedBox(height: 8),
+                  SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        for (final c in widget.recentChannels)
+                          _channelCard(c, focused: _focused == '$_channelPrefix${c.id}'),
+                      ],
+                    ),
+                  ),
+                ],
               ],
             ),
           ),

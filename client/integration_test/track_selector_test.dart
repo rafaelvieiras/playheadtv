@@ -146,7 +146,9 @@ void main() {
 
     Future<void> openTrackSelector(WidgetTester tester) async {
       await showOsd(tester);
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter); // OSD focus mode starts on the audio button
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight); // first arrow after Select enters OSD focus mode (audio button)
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter); // activate the focused audio button
       await tester.pump();
       await pumpUntil(
         tester,
@@ -170,8 +172,8 @@ void main() {
 
       expect(find.byKey(const Key('track-option-audio-0')), findsOneWidget);
       expect(find.byKey(const Key('track-option-audio-1')), findsOneWidget);
-      // No real subtitle track in the fixture — only the virtual "None" entry.
-      expect(find.byKey(const Key('track-option-subtitle--1')), findsOneWidget);
+      // The audio button opens an audio-only picker: no subtitle panel.
+      expect(find.byKey(const Key('track-option-subtitle--1')), findsNothing);
     });
 
     testWidgets('arrowUp/arrowDown move focus within the panel and do not switch channel while the picker is open', (tester) async {

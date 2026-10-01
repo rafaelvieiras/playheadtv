@@ -162,6 +162,10 @@ const epgThumbnailMargin = 24.0;
 const epgThumbnailWidth = 320.0;
 const epgThumbnailHeight = 180.0;
 
+// Playback buffer window handed to mdk (see _createController).
+const playbackBufferMinMs = 2000;
+const playbackBufferMaxMs = 30000;
+
 String streamUrl(String itemId) =>
     '${AppConfig.jellyfinUrl}/Videos/$itemId/stream?Static=true&api_key=${AppConfig.jellyfinApiKey}';
 
@@ -275,9 +279,14 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   Timer? _osdHideTimer;
 
   // Focus mode of the OSD (see widgets/osd_overlay.dart): off while the OSD is
-  // just displayed (auto-show), on once the user pressed Select to interact
-  // with its controls. Always turned off when the OSD hides.
+  // just displayed (auto-show), on once the user pressed Select and then an
+  // arrow (Select, Select opens the EPG instead). Always turned off when the
+  // OSD hides.
   final ValueNotifier<bool> _osdFocusNotifier = ValueNotifier(false);
+  // True while the OSD was opened by Select and no key has followed yet: the
+  // next arrow enters focus mode instead of switching channel, the next
+  // Select opens the EPG. Reset whenever the OSD hides.
+  bool _osdArmed = false;
   final GlobalKey<ChannelOsdState> _osdKey = GlobalKey<ChannelOsdState>();
 
   // Full-screen EPG: state plus the open/close flow. Same pattern as
@@ -383,7 +392,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   void initState() {
     super.initState();
     _osdVisibleNotifier.addListener(() {
-      if (!_osdVisibleNotifier.value) _osdFocusNotifier.value = false;
+      if (!_osdVisibleNotifier.value) {
+        _osdFocusNotifier.value = false;
+        _osdArmed = false;
+      }
     });
     if (AppConfig.jellyfinUrl.isEmpty || AppConfig.jellyfinApiKey.isEmpty || AppConfig.playheadBaseUrl.isEmpty) {
       _status = 'ERROR: run with --dart-define=JELLYFIN_URL=... --dart-define=JELLYFIN_API_KEY=... '
@@ -708,6 +720,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     // on the value and "false" kills the process with
     // std::invalid_argument).
     controller.setProperty('avsync.audio', '0');
+    // Read-ahead window ("minMs+maxMs", mdk's setBufferRange): playback only
+    // starts/resumes once `min` is buffered and the demuxer keeps reading up
+    // to `max` — mdk's default is 1s..4s, too little for a source with
+    // bursty latency (e.g. a network-mounted library), where each hiccup
+    // shows as a stutter.
+    controller.setProperty('buffer', '$playbackBufferMinMs+$playbackBufferMaxMs');
     return controller;
   }
 
@@ -1221,11 +1239,26 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
 
   TrackSelectorPanel _trackPickerInitialPanel = TrackSelectorPanel.audio;
 
-  void _openTrackPicker(TrackSelectorPanel panel) {
+  bool _trackPickerSinglePanel = false;
+
+  void _openTrackPicker(TrackSelectorPanel panel, {bool singlePanel = false}) {
     _trackPickerInitialPanel = panel;
+    _trackPickerSinglePanel = singlePanel;
     _osdHideTimer?.cancel();
     _osdVisibleNotifier.value = false;
     _trackPickerOpenNotifier.value = true;
+  }
+
+  // Most recently watched channels other than the current one, for the OSD's
+  // "Channels" section (SettingsService keeps the MRU list).
+  List<OsdChannelShortcut> _recentChannelShortcuts() {
+    final currentId = (_channelIndex >= 0 && _channelIndex < _channels.length) ? _channels[_channelIndex].id : null;
+    return [
+      for (final id in _settings.recentChannelIds)
+        if (id != currentId)
+          for (final c in _channels.where((c) => c.id == id))
+            OsdChannelShortcut(id: c.id, number: c.number, name: c.name, artUrl: c.guideArtUrl),
+    ];
   }
 
   void _openEpgFromOsd() {
@@ -1427,8 +1460,17 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
         // navigations) move focus across the OSD controls, Select activates
         // the focused one and Back hides the OSD. Every key press restarts
         // the auto-hide countdown.
+        final key = event.logicalKey;
+        final isArrow = key == LogicalKeyboardKey.arrowUp ||
+            key == LogicalKeyboardKey.arrowDown ||
+            key == LogicalKeyboardKey.arrowLeft ||
+            key == LogicalKeyboardKey.arrowRight;
+        // Select opened the OSD and an arrow follows: enter focus mode (the
+        // arrow itself is applied below as the first focus move).
+        if (_osdVisibleNotifier.value && _osdArmed && !_osdFocusNotifier.value && isArrow) {
+          _osdFocusNotifier.value = true;
+        }
         if (_osdVisibleNotifier.value && _osdFocusNotifier.value) {
-          final key = event.logicalKey;
           if (key == LogicalKeyboardKey.arrowLeft) {
             _osdKey.currentState?.move(-1, 0);
           } else if (key == LogicalKeyboardKey.arrowRight) {
@@ -1456,10 +1498,15 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
           case InputAction.channelPrevious:
             _switchChannel(-1);
           case InputAction.select:
-            // OSD hidden or merely displayed (auto-show): Select shows it in
-            // focus mode so the user can reach its controls.
-            _showOsd();
-            _osdFocusNotifier.value = true;
+            // Two stages: with the OSD hidden, Select shows it (armed: an
+            // arrow next enters focus mode); with it already displayed and
+            // no arrow in between, Select opens the full EPG.
+            if (_osdVisibleNotifier.value) {
+              _openEpgFromOsd();
+            } else {
+              _showOsd();
+              _osdArmed = true;
+            }
           case InputAction.trackSelector:
             // Optional accelerator (no default binding): opens the picker
             // directly. The 6-button path is the OSD's CC/audio buttons.
@@ -1474,6 +1521,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
             _debugOverlayVisibleNotifier.value = !_debugOverlayVisibleNotifier.value;
           case InputAction.home:
           case InputAction.back:
+            if (action == InputAction.back && _osdVisibleNotifier.value && _osdArmed) {
+              _osdHideTimer?.cancel();
+              _osdVisibleNotifier.value = false;
+              return;
+            }
             // With the EPG closed, `back` (Esc) has the same effect as `home`:
             // it goes back to the mosaic. There's no other "previous" screen
             // in the player to go back to — the only place you can arrive
@@ -1517,7 +1569,19 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
                 ],
               ),
             ),
-            if (!hasContent)
+            // Loading a channel (boot or switch): a spinner in the middle of the
+            // screen until playback starts. Errors keep the plain status card.
+            if (!hasContent && !_status.startsWith('ERROR'))
+              const Positioned.fill(
+                child: Center(
+                  child: SizedBox(
+                    width: 56,
+                    height: 56,
+                    child: CircularProgressIndicator(key: Key('loading-indicator'), color: Colors.white, strokeWidth: 4),
+                  ),
+                ),
+              ),
+            if (!hasContent && _status.startsWith('ERROR'))
               Positioned(
                 left: 16,
                 top: 16,
@@ -1563,9 +1627,17 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
                     endAt: channel[_currentIndex].startAt.add(channel[_currentIndex].clipDuration),
                     controller: _aIsActive ? _controllerA : _controllerB,
                     focusMode: _osdFocusNotifier,
-                    onOpenSubtitles: () => _openTrackPicker(TrackSelectorPanel.subtitle),
-                    onOpenAudio: () => _openTrackPicker(TrackSelectorPanel.audio),
-                    onOpenChannels: _openEpgFromOsd,
+                    onOpenSubtitles: () => _openTrackPicker(TrackSelectorPanel.subtitle, singlePanel: true),
+                    onOpenAudio: () => _openTrackPicker(TrackSelectorPanel.audio, singlePanel: true),
+                    recentChannels: _recentChannelShortcuts(),
+                    onSelectChannel: (channelId) {
+                      _osdHideTimer?.cancel();
+                      _osdVisibleNotifier.value = false;
+                      final targetIndex = _channels.indexWhere((c) => c.id == channelId);
+                      if (targetIndex >= 0 && targetIndex != _channelIndex) {
+                        unawaited(_switchToChannelIndex(targetIndex));
+                      }
+                    },
                   ),
                 ),
               ),
@@ -1699,6 +1771,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
                   child: TrackSelectorOverlay(
                     key: _trackSelectorKey,
                     initialPanel: _trackPickerInitialPanel,
+                    singlePanel: _trackPickerSinglePanel,
                     audioOptions: audioOptions,
                     subtitleOptions: subtitleOptions,
                     initialAudioFocusIndex: audioFocus,

@@ -17,6 +17,10 @@
 // already used for the EPG's column navigation) switch which panel is
 // active — there are only 2 panels, so both directions just toggle. Select
 // picks the focused option; Back closes without applying anything.
+//
+// `singlePanel` shows only `initialPanel` (the OSD's CC and audio buttons each
+// open their own picker); Left/Right then do nothing. The two-panel layout is
+// kept for the optional `trackSelector` accelerator.
 import 'package:flutter/material.dart';
 
 /// One selectable entry in a panel. `index` is the position in the SAME list
@@ -39,6 +43,7 @@ class TrackSelectorOverlay extends StatefulWidget {
   final int initialAudioFocusIndex;
   final int initialSubtitleFocusIndex;
   final TrackSelectorPanel initialPanel;
+  final bool singlePanel;
   final void Function(TrackSelectorPanel panel, TrackOption option) onSelect;
   final VoidCallback onClose;
 
@@ -49,6 +54,7 @@ class TrackSelectorOverlay extends StatefulWidget {
     this.initialAudioFocusIndex = 0,
     this.initialSubtitleFocusIndex = 0,
     this.initialPanel = TrackSelectorPanel.audio,
+    this.singlePanel = false,
     required this.onSelect,
     required this.onClose,
   }) : super(key: key);
@@ -99,6 +105,7 @@ class TrackSelectorOverlayState extends State<TrackSelectorOverlay> {
   /// the caller passed an empty subtitleOptions, which the parent never
   /// does).
   void switchPanel() {
+    if (widget.singlePanel) return;
     if (widget.audioOptions.isEmpty || widget.subtitleOptions.isEmpty) return;
     setState(() {
       _activePanel =
@@ -174,17 +181,21 @@ class TrackSelectorOverlayState extends State<TrackSelectorOverlay> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const Text(
-                    'Track selector',
-                    style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                  Text(
+                    widget.singlePanel
+                        ? (widget.initialPanel == TrackSelectorPanel.audio ? 'Audio' : 'Subtitles')
+                        : 'Track selector',
+                    style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 16),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      _buildPanel('Audio', TrackSelectorPanel.audio, widget.audioOptions, _focusedAudio),
-                      const SizedBox(width: 24),
-                      _buildPanel('Subtitle', TrackSelectorPanel.subtitle, widget.subtitleOptions, _focusedSubtitle),
+                      if (!widget.singlePanel || widget.initialPanel == TrackSelectorPanel.audio)
+                        _buildPanel('Audio', TrackSelectorPanel.audio, widget.audioOptions, _focusedAudio),
+                      if (!widget.singlePanel) const SizedBox(width: 24),
+                      if (!widget.singlePanel || widget.initialPanel == TrackSelectorPanel.subtitle)
+                        _buildPanel('Subtitle', TrackSelectorPanel.subtitle, widget.subtitleOptions, _focusedSubtitle),
                     ],
                   ),
                 ],

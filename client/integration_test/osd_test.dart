@@ -95,7 +95,7 @@ void main() {
       );
     }
 
-    testWidgets('OSD shows title, channel line, clock, end time, disabled transport controls and the audio/Channels buttons', (tester) async {
+    testWidgets('OSD shows title, channel line, clock, end time, disabled transport controls and the audio button', (tester) async {
       await bootAndHideOsd(tester);
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pump();
@@ -117,7 +117,8 @@ void main() {
       );
       expect(find.byKey(const Key('osd-btn-audio')), findsOneWidget);
       expect(find.byKey(const Key('osd-btn-captions')), findsNothing);
-      expect(find.byKey(const Key('osd-btn-channels')), findsOneWidget);
+      expect(find.byKey(const Key('osd-btn-channels')), findsNothing, reason: 'there is no Channels button anymore');
+      expect(find.byKey(const Key('osd-channels-title')), findsNothing, reason: 'no recent channels with a single channel');
     });
 
     testWidgets('in focus mode Up/Down move OSD focus instead of switching channel, and Back hides the OSD', (tester) async {
@@ -126,13 +127,17 @@ void main() {
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Enter did not show the OSD');
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown); // audio -> Channels
+      // The first arrow after Select enters focus mode instead of switching
+      // channel; later arrows only move focus.
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp); // back to audio
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
       await tester.pump();
       expect(tester.widget<Text>(find.byKey(const Key('osd-channel-number'))).data, '4',
           reason: 'arrow keys in focus mode must not switch channel (only one channel exists, so also check the OSD stayed)');
       expect(osdVisible(tester), isTrue);
+      expect(find.byKey(const Key('osd-btn-channels')), findsNothing, reason: 'there is no Channels button anymore');
+      expect(find.byKey(const Key('osd-channels-title')), findsNothing, reason: 'no recent channels with a single channel');
 
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pump();

@@ -143,17 +143,29 @@ or LLM, and to every artifact in the repo:
     the exception above, in which case verify the *non-accelerator*
     equivalent path is the one actually exercised in testing.
 - `select`'s default binding is `Enter` (not `I`). The channel OSD
-  (`lib/widgets/osd_overlay.dart`) has two states, read off
-  `_osdVisibleNotifier`/`_osdFocusNotifier`: merely *displayed* (auto-show at
-  channel start/switch — Up/Down still switch channel) and *focus mode*
-  (entered with `select`, whether the OSD was hidden or only displayed): the
-  raw arrows move focus across its controls (not remappable), `select`
-  activates the focused one — CC and audio open the track picker on their own
-  panel, "Channels" opens the EPG — and `back` hides the OSD. Controls with
-  no behavior yet are dimmed and skipped by focus. Focus mode ends whenever
-  the OSD hides. `back` (`Esc` by default) closes the EPG if open, and with
-  the OSD hidden goes to the mosaic. `InputAction.trackSelector` has no
-  default binding anymore (optional accelerator).
+  (`lib/widgets/osd_overlay.dart`) has three states, read off
+  `_osdVisibleNotifier`/`_osdArmed`/`_osdFocusNotifier`: merely *displayed*
+  (auto-show at channel start/switch — Up/Down still switch channel),
+  *armed* (opened by `select` with the OSD hidden) and *focus mode*. From
+  armed, the next raw arrow enters focus mode and is applied as the first
+  focus move, while a second `select` instead opens the full EPG. In focus
+  mode the raw arrows (not remappable) move focus across the CC/audio
+  buttons and the "Channels" section (recently watched channels, `Down`
+  reaches it), `select` activates the focused one — CC and audio each open
+  their own single-panel track picker, a channel card switches to it — and
+  `back` hides the OSD. Controls with no behavior yet are dimmed and skipped
+  by focus. Focus mode ends whenever the OSD hides. `back` (`Esc` by
+  default) closes the EPG if open, hides an armed OSD, and otherwise goes to
+  the mosaic. `InputAction.trackSelector` has no default binding anymore
+  (optional accelerator; opens the two-panel picker).
+- While a channel loads (boot or switch) the player shows a centered spinner
+  instead of a status card; errors keep the plain status card. Each
+  `VideoPlayerController` gets mdk's `buffer` property
+  (`playbackBufferMinMs`+`playbackBufferMaxMs` in `main.dart`): playback
+  waits for the min and the demuxer reads ahead up to the max, to ride out
+  bursty latency from network-backed libraries. A min above the remaining
+  length of the 8s integration-test clips stalls their channel load — keep
+  it small.
 - The full-screen EPG (`lib/widgets/epg_overlay.dart`) is a `Stack` overlay
   inside the player's own `build()`, gated by `_epgOpenNotifier` — never a
   separate route. This is what lets the active channel's video thumbnail
