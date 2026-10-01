@@ -114,7 +114,13 @@ class ChannelEntry {
   final String id;
   final String label;
   final Duration clipDuration; // item duration in the schedule (epg_entry end_at - start_at)
-  const ChannelEntry(this.id, this.label, this.clipDuration);
+  // The EPG's real, wall-clock scheduled start (epg_entry.start_at) — see
+  // issue #9. `clipDuration` alone only says how long to play the item once
+  // started; `startAt` is what lets _crossfadeTo tell an interior schedule
+  // gap (startAt still in the future when the previous item ends) from the
+  // client simply running behind (startAt already in the past).
+  final DateTime startAt;
+  const ChannelEntry(this.id, this.label, this.clipDuration, this.startAt);
 }
 
 // Populated at runtime by _loadAndPlayChannel from the GET /epg materialized
@@ -133,6 +139,19 @@ const preloadLead = Duration(seconds: 2);
 // descriptors (reproduced 2026-09-30 — see AGENTS.md). This never changes
 // normal playback: every real clip duration is comfortably above it.
 const minTransitionInterval = Duration(seconds: 5);
+
+// How far `now` may drift from a ChannelEntry's real `startAt` (either way)
+// before _crossfadeTo treats it as something to correct, rather than normal
+// jitter (network latency, the ~30-step crossfade ramp itself, preload
+// timing slop). Below this, items keep playing back to back exactly as
+// before issue #9.
+const epgSyncTolerance = Duration(seconds: 2);
+
+// Looping local slate shown while holding for an interior EPG gap (see
+// _holdForGap) — a schedule hole wide enough that honoring the next item's
+// real startAt means waiting, not starting it early. See
+// assets/slate/NOTICE.md for the asset's attribution.
+const slateAssetPath = 'assets/slate/gap_slate.mp4';
 
 // Video thumbnail inside the EPG — the same instance of
 // _controllerA/_controllerB, just repositioned/resized into a corner (see
@@ -299,6 +318,19 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   // gap, not just the end of the fetched window) — repeats the fetch until
   // something turns up in that gap and playback resumes on its own.
   Timer? _gapRetryTimer;
+  // Only exists while holding on the slate for a KNOWN interior schedule gap
+  // (the next item is already materialized, just not due yet — see
+  // _holdForGap). Distinct from _gapRetryTimer above, which is for when
+  // nothing at all is materialized yet.
+  Timer? _gapHoldTimer;
+  // The real next item's controller, preloaded and waiting out a gap hold,
+  // between _holdForGap's first crossfade (into the slate) and its second
+  // one (_gapHoldTimer firing). Deliberately NOT in _controllerA/_controllerB
+  // during that window (the slate occupies the only free slot) — so a
+  // channel switch's generic staleA/staleB teardown can't reach it. Tracked
+  // here instead purely so that teardown can dispose it too; cleared as soon
+  // as the second crossfade picks it back up.
+  VideoPlayerController? _gapHoldPending;
 
   late final PlayheadApi _api;
   List<PlayheadChannel> _channels = [];
@@ -428,6 +460,15 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     _osdHideTimer = null;
     _gapRetryTimer?.cancel();
     _gapRetryTimer = null;
+    _gapHoldTimer?.cancel();
+    _gapHoldTimer = null;
+    // See _gapHoldPending's doc comment: a gap hold in progress parks the
+    // real next item's controller outside _controllerA/_controllerB, so
+    // cancelling the timer above would otherwise leak it.
+    if (_gapHoldPending != null) {
+      unawaited(serializeGlOp(() => _gapHoldPending!.dispose()));
+      _gapHoldPending = null;
+    }
     _pendingExtend = null;
     _channelInputCommitTimer?.cancel();
     _channelInputCommitTimer = null;
@@ -539,6 +580,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
             catalogItems[i].externalId,
             catalogItems[i].title,
             upcoming[i].endAt.difference(upcoming[i].startAt),
+            upcoming[i].startAt,
           ),
       ];
 
@@ -779,17 +821,64 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       return;
     }
 
-    setState(() => _status = 'CROSSFADE -> ${nextEntry.label}');
-    await incoming.play();
+    // Honor the EPG clock (issue #9) instead of always playing back to back:
+    // compare the next item's real, materialized startAt with wall-clock now.
+    final gap = nextEntry.startAt.difference(DateTime.now().toUtc());
+    if (gap > epgSyncTolerance) {
+      // Interior schedule gap — hold on the slate instead of starting
+      // `incoming` early and running ahead of the EPG clock for the rest of
+      // the session.
+      await _holdForGap(nextIndex: nextIndex, outgoing: outgoing, pending: incoming, gap: gap, generation: generation);
+      return;
+    }
+    if (gap < -epgSyncTolerance) {
+      // Running behind the EPG clock (e.g. a slow preload) — resync by
+      // seeking into the item instead of starting it from zero, which would
+      // only let the drift accumulate further on every following item.
+      var seek = -gap;
+      if (seek > nextEntry.clipDuration) seek = nextEntry.clipDuration;
+      await incoming.seekTo(seek);
+      if (generation != _loadGeneration) return;
+    }
 
-    // Manual crossfade of video (opacity) + audio (volume, 0.0-1.0) in parallel, ~30 steps.
+    setState(() => _status = 'CROSSFADE -> ${nextEntry.label}');
+    await _rampCrossfade(outgoing: outgoing, incoming: incoming, generation: generation);
+    if (generation != _loadGeneration) return;
+    if (!mounted) return;
+    setState(() {
+      _currentIndex = nextIndex;
+      _status = 'playing: ${nextEntry.label}';
+    });
+    _showOsd();
+    _scheduleTransitions(nextIndex, generation: generation);
+    unawaited(_maybeExtendGrid(nextIndex, generation));
+  }
+
+  // Manual crossfade of video (opacity) + audio (volume, 0.0-1.0) between
+  // `outgoing` (disposed once fully faded out) and `incoming` (already
+  // sitting in whichever of _controllerA/_controllerB is NOT currently
+  // active, per the same convention _preloadNext uses), in ~30 steps over
+  // crossfadeDuration. Swaps _aIsActive once done. Shared by the normal
+  // item-to-item crossfade in _crossfadeTo and both legs of a gap hold
+  // (_holdForGap) — same ramp, different "what did we just fade into".
+  // Doesn't touch _currentIndex/_status/scheduling: what "arriving" means
+  // differs between a real item and the gap slate, so the caller handles
+  // that itself once this completes.
+  Future<void> _rampCrossfade({
+    required VideoPlayerController? outgoing,
+    required VideoPlayerController incoming,
+    required int generation,
+  }) async {
+    await incoming.play();
     const steps = 30;
     final stepDuration = crossfadeDuration ~/ steps;
+    final completer = Completer<void>();
     _volumeRampTimer?.cancel();
     var step = 0;
     _volumeRampTimer = Timer.periodic(stepDuration, (t) async {
       if (generation != _loadGeneration) {
         t.cancel();
+        if (!completer.isCompleted) completer.complete();
         return;
       }
       step++;
@@ -815,15 +904,90 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
           _controllerB = null;
         }
         _aIsActive = !_aIsActive;
-        if (!mounted) return;
-        setState(() {
-          _currentIndex = nextIndex;
-          _status = 'playing: ${nextEntry.label}';
-        });
-        _showOsd();
-        _scheduleTransitions(nextIndex, generation: generation);
-        unawaited(_maybeExtendGrid(nextIndex, generation));
+        if (!completer.isCompleted) completer.complete();
       }
+    });
+    return completer.future;
+  }
+
+  Future<VideoPlayerController> _createSlateController() async {
+    final controller = VideoPlayerController.asset(slateAssetPath);
+    await serializeGlOp(() => controller.initialize());
+    await controller.setLooping(true);
+    return controller;
+  }
+
+  // Interior EPG gap (issue #9): `outgoing` (the item that just finished)
+  // crossfades into a looping local slate instead of straight into `pending`
+  // (the real next item, already preloaded by the normal preload timer —
+  // which fires a fixed `preloadLead` before the CURRENT item ends,
+  // independent of the next one's real startAt, so it's always ready here
+  // even though it won't be shown yet). Once `gap` elapses, a second
+  // crossfade brings `pending` on screen and resumes the normal
+  // schedule/preload/extend machinery from `nextIndex`, as if there had been
+  // no gap at all.
+  //
+  // Known trade-off, not addressed here: `pending`'s own network connection
+  // to Jellyfin stays open and idle for the whole hold, however long the gap
+  // is — fine for the gap widths seen in practice (materializer tail
+  // padding/dynamic pool misses, see issue #6), but a very long schedule
+  // hole could in principle let the connection stall or time out server-side
+  // before playback resumes. Revisit (defer `pending`'s creation until near
+  // the end of the hold) if that turns out to matter.
+  Future<void> _holdForGap({
+    required int nextIndex,
+    required VideoPlayerController? outgoing,
+    required VideoPlayerController pending,
+    required Duration gap,
+    required int generation,
+  }) async {
+    final slate = await _createSlateController();
+    if (generation != _loadGeneration) {
+      unawaited(serializeGlOp(() => slate.dispose()));
+      return;
+    }
+    setState(() {
+      if (_aIsActive) {
+        _controllerB = slate;
+      } else {
+        _controllerA = slate;
+      }
+      _status = 'HOLD — next program starts shortly';
+    });
+    await _rampCrossfade(outgoing: outgoing, incoming: slate, generation: generation);
+    if (generation != _loadGeneration) {
+      unawaited(serializeGlOp(() => pending.dispose()));
+      return;
+    }
+
+    _gapHoldTimer?.cancel();
+    _gapHoldPending = pending;
+    _gapHoldTimer = Timer(gap, () async {
+      _gapHoldPending = null;
+      if (generation != _loadGeneration) {
+        unawaited(serializeGlOp(() => pending.dispose()));
+        return;
+      }
+      final nextEntry = channel[nextIndex];
+      final slateOutgoing = _aIsActive ? _controllerA : _controllerB;
+      setState(() {
+        if (_aIsActive) {
+          _controllerB = pending;
+        } else {
+          _controllerA = pending;
+        }
+        _status = 'CROSSFADE -> ${nextEntry.label}';
+      });
+      await _rampCrossfade(outgoing: slateOutgoing, incoming: pending, generation: generation);
+      if (generation != _loadGeneration) return;
+      if (!mounted) return;
+      setState(() {
+        _currentIndex = nextIndex;
+        _status = 'playing: ${nextEntry.label}';
+      });
+      _showOsd();
+      _scheduleTransitions(nextIndex, generation: generation);
+      unawaited(_maybeExtendGrid(nextIndex, generation));
     });
   }
 
@@ -923,6 +1087,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
             catalogItems[i].externalId,
             catalogItems[i].title,
             fresh[i].endAt.difference(fresh[i].startAt),
+            fresh[i].startAt,
           ),
       ];
       var newLoadedUntil = cursor;
@@ -1087,6 +1252,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     _debugOverlayVisibleNotifier.dispose();
     _trackPickerOpenNotifier.dispose();
     _gapRetryTimer?.cancel();
+    _gapHoldTimer?.cancel();
     _channelInputCommitTimer?.cancel();
     if (_streamPrefsReady) _streamPrefs.dispose();
     // State.dispose() itself can't await, but still routes through the
@@ -1094,8 +1260,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     // still-in-flight generation) might be doing at the same moment.
     final finalA = _controllerA;
     final finalB = _controllerB;
+    final finalPending = _gapHoldPending;
     if (finalA != null) unawaited(serializeGlOp(() => finalA.dispose()));
     if (finalB != null) unawaited(serializeGlOp(() => finalB.dispose()));
+    if (finalPending != null) unawaited(serializeGlOp(() => finalPending.dispose()));
     _focusNode.dispose();
     super.dispose();
   }

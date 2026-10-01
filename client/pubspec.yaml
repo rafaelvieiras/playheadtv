@@ -75,6 +75,11 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
+  # Looping slate shown while holding for an interior EPG gap (issue #9) — see
+  # the attribution in assets/slate/NOTICE.md.
+  assets:
+    - assets/slate/gap_slate.mp4
+
   # To add assets to your application, add an assets section, like this:
   # assets:
   #   - images/a_dot_burr.jpeg

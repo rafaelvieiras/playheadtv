@@ -186,25 +186,41 @@ class BackendFixture {
   }
 
   /// Creates a Schedule + a single `once` ScheduleItem inside it, then
-  /// assigns it to the channel (issue #7's Schedule/Playout split:
-  /// schedule_entry became Schedule + ScheduleItem, decoupled from Channel —
-  /// see `docs/ARCHITECTURE.md`). `PUT /channels/{id}` is a full replace
-  /// (channels.go), so the channel's current fields are fetched first —
-  /// otherwise this would wipe out its number/name/timezone.
+  /// assigns it to the channel. A thin wrapper over createScheduleWithItems
+  /// below for the common single-occurrence case most suites need.
   Future<void> createScheduleOnce({
     required String channelId,
     required String blockId,
     required DateTime startAt,
+  }) =>
+      createScheduleWithItems(channelId: channelId, items: [(blockId: blockId, startAt: startAt)]);
+
+  /// Creates a Schedule with one or more `once` ScheduleItems (each its own
+  /// block + explicit start_at), then assigns it to the channel (issue #7's
+  /// Schedule/Playout split: schedule_entry became Schedule + ScheduleItem,
+  /// decoupled from Channel — see `docs/ARCHITECTURE.md`). `PUT /channels/{id}`
+  /// is a full replace (channels.go), so the channel's current fields are
+  /// fetched first — otherwise this would wipe out its number/name/timezone.
+  ///
+  /// Several items with a start_at gap between one's nominal content end and
+  /// the next one's start_at materialize a real interior EPG gap (no filler
+  /// rule configured by these tests to fill it) — see epg_gap_test.dart
+  /// (issue #9).
+  Future<void> createScheduleWithItems({
+    required String channelId,
+    required List<({String blockId, DateTime startAt})> items,
   }) async {
     final scheduleResp = await _postJson('/schedules', {
       'name': 'Schedule ${DateTime.now().microsecondsSinceEpoch}',
     });
     final scheduleId = scheduleResp['id'] as String;
-    await _postJson('/schedules/$scheduleId/items', {
-      'block_id': blockId,
-      'recurrence_type': 'once',
-      'start_at': startAt.toUtc().millisecondsSinceEpoch,
-    });
+    for (final item in items) {
+      await _postJson('/schedules/$scheduleId/items', {
+        'block_id': item.blockId,
+        'recurrence_type': 'once',
+        'start_at': item.startAt.toUtc().millisecondsSinceEpoch,
+      });
+    }
     final ch = await _getJson('/channels/$channelId') as Map<String, dynamic>;
     await _putJson('/channels/$channelId', {
       'number': ch['number'],
