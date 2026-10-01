@@ -26,6 +26,7 @@ import 'package:fvp/fvp.dart'; // extension setSubtitleTracks on VideoPlayerCont
 import '../main.dart';
 import '../playhead_api.dart';
 import '../services/settings_service.dart';
+import '../util/gl_serial.dart';
 import 'settings_page.dart';
 
 class _MosaicTile {
@@ -175,9 +176,9 @@ class _MosaicPageState extends State<MosaicPage> {
       if (!mounted) return;
 
       final controller = VideoPlayerController.networkUrl(Uri.parse(streamUrl(catalogItem.externalId)));
-      await controller.initialize();
+      await serializeGlOp(() => controller.initialize());
       if (!mounted) {
-        controller.dispose();
+        unawaited(serializeGlOp(() => controller.dispose()));
         return;
       }
 
@@ -192,7 +193,7 @@ class _MosaicPageState extends State<MosaicPage> {
       await controller.play();
 
       if (!mounted) {
-        controller.dispose();
+        unawaited(serializeGlOp(() => controller.dispose()));
         return;
       }
       setState(() => _previewController = controller);
@@ -250,7 +251,12 @@ class _MosaicPageState extends State<MosaicPage> {
     final preview = _previewController;
     _previewController = null;
     if (preview != null) {
-      await preview.dispose();
+      // Routed through serializeGlOp (see its doc comment): this await
+      // alone isn't enough once the channel player's own controllers start
+      // being created through the same shared queue — it guarantees this
+      // dispose is strictly ordered relative to them, not just relative to
+      // this function's own subsequent code.
+      await serializeGlOp(() => preview.dispose());
     }
     if (!mounted) return;
     Navigator.of(context)
@@ -274,7 +280,8 @@ class _MosaicPageState extends State<MosaicPage> {
 
   @override
   void dispose() {
-    _previewController?.dispose();
+    final preview = _previewController;
+    if (preview != null) unawaited(serializeGlOp(() => preview.dispose()));
     for (final node in _focusNodes) {
       node.dispose();
     }

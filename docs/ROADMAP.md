@@ -854,6 +854,47 @@ actionable checklist.
       this validation, including once against unmodified `main` — confirmed
       pre-existing, not chased.
 
+- [x] Fixed a real segfault reported from a release build
+      (`./build/linux/x64/release/bundle/client`), reproduced by switching
+      channels in quick succession: `fvp`/libmdk creates GL resources
+      (fbo/tex) on its own raster thread during `initialize()` and frees them
+      on a separate dispose thread during `dispose()`, with no
+      synchronization between the two — and those threads are process-global,
+      shared by every `VideoPlayerController` instance in the app (the
+      channel player's crossfade pair AND the mosaic page's own, separate
+      preview controller), not one pair per controller. A fast channel switch
+      left a stale controller's fire-and-forget `dispose()` (from a
+      `_loadGeneration`-aborted path) able to overlap with a different,
+      already-in-flight generation's `initialize()`, reusing the same GL
+      object id mid-teardown. Fix: `client/lib/util/gl_serial.dart`'s
+      `serializeGlOp` — a single shared FIFO chain every `initialize()`/
+      `dispose()` call in `main.dart` and `mosaic_page.dart` now goes through,
+      so the native GL work is strictly ordered regardless of which unrelated
+      Future chain (a channel-switch generation, the mosaic preview, ...)
+      enqueued it (see `AGENTS.md`'s gotchas).
+      Alongside it, added channel-switch coalescing
+      (`_channelLoadInFlight`/`_pendingChannelSwitchTarget` in
+      `_switchToChannelIndex`): mashing next/prev used to fire one real
+      network-fetch-plus-controller-create per keypress, each discarded by
+      the next press — wasteful, and the exact scenario that made the race
+      above easy to hit. Deliberately adaptive instead of a fixed debounce
+      timer (decided with the user: a single, isolated press must stay
+      perceptually instant, as before) — a press loads for real immediately
+      unless a previous press's load is still in flight, in which case it
+      only updates the pending target/visual index; the in-flight load's own
+      generation check aborts almost immediately and the pending target loads
+      right after.
+      While validating this against the real `integration_test` suite (per
+      `AGENTS.md`'s operational practices), found and fixed a pre-existing,
+      unrelated gap left over from issue #7's Schedule/Playout split:
+      `client/integration_test/support/backend_fixture.dart` and
+      `client/test/playhead_api_test.dart` still posted to the removed
+      `/schedule-entries` endpoint — updated both to create a `Schedule` +
+      `ScheduleItem` and assign it via `PUT /channels/{id}` (a full replace,
+      so the channel's other fields are preserved explicitly). All 6
+      `integration_test/*.dart` files and `test/playhead_api_test.dart` pass
+      after both fixes.
+
 ## Phase 6 — Platforms
 
 - [ ] Android / Android TV client build.

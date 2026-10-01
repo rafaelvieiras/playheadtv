@@ -285,3 +285,35 @@ or LLM, and to every artifact in the repo:
   `track_selector_persistence_test.dart`, split for exactly this reason);
   don't chase this as an application bug, and don't grow one file's real-boot
   count without budgeting for it.
+- The same GL-texture class above escalated to a real segfault (reproduced
+  2026-09-30, switching channels in quick succession): `fvp`/libmdk creates
+  GL resources (fbo/tex) on its own raster thread during `initialize()` and
+  frees them on a separate dispose thread during `dispose()`, with no
+  synchronization between the two, and those threads are process-global —
+  shared by every `VideoPlayerController` instance, not one pair per
+  controller. A fast enough channel switch lets a stale controller's
+  `dispose()` (fire-and-forget, since the aborting `_loadGeneration` check
+  doesn't block on it) overlap with a different, already-in-flight
+  generation's `initialize()` for its own controller, reusing the same GL
+  object id mid-teardown. The fix: `client/lib/util/gl_serial.dart`'s
+  `serializeGlOp` — every `initialize()`/`dispose()` call in `main.dart`
+  AND `mosaic_page.dart` (its own, separate preview controller hits the same
+  process-global threads) is routed through one shared FIFO chain, so the
+  native GL work never overlaps regardless of which unrelated Future chain
+  enqueued it. Any NEW call site that creates or disposes a
+  `VideoPlayerController` must go through `serializeGlOp` too, or this comes
+  back.
+- Channel-switch coalescing (`_channelLoadInFlight`/
+  `_pendingChannelSwitchTarget` in `main.dart`'s `_switchToChannelIndex`):
+  mashing next/prev used to fire one real `_loadAndPlayChannel` (network +
+  controller create) per keypress, each one immediately discarded by the
+  next press's `_loadGeneration` bump — wasteful, and the scenario that made
+  the GL-serialization race above easy to hit. Deliberately NOT a fixed
+  debounce timer (that would add latency to the common single, isolated
+  press): a press is loaded for real immediately unless a previous press's
+  load is still in flight, in which case it only updates the pending target
+  and the visual channel index — the in-flight load's own generation check
+  aborts it almost immediately, and the pending target loads right after.
+  Adapts to real network/controller-creation latency with no magic number to
+  tune; don't replace it with a timer-based debounce without re-confirming
+  that trade-off.

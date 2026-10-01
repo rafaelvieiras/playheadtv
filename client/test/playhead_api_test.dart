@@ -101,6 +101,19 @@ void main() {
     return jsonDecode(resp.body) as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> putJson(String path, Map<String, dynamic> body, {String? token}) async {
+    final resp = await httpClient.put(
+      Uri.parse('$baseUrl$path'),
+      headers: {
+        'Content-Type': 'application/json',
+        if (token != null) 'Authorization': 'Bearer $token',
+      },
+      body: jsonEncode(body),
+    );
+    expect(resp.statusCode, 200, reason: 'PUT $path -> ${resp.statusCode}: ${resp.body}');
+    return jsonDecode(resp.body) as Map<String, dynamic>;
+  }
+
   test('PlayheadApi reads real channels/epg/catalog-items from the backend', () async {
     // --- bootstrap: create the tenant's single app_user and log in to get a session token ---
     await postJson('/app-users', {'email': 'e2e-test@example.com', 'password': 'test-password-123'});
@@ -149,16 +162,28 @@ void main() {
 
     // Started 10s ago: item A (20s) is still "on air" — a real scenario that
     // main.dart has to handle (seek into the middle of the first item).
+    //
+    // Issue #7's Schedule/Playout split: schedule_entry became Schedule +
+    // ScheduleItem, decoupled from Channel (see docs/ARCHITECTURE.md) — a
+    // Schedule is created, a ScheduleItem added to it, then assigned to the
+    // channel via PUT /channels/{id}, which is a full replace (channels.go),
+    // hence repeating the number/name/timezone already used above.
     final now = DateTime.now().toUtc();
     final startAt = now.subtract(const Duration(seconds: 10));
+    final scheduleResp = await postJson('/schedules', {'name': 'Test Schedule'}, token: sessionToken);
+    final scheduleId = scheduleResp['id'] as String;
     await postJson(
-      '/schedule-entries',
+      '/schedules/$scheduleId/items',
       {
-        'channel_id': channelId,
         'block_id': blockId,
         'recurrence_type': 'once',
         'start_at': startAt.millisecondsSinceEpoch,
       },
+      token: sessionToken,
+    );
+    await putJson(
+      '/channels/$channelId',
+      {'number': 1, 'name': 'Test Channel', 'timezone': 'UTC', 'schedule_id': scheduleId},
       token: sessionToken,
     );
 

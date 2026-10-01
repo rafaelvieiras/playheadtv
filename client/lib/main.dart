@@ -31,6 +31,7 @@ import 'services/stream_preferences_service.dart';
 import 'services/stream_selection_resolver.dart';
 import 'input/input_action.dart';
 import 'pages/mosaic_page.dart';
+import 'util/gl_serial.dart';
 import 'widgets/epg_overlay.dart';
 import 'widgets/debug_overlay.dart';
 import 'widgets/track_selector_overlay.dart';
@@ -298,6 +299,13 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   // that already left the scene — abort instead of applying the result on top
   // of the new channel's state.
   int _loadGeneration = 0;
+  // Whether _loadAndPlayChannel is currently doing real work (network fetch
+  // + controller create) for the current generation. See _switchToChannelIndex.
+  bool _channelLoadInFlight = false;
+  // The most recent target a channel switch asked for while a real load was
+  // already in flight — resolved by _runChannelLoad right after that load
+  // finishes (or self-aborts via _loadGeneration). See _switchToChannelIndex.
+  int? _pendingChannelSwitchTarget;
 
   // Direct jump by number: digits accumulated while the user types a channel
   // number. While non-null/non-empty, the "Channel: NN_" overlay appears in
@@ -413,8 +421,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     _pendingExtend = null;
     _channelInputCommitTimer?.cancel();
     _channelInputCommitTimer = null;
-    _controllerA?.dispose();
-    _controllerB?.dispose();
+    // Fire-and-forget, but routed through serializeGlOp (see its doc
+    // comment): this generation's own execution doesn't stop here to wait
+    // for the native teardown, and _loadAndPlayChannel below can create a
+    // brand new controller before it's done — without the shared queue,
+    // that create() could run on fvp/libmdk's raster thread while this
+    // dispose() is still freeing GL resources on its dispose thread.
+    final staleA = _controllerA;
+    final staleB = _controllerB;
+    if (staleA != null) unawaited(serializeGlOp(() => staleA.dispose()));
+    if (staleB != null) unawaited(serializeGlOp(() => staleB.dispose()));
     _osdVisibleNotifier.value = false;
     setState(() {
       _channelIndex = targetIndex;
@@ -429,7 +445,40 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       _channelInputBuffer = null;
       _status = 'switching channel…';
     });
+
+    if (_channelLoadInFlight) {
+      // A previous switch's real load (network + controller create) hasn't
+      // finished yet — starting a second one now is exactly the
+      // rapid-succession case that wastes a full GET /epg + controller
+      // create per keypress (immediately discarded by the next press's own
+      // generation bump) and made the GL-serialization race easy to hit in
+      // the first place (see gl_serial.dart). The visual state above
+      // already updated instantly regardless — only the real load is
+      // deferred, to whichever target the user last asked for once the
+      // in-flight one finishes or self-aborts.
+      _pendingChannelSwitchTarget = targetIndex;
+      return;
+    }
+    await _runChannelLoad(target, generation);
+  }
+
+  // Runs the real (network + controller) load for a channel switch, then
+  // immediately re-dispatches to the last target requested while it was
+  // running, if any — see the `_channelLoadInFlight` branch above. No
+  // `await` sits between clearing `_channelLoadInFlight` and reading/
+  // clearing `_pendingChannelSwitchTarget`, so a press that arrives in that
+  // gap can only ever be the one this function itself is about to act on
+  // (Dart's single-threaded event loop doesn't interleave in the middle of
+  // synchronous code) — nothing gets lost or double-fired.
+  Future<void> _runChannelLoad(PlayheadChannel target, int generation) async {
+    _channelLoadInFlight = true;
     await _loadAndPlayChannel(target, generation: generation);
+    _channelLoadInFlight = false;
+    final pending = _pendingChannelSwitchTarget;
+    _pendingChannelSwitchTarget = null;
+    if (pending != null) {
+      unawaited(_switchToChannelIndex(pending));
+    }
   }
 
   // Fetches the materialized schedule (GET /epg) in an epgWindow-sized window
@@ -505,7 +554,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
 
   Future<VideoPlayerController> _createController(ChannelEntry entry, {Duration? seekTo}) async {
     final controller = VideoPlayerController.networkUrl(Uri.parse(streamUrl(entry.id)));
-    await controller.initialize();
+    await serializeGlOp(() => controller.initialize());
     if (seekTo != null && seekTo > Duration.zero) {
       // Only the first item of the schedule (the "TV turned on" in the middle
       // of a program) uses this — preload/crossfade of the following items
@@ -586,7 +635,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     final controller = await _createController(entry, seekTo: initialSeek);
     if (generation != _loadGeneration) {
       // Switched channel again while the controller was initializing/seeking.
-      controller.dispose();
+      // See serializeGlOp's doc comment for why this fire-and-forget dispose
+      // still has to go through the shared queue.
+      unawaited(serializeGlOp(() => controller.dispose()));
       return;
     }
     await controller.setVolume(1);
@@ -633,18 +684,21 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     final controller = await _createController(nextEntry);
     await controller.setVolume(0);
     if (!mounted || generation != _loadGeneration) {
-      controller.dispose();
+      unawaited(serializeGlOp(() => controller.dispose()));
       return;
     }
+    // Captured before setState so the old controller's dispose (fire-and
+    // forget) is routed through serializeGlOp instead of racing this
+    // function's own already-created controller.
+    final replaced = _aIsActive ? _controllerB : _controllerA;
     setState(() {
       if (_aIsActive) {
-        _controllerB?.dispose();
         _controllerB = controller;
       } else {
-        _controllerA?.dispose();
         _controllerA = controller;
       }
     });
+    if (replaced != null) unawaited(serializeGlOp(() => replaced.dispose()));
   }
 
   Future<void> _crossfadeTo(int nextIndex, int generation) async {
@@ -724,7 +778,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       if (step >= steps) {
         t.cancel();
         await outgoing?.pause();
-        await outgoing?.dispose();
+        if (outgoing != null) await serializeGlOp(() => outgoing.dispose());
         if (_aIsActive) {
           _controllerA = null;
         } else {
@@ -753,14 +807,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     final entry = channel[index];
     final controller = await _createController(entry);
     if (generation != _loadGeneration) {
-      controller.dispose();
+      unawaited(serializeGlOp(() => controller.dispose()));
       return;
     }
     await controller.setVolume(1);
     await controller.play();
     if (!mounted) return;
-    _controllerA?.dispose();
-    _controllerB?.dispose();
+    final staleA = _controllerA;
+    final staleB = _controllerB;
+    if (staleA != null) unawaited(serializeGlOp(() => staleA.dispose()));
+    if (staleB != null) unawaited(serializeGlOp(() => staleB.dispose()));
     setState(() {
       _controllerA = controller;
       _controllerB = null;
@@ -1001,8 +1057,13 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     _gapRetryTimer?.cancel();
     _channelInputCommitTimer?.cancel();
     if (_streamPrefsReady) _streamPrefs.dispose();
-    _controllerA?.dispose();
-    _controllerB?.dispose();
+    // State.dispose() itself can't await, but still routes through the
+    // shared queue so this doesn't race a create() the mosaic page (or a
+    // still-in-flight generation) might be doing at the same moment.
+    final finalA = _controllerA;
+    final finalB = _controllerB;
+    if (finalA != null) unawaited(serializeGlOp(() => finalA.dispose()));
+    if (finalB != null) unawaited(serializeGlOp(() => finalB.dispose()));
     _focusNode.dispose();
     super.dispose();
   }

@@ -135,6 +135,21 @@ class BackendFixture {
     return jsonDecode(resp.body);
   }
 
+  Future<Map<String, dynamic>> _putJson(String path, Map<String, dynamic> body) async {
+    final resp = await _client.put(
+      Uri.parse('$_baseUrl$path'),
+      headers: {
+        'Content-Type': 'application/json',
+        if (_sessionToken != null) 'Authorization': 'Bearer $_sessionToken',
+      },
+      body: jsonEncode(body),
+    );
+    if (resp.statusCode != 200) {
+      throw StateError('PUT $path -> ${resp.statusCode}: ${resp.body}');
+    }
+    return jsonDecode(resp.body) as Map<String, dynamic>;
+  }
+
   Future<String> createChannel({required int number, required String name}) async {
     final resp = await _postJson('/channels', {'number': number, 'name': name, 'timezone': 'UTC'});
     return resp['id'] as String;
@@ -170,16 +185,33 @@ class BackendFixture {
     return blockId;
   }
 
+  /// Creates a Schedule + a single `once` ScheduleItem inside it, then
+  /// assigns it to the channel (issue #7's Schedule/Playout split:
+  /// schedule_entry became Schedule + ScheduleItem, decoupled from Channel —
+  /// see `docs/ARCHITECTURE.md`). `PUT /channels/{id}` is a full replace
+  /// (channels.go), so the channel's current fields are fetched first —
+  /// otherwise this would wipe out its number/name/timezone.
   Future<void> createScheduleOnce({
     required String channelId,
     required String blockId,
     required DateTime startAt,
   }) async {
-    await _postJson('/schedule-entries', {
-      'channel_id': channelId,
+    final scheduleResp = await _postJson('/schedules', {
+      'name': 'Schedule ${DateTime.now().microsecondsSinceEpoch}',
+    });
+    final scheduleId = scheduleResp['id'] as String;
+    await _postJson('/schedules/$scheduleId/items', {
       'block_id': blockId,
       'recurrence_type': 'once',
       'start_at': startAt.toUtc().millisecondsSinceEpoch,
+    });
+    final ch = await _getJson('/channels/$channelId') as Map<String, dynamic>;
+    await _putJson('/channels/$channelId', {
+      'number': ch['number'],
+      'name': ch['name'],
+      'guide_art_url': ch['guide_art_url'],
+      'timezone': ch['timezone'],
+      'schedule_id': scheduleId,
     });
   }
 
