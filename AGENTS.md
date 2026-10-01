@@ -354,36 +354,25 @@ or LLM, and to every artifact in the repo:
   video server) that the normal lifecycle itself doesn't leak file
   descriptors — the leak only shows up when something schedules a genuinely
   broken-duration item.
-- Issue #9 (honor EPG start/end times instead of playing back to back):
-  `ChannelEntry` (`client/lib/main.dart`) now carries the item's real,
+- `ChannelEntry` (`client/lib/main.dart`) carries each item's real,
   materialized `startAt`, and `_crossfadeTo` compares it against wall-clock
-  `now` before starting the next item — `epgSyncTolerance` (2s) is the slop
-  budget before either branch below kicks in. Running behind (`now` already
-  past `startAt` by more than the tolerance, e.g. a slow preload) seeks into
-  the item instead of starting it from zero, the same way the "TV turned on
-  mid-program" boot case already did. An interior schedule gap (`startAt`
-  still more than the tolerance in the future — e.g. the materializer's tail
-  padding not fitting with no `fallback` rule configured, issue #6) holds on
-  a looping local slate (`_holdForGap`, asset at
-  `client/assets/slate/gap_slate.mp4` — attribution in
-  `client/assets/slate/NOTICE.md`) instead of running ahead of the EPG clock;
-  `_rampCrossfade` is the manual opacity/volume stepper factored out of the
-  original `_crossfadeTo` so both the real item-to-item crossfade and both
-  legs of a gap hold (outgoing→slate, slate→pending) share the exact same
-  ramp. `pending` (the real next item, already preloaded by the normal fixed
-  `preloadLead`-before-current-item-ends timer, independent of the gap) sits
-  outside `_controllerA`/`_controllerB` for the whole hold — tracked in
-  `_gapHoldPending` purely so a channel switch's teardown (which only
-  disposes whatever is currently IN those two slots) can still find and
-  dispose it; forgetting that field when touching this code leaks a real
-  controller. Known, accepted trade-off: `pending`'s network connection to
-  Jellyfin stays open and idle for however long the hold lasts — fine for
-  the gap widths seen in practice, revisit (defer its creation instead) only
-  if a very long schedule hole turns out to matter. Deliberately NOT handled
-  by this fix: a gap right at channel tune-in (first item of a freshly
-  switched-to channel) — `_startChannel` still starts the first item
-  immediately exactly as before; only gaps encountered while already
-  watching a channel are honored. Covered by
-  `client/integration_test/epg_gap_test.dart` (two `once` ScheduleItems, no
-  filler/fallback rule, so the materializer leaves a real un-filled interior
-  gap — see `BackendFixture.createScheduleWithItems`).
+  `now` before starting the next item instead of always chaining durations
+  back to back — `epgSyncTolerance` (2s) is the slop budget before either
+  branch below kicks in. Running behind resyncs by seeking into the item
+  instead of starting it from zero (same approach the mid-program tune-in
+  boot case already used); an interior schedule gap holds on a looping local
+  slate (`_holdForGap`, asset at `client/assets/slate/gap_slate.mp4` —
+  attribution in `client/assets/slate/NOTICE.md`) via `_rampCrossfade`, the
+  shared opacity/volume stepper factored out of the original crossfade so
+  both legs of a hold (outgoing→slate, slate→pending) reuse it. `pending`
+  (the real next item, already preloaded independently of the gap by the
+  normal fixed `preloadLead` timer) sits outside `_controllerA`/
+  `_controllerB` for the whole hold — tracked in `_gapHoldPending` purely so
+  a channel switch's teardown (which only disposes whatever is currently IN
+  those two slots) can still find and dispose it; forgetting that field when
+  touching this code leaks a real controller. Known, accepted trade-off:
+  `pending`'s network connection stays open and idle for however long the
+  hold lasts — fine for the gap widths seen in practice, revisit (defer its
+  creation instead) only if a very long schedule hole turns out to matter.
+  Doesn't apply to a gap right at channel tune-in — `_startChannel` still
+  starts the first item immediately.

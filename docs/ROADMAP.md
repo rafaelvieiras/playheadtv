@@ -895,39 +895,6 @@ actionable checklist.
       `integration_test/*.dart` files and `test/playhead_api_test.dart` pass
       after both fixes.
 
-- [x] Issue #9: the client honors the materialized EPG's real `start_at`
-      instead of always playing entries back to back. `ChannelEntry`
-      (`client/lib/main.dart`) now carries each item's `startAt`;
-      `_crossfadeTo` compares it with wall-clock `now` (`epgSyncTolerance`,
-      2s) before starting the next item — running behind seeks into the item
-      (same approach the "TV turned on mid-program" boot case already used),
-      and an interior gap (e.g. tail padding not fitting with no `fallback`
-      rule, issue #6) holds on a looping local slate (`_holdForGap`) instead
-      of running ahead of the EPG clock. No backend change needed — `GET
-      /epg` already reported `start_at`/`end_at` as epoch millis (UTC,
-      timezone-agnostic), the client just wasn't using the field for
-      anything beyond the initial seek and window filtering. Decided with
-      the user: the slate is a real looping video asset (not a generic
-      card/text slate) — `client/assets/slate/gap_slate.mp4` re-encoded from
-      a Pixabay video (960x540, ~8.5MB, attribution in
-      `client/assets/slate/NOTICE.md`); running behind resyncs by seeking
-      rather than replaying from zero; time reference is the device's own
-      local clock (no `GET /epg/meta` offset estimate — already timezone-safe
-      since the EPG's times are epoch millis). Scope deliberately excludes a
-      gap at channel tune-in (first item of a freshly switched-to channel
-      still starts immediately, as before) — only gaps hit while already
-      watching a channel are honored; not requested, and the issue's own text
-      treats a fresh tune-in's recompute-from-now as acceptable (only
-      mid-session drift was the complaint). Covered by a new real e2e suite,
-      `client/integration_test/epg_gap_test.dart` (two `once` ScheduleItems
-      with an intentional un-filled interior gap, via the new
-      `BackendFixture.createScheduleWithItems` — `createScheduleOnce` now a
-      thin wrapper over it); all 7 `integration_test/*.dart` files pass
-      (two pre-existing, already-documented flakes recurred during
-      validation — `channel_navigation_test.dart`'s digit-entry case and a
-      track-selector OSD-wait case — both reproduced identically against an
-      unmodified, clean `main`, confirming neither is a regression).
-
 ## Phase 6 — Platforms
 
 - [ ] Android / Android TV client build.
