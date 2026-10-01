@@ -124,6 +124,16 @@ List<ChannelEntry> channel = <ChannelEntry>[];
 const crossfadeDuration = Duration(milliseconds: 800);
 const preloadLead = Duration(seconds: 2);
 
+// Last-resort floor under _scheduleTransitions' `effective` duration. The
+// GET /epg filters in _loadAndPlayChannel/_doFetchNextEpgSlice (and
+// pullsync's own sync-time guard) should already keep a non-positive-duration
+// item out of `channel` entirely, but if one ever slips through anyway,
+// _scheduleTransitions would otherwise fire its next-item Timer immediately,
+// churning real controller create/dispose cycles fast enough to exhaust file
+// descriptors (reproduced 2026-09-30 — see AGENTS.md). This never changes
+// normal playback: every real clip duration is comfortably above it.
+const minTransitionInterval = Duration(seconds: 5);
+
 // Video thumbnail inside the EPG — the same instance of
 // _controllerA/_controllerB, just repositioned/resized into a corner (see
 // _videoThumbnailRect and the long comment about the fvp/libmdk GL texture bug
@@ -503,8 +513,14 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
 
       // Drops whatever already ended (can only happen because of some
       // clock/materialization slack, but safer than assuming it never
-      // occurs).
-      final upcoming = entries.where((e) => e.endAt.isAfter(now)).toList();
+      // occurs) and anything with a non-positive duration (a corrupt/unprobed
+      // source item — pullsync's own guard should already reject these at
+      // sync time, but _scheduleTransitions fires its next-item timer
+      // immediately for a zero-length clip, so a single one that slips
+      // through would churn real controller create/dispose cycles until the
+      // process runs out of file descriptors — reproduced 2026-09-30, see
+      // AGENTS.md).
+      final upcoming = entries.where((e) => e.endAt.isAfter(now) && e.endAt.isAfter(e.startAt)).toList();
       if (upcoming.isEmpty) {
         if (!mounted) return;
         setState(() => _status = 'ERROR: nothing scheduled in the next ${epgWindow.inHours}h for channel ${target.number}');
@@ -680,7 +696,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   // detect whether the channel changed again before firing.
   void _scheduleTransitions(int index, {Duration? remaining, required int generation}) {
     final entry = channel[index];
-    final effective = remaining ?? entry.clipDuration;
+    var effective = remaining ?? entry.clipDuration;
+    if (effective < minTransitionInterval) effective = minTransitionInterval;
     final preloadAt = effective - preloadLead;
     Timer(preloadAt.isNegative ? Duration.zero : preloadAt, () => _preloadNext(index + 1, generation));
 
@@ -892,7 +909,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       final entries = await _api.getEpg(channelId, cursor, cursor.add(epgWindow));
       if (generation != _loadGeneration) return false;
 
-      final fresh = entries.where((e) => !e.startAt.isBefore(cursor)).toList();
+      // See the matching filter in _loadAndPlayChannel for why non-positive
+      // duration entries are dropped here too.
+      final fresh = entries.where((e) => !e.startAt.isBefore(cursor) && e.endAt.isAfter(e.startAt)).toList();
       if (fresh.isEmpty) return false;
 
       final catalogItems = await Future.wait(fresh.map((e) => _api.getCatalogItem(e.catalogItemId)));

@@ -326,3 +326,31 @@ or LLM, and to every artifact in the repo:
   Adapts to real network/controller-creation latency with no magic number to
   tune; don't replace it with a timer-based debounce without re-confirming
   that trade-off.
+- A catalog item with a non-positive duration (reproduced 2026-09-30: a
+  Jellyfin library item synced with `RunTimeTicks: 0`, missing/unprobed
+  metadata) breaks the entire channel-assembly model if it ever reaches a
+  schedule. `_scheduleTransitions` (`client/lib/main.dart`) fires its
+  next-item `Timer` relative to the clip's duration — a zero-length one fires
+  essentially immediately, so the client crossfades into the next item right
+  away, and if that one is ALSO bad (or the rotation loops back to the same
+  one), it cascades into a tight loop of real `_createController`/dispose
+  cycles (network connect + native GL lifecycle per iteration), fast enough
+  to exhaust the process's file descriptors and crash — observed as
+  PulseAudio aborting with "cannot create wakeup pipe" after a burst of
+  fbo/tex create+cleanup lines with no user interaction in between, and
+  reported by the user as "channel 1 takes a while to load and restarts the
+  movie every time" (the cascade churns through a few bad entries before
+  landing back on the real movie, repeatedly). Fixed in three layers, don't
+  remove any of them: (1) `pullsync/jellyfin.go`'s `mapJellyfinItem` now
+  rejects `RunTimeTicks <= 0` at sync time, so bad source metadata never
+  becomes a catalog item at all; (2) `_loadAndPlayChannel` and
+  `_doFetchNextEpgSlice` (`main.dart`) both filter `GET /epg` entries down to
+  `endAt.isAfter(startAt)`, so a bad entry can never enter `channel` even if
+  one slips past (1) some other way (e.g. a manual API call, a future
+  `TrimDurationMs` bug); (3) `_scheduleTransitions` clamps `effective` to
+  `minTransitionInterval` (5s) as a last-resort floor, so even a bug nobody
+  has thought of yet can't turn a near-zero duration into a runaway loop.
+  Confirmed via a 20-cycle player↔mosaic stress test (real controllers, fake
+  video server) that the normal lifecycle itself doesn't leak file
+  descriptors — the leak only shows up when something schedules a genuinely
+  broken-duration item.

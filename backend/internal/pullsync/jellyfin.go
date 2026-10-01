@@ -120,6 +120,19 @@ func mapJellyfinItem(ri jellyfinItem, seriesGenres map[string][]string) (catalog
 	if ri.Id == "" || ri.Name == "" {
 		return catalogsync.Item{}, false
 	}
+	// A non-positive RunTimeTicks (missing/unprobed duration, or a corrupt
+	// file Jellyfin couldn't analyze) must never become a playable catalog
+	// item: the client's channel-assembly scheduler (see AGENTS.md "channel 1
+	// churned through controllers and crashed") assumes every scheduled
+	// item's clip has a positive duration and fires its next-item timer
+	// immediately for a zero-length one — scheduling even one such item
+	// causes a tight loop of real controller creation/disposal that exhausts
+	// file descriptors. Skip it here rather than relying on a downstream
+	// guard to always catch it.
+	if ri.RunTimeTicks <= 0 {
+		log.Printf("pullsync: skipping %q (%s): non-positive RunTimeTicks (%d)", ri.Name, ri.Id, ri.RunTimeTicks)
+		return catalogsync.Item{}, false
+	}
 	var kind domain.CatalogItemKind
 	switch ri.Type {
 	case "Movie":

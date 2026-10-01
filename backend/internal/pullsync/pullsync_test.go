@@ -177,11 +177,11 @@ func TestSyncOneEpisodeInheritsSeriesGenre(t *testing.T) {
 
 	items := []jellyfinItem{
 		{
-			Id: "movie-1", Name: "A Movie", Type: "Movie",
+			Id: "movie-1", Name: "A Movie", Type: "Movie", RunTimeTicks: 65_316_370_000,
 			Genres: []string{"Comedy"}, ProductionYear: int64Ptr(2019),
 		},
 		{
-			Id: "ep-1", Name: "Pilot", Type: "Episode",
+			Id: "ep-1", Name: "Pilot", Type: "Episode", RunTimeTicks: 12_000_000_000,
 			SeriesName: strPtr("Some Show"), SeriesId: strPtr("series-1"),
 			ProductionYear: int64Ptr(2021),
 		},
@@ -282,8 +282,8 @@ func TestSyncOneResolvesDynamicPools(t *testing.T) {
 	db := newTestDB(t)
 
 	items := []jellyfinItem{
-		{Id: "ext-1", Name: "Comedy One", Type: "Movie", Genres: []string{"Comedy"}},
-		{Id: "ext-2", Name: "Action One", Type: "Movie", Genres: []string{"Action"}},
+		{Id: "ext-1", Name: "Comedy One", Type: "Movie", RunTimeTicks: 65_316_370_000, Genres: []string{"Comedy"}},
+		{Id: "ext-2", Name: "Action One", Type: "Movie", RunTimeTicks: 65_316_370_000, Genres: []string{"Action"}},
 	}
 	current := &items
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -340,7 +340,7 @@ func TestRunIsolatesPerSourceFailures(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode(jellyfinItemsResponse{
-			Items:            []jellyfinItem{{Id: "ok-1", Name: "OK Movie", Type: "Movie"}},
+			Items:            []jellyfinItem{{Id: "ok-1", Name: "OK Movie", Type: "Movie", RunTimeTicks: 65_316_370_000}},
 			TotalRecordCount: 1,
 		})
 	}))

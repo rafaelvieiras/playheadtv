@@ -42,6 +42,7 @@ func TestMapJellyfinItem_MovieGenresAndProductionYear(t *testing.T) {
 		Id:             "movie-1",
 		Name:           "A Movie",
 		Type:           "Movie",
+		RunTimeTicks:   65_316_370_000,
 		Genres:         []string{"Comedy", "Action"},
 		ProductionYear: int64Ptr(2019),
 	}, nil)
@@ -81,6 +82,7 @@ func TestMapJellyfinItem_EpisodeInheritsSeriesGenres(t *testing.T) {
 		Id:             "ep-1",
 		Name:           "Pilot",
 		Type:           "Episode",
+		RunTimeTicks:   12_000_000_000,
 		SeriesName:     strPtr("Some Show"),
 		SeriesId:       strPtr("series-1"),
 		ProductionYear: int64Ptr(2020), // already inherited by Jellyfin itself on episodes
@@ -101,11 +103,12 @@ func TestMapJellyfinItem_EpisodeOwnGenresPreferredOverSeries(t *testing.T) {
 	// directly should win over the series lookup, not be overwritten by it.
 	seriesGenres := map[string][]string{"series-1": {"Comedy"}}
 	item, ok := mapJellyfinItem(jellyfinItem{
-		Id:       "ep-1",
-		Name:     "Pilot",
-		Type:     "Episode",
-		Genres:   []string{"Drama"},
-		SeriesId: strPtr("series-1"),
+		Id:           "ep-1",
+		Name:         "Pilot",
+		Type:         "Episode",
+		RunTimeTicks: 12_000_000_000,
+		Genres:       []string{"Drama"},
+		SeriesId:     strPtr("series-1"),
 	}, seriesGenres)
 	if !ok {
 		t.Fatal("ok = false, want true")
@@ -117,10 +120,11 @@ func TestMapJellyfinItem_EpisodeOwnGenresPreferredOverSeries(t *testing.T) {
 
 func TestMapJellyfinItem_EpisodeSeriesNotInMapNoPanic(t *testing.T) {
 	item, ok := mapJellyfinItem(jellyfinItem{
-		Id:       "ep-1",
-		Name:     "Pilot",
-		Type:     "Episode",
-		SeriesId: strPtr("unknown-series"),
+		Id:           "ep-1",
+		Name:         "Pilot",
+		Type:         "Episode",
+		RunTimeTicks: 12_000_000_000,
+		SeriesId:     strPtr("unknown-series"),
 	}, map[string][]string{})
 	if !ok {
 		t.Fatal("ok = false, want true")
@@ -164,9 +168,19 @@ func TestMapJellyfinItem_MissingIDOrNameSkipped(t *testing.T) {
 	}
 }
 
+func TestMapJellyfinItem_NonPositiveDurationSkipped(t *testing.T) {
+	if _, ok := mapJellyfinItem(jellyfinItem{Id: "m-1", Name: "M", Type: "Movie", RunTimeTicks: 0}, nil); ok {
+		t.Error("mapJellyfinItem(RunTimeTicks=0) ok = true, want false")
+	}
+	if _, ok := mapJellyfinItem(jellyfinItem{Id: "m-1", Name: "M", Type: "Movie", RunTimeTicks: -1}, nil); ok {
+		t.Error("mapJellyfinItem(RunTimeTicks=-1) ok = true, want false")
+	}
+}
+
 func TestMapJellyfinItem_SourceModifiedAtFallback(t *testing.T) {
 	item, ok := mapJellyfinItem(jellyfinItem{
 		Id: "m-1", Name: "M", Type: "Movie",
+		RunTimeTicks:  65_316_370_000,
 		DateLastSaved: nil,
 		DateCreated:   strPtr("2024-01-02T03:04:05Z"),
 	}, nil)
@@ -177,7 +191,7 @@ func TestMapJellyfinItem_SourceModifiedAtFallback(t *testing.T) {
 		t.Fatal("SourceModifiedAt = nil, want fallback to DateCreated")
 	}
 
-	item, ok = mapJellyfinItem(jellyfinItem{Id: "m-2", Name: "M2", Type: "Movie"}, nil)
+	item, ok = mapJellyfinItem(jellyfinItem{Id: "m-2", Name: "M2", Type: "Movie", RunTimeTicks: 65_316_370_000}, nil)
 	if !ok {
 		t.Fatal("ok = false, want true")
 	}
