@@ -10,8 +10,8 @@
 // and right), instead of a ClipPath — simpler and enough since the rectangle
 // is always axis-aligned.
 //
-// Navigation: row = channel (`moveRow`, called by the parent on
-// channelNext/channelPrevious already resolved via KeyBindingsService),
+// Navigation: row = channel (`moveRow`, called by the parent on RAW
+// arrowUp/arrowDown — Up = previous row — bypassing KeyBindingsService),
 // column = program within the row (`moveColumn`, called by the parent on RAW
 // arrowLeft/arrowRight — bypassing KeyBindingsService, same decision already
 // made in MosaicPage for 2D grid navigation). `select` (Enter) has a
@@ -142,9 +142,9 @@ class EpgOverlayState extends State<EpgOverlay> {
     }
   }
 
-  // Called by the parent on KeyDownEvent of `channelNext`/`channelPrevious` —
-  // inside the EPG it becomes ROW (channel) navigation, without wrapping
-  // around the edges.
+  // Called by the parent on KeyDownEvent of raw arrowDown (delta 1) /
+  // arrowUp (delta -1) — ROW (channel) navigation, without wrapping around
+  // the edges.
   void moveRow(int delta) {
     if (_loading || _error != null || _entriesByChannel.isEmpty) return;
     final newRow = _focusedRow + delta;

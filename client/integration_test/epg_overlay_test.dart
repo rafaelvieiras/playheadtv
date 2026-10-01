@@ -221,17 +221,46 @@ void main() {
       expect(osdChannelNumberText(tester), '3');
     });
 
+    // The channel whose row holds the focused (3px white border) EPG cell.
+    String? focusedEpgChannelNumber(WidgetTester tester) {
+      for (final entry in channelIds.entries) {
+        final prefix = 'epg-cell-${entry.value}-';
+        for (final element in find.byWidgetPredicate((w) => w.key is ValueKey<String> && (w.key as ValueKey<String>).value.startsWith(prefix)).evaluate()) {
+          final decoration = (element.widget as Container).decoration as BoxDecoration;
+          if ((decoration.border as Border).top.width == 3) return '${entry.key}';
+        }
+      }
+      return null;
+    }
+
+    // Regression test for a real bug: Up moved DOWN and Down moved UP because
+    // the EPG reused the channelNext/channelPrevious bindings. Also asserts
+    // that remapping channelNext does not change the EPG's row navigation.
     testWidgets('opens the EPG and selects the live program of another channel', (tester) async {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt('key_binding_channelNext', LogicalKeyboardKey.keyK.keyId);
       await tester.pumpWidget(const PlayheadSpikeApp());
       await waitForChannelNumber(tester, 3);
 
       await openEpg(tester);
 
-      // The current channel (3) is row 0 (lowest-number channel). Move down to
-      // the channel 8 row and activate (short Enter tap) its live cell —
-      // program A (column index 0) is the "live now" one.
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp); // channelNext -> moveRow(1)
+      // The current channel (3) is row 0 (lowest-number channel). Down moves to
+      // the channel 8 row, Up moves back, and the remapped channelNext key
+      // (K) does nothing inside the EPG.
+      expect(focusedEpgChannelNumber(tester), '3');
+      await tester.sendKeyEvent(LogicalKeyboardKey.keyK);
       await tester.pump();
+      expect(focusedEpgChannelNumber(tester), '3', reason: 'remapped channelNext must not move EPG rows');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      expect(focusedEpgChannelNumber(tester), '8', reason: 'Down must move to the next row');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      expect(focusedEpgChannelNumber(tester), '3', reason: 'Up must move to the previous row');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await tester.pump();
+      // Activate (short Enter tap) the channel 8 live cell — program A
+      // (column index 0) is the "live now" one.
       await tester.sendKeyEvent(LogicalKeyboardKey.enter); // short tap: quick down+up
       await tester.pump();
 

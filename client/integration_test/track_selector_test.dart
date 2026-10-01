@@ -180,17 +180,23 @@ void main() {
 
       await openTrackSelector(tester);
 
-      // channelNext (arrowUp)/channelPrevious (arrowDown) are captured by the
-      // picker instead of switching channel.
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
-      await tester.pump();
-      expect(find.byKey(const Key('track-selector-overlay')), findsOneWidget, reason: 'picker should still be open');
-      expect(osdChannelNumberText(tester), '4', reason: 'arrowUp must not switch channel while the picker is open');
+      bool focused(String key) {
+        final decoration = tester.widget<Container>(find.byKey(Key(key))).decoration as BoxDecoration;
+        return decoration.color == Colors.white24;
+      }
 
+      // Raw Up/Down are captured by the picker instead of switching channel:
+      // Down focuses the next option, Up the previous one.
+      expect(focused('track-option-audio-0'), isTrue);
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pump();
-      expect(find.byKey(const Key('track-selector-overlay')), findsOneWidget, reason: 'picker should still be open');
+      expect(focused('track-option-audio-1'), isTrue, reason: 'Down must focus the next option');
       expect(osdChannelNumberText(tester), '4', reason: 'arrowDown must not switch channel while the picker is open');
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await tester.pump();
+      expect(focused('track-option-audio-0'), isTrue, reason: 'Up must focus the previous option');
+      expect(find.byKey(const Key('track-selector-overlay')), findsOneWidget, reason: 'picker should still be open');
+      expect(osdChannelNumberText(tester), '4', reason: 'arrowUp must not switch channel while the picker is open');
     });
 
     testWidgets('Back closes the picker without applying or persisting anything', (tester) async {

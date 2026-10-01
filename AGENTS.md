@@ -102,12 +102,14 @@ or LLM, and to every artifact in the repo:
   `KeyBindingsService.resolve(LogicalKeyboardKey)`, never a raw
   `if (event.logicalKey == ...)` check — `defaultKeyBindings` + a per-action
   override in `SettingsService`, remappable from Settings → Remap
-  controls. Exception, deliberate: 2D grid focus movement (`MosaicPage`,
-  and the EPG grid's left/right time-navigation) reads
-  `LogicalKeyboardKey.arrowLeft/Right` raw, bypassing `InputAction` — grid
-  navigation is a different concept from the player's repurposed
-  up/down-as-channel-switch semantics and isn't something a user would
-  sensibly remap.
+  controls. Exception, deliberate: menu/grid focus movement (`MosaicPage`,
+  the EPG grid's left/right time-navigation and up/down row navigation, the
+  track picker's up/down and left/right) reads
+  `LogicalKeyboardKey.arrowUp/Down/Left/Right` raw, bypassing `InputAction` —
+  menu navigation is a different concept from the player's repurposed
+  up/down-as-channel-switch semantics (`channelNext`/`channelPrevious`, which
+  must never drive a menu: Up always moves visually up) and isn't something a
+  user would sensibly remap.
 - **6-button baseline**: every user-facing flow in the client (not the web
   UI, which is desktop/mouse admin tooling by nature) must be fully
   operable with exactly six inputs — Up, Down, Left, Right, Select, Back —

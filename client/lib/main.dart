@@ -1348,10 +1348,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       //
       // With the EPG OPEN, the same key events are redirected to the
       // `EpgOverlayState` (via `_epgOverlayKey`) instead of going to the
-      // channel dispatch above: `channelNext`/`channelPrevious` become ROW
-      // navigation (`moveRow`), RAW `arrowLeft`/`arrowRight` (not remappable,
-      // same decision already made in `MosaicPage` for the 2D grid) become
-      // COLUMN navigation (`moveColumn`), `select` delegates to the overlay's
+      // channel dispatch above: RAW `arrowUp`/`arrowDown` (not remappable, so
+      // Up is always visually up regardless of the channel-switch binding)
+      // become ROW navigation (`moveRow`, Up = previous row), RAW
+      // `arrowLeft`/`arrowRight` (same decision already made in `MosaicPage`
+      // for the 2D grid) become COLUMN navigation (`moveColumn`), `select` delegates to the overlay's
       // long-press/short-tap (`handleSelectKeyEvent`, which also receives the
       // `KeyUpEvent` — the only screen in the app that needs it) and `back`
       // closes the EPG.
@@ -1377,9 +1378,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
             return;
           }
           if (event is! KeyDownEvent) return;
-          if (action == InputAction.channelNext) {
+          if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
             _epgOverlayKey.currentState?.moveRow(1);
-          } else if (action == InputAction.channelPrevious) {
+          } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
             _epgOverlayKey.currentState?.moveRow(-1);
           } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
             _epgOverlayKey.currentState?.moveColumn(-1);
@@ -1391,8 +1392,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
 
         // Tier 1 track picker (InputAction.trackSelector — arrowRight by
         // default): same override pattern as the EPG branch above — while
-        // open, channelNext/channelPrevious become focus movement WITHIN the
-        // active panel (captured, never a real channel switch), raw
+        // open, raw arrowUp/arrowDown (Up = previous option) become focus
+        // movement WITHIN the active panel (captured, never a real channel
+        // switch), raw
         // arrowLeft/arrowRight switch panel, `select` picks and `back`
         // closes without applying anything.
         if (_trackPickerOpenNotifier.value) {
@@ -1403,9 +1405,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
           if (event is! KeyDownEvent) return;
           if (action == InputAction.select) {
             _trackSelectorKey.currentState?.selectFocused();
-          } else if (action == InputAction.channelNext) {
+          } else if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
             _trackSelectorKey.currentState?.moveFocus(1);
-          } else if (action == InputAction.channelPrevious) {
+          } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
             _trackSelectorKey.currentState?.moveFocus(-1);
           } else if (event.logicalKey == LogicalKeyboardKey.arrowLeft ||
               event.logicalKey == LogicalKeyboardKey.arrowRight) {

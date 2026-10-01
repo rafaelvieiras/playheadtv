@@ -159,8 +159,8 @@ void main() {
       await openTrackSelector(tester);
 
       // Default focus is the 1st audio option (index 0, "eng"). Move down
-      // once (channelNext/arrowUp -> moveFocus(1)) to focus the 2nd ("por").
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      // once (arrowDown -> moveFocus(1)) to focus the 2nd ("por").
+      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
       await tester.pump();
       await tester.sendKeyEvent(LogicalKeyboardKey.enter);
       await tester.pump();

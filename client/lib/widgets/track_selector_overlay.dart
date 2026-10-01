@@ -10,7 +10,7 @@
 // GL-texture gotcha for why that's load-bearing, not style).
 //
 // Navigation, same "row vs column" split already used by EpgOverlay
-// (moveRow/moveColumn): Up/Down (channelNext/channelPrevious, captured by
+// (moveRow/moveColumn): raw Up/Down (bypassing InputAction, captured by
 // the parent — they must NOT fall through to an actual channel switch while
 // this is open) move focus within the currently active panel (Audio or
 // Subtitle); raw Left/Right (bypassing InputAction, same 2D-grid exception
@@ -76,8 +76,8 @@ class TrackSelectorOverlayState extends State<TrackSelectorOverlay> {
       _activePanel == TrackSelectorPanel.audio ? widget.audioOptions : widget.subtitleOptions;
   int get _focusedIndex => _activePanel == TrackSelectorPanel.audio ? _focusedAudio : _focusedSubtitle;
 
-  /// Called by the parent on KeyDownEvent of channelNext (delta 1) /
-  /// channelPrevious (delta -1) — moves focus within the active panel,
+  /// Called by the parent on KeyDownEvent of raw arrowDown (delta 1) /
+  /// arrowUp (delta -1) — moves focus within the active panel,
   /// without wrapping (same as EpgOverlay.moveRow).
   void moveFocus(int delta) {
     final options = _activeOptions;
