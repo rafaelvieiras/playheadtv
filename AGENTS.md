@@ -173,6 +173,16 @@ or LLM, and to every artifact in the repo:
   playing (just resized into a corner via `AnimatedPositioned`), instead of
   creating a second video surface — see the GL-texture gotcha below for why
   that distinction is load-bearing, not just tidiness.
+  The grid inside it is responsive: a fixed 3h visible span
+  (`_visibleSpan`) with pixels-per-minute derived from the available width on
+  every build, a sticky time header (tick every 30 min), a "now" line
+  refreshed by a timer, rows of fixed height in a vertical `ListView` that
+  follows the focused row, and horizontal scrolling kept as one animated
+  offset in minutes (not `Scrollable`s) so header, rows and now line stay
+  aligned. Up/Down pick the program covering the focus's time anchor in the
+  new row; moving right past the loaded window lazily fetches more of
+  `GET /epg` (up to the backend's 48h materialized horizon). All of this state
+  lives in `EpgOverlayState`, never in `_ChannelPlayerPageState`.
 
 ## Operational practices
 
