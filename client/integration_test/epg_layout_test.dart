@@ -166,6 +166,7 @@ void main() {
       await openEpg(tester);
 
       expect(detailsTitle(tester), 'LAYOUT 1 ITEM 0');
+      final liveHeight = tester.getSize(find.byKey(const Key('epg-details-panel'))).height;
       // Item 9 starts 4.5h from now, past the initial window (4h ahead).
       for (var i = 0; i < 9; i++) {
         await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
@@ -176,6 +177,8 @@ void main() {
         () => detailsTitle(tester) == 'LAYOUT 1 ITEM 9',
         failMessage: 'focus never reached the program beyond the initial window (lazy fetch failed)',
       );
+      expect(find.byKey(const Key('epg-details-progress')), findsNothing, reason: 'a future program has no progress bar');
+      expect(tester.getSize(find.byKey(const Key('epg-details-panel'))).height, liveHeight, reason: 'the progress slot keeps the panel height stable');
       // The focused cell is scrolled into view.
       await tester.pump(const Duration(milliseconds: 400));
       final rowsRect = tester.getRect(find.byKey(const Key('epg-rows')));

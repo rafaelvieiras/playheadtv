@@ -592,16 +592,21 @@ class EpgOverlayState extends State<EpgOverlay> {
             const SizedBox(height: 6),
             Text(durationText, style: const TextStyle(color: Colors.white54, fontSize: 18)),
           ],
-          if (live) ...[
-            SizedBox(height: expanded ? 12 : 8),
-            LinearProgressIndicator(
-              key: const Key('epg-details-progress'),
-              value: progress.clamp(0.0, 1.0),
-              minHeight: 4,
-              color: Colors.white,
-              backgroundColor: Colors.white24,
-            ),
-          ],
+          // The slot is always reserved so the panel keeps its height; only
+          // the bar itself comes and goes.
+          SizedBox(height: expanded ? 12 : 8),
+          SizedBox(
+            height: 4,
+            child: live
+                ? LinearProgressIndicator(
+                    key: const Key('epg-details-progress'),
+                    value: progress.clamp(0.0, 1.0),
+                    minHeight: 4,
+                    color: Colors.white,
+                    backgroundColor: Colors.white24,
+                  )
+                : null,
+          ),
         ],
       ),
     );
