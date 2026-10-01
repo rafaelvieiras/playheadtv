@@ -302,7 +302,16 @@ or LLM, and to every artifact in the repo:
   native GL work never overlaps regardless of which unrelated Future chain
   enqueued it. Any NEW call site that creates or disposes a
   `VideoPlayerController` must go through `serializeGlOp` too, or this comes
-  back.
+  back. Centralizing every call behind one queue has its own failure mode,
+  though: the pre-existing raster-thread stall documented just above (a
+  create()/dispose() that never resolves under machine load) would otherwise
+  wedge that single shared queue forever, blocking every *other*, unrelated
+  controller's GL calls too — strictly worse than before the queue existed,
+  when a stalled controller only ever froze itself. `serializeGlOp` bounds
+  this with `_glOpQueueTimeout` (20s): the queue stops waiting on a stuck op
+  and lets the next one in line start, while the stuck op's own caller still
+  gets its real result/error whenever (if ever) it resolves — the timeout
+  only protects the queue, it never cancels or misreports the op itself.
 - Channel-switch coalescing (`_channelLoadInFlight`/
   `_pendingChannelSwitchTarget` in `main.dart`'s `_switchToChannelIndex`):
   mashing next/prev used to fire one real `_loadAndPlayChannel` (network +

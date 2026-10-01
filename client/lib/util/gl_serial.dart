@@ -27,11 +27,27 @@ import 'dart:async';
 // (a channel-switch generation, the mosaic preview, ...) enqueued it.
 Future<void> _glOpChain = Future.value();
 
+// How long the shared queue waits for one op before letting the next one in
+// line start anyway. This is a safety valve, not a normal-path timeout:
+// AGENTS.md already documents a pre-existing fvp/libmdk raster-thread stall
+// under machine load that can hang a create()/dispose() indefinitely. Without
+// a bound, centralizing every GL lifecycle call behind one FIFO (the whole
+// point of this file) would turn that into a single wedged op blocking every
+// *other*, unrelated controller's create()/dispose() forever too — strictly
+// worse than before this queue existed, when a stalled controller only ever
+// froze itself. Comfortably above any real initialize()/dispose() latency
+// (network stream open, Jellyfin transcode probe) seen in this codebase.
+const _glOpQueueTimeout = Duration(seconds: 20);
+
 Future<T> serializeGlOp<T>(Future<T> Function() op) {
   final result = _glOpChain.then((_) => op());
-  // Swallow the error here so a failed op doesn't wedge the chain for
-  // everyone after it — the caller of serializeGlOp still sees it via
-  // `result`.
-  _glOpChain = result.then((_) {}, onError: (_) {});
+  // The queue itself only ever waits up to _glOpQueueTimeout for this op
+  // before moving on — but `result` (what the caller awaits) is NOT
+  // time-limited: it still resolves/throws whenever the real native call
+  // actually finishes, however long that takes. The timeout only stops a
+  // stuck op from starving everyone queued behind it; it never cancels the
+  // op or misreports its outcome to its own caller.
+  final gate = result.then<void>((_) {}, onError: (_) {});
+  _glOpChain = gate.timeout(_glOpQueueTimeout, onTimeout: () {});
   return result;
 }

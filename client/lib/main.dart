@@ -545,7 +545,20 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
         channel = loaded;
         _epgLoadedUntil = loadedUntil;
       });
-      await _startChannel(initialSeek: initialSeek, generation: generation);
+      // Separate try/catch from the backend fetch above: _startChannel opens
+      // the actual video stream against Jellyfin (controller.initialize()),
+      // a completely different failure mode (Jellyfin unreachable, item
+      // deleted, unsupported codec) from "the backend didn't answer" —
+      // reporting both under one generic "failed to load schedule from
+      // backend" message sent whoever's reading it chasing the wrong system
+      // (reproduced 2026-09-30: Jellyfin was down, and the error read as a
+      // backend/schedule problem instead).
+      try {
+        await _startChannel(initialSeek: initialSeek, generation: generation);
+      } catch (e) {
+        if (!mounted || generation != _loadGeneration) return;
+        setState(() => _status = 'ERROR: could not start playback — is Jellyfin reachable? ($e)');
+      }
     } catch (e) {
       if (!mounted || generation != _loadGeneration) return;
       setState(() => _status = 'ERROR: failed to load schedule from backend: $e');
