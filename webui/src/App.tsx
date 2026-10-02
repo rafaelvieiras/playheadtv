@@ -8,7 +8,9 @@ import { BlocksPage } from '@/pages/BlocksPage'
 import { ChannelsPage } from '@/pages/ChannelsPage'
 import { DevicesPage } from '@/pages/DevicesPage'
 import { EpgPage } from '@/pages/EpgPage'
+import { FillerPoolEditorPage } from '@/pages/FillerPoolEditorPage'
 import { FillerPoolsPage } from '@/pages/FillerPoolsPage'
+import { FillerRuleEditorPage } from '@/pages/FillerRuleEditorPage'
 import { FillerRulesPage } from '@/pages/FillerRulesPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { MediaSourcesPage } from '@/pages/MediaSourcesPage'
@@ -39,15 +41,9 @@ export default function App() {
         />
         <Route path="/schedule" element={<SchedulePage />} />
         <Route path="/filler-pools" element={<FillerPoolsPage />} />
-        <Route
-          path="/filler-pools/:id"
-          element={<DetailPlaceholder entity="Filler pool" listLabel="Filler pools" listPath="/filler-pools" />}
-        />
+        <Route path="/filler-pools/:id" element={<FillerPoolEditorPage />} />
         <Route path="/filler-rules" element={<FillerRulesPage />} />
-        <Route
-          path="/filler-rules/:id"
-          element={<DetailPlaceholder entity="Filler rule" listLabel="Filler rules" listPath="/filler-rules" />}
-        />
+        <Route path="/filler-rules/:id" element={<FillerRuleEditorPage />} />
         <Route path="/stream-selector" element={<StreamSelectorPage />} />
         <Route path="/media-sources" element={<MediaSourcesPage />} />
         <Route path="/devices" element={<DevicesPage />} />

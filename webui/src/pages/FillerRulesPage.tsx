@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { FillerRuleDialog, KIND_LABELS, SCOPE_LABELS, STRATEGY_LABELS } from '@/components/FillerRuleDialog'
+import { KIND_LABELS, SCOPE_LABELS, STRATEGY_LABELS } from '@/lib/filler'
 import { api } from '@/lib/http'
 import type { Block, Channel, FillerPool, FillerRule } from '@/lib/types'
 
@@ -49,8 +49,6 @@ export function FillerRulesPage() {
     return name ?? rule.scope_id
   }
 
-  const [dialogOpen, setDialogOpen] = useState(false)
-  const [editingRule, setEditingRule] = useState<FillerRule | undefined>(undefined)
   const [deletingRule, setDeletingRule] = useState<FillerRule | undefined>(undefined)
 
   const deleteMutation = useMutation({
@@ -65,21 +63,13 @@ export function FillerRulesPage() {
     },
   })
 
-  function openCreateDialog() {
-    setEditingRule(undefined)
-    setDialogOpen(true)
-  }
-
-  function openEditDialog(rule: FillerRule) {
-    setEditingRule(rule)
-    setDialogOpen(true)
-  }
-
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Filler rules</h1>
-        <Button onClick={openCreateDialog}>New rule</Button>
+        <Button asChild>
+          <Link to="/filler-rules/new">New rule</Link>
+        </Button>
       </div>
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
@@ -117,8 +107,8 @@ export function FillerRulesPage() {
                 <TableCell>{STRATEGY_LABELS[rule.selection_strategy]}</TableCell>
                 <TableCell>{rule.position}</TableCell>
                 <TableCell className="flex justify-end gap-2 text-right">
-                  <Button variant="outline" size="sm" onClick={() => openEditDialog(rule)}>
-                    Edit
+                  <Button asChild variant="outline" size="sm">
+                    <Link to={`/filler-rules/${rule.id}`}>Edit</Link>
                   </Button>
                   <Button variant="destructive" size="sm" onClick={() => setDeletingRule(rule)}>
                     Delete
@@ -129,8 +119,6 @@ export function FillerRulesPage() {
           </TableBody>
         </Table>
       )}
-
-      <FillerRuleDialog open={dialogOpen} onOpenChange={setDialogOpen} rule={editingRule} />
 
       <AlertDialog open={deletingRule !== undefined} onOpenChange={(open) => !open && setDeletingRule(undefined)}>
         <AlertDialogContent>

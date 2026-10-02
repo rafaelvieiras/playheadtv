@@ -14,80 +14,56 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
+import { validateCriteria } from '@/lib/filler'
 import { api } from '@/lib/http'
 import type { DynamicCriteria, FillerPool, FillerPoolInput } from '@/lib/types'
 
 interface FillerPoolDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  // Present when editing an existing pool, absent when creating one.
-  pool?: FillerPool
+  // Called with the created pool; the pool editor page is where its items
+  // (or the criteria preview) are worked on afterwards.
+  onCreated: (pool: FillerPool) => void
 }
 
-interface FormState {
-  name: string
-  criteria: DynamicCriteria | null
-}
-
-const emptyForm: FormState = {
-  name: '',
-  criteria: null,
-}
-
-function poolToForm(pool: FillerPool): FormState {
-  return {
-    name: pool.name,
-    criteria: pool.criteria ? (JSON.parse(pool.criteria) as DynamicCriteria) : null,
-  }
-}
-
-function validate(form: FormState): string | undefined {
-  if (!form.criteria) return undefined
-  const hasGenres = form.criteria.genres.length > 0
-  const hasYearRange = form.criteria.year_from !== null || form.criteria.year_to !== null
-  if (!hasGenres && !hasYearRange) {
-    return 'Enter at least one genre or a year range for the dynamic criteria.'
-  }
-  return undefined
-}
-
-export function FillerPoolDialog({ open, onOpenChange, pool }: FillerPoolDialogProps) {
+// Quick create: a name and, optionally, dynamic criteria. Create only —
+// editing a pool happens on its own page (/filler-pools/:id).
+export function FillerPoolDialog({ open, onOpenChange, onCreated }: FillerPoolDialogProps) {
   const queryClient = useQueryClient()
-  const [form, setForm] = useState<FormState>(emptyForm)
+  const [name, setName] = useState('')
+  const [criteria, setCriteria] = useState<DynamicCriteria | null>(null)
   const [error, setError] = useState<string | undefined>(undefined)
-  const isEditing = pool !== undefined
 
   useEffect(() => {
     if (open) {
-      setForm(pool ? poolToForm(pool) : emptyForm)
+      setName('')
+      setCriteria(null)
       setError(undefined)
     }
-  }, [open, pool])
+  }, [open])
 
   const mutation = useMutation({
-    mutationFn: (payload: FillerPoolInput) =>
-      isEditing
-        ? api.put<FillerPool>(`/filler-pools/${pool.id}`, payload)
-        : api.post<FillerPool>('/filler-pools', payload),
-    onSuccess: () => {
+    mutationFn: (payload: FillerPoolInput) => api.post<FillerPool>('/filler-pools', payload),
+    onSuccess: (pool) => {
       queryClient.invalidateQueries({ queryKey: ['filler-pools'] })
-      toast.success(isEditing ? 'Filler pool updated.' : 'Filler pool created.')
+      toast.success('Filler pool created.')
       onOpenChange(false)
+      onCreated(pool)
     },
-    onError: () => {
-      toast.error(isEditing ? 'Could not update the filler pool.' : 'Could not create the filler pool.')
-    },
+    onError: () => toast.error('Could not create the filler pool.'),
   })
 
   function handleSubmit(e: FormEvent) {
+    // Nested inside another page's form tree? Never submit the outer one.
     e.preventDefault()
-    const validationError = validate(form)
+    e.stopPropagation()
+    const validationError = validateCriteria(criteria)
     if (validationError) {
       setError(validationError)
       return
     }
     setError(undefined)
-    mutation.mutate({ name: form.name, criteria: form.criteria })
+    mutation.mutate({ name: name.trim(), criteria })
   }
 
   return (
@@ -95,29 +71,19 @@ export function FillerPoolDialog({ open, onOpenChange, pool }: FillerPoolDialogP
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>{isEditing ? 'Edit filler pool' : 'New filler pool'}</DialogTitle>
+            <DialogTitle>New filler pool</DialogTitle>
             <DialogDescription>
-              {isEditing
-                ? 'Update the filler pool details.'
-                : 'A manual pool has items added one by one; a dynamic pool is filled automatically from criteria.'}
+              A manual pool has items added one by one on its page; a dynamic pool is filled automatically from
+              criteria.
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
             <Field>
-              <FieldLabel htmlFor="pool-name">Name</FieldLabel>
-              <Input
-                id="pool-name"
-                required
-                value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-              />
+              <FieldLabel htmlFor="new-pool-name">Name</FieldLabel>
+              <Input id="new-pool-name" required value={name} onChange={(e) => setName(e.target.value)} />
             </Field>
 
-            <DynamicCriteriaFields
-              value={form.criteria}
-              onChange={(criteria) => setForm((f) => ({ ...f, criteria }))}
-              idPrefix="pool-criteria"
-            />
+            <DynamicCriteriaFields value={criteria} onChange={setCriteria} idPrefix="new-pool-criteria" />
 
             {error && <p className="text-sm text-destructive">{error}</p>}
           </FieldGroup>
@@ -126,7 +92,7 @@ export function FillerPoolDialog({ open, onOpenChange, pool }: FillerPoolDialogP
               Cancel
             </Button>
             <Button type="submit" disabled={mutation.isPending}>
-              {mutation.isPending ? 'Saving…' : 'Save'}
+              {mutation.isPending ? 'Creating…' : 'Create'}
             </Button>
           </DialogFooter>
         </form>

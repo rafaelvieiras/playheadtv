@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 
 import {
   AlertDialog,
@@ -16,9 +16,9 @@ import {
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { FillerPoolDialog } from '@/components/FillerPoolDialog'
-import { FillerPoolItemsDialog } from '@/components/FillerPoolItemsDialog'
 import { api } from '@/lib/http'
-import type { DynamicCriteria, FillerPool } from '@/lib/types'
+import { summarizeCriteria } from '@/lib/filler'
+import type { FillerPool } from '@/lib/types'
 
 function DynamicBadge({ dynamic }: { dynamic: boolean }) {
   if (dynamic) {
@@ -35,20 +35,6 @@ function DynamicBadge({ dynamic }: { dynamic: boolean }) {
   )
 }
 
-function summarizeCriteria(raw: string): string {
-  try {
-    const criteria = JSON.parse(raw) as DynamicCriteria
-    const parts: string[] = [criteria.kind]
-    if (criteria.genres.length > 0) parts.push(criteria.genres.join(', '))
-    if (criteria.year_from !== null || criteria.year_to !== null) {
-      parts.push(`${criteria.year_from ?? '…'}–${criteria.year_to ?? '…'}`)
-    }
-    return parts.join(' · ')
-  } catch {
-    return '—'
-  }
-}
-
 export function FillerPoolsPage() {
   const queryClient = useQueryClient()
   const { data: pools, isLoading, isError } = useQuery({
@@ -56,11 +42,9 @@ export function FillerPoolsPage() {
     queryFn: () => api.get<FillerPool[]>('/filler-pools'),
   })
 
+  const navigate = useNavigate()
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [editingPool, setEditingPool] = useState<FillerPool | undefined>(undefined)
   const [deletingPool, setDeletingPool] = useState<FillerPool | undefined>(undefined)
-  const [itemsDialogOpen, setItemsDialogOpen] = useState(false)
-  const [selectedPool, setSelectedPool] = useState<FillerPool | undefined>(undefined)
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/filler-pools/${id}`),
@@ -74,26 +58,11 @@ export function FillerPoolsPage() {
     },
   })
 
-  function openCreateDialog() {
-    setEditingPool(undefined)
-    setDialogOpen(true)
-  }
-
-  function openEditDialog(pool: FillerPool) {
-    setEditingPool(pool)
-    setDialogOpen(true)
-  }
-
-  function openItemsDialog(pool: FillerPool) {
-    setSelectedPool(pool)
-    setItemsDialogOpen(true)
-  }
-
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Filler pools</h1>
-        <Button onClick={openCreateDialog}>New pool</Button>
+        <Button onClick={() => setDialogOpen(true)}>New pool</Button>
       </div>
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
@@ -131,11 +100,8 @@ export function FillerPoolsPage() {
                   {pool.criteria ? summarizeCriteria(pool.criteria) : '—'}
                 </TableCell>
                 <TableCell className="flex justify-end gap-2 text-right">
-                  <Button variant="outline" size="sm" onClick={() => openItemsDialog(pool)}>
-                    Items
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => openEditDialog(pool)}>
-                    Edit
+                  <Button asChild variant="outline" size="sm">
+                    <Link to={`/filler-pools/${pool.id}`}>Edit</Link>
                   </Button>
                   <Button variant="destructive" size="sm" onClick={() => setDeletingPool(pool)}>
                     Delete
@@ -147,9 +113,11 @@ export function FillerPoolsPage() {
         </Table>
       )}
 
-      <FillerPoolDialog open={dialogOpen} onOpenChange={setDialogOpen} pool={editingPool} />
-
-      <FillerPoolItemsDialog open={itemsDialogOpen} onOpenChange={setItemsDialogOpen} pool={selectedPool} />
+      <FillerPoolDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        onCreated={(pool) => navigate(`/filler-pools/${pool.id}`)}
+      />
 
       <AlertDialog open={deletingPool !== undefined} onOpenChange={(open) => !open && setDeletingPool(undefined)}>
         <AlertDialogContent>
