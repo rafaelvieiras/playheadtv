@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { Link } from 'react-router-dom'
 
 import {
   AlertDialog,
@@ -95,7 +96,11 @@ export function ChannelsPage() {
             {channels.map((channel) => (
               <TableRow key={channel.id}>
                 <TableCell>{channel.number}</TableCell>
-                <TableCell>{channel.name}</TableCell>
+                <TableCell>
+                  <Link to={`/channels/${channel.id}`} className="hover:underline">
+                    {channel.name}
+                  </Link>
+                </TableCell>
                 <TableCell>{channel.timezone}</TableCell>
                 <TableCell className="flex justify-end gap-2 text-right">
                   <Button variant="outline" size="sm" onClick={() => openEditDialog(channel)}>

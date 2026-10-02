@@ -67,6 +67,9 @@ export interface CatalogItem {
   duration_ms: number
   source_modified_at: number | null
   synced_at: number
+  // Comma-separated, in the source's language, not normalized.
+  genres: string
+  production_year: number | null
 }
 
 // Mirrors backend/internal/api's fillerPoolCriteriaRequest / poolCriteria —
@@ -347,4 +350,28 @@ export interface StreamPreferenceRule {
 // backend/internal/api/stream_preferences.go).
 export interface StreamPreferenceRuleInput {
   rules: StreamRuleCascade
+}
+
+// BlockItemUpdateInput is the body of PUT /blocks/{id}/items/{item_id}: at
+// least one field is required, an absent/null one is left unchanged.
+// `position` is the new 0-based index (the backend keeps positions contiguous);
+// `trim_duration_ms` must be positive. Manual blocks only (409 on dynamic).
+export interface BlockItemUpdateInput {
+  position?: number
+  trim_duration_ms?: number
+}
+
+// FillerPoolItemUpdateInput is the body of
+// PUT /filler-pools/{id}/items/{item_id}. Manual pools only (409 on dynamic).
+export interface FillerPoolItemUpdateInput {
+  weight: number
+}
+
+// Response of POST /catalog-items/preview-criteria
+// (backend/internal/catalogsync.CriteriaPreview): what the criteria match
+// right now; nothing is persisted. `sample` holds at most 20 items.
+export interface CriteriaPreview {
+  match_count: number
+  total_duration_ms: number
+  sample: CatalogItem[]
 }

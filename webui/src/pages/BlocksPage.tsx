@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { Link } from 'react-router-dom'
 
 import {
   AlertDialog,
@@ -104,7 +105,11 @@ export function BlocksPage() {
             )}
             {blocks.map((block) => (
               <TableRow key={block.id}>
-                <TableCell>{block.name}</TableCell>
+                <TableCell>
+                  <Link to={`/blocks/${block.id}`} className="hover:underline">
+                    {block.name}
+                  </Link>
+                </TableCell>
                 <TableCell>
                   <DynamicBadge dynamic={block.criteria != null} />
                 </TableCell>

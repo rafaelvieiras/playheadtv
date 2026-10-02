@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 
+import { DetailPlaceholder } from '@/components/DetailPlaceholder'
 import { Layout } from '@/components/Layout'
 import { RequireAuth } from '@/components/RequireAuth'
 import { BlocksPage } from '@/pages/BlocksPage'
@@ -26,10 +27,26 @@ export default function App() {
       >
         <Route path="/" element={<EpgPage />} />
         <Route path="/channels" element={<ChannelsPage />} />
+        <Route
+          path="/channels/:id"
+          element={<DetailPlaceholder entity="Channel" listLabel="Channels" listPath="/channels" />}
+        />
         <Route path="/blocks" element={<BlocksPage />} />
+        <Route
+          path="/blocks/:id"
+          element={<DetailPlaceholder entity="Block" listLabel="Blocks" listPath="/blocks" />}
+        />
         <Route path="/schedule" element={<SchedulePage />} />
         <Route path="/filler-pools" element={<FillerPoolsPage />} />
+        <Route
+          path="/filler-pools/:id"
+          element={<DetailPlaceholder entity="Filler pool" listLabel="Filler pools" listPath="/filler-pools" />}
+        />
         <Route path="/filler-rules" element={<FillerRulesPage />} />
+        <Route
+          path="/filler-rules/:id"
+          element={<DetailPlaceholder entity="Filler rule" listLabel="Filler rules" listPath="/filler-rules" />}
+        />
         <Route path="/stream-selector" element={<StreamSelectorPage />} />
         <Route path="/media-sources" element={<MediaSourcesPage />} />
         <Route path="/devices" element={<DevicesPage />} />

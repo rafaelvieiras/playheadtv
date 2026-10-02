@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { Link } from 'react-router-dom'
 
 import {
   AlertDialog,
@@ -118,7 +119,11 @@ export function FillerPoolsPage() {
             )}
             {pools.map((pool) => (
               <TableRow key={pool.id}>
-                <TableCell>{pool.name}</TableCell>
+                <TableCell>
+                  <Link to={`/filler-pools/${pool.id}`} className="hover:underline">
+                    {pool.name}
+                  </Link>
+                </TableCell>
                 <TableCell>
                   <DynamicBadge dynamic={pool.criteria != null} />
                 </TableCell>

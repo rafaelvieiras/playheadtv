@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
+import { Link } from 'react-router-dom'
 
 import {
   AlertDialog,
@@ -107,7 +108,9 @@ export function FillerRulesPage() {
             {rules.map((rule) => (
               <TableRow key={rule.id}>
                 <TableCell>
-                  {SCOPE_LABELS[rule.scope_type]}: {scopeName(rule)}
+                  <Link to={`/filler-rules/${rule.id}`} className="hover:underline">
+                    {SCOPE_LABELS[rule.scope_type]}: {scopeName(rule)}
+                  </Link>
                 </TableCell>
                 <TableCell>{KIND_LABELS[rule.kind]}</TableCell>
                 <TableCell>{poolNames.get(rule.filler_pool_id) ?? rule.filler_pool_id}</TableCell>
