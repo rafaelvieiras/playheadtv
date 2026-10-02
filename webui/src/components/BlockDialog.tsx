@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -14,14 +15,13 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
+import { validateCriteria } from '@/lib/criteria'
 import { api } from '@/lib/http'
-import type { Block, BlockInput, DynamicCriteria } from '@/lib/types'
+import type { Block, BlockInput } from '@/lib/types'
 
 interface BlockDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  // Present when editing an existing block, absent when creating one.
-  block?: Block
 }
 
 const emptyForm: BlockInput = {
@@ -30,55 +30,37 @@ const emptyForm: BlockInput = {
   criteria: null,
 }
 
-function validate(form: BlockInput): string | undefined {
-  if (!form.criteria) return undefined
-  const hasGenres = form.criteria.genres.length > 0
-  const hasYearRange = form.criteria.year_from !== null || form.criteria.year_to !== null
-  if (!hasGenres && !hasYearRange) {
-    return 'Enter at least one genre or a year range for the dynamic criteria.'
-  }
-  return undefined
-}
-
-export function BlockDialog({ open, onOpenChange, block }: BlockDialogProps) {
+// Quick create only: editing a block happens on its own page (/blocks/:id),
+// which this dialog navigates to after the block is created.
+export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [form, setForm] = useState<BlockInput>(emptyForm)
   const [error, setError] = useState<string | undefined>(undefined)
-  const isEditing = block !== undefined
 
   useEffect(() => {
     if (open) {
-      setForm(
-        block
-          ? {
-              name: block.name,
-              description: block.description,
-              criteria: block.criteria ? (JSON.parse(block.criteria) as DynamicCriteria) : null,
-            }
-          : emptyForm
-      )
+      setForm(emptyForm)
       setError(undefined)
     }
-  }, [open, block])
+  }, [open])
 
   const mutation = useMutation({
-    mutationFn: () =>
-      isEditing
-        ? api.put<Block>(`/blocks/${block.id}`, form)
-        : api.post<Block>('/blocks', form),
-    onSuccess: () => {
+    mutationFn: () => api.post<Block>('/blocks', form),
+    onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['blocks'] })
-      toast.success(isEditing ? 'Block updated.' : 'Block created.')
+      toast.success('Block created.')
       onOpenChange(false)
+      navigate(`/blocks/${created.id}`)
     },
     onError: () => {
-      toast.error(isEditing ? 'Could not update the block.' : 'Could not create the block.')
+      toast.error('Could not create the block.')
     },
   })
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    const validationError = validate(form)
+    const validationError = validateCriteria(form.criteria)
     if (validationError) {
       setError(validationError)
       return
@@ -92,9 +74,9 @@ export function BlockDialog({ open, onOpenChange, block }: BlockDialogProps) {
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>{isEditing ? 'Edit block' : 'New block'}</DialogTitle>
+            <DialogTitle>New block</DialogTitle>
             <DialogDescription>
-              {isEditing ? 'Update the block details.' : 'Fill in the details of the new block.'}
+              Create the block, then fill its items or refine its criteria in the editor.
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
@@ -129,7 +111,7 @@ export function BlockDialog({ open, onOpenChange, block }: BlockDialogProps) {
               Cancel
             </Button>
             <Button type="submit" disabled={mutation.isPending}>
-              {mutation.isPending ? 'Saving…' : 'Save'}
+              {mutation.isPending ? 'Saving…' : 'Create'}
             </Button>
           </DialogFooter>
         </form>

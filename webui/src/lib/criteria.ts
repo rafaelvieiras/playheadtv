@@ -1,0 +1,23 @@
+import type { DynamicCriteria } from '@/lib/types'
+
+// Shared validation for a block's dynamic criteria: at least one genre or a
+// year bound is required (mirrors the backend's validatePoolCriteria).
+export function validateCriteria(criteria: DynamicCriteria | null): string | undefined {
+  if (!criteria) return undefined
+  const hasGenres = criteria.genres.length > 0
+  const hasYearRange = criteria.year_from !== null || criteria.year_to !== null
+  if (!hasGenres && !hasYearRange) {
+    return 'Enter at least one genre or a year range for the dynamic criteria.'
+  }
+  return undefined
+}
+
+export function formatDuration(ms: number): string {
+  const totalSeconds = Math.round(ms / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return minutes > 0 ? `${hours}h ${minutes}min` : `${hours}h`
+  if (minutes > 0) return seconds > 0 ? `${minutes}min ${seconds}s` : `${minutes}min`
+  return `${seconds}s`
+}

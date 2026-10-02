@@ -3,6 +3,7 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { DetailPlaceholder } from '@/components/DetailPlaceholder'
 import { Layout } from '@/components/Layout'
 import { RequireAuth } from '@/components/RequireAuth'
+import { BlockEditorPage } from '@/pages/BlockEditorPage'
 import { BlocksPage } from '@/pages/BlocksPage'
 import { ChannelsPage } from '@/pages/ChannelsPage'
 import { DevicesPage } from '@/pages/DevicesPage'
@@ -34,7 +35,7 @@ export default function App() {
         <Route path="/blocks" element={<BlocksPage />} />
         <Route
           path="/blocks/:id"
-          element={<DetailPlaceholder entity="Block" listLabel="Blocks" listPath="/blocks" />}
+          element={<BlockEditorPage />}
         />
         <Route path="/schedule" element={<SchedulePage />} />
         <Route path="/filler-pools" element={<FillerPoolsPage />} />

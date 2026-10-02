@@ -16,7 +16,6 @@ import {
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { BlockDialog } from '@/components/BlockDialog'
-import { BlockItemsDialog } from '@/components/BlockItemsDialog'
 import { api } from '@/lib/http'
 import type { Block } from '@/lib/types'
 
@@ -43,10 +42,7 @@ export function BlocksPage() {
   })
 
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [editingBlock, setEditingBlock] = useState<Block | undefined>(undefined)
   const [deletingBlock, setDeletingBlock] = useState<Block | undefined>(undefined)
-  const [itemsDialogOpen, setItemsDialogOpen] = useState(false)
-  const [selectedBlock, setSelectedBlock] = useState<Block | undefined>(undefined)
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/blocks/${id}`),
@@ -61,18 +57,7 @@ export function BlocksPage() {
   })
 
   function openCreateDialog() {
-    setEditingBlock(undefined)
     setDialogOpen(true)
-  }
-
-  function openEditDialog(block: Block) {
-    setEditingBlock(block)
-    setDialogOpen(true)
-  }
-
-  function openItemsDialog(block: Block) {
-    setSelectedBlock(block)
-    setItemsDialogOpen(true)
   }
 
   return (
@@ -117,11 +102,8 @@ export function BlocksPage() {
                   {block.description ?? '—'}
                 </TableCell>
                 <TableCell className="flex justify-end gap-2 text-right">
-                  <Button variant="outline" size="sm" onClick={() => openItemsDialog(block)}>
-                    Items
-                  </Button>
-                  <Button variant="outline" size="sm" onClick={() => openEditDialog(block)}>
-                    Edit
+                  <Button asChild variant="outline" size="sm">
+                    <Link to={`/blocks/${block.id}`}>Edit</Link>
                   </Button>
                   <Button variant="destructive" size="sm" onClick={() => setDeletingBlock(block)}>
                     Delete
@@ -133,9 +115,7 @@ export function BlocksPage() {
         </Table>
       )}
 
-      <BlockDialog open={dialogOpen} onOpenChange={setDialogOpen} block={editingBlock} />
-
-      <BlockItemsDialog open={itemsDialogOpen} onOpenChange={setItemsDialogOpen} block={selectedBlock} />
+      <BlockDialog open={dialogOpen} onOpenChange={setDialogOpen} />
 
       <AlertDialog open={deletingBlock !== undefined} onOpenChange={(open) => !open && setDeletingBlock(undefined)}>
         <AlertDialogContent>
