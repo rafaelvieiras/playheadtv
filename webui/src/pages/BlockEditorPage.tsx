@@ -440,7 +440,7 @@ function TrimInput({
         step="any"
         className="w-28"
         aria-label="Trim in seconds"
-        placeholder={fullMs !== undefined ? String(fullMs / 1000) : ''}
+        placeholder="full length"
         value={value}
         disabled={disabled}
         onChange={(e) => setValue(e.target.value)}

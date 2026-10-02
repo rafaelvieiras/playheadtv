@@ -4,8 +4,9 @@
 import { DAY_LABELS } from '@/lib/schedule'
 import type { Block, BlockItem, CatalogItem, EpgEntry, EpgEntryKind, ScheduleItem } from '@/lib/types'
 
-// Silence shorter than this between two entries is rounding, not a gap.
-export const GAP_TOLERANCE_MS = 1000
+// Silence shorter than this between two entries is a seam, not a gap: no
+// warning and no gap block.
+export const MIN_GAP_MS = 60_000
 
 export interface Gap {
   start: number
@@ -20,7 +21,7 @@ export function findGaps(entries: EpgEntry[]): Gap[] {
   const gaps: Gap[] = []
   let coveredUntil: number | undefined
   for (const entry of sorted) {
-    if (coveredUntil !== undefined && entry.start_at - coveredUntil >= GAP_TOLERANCE_MS) {
+    if (coveredUntil !== undefined && entry.start_at - coveredUntil >= MIN_GAP_MS) {
       gaps.push({ start: coveredUntil, end: entry.start_at })
     }
     coveredUntil = coveredUntil === undefined ? entry.end_at : Math.max(coveredUntil, entry.end_at)
