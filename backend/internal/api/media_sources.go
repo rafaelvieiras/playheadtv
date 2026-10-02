@@ -284,6 +284,12 @@ type catalogSyncItem struct {
 	SeriesTitle      *string `json:"series_title"`
 	DurationMs       int64   `json:"duration_ms"`
 	SourceModifiedAt *int64  `json:"source_modified_at"`
+	Genres           string  `json:"genres"` // comma-separated, as stored and returned
+	ProductionYear   *int64  `json:"production_year"`
+
+	// The same optional metadata GET /catalog-items returns. At most
+	// catalogsync.MaxPeople people (directors first, then cast) are kept.
+	domain.CatalogMetadata
 }
 
 type catalogSyncRequest struct {
@@ -330,6 +336,9 @@ func catalogSync(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 				SeriesTitle:      item.SeriesTitle,
 				DurationMs:       item.DurationMs,
 				SourceModifiedAt: item.SourceModifiedAt,
+				Genres:           item.Genres,
+				ProductionYear:   item.ProductionYear,
+				CatalogMetadata:  item.CatalogMetadata,
 			}, now)
 			if err != nil {
 				handleDBError(w, err)

@@ -228,10 +228,9 @@ func (s *Syncer) SyncOne(ctx context.Context, ms domain.MediaSource) (SyncResult
 		return SyncResult{}, fmt.Errorf("pullsync: list existing catalog_item: %w", err)
 	}
 
-	// Collect each episode's unique SeriesId up front so genre for episodes
-	// can be resolved with one request per series, not one per episode — see
-	// fetchSeriesGenres's doc comment for why episodes need this at all
-	// (their own Genres field always comes back empty from Jellyfin).
+	// Collect each episode's unique SeriesId up front so genre and other
+	// series-level metadata for episodes can be resolved with one request per
+	// series, not one per episode — see fetchSeriesInfo's doc comment.
 	var episodeSeriesIDs []string
 	seriesIDSeen := make(map[string]bool)
 	for _, ri := range remote {
@@ -240,13 +239,13 @@ func (s *Syncer) SyncOne(ctx context.Context, ms domain.MediaSource) (SyncResult
 			episodeSeriesIDs = append(episodeSeriesIDs, *ri.SeriesId)
 		}
 	}
-	seriesGenres := fetchSeriesGenres(ctx, s.client, *ms.BaseURL, apiKey, episodeSeriesIDs)
+	series := fetchSeriesInfo(ctx, s.client, *ms.BaseURL, apiKey, episodeSeriesIDs)
 
 	now := time.Now().UnixMilli()
 	seen := make(map[string]struct{}, len(remote))
 	upserted := 0
 	for _, ri := range remote {
-		item, ok := mapJellyfinItem(ri, seriesGenres)
+		item, ok := mapJellyfinItem(ri, series)
 		if !ok {
 			continue // unsupported/malformed item — skip, don't fail the whole sync
 		}

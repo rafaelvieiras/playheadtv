@@ -2,17 +2,13 @@ package mcpserver
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
-
-// catalogItemColumns mirrors internal/api/catalog_items.go's
-// catalogItemColumns constant — duplicated rather than imported, see
-// mcpserver.go's package comment.
-const catalogItemColumns = "id, tenant_id, media_source_id, external_id, kind, title, series_title, duration_ms, source_modified_at, synced_at"
 
 // Same defaults/limits as internal/api/catalog_items.go.
 const (
@@ -26,6 +22,38 @@ func registerCatalogTools(s *mcp.Server, db storage.DB) {
 		Description: "Search/browse synced catalog items (movies, episodes, etc.) by title or series title (case- and accent-insensitive), to find " +
 			"catalog_item_id values for building blocks and filler pools. Mirrors GET /catalog-items.",
 	}, searchCatalogHandler(db))
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "get_catalog_item",
+		Description: "Get one catalog item by id with everything search_catalog returns plus cast, directors, production locations and " +
+			"chapters. Mirrors GET /catalog-items/{id}.",
+	}, getCatalogItemHandler(db))
+}
+
+type getCatalogItemInput struct {
+	ID string `json:"id" jsonschema:"catalog_item id"`
+}
+
+type getCatalogItemOutput struct {
+	Item domain.CatalogItem `json:"item"`
+}
+
+func getCatalogItemHandler(db storage.DB) mcp.ToolHandlerFor[getCatalogItemInput, getCatalogItemOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in getCatalogItemInput) (*mcp.CallToolResult, getCatalogItemOutput, error) {
+		var rows []domain.CatalogItem
+		if err := db.Query(ctx, &rows,
+			"SELECT "+catalogsync.DetailColumns+" FROM catalog_item WHERE tenant_id = ? AND id = ?",
+			defaultTenantID, in.ID,
+		); err != nil {
+			return nil, getCatalogItemOutput{}, err
+		}
+		if len(rows) == 0 {
+			return nil, getCatalogItemOutput{}, fmt.Errorf("catalog item %q not found", in.ID)
+		}
+		if err := catalogsync.LoadRelations(ctx, db, defaultTenantID, rows, true); err != nil {
+			return nil, getCatalogItemOutput{}, err
+		}
+		return nil, getCatalogItemOutput{Item: rows[0]}, nil
+	}
 }
 
 type searchCatalogInput struct {
@@ -52,7 +80,7 @@ func searchCatalogHandler(db storage.DB) mcp.ToolHandlerFor[searchCatalogInput, 
 			offset = *in.Offset
 		}
 
-		query := "SELECT " + catalogItemColumns + " FROM catalog_item WHERE tenant_id = ?"
+		query := "SELECT " + catalogsync.ListColumns + " FROM catalog_item WHERE tenant_id = ?"
 		args := []any{defaultTenantID}
 		if in.Query != "" {
 			clause, arg := catalogsync.SearchClause(in.Query)
@@ -64,6 +92,9 @@ func searchCatalogHandler(db storage.DB) mcp.ToolHandlerFor[searchCatalogInput, 
 
 		var items []domain.CatalogItem
 		if err := db.Query(ctx, &items, query, args...); err != nil {
+			return nil, searchCatalogOutput{}, err
+		}
+		if err := catalogsync.LoadRelations(ctx, db, defaultTenantID, items, false); err != nil {
 			return nil, searchCatalogOutput{}, err
 		}
 		return nil, searchCatalogOutput{Items: items}, nil

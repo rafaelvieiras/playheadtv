@@ -83,7 +83,7 @@ type CriteriaPreview struct {
 	Sample          []domain.CatalogItem `json:"sample"`
 }
 
-const previewItemColumns = "id, tenant_id, media_source_id, external_id, kind, title, series_title, duration_ms, source_modified_at, synced_at, genres, production_year"
+const previewItemColumns = ListColumns
 
 type previewTotals struct {
 	MatchCount      int

@@ -129,6 +129,73 @@ from the first entry of `GET /Users`).
 Deliberately excluded from the MCP surface in v1, same rationale as
 `catalog-sync`: it's data sync, not authoring.
 
+### Catalog metadata (migration `0009`)
+
+Beyond what scheduling needs, `catalog_item` caches descriptive metadata so
+the UI, MCP and later criteria matching can use it. Both sync directions
+write it through `catalogsync.Upsert`, which replaces the whole stored
+snapshot of the item (a field a sync leaves out is cleared).
+
+- **Single-valued facts are plain nullable columns:** `season_number` (0 =
+  specials), `episode_number`, `episode_number_end`, `series_external_id`,
+  `season_name`, `original_title`, `sort_title`, `premiere_date` and
+  `date_added` (epoch ms, UTC), `overview`, `tagline`, `content_rating`,
+  `community_rating`, `critic_rating`, `imdb_id`/`tmdb_id`/`tvdb_id`, and the
+  technical info `width`, `height`, `video_codec`, `container`, `bitrate`.
+  Season/episode numbering and `series_external_id` are mapped for episodes
+  only.
+- **Art is references only:** `image_primary_tag`, `image_backdrop_tag`,
+  `image_thumb_tag` and `series_image_primary_tag` (the parent series' primary
+  tag, a fallback for episodes) are Jellyfin image tags. The backend never
+  fetches, stores or serves images; clients download and cache art from the
+  media server like they do video.
+- **Everything queryable is normalized and per tenant:** dimension tables
+  `person`, `studio`, `tag`, `genre`, `language` (columns `tenant_id`, `id`,
+  `name`, `name_norm`; unique on `(tenant_id, name_norm)`, where `name_norm`
+  is `catalogsync.FoldText`, so spelling differing only in case/accents is one
+  row and the first spelling seen is kept for display) and link tables
+  `catalog_item_person` (`kind` actor/director, `role`, billing `position`),
+  `catalog_item_studio`, `catalog_item_tag`, `catalog_item_genre`,
+  `catalog_item_language` (`kind` audio/subtitle). `tenant_id` leads every
+  primary key and index, in both directions of each link, and links cascade
+  with their `catalog_item`. Dimension rows nobody links to any more are not
+  garbage-collected.
+- **JSON only for descriptive data:** `production_locations` (array of
+  strings) and `chapters` (array of `{name, start_ms}`).
+- **People are capped** at `catalogsync.MaxPeople` (10) per item, directors
+  first, then main cast in the source's order, enforced for push and pull alike.
+- The comma-separated `genres` column is unchanged and still what dynamic
+  blocks and pools match against. `catalog_item_genre` is filled in parallel
+  from it and nothing reads it yet.
+- Re-syncing an item diffs its links per table: stale links are deleted, new
+  ones inserted, a changed role/position updated, unchanged links cost no write.
+
+Pull sync requests, in addition to the original `Fields`, `Overview`,
+`Taglines`, `OriginalTitle`, `SortName`, `ProviderIds`, `Studios`, `Tags`,
+`People`, `ProductionLocations`, `Chapters`, `MediaStreams` and
+`MediaSources`. Technical info comes from item-level `Width`/`Height`/
+`Container` when present, else the first video stream and first media source;
+audio/subtitle languages from the item's streams. Episodes inherit from their
+series (the same single `GET /Items/{seriesId}` per unique series that
+already provided genres, now with `Fields=Genres,Studios,Tags,People,
+ProductionLocations`): genres, studios, tags, content rating, production
+locations, directors and cast (each only when the episode has none of its own)
+and the series' primary image tag. Overview, ratings, dates, provider ids and
+numbering are never inherited. Cost of requesting `People`/`MediaStreams`/
+`MediaSources` on a large library's first sync has not been measured.
+
+Push sync (`POST /media-sources/{id}/catalog-sync`) accepts the same fields
+optionally, using the response field names (plus `genres` and
+`production_year`), with `cast: [{name, role}]` and `directors: [{name}]`.
+
+`GET /catalog-items` returns every scalar field plus the compact lists
+(`studios`, `tags`, `audio_languages`, `subtitle_languages`; omitted when
+empty). `GET /catalog-items/{id}` and the MCP `get_catalog_item` tool
+additionally return `cast`, `directors` (each `{name, type, role}`),
+`production_locations` and `chapters`. MCP `search_catalog` returns the list
+shape. Title search is still a table scan over `search_text`, moving it to
+FTS5 is a follow-up once catalogs grow.
+
 `media_source.last_synced_at` is surfaced in the web UI (both pull and push)
 so staleness is visible, not hidden.
 

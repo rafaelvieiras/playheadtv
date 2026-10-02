@@ -40,6 +40,69 @@ type jellyfinItem struct {
 	// genre for episodes has to be resolved from the parent series via this
 	// ID (see fetchSeriesGenres).
 	SeriesId *string `json:"SeriesId"`
+
+	// Descriptive metadata (issue #35). Field names follow BaseItemDto. Which
+	// of these Jellyfin returns by default and which only via the Fields
+	// query parameter is NOT verified against a live server here: the Fields
+	// list in fetchItemsPage asks for the optional ones explicitly, and every
+	// field is decoded leniently (absent means nil/empty).
+	IndexNumber         *int64             `json:"IndexNumber"`
+	ParentIndexNumber   *int64             `json:"ParentIndexNumber"`
+	IndexNumberEnd      *int64             `json:"IndexNumberEnd"`
+	SeasonName          *string            `json:"SeasonName"`
+	OriginalTitle       *string            `json:"OriginalTitle"`
+	SortName            *string            `json:"SortName"`
+	PremiereDate        *string            `json:"PremiereDate"`
+	Overview            *string            `json:"Overview"`
+	Taglines            []string           `json:"Taglines"`
+	OfficialRating      *string            `json:"OfficialRating"`
+	CommunityRating     *float64           `json:"CommunityRating"`
+	CriticRating        *float64           `json:"CriticRating"`
+	ProviderIds         map[string]string  `json:"ProviderIds"`
+	Studios             []jellyfinNamePair `json:"Studios"`
+	Tags                []string           `json:"Tags"`
+	People              []jellyfinPerson   `json:"People"`
+	ProductionLocations []string           `json:"ProductionLocations"`
+	Chapters            []jellyfinChapter  `json:"Chapters"`
+	MediaStreams        []jellyfinStream   `json:"MediaStreams"`
+	MediaSources        []jellyfinSource   `json:"MediaSources"`
+	Container           *string            `json:"Container"`
+	Width               *int64             `json:"Width"`
+	Height              *int64             `json:"Height"`
+
+	// Art references: image tags only, the backend never fetches images.
+	ImageTags             map[string]string `json:"ImageTags"`
+	BackdropImageTags     []string          `json:"BackdropImageTags"`
+	SeriesPrimaryImageTag *string           `json:"SeriesPrimaryImageTag"`
+}
+
+type jellyfinNamePair struct {
+	Name string `json:"Name"`
+}
+
+type jellyfinPerson struct {
+	Name string `json:"Name"`
+	Role string `json:"Role"`
+	Type string `json:"Type"` // "Actor" | "Director" | "Writer" | ...
+}
+
+type jellyfinChapter struct {
+	Name               string `json:"Name"`
+	StartPositionTicks int64  `json:"StartPositionTicks"`
+}
+
+type jellyfinStream struct {
+	Type     string `json:"Type"` // "Video" | "Audio" | "Subtitle" | ...
+	Codec    string `json:"Codec"`
+	Language string `json:"Language"`
+	Width    *int64 `json:"Width"`
+	Height   *int64 `json:"Height"`
+	BitRate  *int64 `json:"BitRate"`
+}
+
+type jellyfinSource struct {
+	Container string `json:"Container"`
+	Bitrate   *int64 `json:"Bitrate"`
 }
 
 type jellyfinItemsResponse struct {
@@ -49,6 +112,18 @@ type jellyfinItemsResponse struct {
 }
 
 const jellyfinPageSize = 200
+
+// itemFields is the Fields value of the /Items listing: the original set plus
+// only what the catalog metadata needs. People, MediaStreams, MediaSources
+// and Chapters are the heavy ones; their cost on a large library's first sync
+// has not been measured.
+const itemFields = "SeriesName,DateCreated,DateLastSaved,RunTimeTicks,Genres,ProductionYear,SeriesId," +
+	"Overview,Taglines,OriginalTitle,SortName,ProviderIds,Studios,Tags,People,ProductionLocations,Chapters," +
+	"MediaStreams,MediaSources"
+
+// seriesFields is the Fields value of the per-series lookup: what an episode
+// can inherit when Jellyfin leaves it empty on the episode itself.
+const seriesFields = "Genres,Studios,Tags,People,ProductionLocations"
 
 // maxPages is a defensive ceiling against a pathological server that never
 // reports StartIndex+len(Items) >= TotalRecordCount honestly — 500 pages *
@@ -88,7 +163,7 @@ func fetchItemsPage(ctx context.Context, client *http.Client, baseURL, apiKey st
 	// dedicated item type for that kind of clip, it just tags it "Video".
 	// mapJellyfinItem below maps it to domain.CatalogOther.
 	q.Set("IncludeItemTypes", "Movie,Episode,Video")
-	q.Set("Fields", "SeriesName,DateCreated,DateLastSaved,RunTimeTicks,Genres,ProductionYear,SeriesId")
+	q.Set("Fields", itemFields)
 	q.Set("StartIndex", strconv.Itoa(startIndex))
 	q.Set("Limit", strconv.Itoa(limit))
 	req.URL.RawQuery = q.Encode()
@@ -113,10 +188,15 @@ func fetchItemsPage(ctx context.Context, client *http.Client, baseURL, apiKey st
 // ok=false for item types this cache doesn't model, or missing Id/Name —
 // callers skip those rather than failing the whole sync.
 //
-// seriesGenres is the seriesID -> genres map fetchSeriesGenres built for this
-// sync pass, used only for Episode items (see the field comment on
-// jellyfinItem.SeriesId above for why). Movie genres come straight off ri.
-func mapJellyfinItem(ri jellyfinItem, seriesGenres map[string][]string) (catalogsync.Item, bool) {
+// series is the seriesID -> series item map fetchSeriesInfo built for this
+// sync pass, used only for Episode items: Jellyfin returns no genres on an
+// episode (confirmed live) and, in practice, little else the series owns, so
+// a field the episode leaves empty is inherited from its series. Inherited:
+// genres, studios, tags, content rating, production locations, directors and
+// cast (each list only when the episode has none of that kind), and the
+// series' primary image tag. Never inherited, because they describe the
+// episode itself: overview, ratings, dates, provider ids, numbering.
+func mapJellyfinItem(ri jellyfinItem, series map[string]jellyfinItem) (catalogsync.Item, bool) {
 	if ri.Id == "" || ri.Name == "" {
 		return catalogsync.Item{}, false
 	}
@@ -156,17 +236,22 @@ func mapJellyfinItem(ri jellyfinItem, seriesGenres map[string][]string) (catalog
 		DurationMs:     ri.RunTimeTicks / 10_000,
 		ProductionYear: ri.ProductionYear,
 	}
+	var parent jellyfinItem // zero value when not an episode or the series wasn't resolved
+	if kind == domain.CatalogEpisode && ri.SeriesId != nil {
+		parent = series[*ri.SeriesId]
+	}
 	switch {
 	case len(ri.Genres) > 0:
 		// Defensive: covers Movie always, and Episode on a future Jellyfin
 		// version that starts populating it directly.
 		item.Genres = strings.Join(ri.Genres, ",")
-	case ri.SeriesId != nil:
-		// seriesGenres[*ri.SeriesId] is a nil slice when the series wasn't
-		// resolved (lookup failure, or simply absent from the map) —
-		// strings.Join of a nil slice is "", not a panic.
-		item.Genres = strings.Join(seriesGenres[*ri.SeriesId], ",")
+	default:
+		// parent.Genres is nil when the series wasn't resolved (lookup
+		// failure, or simply absent from the map) — strings.Join of a nil
+		// slice is "", not a panic.
+		item.Genres = strings.Join(parent.Genres, ",")
 	}
+	mapMetadata(&item, ri, parent, kind)
 	modified := ri.DateLastSaved
 	if modified == nil {
 		modified = ri.DateCreated
@@ -178,6 +263,175 @@ func mapJellyfinItem(ri jellyfinItem, seriesGenres map[string][]string) (catalog
 		}
 	}
 	return item, true
+}
+
+// mapMetadata fills item's descriptive metadata from ri, falling back to
+// parent (the episode's series, zero value otherwise) where documented on
+// mapJellyfinItem.
+func mapMetadata(item *catalogsync.Item, ri, parent jellyfinItem, kind domain.CatalogItemKind) {
+	if kind == domain.CatalogEpisode {
+		item.SeasonNumber = ri.ParentIndexNumber
+		item.EpisodeNumber = ri.IndexNumber
+		item.EpisodeNumberEnd = ri.IndexNumberEnd
+		item.SeriesExternalID = nonEmpty(ri.SeriesId)
+		item.SeasonName = nonEmpty(ri.SeasonName)
+	}
+	item.OriginalTitle = nonEmpty(ri.OriginalTitle)
+	item.SortTitle = nonEmpty(ri.SortName)
+	item.PremiereDate = parseTimeMs(ri.PremiereDate)
+	item.DateAdded = parseTimeMs(ri.DateCreated)
+	item.Overview = nonEmpty(ri.Overview)
+	if len(ri.Taglines) > 0 {
+		item.Tagline = nonEmpty(&ri.Taglines[0])
+	}
+	item.ContentRating = firstNonEmpty(ri.OfficialRating, parent.OfficialRating)
+	item.CommunityRating = ri.CommunityRating
+	item.CriticRating = ri.CriticRating
+	item.ImdbID = providerID(ri.ProviderIds, "Imdb")
+	item.TmdbID = providerID(ri.ProviderIds, "Tmdb")
+	item.TvdbID = providerID(ri.ProviderIds, "Tvdb")
+
+	// Technical info: item-level values first, then the first video stream
+	// and first media source.
+	var video *jellyfinStream
+	for i := range ri.MediaStreams {
+		st := &ri.MediaStreams[i]
+		switch strings.ToLower(st.Type) {
+		case "video":
+			if video == nil {
+				video = st
+			}
+		case "audio":
+			item.AudioLanguages = append(item.AudioLanguages, st.Language)
+		case "subtitle":
+			item.SubtitleLanguages = append(item.SubtitleLanguages, st.Language)
+		}
+	}
+	item.Width, item.Height = ri.Width, ri.Height
+	var src *jellyfinSource
+	if len(ri.MediaSources) > 0 {
+		src = &ri.MediaSources[0]
+	}
+	item.Container = nonEmpty(ri.Container)
+	if video != nil {
+		if item.Width == nil {
+			item.Width = video.Width
+		}
+		if item.Height == nil {
+			item.Height = video.Height
+		}
+		item.VideoCodec = nonEmpty(&video.Codec)
+	}
+	if src != nil {
+		if item.Container == nil {
+			item.Container = nonEmpty(&src.Container)
+		}
+		item.Bitrate = src.Bitrate
+	}
+	if item.Bitrate == nil && video != nil {
+		item.Bitrate = video.BitRate
+	}
+
+	item.Studios = namePairs(ri.Studios)
+	if len(item.Studios) == 0 {
+		item.Studios = namePairs(parent.Studios)
+	}
+	item.Tags = ri.Tags
+	if len(item.Tags) == 0 {
+		item.Tags = parent.Tags
+	}
+	item.Locations = ri.ProductionLocations
+	if len(item.Locations) == 0 {
+		item.Locations = parent.ProductionLocations
+	}
+	item.Directors = people(ri.People, "Director")
+	if len(item.Directors) == 0 {
+		item.Directors = people(parent.People, "Director")
+	}
+	item.Cast = people(ri.People, "Actor")
+	if len(item.Cast) == 0 {
+		item.Cast = people(parent.People, "Actor")
+	}
+	for _, c := range ri.Chapters {
+		item.Chapters = append(item.Chapters, domain.CatalogChapter{Name: c.Name, StartMs: c.StartPositionTicks / 10_000})
+	}
+
+	item.ImagePrimaryTag = nonEmpty(mapTag(ri.ImageTags, "Primary"))
+	item.ImageThumbTag = nonEmpty(mapTag(ri.ImageTags, "Thumb"))
+	if len(ri.BackdropImageTags) > 0 {
+		item.ImageBackdropTag = nonEmpty(&ri.BackdropImageTags[0])
+	}
+	if kind == domain.CatalogEpisode {
+		item.SeriesImagePrimaryTag = firstNonEmpty(ri.SeriesPrimaryImageTag, mapTag(parent.ImageTags, "Primary"))
+	}
+}
+
+func nonEmpty(s *string) *string {
+	if s == nil || strings.TrimSpace(*s) == "" {
+		return nil
+	}
+	v := strings.TrimSpace(*s)
+	return &v
+}
+
+func firstNonEmpty(vals ...*string) *string {
+	for _, v := range vals {
+		if r := nonEmpty(v); r != nil {
+			return r
+		}
+	}
+	return nil
+}
+
+func mapTag(m map[string]string, key string) *string {
+	if v, ok := m[key]; ok {
+		return &v
+	}
+	return nil
+}
+
+func providerID(m map[string]string, key string) *string {
+	// Jellyfin spells the keys "Imdb"/"Tmdb"/"Tvdb", but be lenient on case.
+	for k, v := range m {
+		if strings.EqualFold(k, key) {
+			return nonEmpty(&v)
+		}
+	}
+	return nil
+}
+
+func parseTimeMs(s *string) *int64 {
+	if s == nil {
+		return nil
+	}
+	t, err := time.Parse(time.RFC3339, *s)
+	if err != nil {
+		return nil
+	}
+	ms := t.UnixMilli()
+	return &ms
+}
+
+func namePairs(in []jellyfinNamePair) []string {
+	var out []string
+	for _, p := range in {
+		if n := strings.TrimSpace(p.Name); n != "" {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// people returns the people of one Jellyfin Type. The per-item cap is applied
+// by catalogsync (directors first), not here.
+func people(in []jellyfinPerson, typ string) []domain.CatalogPerson {
+	var out []domain.CatalogPerson
+	for _, p := range in {
+		if strings.EqualFold(p.Type, typ) && strings.TrimSpace(p.Name) != "" {
+			out = append(out, domain.CatalogPerson{Name: p.Name, Type: typ, Role: p.Role})
+		}
+	}
+	return out
 }
 
 // jellyfinUser is the subset of Jellyfin's UserDto (GET /Users) needed to
@@ -216,64 +470,63 @@ func fetchAdminUserID(ctx context.Context, client *http.Client, baseURL, apiKey 
 	return users[0].Id, nil
 }
 
-// fetchSeriesGenres resolves the genres of each unique series in seriesIDs,
-// for inheriting onto their episodes — Episode.Genres always comes back
-// empty from Jellyfin itself (confirmed live), so this is the only way to
-// tag an episode with a genre at all.
+// fetchSeriesInfo resolves each unique series in seriesIDs (one request per
+// series, never per episode), for inheriting onto their episodes — Episode
+// genres always come back empty from Jellyfin itself (confirmed live), so
+// this is the only way to tag an episode with a genre at all, and it is also
+// where the series-level studios, tags, people and so on come from.
 //
 // Best-effort by design, not fatal: if the userId lookup fails, this logs a
-// warning and returns an empty map — episodes simply go without a genre for
-// this sync round rather than the whole sync failing. Likewise, a failure
-// fetching one specific series is logged and only that series is left out of
-// the returned map.
-func fetchSeriesGenres(ctx context.Context, client *http.Client, baseURL, apiKey string, seriesIDs []string) map[string][]string {
-	result := make(map[string][]string)
+// warning and returns an empty map — episodes simply go without inherited
+// data for this sync round rather than the whole sync failing. Likewise, a
+// failure fetching one specific series is logged and only that series is left
+// out of the returned map.
+func fetchSeriesInfo(ctx context.Context, client *http.Client, baseURL, apiKey string, seriesIDs []string) map[string]jellyfinItem {
+	result := make(map[string]jellyfinItem)
 	if len(seriesIDs) == 0 {
 		return result
 	}
 
 	userID, err := fetchAdminUserID(ctx, client, baseURL, apiKey)
 	if err != nil {
-		log.Printf("pullsync: resolve jellyfin userId for series genre lookup: %v", err)
+		log.Printf("pullsync: resolve jellyfin userId for series lookup: %v", err)
 		return result
 	}
 
 	for _, seriesID := range seriesIDs {
-		genres, err := fetchOneSeriesGenres(ctx, client, baseURL, apiKey, userID, seriesID)
+		info, err := fetchOneSeries(ctx, client, baseURL, apiKey, userID, seriesID)
 		if err != nil {
-			log.Printf("pullsync: fetch genres for series %s: %v", seriesID, err)
+			log.Printf("pullsync: fetch series %s: %v", seriesID, err)
 			continue
 		}
-		result[seriesID] = genres
+		result[seriesID] = info
 	}
 	return result
 }
 
-func fetchOneSeriesGenres(ctx context.Context, client *http.Client, baseURL, apiKey, userID, seriesID string) ([]string, error) {
+func fetchOneSeries(ctx context.Context, client *http.Client, baseURL, apiKey, userID, seriesID string) (jellyfinItem, error) {
 	u := strings.TrimRight(baseURL, "/") + "/Items/" + seriesID
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
-		return nil, err
+		return jellyfinItem{}, err
 	}
 	q := req.URL.Query()
-	q.Set("Fields", "Genres")
+	q.Set("Fields", seriesFields)
 	q.Set("userId", userID)
 	req.URL.RawQuery = q.Encode()
 	req.Header.Set("X-Emby-Token", apiKey)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return jellyfinItem{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("jellyfin GET /Items/%s: status %d", seriesID, resp.StatusCode)
+		return jellyfinItem{}, fmt.Errorf("jellyfin GET /Items/%s: status %d", seriesID, resp.StatusCode)
 	}
-	var parsed struct {
-		Genres []string `json:"Genres"`
-	}
+	var parsed jellyfinItem
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
-		return nil, fmt.Errorf("decode jellyfin /Items/%s response: %w", seriesID, err)
+		return jellyfinItem{}, fmt.Errorf("decode jellyfin /Items/%s response: %w", seriesID, err)
 	}
-	return parsed.Genres, nil
+	return parsed, nil
 }

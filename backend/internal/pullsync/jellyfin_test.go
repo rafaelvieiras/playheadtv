@@ -77,7 +77,7 @@ func TestMapJellyfinItem_Episode(t *testing.T) {
 }
 
 func TestMapJellyfinItem_EpisodeInheritsSeriesGenres(t *testing.T) {
-	seriesGenres := map[string][]string{"series-1": {"Comedy", "Romance"}}
+	seriesGenres := map[string]jellyfinItem{"series-1": {Genres: []string{"Comedy", "Romance"}}}
 	item, ok := mapJellyfinItem(jellyfinItem{
 		Id:             "ep-1",
 		Name:           "Pilot",
@@ -101,7 +101,7 @@ func TestMapJellyfinItem_EpisodeInheritsSeriesGenres(t *testing.T) {
 func TestMapJellyfinItem_EpisodeOwnGenresPreferredOverSeries(t *testing.T) {
 	// Defensive path: a future Jellyfin version populating Episode.Genres
 	// directly should win over the series lookup, not be overwritten by it.
-	seriesGenres := map[string][]string{"series-1": {"Comedy"}}
+	seriesGenres := map[string]jellyfinItem{"series-1": {Genres: []string{"Comedy"}}}
 	item, ok := mapJellyfinItem(jellyfinItem{
 		Id:           "ep-1",
 		Name:         "Pilot",
@@ -125,7 +125,7 @@ func TestMapJellyfinItem_EpisodeSeriesNotInMapNoPanic(t *testing.T) {
 		Type:         "Episode",
 		RunTimeTicks: 12_000_000_000,
 		SeriesId:     strPtr("unknown-series"),
-	}, map[string][]string{})
+	}, map[string]jellyfinItem{})
 	if !ok {
 		t.Fatal("ok = false, want true")
 	}
@@ -307,8 +307,8 @@ func TestFetchSeriesGenres_HappyPath(t *testing.T) {
 	)
 	defer srv.Close()
 
-	result := fetchSeriesGenres(context.Background(), srv.Client(), srv.URL, "token", []string{"series-1"})
-	if got := strings.Join(result["series-1"], ","); got != "Comedy,Romance" {
+	result := fetchSeriesInfo(context.Background(), srv.Client(), srv.URL, "token", []string{"series-1"})
+	if got := strings.Join(result["series-1"].Genres, ","); got != "Comedy,Romance" {
 		t.Errorf("result[series-1] = %q, want %q", got, "Comedy,Romance")
 	}
 	if len(*gotUserIDs) != 1 || (*gotUserIDs)[0] != "user-1" {
@@ -323,11 +323,11 @@ func TestFetchSeriesGenres_SeriesNotFoundExcludedFromMap(t *testing.T) {
 	)
 	defer srv.Close()
 
-	result := fetchSeriesGenres(context.Background(), srv.Client(), srv.URL, "token", []string{"series-1", "series-missing"})
+	result := fetchSeriesInfo(context.Background(), srv.Client(), srv.URL, "token", []string{"series-1", "series-missing"})
 	if _, ok := result["series-missing"]; ok {
 		t.Error("result contains series-missing, want it excluded (fetch for it failed)")
 	}
-	if got := strings.Join(result["series-1"], ","); got != "Comedy" {
+	if got := strings.Join(result["series-1"].Genres, ","); got != "Comedy" {
 		t.Errorf("result[series-1] = %q, want %q", got, "Comedy")
 	}
 }
@@ -336,7 +336,7 @@ func TestFetchSeriesGenres_NoUsersReturnsEmptyMap(t *testing.T) {
 	srv, _ := jellyfinFakeServer(t, []jellyfinUser{}, nil)
 	defer srv.Close()
 
-	result := fetchSeriesGenres(context.Background(), srv.Client(), srv.URL, "token", []string{"series-1"})
+	result := fetchSeriesInfo(context.Background(), srv.Client(), srv.URL, "token", []string{"series-1"})
 	if len(result) != 0 {
 		t.Errorf("result = %v, want empty map when /Users has no users", result)
 	}
@@ -352,7 +352,7 @@ func TestFetchSeriesGenres_EmptySeriesIDsSkipsUsersCall(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	result := fetchSeriesGenres(context.Background(), srv.Client(), srv.URL, "token", nil)
+	result := fetchSeriesInfo(context.Background(), srv.Client(), srv.URL, "token", nil)
 	if len(result) != 0 {
 		t.Errorf("result = %v, want empty map", result)
 	}

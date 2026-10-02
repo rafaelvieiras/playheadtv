@@ -115,6 +115,12 @@ actionable checklist.
       its parent series (own `Genres` always empty on Jellyfin) via one
       `GET /Items/{seriesId}` per unique series per sync, with the `userId`
       that endpoint requires resolved once from `GET /Users`.
+- [x] Catalog metadata sync (season/episode numbers, overview, ratings,
+      people, studios, tags, languages, chapters, art references): see
+      `docs/ARCHITECTURE.md` "Catalog metadata". `GET /catalog-items/{id}` and
+      MCP `get_catalog_item` carry the full detail, the list endpoint and
+      `search_catalog` the compact form; the web UI shows `S01E03` next to
+      the series name.
 - [x] Dynamic `filler_pool`s: an optional `filler_pool.criteria`
       (`{kind, genres, year_from, year_to}`) makes `catalogsync.ResolveDynamicPools`
       own that pool's `filler_pool_item` rows, recomputed after every catalog

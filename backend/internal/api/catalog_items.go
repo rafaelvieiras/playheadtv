@@ -1,6 +1,7 @@
 package api
 
 import (
+	"database/sql"
 	"net/http"
 	"strconv"
 
@@ -14,8 +15,6 @@ func registerCatalogItems(mux *http.ServeMux, db storage.DB) {
 	mux.HandleFunc("POST /catalog-items/preview-criteria", previewCriteria(db))
 	mux.HandleFunc("GET /catalog-items/{id}", getCatalogItem(db))
 }
-
-const catalogItemColumns = "id, tenant_id, media_source_id, external_id, kind, title, series_title, duration_ms, source_modified_at, synced_at, genres, production_year"
 
 const (
 	defaultCatalogItemLimit = 50
@@ -48,7 +47,7 @@ func listCatalogItems(db storage.DB) http.HandlerFunc {
 			offset = n
 		}
 
-		query := "SELECT " + catalogItemColumns + " FROM catalog_item WHERE tenant_id = ?"
+		query := "SELECT " + catalogsync.ListColumns + " FROM catalog_item WHERE tenant_id = ?"
 		args := []any{DefaultTenantID}
 
 		if title := q.Get("q"); title != "" {
@@ -69,6 +68,10 @@ func listCatalogItems(db storage.DB) http.HandlerFunc {
 
 		var items []domain.CatalogItem
 		if err := db.Query(r.Context(), &items, query, args...); err != nil {
+			handleDBError(w, err)
+			return
+		}
+		if err := catalogsync.LoadRelations(r.Context(), db, DefaultTenantID, items, false); err != nil {
 			handleDBError(w, err)
 			return
 		}
@@ -102,21 +105,31 @@ func previewCriteria(db storage.DB) http.HandlerFunc {
 	}
 }
 
-// getCatalogItem exists mainly for a playback client resolving a
+// getCatalogItem returns one item with everything GET /catalog-items returns
+// plus the detail-only fields: cast, directors, production_locations and
+// chapters. It exists mainly for a playback client resolving a
 // GET /epg entry's catalog_item_id into the source-native ID (ExternalID)
 // and MediaSourceID it needs to build a stream URL — GET /catalog-items
 // alone only supports search/browse, not a lookup by ID.
 func getCatalogItem(db storage.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var item domain.CatalogItem
-		err := db.Query(r.Context(), &item,
-			"SELECT "+catalogItemColumns+" FROM catalog_item WHERE tenant_id = ? AND id = ?",
+		var rows []domain.CatalogItem
+		err := db.Query(r.Context(), &rows,
+			"SELECT "+catalogsync.DetailColumns+" FROM catalog_item WHERE tenant_id = ? AND id = ?",
 			DefaultTenantID, r.PathValue("id"),
 		)
 		if err != nil {
 			handleDBError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, item)
+		if len(rows) == 0 {
+			handleDBError(w, sql.ErrNoRows)
+			return
+		}
+		if err := catalogsync.LoadRelations(r.Context(), db, DefaultTenantID, rows, true); err != nil {
+			handleDBError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, rows[0])
 	}
 }

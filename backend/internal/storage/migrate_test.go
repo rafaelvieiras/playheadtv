@@ -162,3 +162,73 @@ func TestMigration0006_MigratesScheduleEntryData(t *testing.T) {
 		t.Fatalf("RunMigrations (second run): %v", err)
 	}
 }
+
+// TestMigration0009_KeepsExistingCatalogRows proves the catalog metadata
+// migration upgrades a database already holding catalog_item rows: the rows
+// survive untouched with NULL metadata, and the new link tables work.
+func TestMigration0009_KeepsExistingCatalogRows(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "playheadtv.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	pre := fstest.MapFS{}
+	entries, _ := fs.ReadDir(migrations.FS, ".")
+	for _, e := range entries {
+		if e.Name() >= "0009_" {
+			continue
+		}
+		content, err := fs.ReadFile(migrations.FS, e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pre[e.Name()] = &fstest.MapFile{Data: content}
+	}
+	if err := RunMigrations(ctx, db, pre); err != nil {
+		t.Fatalf("RunMigrations (pre-0009): %v", err)
+	}
+	for _, q := range []string{
+		"INSERT INTO tenant (id, name, tier, created_at) VALUES ('t1', 'Test', 'self_hosted', 1)",
+		"INSERT INTO media_source (id, tenant_id, type, name, sync_mode, created_at, updated_at) VALUES ('ms1', 't1', 'local_folder', 'Local', 'push', 1, 1)",
+		"INSERT INTO catalog_item (id, tenant_id, media_source_id, external_id, kind, title, duration_ms, synced_at, genres, search_text) VALUES ('ci1', 't1', 'ms1', 'ext1', 'movie', 'Old Movie', 60000, 1, 'Comedy', 'old movie')",
+	} {
+		if err := db.Exec(ctx, q); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+
+	if err := RunMigrations(ctx, db, migrations.FS); err != nil {
+		t.Fatalf("RunMigrations (0009): %v", err)
+	}
+
+	type row struct {
+		Title        string
+		Genres       string
+		SeasonNumber *int64
+		Overview     *string
+	}
+	var rows []row
+	if err := db.Query(ctx, &rows, "SELECT title, genres, season_number, overview FROM catalog_item WHERE id = 'ci1'"); err != nil {
+		t.Fatalf("query: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Title != "Old Movie" || rows[0].Genres != "Comedy" || rows[0].SeasonNumber != nil || rows[0].Overview != nil {
+		t.Fatalf("existing row after migration = %+v", rows)
+	}
+
+	// The link tables accept rows and cascade with the item.
+	for _, q := range []string{
+		"INSERT INTO studio (tenant_id, id, name, name_norm) VALUES ('t1', 's1', 'Acme', 'acme')",
+		"INSERT INTO catalog_item_studio (tenant_id, catalog_item_id, studio_id) VALUES ('t1', 'ci1', 's1')",
+		"DELETE FROM catalog_item WHERE id = 'ci1'",
+	} {
+		if err := db.Exec(ctx, q); err != nil {
+			t.Fatalf("%q: %v", q, err)
+		}
+	}
+	var n []int
+	if err := db.Query(ctx, &n, "SELECT COUNT(*) FROM catalog_item_studio"); err != nil || n[0] != 0 {
+		t.Fatalf("catalog_item_studio after item delete = %v (%v), want 0", n, err)
+	}
+}

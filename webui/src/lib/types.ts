@@ -70,6 +70,56 @@ export interface CatalogItem {
   // Comma-separated, in the source's language, not normalized.
   genres: string
   production_year: number | null
+  // Descriptive metadata (backend/internal/domain.CatalogMetadata). All
+  // optional: items synced before the metadata sync existed have none, and
+  // the list fields are omitted when empty. Dates are epoch ms (UTC), images
+  // are Jellyfin image tags (the backend never serves art). cast, directors,
+  // production_locations and chapters come only from GET /catalog-items/{id}.
+  season_number?: number | null // 0 = specials
+  episode_number?: number | null
+  episode_number_end?: number | null
+  series_external_id?: string | null
+  season_name?: string | null
+  original_title?: string | null
+  sort_title?: string | null
+  premiere_date?: number | null
+  date_added?: number | null
+  overview?: string | null
+  tagline?: string | null
+  content_rating?: string | null
+  community_rating?: number | null
+  critic_rating?: number | null
+  imdb_id?: string | null
+  tmdb_id?: string | null
+  tvdb_id?: string | null
+  width?: number | null
+  height?: number | null
+  video_codec?: string | null
+  container?: string | null
+  bitrate?: number | null
+  image_primary_tag?: string | null
+  image_backdrop_tag?: string | null
+  image_thumb_tag?: string | null
+  series_image_primary_tag?: string | null
+  studios?: string[]
+  tags?: string[]
+  audio_languages?: string[]
+  subtitle_languages?: string[]
+  cast?: CatalogPerson[]
+  directors?: CatalogPerson[]
+  production_locations?: string[]
+  chapters?: CatalogChapter[]
+}
+
+export interface CatalogPerson {
+  name: string
+  type?: string
+  role?: string
+}
+
+export interface CatalogChapter {
+  name: string
+  start_ms: number
 }
 
 // Mirrors backend/internal/api's fillerPoolCriteriaRequest / poolCriteria —

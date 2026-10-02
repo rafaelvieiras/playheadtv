@@ -247,7 +247,7 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 		// create_block was never a real tool (block creation is REST/web-UI
 		// only) — fixed here while touching this list for issue #7 rather
 		// than leaving TestMCPToolsEndToEnd failing on unmodified main too.
-		"create_channel", "list_channels", "assign_channel_schedule", "register_media_source", "search_catalog",
+		"create_channel", "list_channels", "assign_channel_schedule", "register_media_source", "search_catalog", "get_catalog_item",
 		"add_block_item", "list_block_items",
 		"create_filler_pool", "add_filler_pool_item", "create_filler_rule", "list_filler_pools",
 		"create_schedule", "create_schedule_item", "preview_epg",
@@ -298,7 +298,8 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 
 	doJSON(t, ts, "POST", "/media-sources/"+localSource.ID+"/catalog-sync", token, map[string]any{
 		"items": []map[string]any{
-			{"external_id": "ext-1", "kind": "movie", "title": "Movie One", "duration_ms": 5_400_000},
+			{"external_id": "ext-1", "kind": "movie", "title": "Movie One", "duration_ms": 5_400_000,
+				"season_number": 2, "studios": []string{"Acme"}, "cast": []map[string]any{{"name": "Ana", "role": "Hero"}}},
 			{"external_id": "ext-2", "kind": "movie", "title": "Filler Short", "duration_ms": 60_000},
 			// Accented title/series are deliberate test data for accent-insensitive search.
 			{"external_id": "ext-3", "kind": "episode", "title": "Episódio Final", "series_title": "Minha Série", "duration_ms": 60_000},
@@ -335,6 +336,15 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 		t.Fatalf("search_catalog(query=Movie): unexpected result %+v", searchOut.Items)
 	}
 	movieItemID := searchOut.Items[0].ID
+	if got := searchOut.Items[0]; got.SeasonNumber == nil || *got.SeasonNumber != 2 || len(got.Studios) != 1 || len(got.Cast) != 0 {
+		t.Fatalf("search_catalog: metadata = season %v studios %v cast %v, want season 2, one studio, no cast (list shape)", got.SeasonNumber, got.Studios, got.Cast)
+	}
+	detail := callTool[struct {
+		Item domain.CatalogItem `json:"item"`
+	}](t, ctx, session, "get_catalog_item", map[string]any{"id": movieItemID})
+	if len(detail.Item.Cast) != 1 || detail.Item.Cast[0].Role != "Hero" {
+		t.Fatalf("get_catalog_item: cast = %+v", detail.Item.Cast)
+	}
 
 	for _, q := range []string{"episodio", "EPISÓDIO", "minha serie"} {
 		accentOut := callTool[struct {

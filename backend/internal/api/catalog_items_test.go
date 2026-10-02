@@ -143,3 +143,73 @@ func TestCatalogItemsSearchAccentCaseSeriesAndFilters(t *testing.T) {
 	eq(titles("/catalog-items?q=serie&media_source_id="+ms.ID), "Episódio Dois", "Piloto")
 	eq(titles("/catalog-items?q=serie&media_source_id=nope"))
 }
+
+func TestCatalogSyncPushAcceptsMetadataAndAPIReturnsIt(t *testing.T) {
+	_, mux := newTestDB(t)
+
+	rec := doRequest(t, mux, "POST", "/media-sources", `{"type":"local_folder","name":"NAS"}`)
+	var ms domain.MediaSource
+	json.Unmarshal(rec.Body.Bytes(), &ms)
+
+	syncBody := `{"items": [{
+		"external_id":"e1","kind":"episode","title":"Pilot","series_title":"Some Show","duration_ms":1000,
+		"genres":"Comedy,Drama","production_year":2020,
+		"season_number":1,"episode_number":3,"episode_number_end":4,"series_external_id":"s1","season_name":"Season 1",
+		"overview":"First.","content_rating":"TV-14","community_rating":8.5,"imdb_id":"tt1",
+		"width":1920,"height":1080,"video_codec":"h264","container":"mkv","bitrate":5000000,
+		"image_primary_tag":"p","series_image_primary_tag":"sp",
+		"studios":["Acme"],"tags":["cult"],"audio_languages":["eng"],"subtitle_languages":["por"],
+		"cast":[{"name":"Ana","role":"Hero"}],"directors":[{"name":"Dana"}],
+		"production_locations":["Brazil"],"chapters":[{"name":"Intro","start_ms":0}]
+	},{"external_id":"m1","kind":"movie","title":"Plain","duration_ms":1000}]}`
+	if rec = doRequest(t, mux, "POST", "/media-sources/"+ms.ID+"/catalog-sync", syncBody); rec.Code != http.StatusOK {
+		t.Fatalf("catalog-sync: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doRequest(t, mux, "GET", "/catalog-items?kind=episode", "")
+	var list []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &list)
+	if len(list) != 1 {
+		t.Fatalf("list = %d items, want 1", len(list))
+	}
+	ep := list[0]
+	if ep["season_number"] != float64(1) || ep["episode_number_end"] != float64(4) || ep["community_rating"] != 8.5 || ep["genres"] != "Comedy,Drama" {
+		t.Errorf("list scalars wrong: %v", ep)
+	}
+	if studios, _ := ep["studios"].([]any); len(studios) != 1 || studios[0] != "Acme" {
+		t.Errorf("list studios = %v", ep["studios"])
+	}
+	for _, detailOnly := range []string{"cast", "directors", "production_locations", "chapters"} {
+		if _, ok := ep[detailOnly]; ok {
+			t.Errorf("list response carries detail-only field %q", detailOnly)
+		}
+	}
+
+	rec = doRequest(t, mux, "GET", "/catalog-items/"+ep["id"].(string), "")
+	var item domain.CatalogItem
+	json.Unmarshal(rec.Body.Bytes(), &item)
+	if len(item.Cast) != 1 || item.Cast[0].Role != "Hero" || len(item.Directors) != 1 || item.Directors[0].Name != "Dana" ||
+		len(item.Locations) != 1 || len(item.Chapters) != 1 || len(item.AudioLanguages) != 1 || item.SubtitleLanguages[0] != "por" {
+		t.Errorf("detail wrong: %+v", item)
+	}
+
+	// An item pushed without metadata still renders, with nulls and no lists.
+	rec = doRequest(t, mux, "GET", "/catalog-items?kind=movie", "")
+	var movies []map[string]any
+	json.Unmarshal(rec.Body.Bytes(), &movies)
+	if _, has := movies[0]["studios"]; movies[0]["season_number"] != nil || has {
+		t.Errorf("plain movie = %v, want null season_number and no studios", movies[0])
+	}
+
+	// Re-push without the lists clears the links.
+	if rec = doRequest(t, mux, "POST", "/media-sources/"+ms.ID+"/catalog-sync",
+		`{"items":[{"external_id":"e1","kind":"episode","title":"Pilot","duration_ms":1000,"studios":["Other"]}]}`); rec.Code != http.StatusOK {
+		t.Fatalf("re-push: %d", rec.Code)
+	}
+	rec = doRequest(t, mux, "GET", "/catalog-items/"+ep["id"].(string), "")
+	item = domain.CatalogItem{}
+	json.Unmarshal(rec.Body.Bytes(), &item)
+	if len(item.Cast) != 0 || len(item.Studios) != 1 || item.Studios[0] != "Other" || item.SeasonNumber != nil {
+		t.Errorf("after re-push: %+v", item)
+	}
+}

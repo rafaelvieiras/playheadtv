@@ -86,15 +86,8 @@ func scanInto(rows *sql.Rows, itemVal reflect.Value) error {
 		return err
 	}
 
-	fieldByCol := make(map[string]int, itemVal.NumField())
-	t := itemVal.Type()
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
-		if !f.IsExported() {
-			continue
-		}
-		fieldByCol[toSnakeCase(f.Name)] = i
-	}
+	fieldByCol := make(map[string][]int, itemVal.NumField())
+	collectFields(itemVal.Type(), nil, fieldByCol)
 
 	targets := make([]any, len(cols))
 	nullables := make(map[int]nullableScan, len(cols))
@@ -105,7 +98,7 @@ func scanInto(rows *sql.Rows, itemVal reflect.Value) error {
 			targets[i] = &discard
 			continue
 		}
-		fieldVal := itemVal.Field(fieldIdx)
+		fieldVal := itemVal.FieldByIndex(fieldIdx)
 		target, nullable := scanTargetFor(fieldVal)
 		targets[i] = target
 		if nullable != nil {
@@ -118,10 +111,28 @@ func scanInto(rows *sql.Rows, itemVal reflect.Value) error {
 	}
 
 	for i, fill := range nullables {
-		fieldIdx := fieldByCol[cols[i]]
-		fill(itemVal.Field(fieldIdx))
+		fill(itemVal.FieldByIndex(fieldByCol[cols[i]]))
 	}
 	return nil
+}
+
+// collectFields records, for every exported field of t, the index path to it
+// keyed by its snake_case column name. An embedded (anonymous) struct is
+// flattened into its parent, mirroring how encoding/json treats it, so a
+// shared group of columns can be declared once and embedded.
+func collectFields(t reflect.Type, prefix []int, out map[string][]int) {
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		path := append(append([]int(nil), prefix...), i)
+		if f.Anonymous && f.Type.Kind() == reflect.Struct {
+			collectFields(f.Type, path, out)
+			continue
+		}
+		out[toSnakeCase(f.Name)] = path
+	}
 }
 
 // nullableScan assigns the value collected in a sql.Null* scan target back
@@ -157,6 +168,15 @@ func scanTargetFor(fieldVal reflect.Value) (target any, nullable nullableScan) {
 			if ni.Valid {
 				v := int(ni.Int64)
 				f.Set(reflect.ValueOf(&v))
+			} else {
+				f.Set(reflect.Zero(f.Type()))
+			}
+		}
+	case *float64:
+		var nf sql.NullFloat64
+		return &nf, func(f reflect.Value) {
+			if nf.Valid {
+				f.Set(reflect.ValueOf(&nf.Float64))
 			} else {
 				f.Set(reflect.Zero(f.Type()))
 			}

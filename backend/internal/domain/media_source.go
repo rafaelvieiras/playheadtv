@@ -65,4 +65,10 @@ type CatalogItem struct {
 	Genres           string          `json:"genres"`             // comma-separated, in the source's language, not normalized
 	ProductionYear   *int64          `json:"production_year"`
 	SyncedAt         int64           `json:"synced_at"`
+
+	CatalogMetadata
+
+	// Raw JSON columns, decoded into Locations/Chapters by the detail loader.
+	LocationsJSON *string `json:"-"`
+	ChaptersJSON  *string `json:"-"`
 }
