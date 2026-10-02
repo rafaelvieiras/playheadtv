@@ -1,3 +1,4 @@
+import { BlockPlaybackFields, type BlockPlaybackDraft } from '@/components/BlockPlaybackFields'
 import { QueryBuilder } from '@/components/QueryBuilder'
 import { Field, FieldDescription, FieldLabel } from '@/components/ui/field'
 import { Switch } from '@/components/ui/switch'
@@ -7,11 +8,13 @@ interface DynamicCriteriaFieldsProps {
   value: Query | null
   onChange: (value: Query | null) => void
   idPrefix?: string
+  // Blocks only (not filler pools): the playback order of the dynamic block.
+  playback?: { value: BlockPlaybackDraft; onChange: (value: BlockPlaybackDraft) => void }
 }
 
 // The "dynamic (automatic criteria)" switch plus, while it is on, the query
 // builder: the block or pool is then filled from the catalog by that query.
-export function DynamicCriteriaFields({ value, onChange, idPrefix = 'criteria' }: DynamicCriteriaFieldsProps) {
+export function DynamicCriteriaFields({ value, onChange, idPrefix = 'criteria', playback }: DynamicCriteriaFieldsProps) {
   const enabled = value !== null
 
   return (
@@ -34,6 +37,10 @@ export function DynamicCriteriaFields({ value, onChange, idPrefix = 'criteria' }
             syncs.
           </FieldDescription>
         </Field>
+      )}
+
+      {enabled && value && playback && (
+        <BlockPlaybackFields value={playback.value} onChange={playback.onChange} idPrefix={idPrefix} />
       )}
     </>
   )

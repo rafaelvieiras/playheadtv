@@ -6,7 +6,9 @@ import { toast } from 'sonner'
 
 import { CriteriaAmountControl, CriteriaOrderSelect } from '@/components/CriteriaItemControls'
 import { CriteriaReviewNotice } from '@/components/CriteriaReviewNotice'
+import { type BlockPlaybackDraft } from '@/components/BlockPlaybackFields'
 import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
+import { InterleaveControls } from '@/components/InterleaveControls'
 import { QueryBuilder } from '@/components/QueryBuilder'
 import { InlineWarning } from '@/components/InlineWarning'
 import { PageHeader } from '@/components/PageHeader'
@@ -21,6 +23,13 @@ import { Textarea } from '@/components/ui/textarea'
 import { authoringKeys, usePreviewCriteria, useUpdateBlockItem } from '@/lib/authoring'
 import { formatCatalogTitle } from '@/lib/catalog'
 import { formatDuration } from '@/lib/criteria'
+import {
+  blockPlaybackPayload,
+  DEFAULT_INTERLEAVE,
+  toDraft,
+  validateInterleave,
+  type InterleaveDraft,
+} from '@/lib/interleave'
 import { emptyQuery, parseStoredCriteria, queryKey, summarizeQuery, validateQuery, type Query } from '@/lib/query'
 import { airsUntilSlotEnd } from '@/lib/guide'
 import { ApiError, api } from '@/lib/http'
@@ -35,6 +44,7 @@ import {
   type CatalogItem,
   type CriteriaAmount,
   type CriteriaOrder,
+  type Interleave,
   type PlaybackOrder,
   type SeriesAmount,
   type SeriesSummary,
@@ -100,7 +110,12 @@ function BlockDetailsForm({ block }: { block: Block }) {
     }),
     [block, stored]
   )
+  const initialPlayback = useMemo<BlockPlaybackDraft>(
+    () => ({ order: block.playback_order ?? 'title', interleave: toDraft(block.interleave) }),
+    [block]
+  )
   const [draft, setDraft] = useState(initial)
+  const [playback, setPlayback] = useState(initialPlayback)
   const [error, setError] = useState<string | null>(null)
   const isDynamic = block.criteria !== null
   const unreviewed = draft.keepLegacy && draft.criteria === null
@@ -109,11 +124,17 @@ function BlockDetailsForm({ block }: { block: Block }) {
     draft.name !== initial.name ||
     draft.description !== initial.description ||
     queryKey(draft.criteria) !== queryKey(initial.criteria) ||
-    draft.keepLegacy !== initial.keepLegacy
+    draft.keepLegacy !== initial.keepLegacy ||
+    (isDynamic && JSON.stringify(playback) !== JSON.stringify(initialPlayback))
 
   const saveMutation = useMutation({
     mutationFn: () =>
-      api.put<Block>(`/blocks/${block.id}`, { name: draft.name, description: draft.description, criteria: draft.criteria } satisfies BlockInput),
+      api.put<Block>(`/blocks/${block.id}`, {
+        name: draft.name,
+        description: draft.description,
+        criteria: draft.criteria,
+        ...(draft.criteria ? blockPlaybackPayload(playback.order, playback.interleave) : {}),
+      } satisfies BlockInput),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['blocks'] })
       toast.success('Block saved.')
@@ -130,7 +151,9 @@ function BlockDetailsForm({ block }: { block: Block }) {
       setError('Review the old criteria first: use the proposed query or write a new one.')
       return
     }
-    const criteriaError = validateQuery(draft.criteria)
+    const criteriaError =
+      validateQuery(draft.criteria) ??
+      (draft.criteria && playback.order === 'interleaved' ? validateInterleave(playback.interleave) : undefined)
     if (criteriaError) {
       setError(criteriaError)
       return
@@ -141,6 +164,7 @@ function BlockDetailsForm({ block }: { block: Block }) {
 
   function discard() {
     setDraft(initial)
+    setPlayback(initialPlayback)
     setError(null)
   }
 
@@ -168,6 +192,7 @@ function BlockDetailsForm({ block }: { block: Block }) {
             value={draft.criteria}
             onChange={(criteria) => setDraft((d) => ({ ...d, criteria }))}
             idPrefix="block-editor-criteria"
+            playback={{ value: playback, onChange: setPlayback }}
           />
         )}
       </FieldGroup>
@@ -381,6 +406,17 @@ function BlockItemsSection({ block }: { block: Block }) {
     )
   }
 
+  function setCriteriaInterleave(item: BlockItem, interleave: InterleaveDraft) {
+    if (interleave.per_round === null) return
+    updateMutation.mutate(
+      { itemId: item.id, interleave: { ...interleave, per_round: interleave.per_round } satisfies Interleave },
+      {
+        onSuccess: () => toast.success('Interleave settings saved.'),
+        onError: (err) => toast.error(errorMessage(err, 'Could not save the interleave settings.')),
+      }
+    )
+  }
+
   function setCriteriaAmount(item: BlockItem, amount: CriteriaAmount | null) {
     if (!amount) return
     updateMutation.mutate(
@@ -420,17 +456,21 @@ function BlockItemsSection({ block }: { block: Block }) {
   const [newQuery, setNewQuery] = useState<Query>(emptyQuery)
   const [newCriteriaOrder, setNewCriteriaOrder] = useState<CriteriaOrder>('title')
   const [newCriteriaAmount, setNewCriteriaAmount] = useState<CriteriaAmount | null>(null)
+  const [newInterleave, setNewInterleave] = useState<InterleaveDraft>(DEFAULT_INTERLEAVE)
   const [newCriteriaKey, setNewCriteriaKey] = useState(0)
   const newQueryError = validateQuery(newQuery)
+  const newInterleaveError = newCriteriaOrder === 'interleaved' ? validateInterleave(newInterleave) : undefined
 
   function addCriteria() {
-    if (newQueryError || !newCriteriaAmount) return
+    if (newQueryError || newInterleaveError || !newCriteriaAmount) return
+    const interleave = blockPlaybackPayload(newCriteriaOrder === 'interleaved' ? 'interleaved' : 'title', newInterleave).interleave
     addMutation.mutate(
-      { criteria: { query: newQuery, playback_order: newCriteriaOrder, amount: newCriteriaAmount } },
+      { criteria: { query: newQuery, playback_order: newCriteriaOrder, amount: newCriteriaAmount, ...(interleave ? { interleave } : {}) } },
       {
         onSuccess: () => {
           setNewQuery(emptyQuery())
           setNewCriteriaOrder('title')
+          setNewInterleave(DEFAULT_INTERLEAVE)
           setNewCriteriaAmount(null)
           setNewCriteriaKey((k) => k + 1)
         },
@@ -563,6 +603,15 @@ function BlockItemsSection({ block }: { block: Block }) {
                           disabled={busy}
                           testId="criteria-order"
                         />
+                        {item.criteria?.playback_order === 'interleaved' && (
+                          <InterleaveControls
+                            key={`${item.id}-${JSON.stringify(item.criteria.interleave)}`}
+                            value={toDraft(item.criteria.interleave)}
+                            onChange={(v) => setCriteriaInterleave(item, v)}
+                            disabled={busy}
+                            testIdPrefix="criteria"
+                          />
+                        )}
                         <CriteriaAmountControl
                           key={`${item.id}-${item.criteria?.amount?.mode}-${item.criteria?.amount?.count}`}
                           value={item.criteria?.amount ?? null}
@@ -751,7 +800,12 @@ function BlockItemsSection({ block }: { block: Block }) {
             testIdPrefix="new-criteria"
           />
         </div>
-        {newQueryError && <p className="text-sm text-destructive" data-testid="new-criteria-error">{newQueryError}</p>}
+        {newCriteriaOrder === 'interleaved' && (
+          <InterleaveControls value={newInterleave} onChange={setNewInterleave} eager testIdPrefix="new-criteria" />
+        )}
+        {(newQueryError ?? newInterleaveError) && (
+          <p className="text-sm text-destructive" data-testid="new-criteria-error">{newQueryError ?? newInterleaveError}</p>
+        )}
         {!newCriteriaAmount && (
           <p className="text-xs text-muted-foreground">
             Choose how many matches to play per visit, or all of them. There is no default.
@@ -761,7 +815,7 @@ function BlockItemsSection({ block }: { block: Block }) {
           <Button
             size="sm"
             data-testid="add-criteria-button"
-            disabled={addMutation.isPending || !!newQueryError || !newCriteriaAmount}
+            disabled={addMutation.isPending || !!newQueryError || !!newInterleaveError || !newCriteriaAmount}
             onClick={addCriteria}
           >
             Add criteria item

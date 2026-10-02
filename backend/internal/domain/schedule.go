@@ -80,6 +80,9 @@ type EpgEntry struct {
 	// Internal bookkeeping, never served to clients.
 	SourceBlockItemID *string `json:"-"`
 	SeriesCycle       *int    `json:"-"`
+	// SeriesRound is the round of an interleaved walk the entry belongs to
+	// (nil for every other entry), rebuilt like SeriesCycle.
+	SeriesRound *int `json:"-"`
 }
 
 // EpgRevision is the one-row-per-tenant version marker GET /epg/meta serves,

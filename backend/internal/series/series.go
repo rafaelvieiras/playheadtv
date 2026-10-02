@@ -25,6 +25,11 @@ type Episode struct {
 	SeasonNumber  *int64
 	EpisodeNumber *int64
 	PremiereDate  *int64
+	// GroupKey and GroupTitle identify the series an item belongs to for an
+	// interleaved walk (see blockitem.Episodes); empty for the episodes of a
+	// series item, which have no use for them.
+	GroupKey   string
+	GroupTitle string
 }
 
 // Summary is one series of the catalog, as GET /series lists it.
@@ -151,7 +156,7 @@ func Episodes(ctx context.Context, db storage.DB, tenantID string, s domain.Seri
 	}
 	out := make([]Episode, len(rows))
 	for i, r := range rows {
-		out[i] = Episode(r)
+		out[i] = Episode{ID: r.ID, Title: r.Title, DurationMs: r.DurationMs, SeasonNumber: r.SeasonNumber, EpisodeNumber: r.EpisodeNumber, PremiereDate: r.PremiereDate}
 	}
 	return out, nil
 }

@@ -35,7 +35,7 @@ func registerBlocks(mux *http.ServeMux, db storage.DB, mat *materializer.Materia
 	mux.HandleFunc("DELETE /blocks/{id}/items/{item_id}", deleteBlockItem(db, mat))
 }
 
-const blockColumns = "id, tenant_id, name, description, criteria, created_at, updated_at"
+const blockColumns = "id, tenant_id, name, description, criteria, playback_order, interleave_spec, playback_seed, created_at, updated_at"
 
 // blockItemColumns reads the typed block_item: a series item has a NULL
 // catalog_item_id, read back as the empty string.
@@ -51,6 +51,11 @@ type blockRequest struct {
 	// parseCriteriaField (criteria.go): a versioned condition tree, the same
 	// one filler pools take.
 	Criteria json.RawMessage `json:"criteria"`
+	// PlaybackOrder (dynamic blocks only) is title (default: every match by
+	// title, looped) or interleaved (round-robin across series, see
+	// Interleave). Like the rest of the PUT it is a full replace.
+	PlaybackOrder string                  `json:"playback_order"`
+	Interleave    *domain.InterleaveInput `json:"interleave"`
 }
 
 func fetchBlock(db storage.DB, r *http.Request, id string) (domain.Block, error) {
@@ -59,6 +64,7 @@ func fetchBlock(db storage.DB, r *http.Request, id string) (domain.Block, error)
 		"SELECT "+blockColumns+" FROM block WHERE tenant_id = ? AND id = ?",
 		DefaultTenantID, id,
 	)
+	b.FillInterleave()
 	return b, err
 }
 
@@ -78,19 +84,28 @@ func createBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		playback, _, err := blockitem.NewBlockPlayback(criteria != nil, req.PlaybackOrder, req.Interleave, nil)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		now := time.Now().UnixMilli()
 		b := domain.Block{
-			ID:          uuid.NewString(),
-			TenantID:    DefaultTenantID,
-			Name:        req.Name,
-			Description: req.Description,
-			Criteria:    criteria,
-			CreatedAt:   now,
-			UpdatedAt:   now,
+			ID:             uuid.NewString(),
+			TenantID:       DefaultTenantID,
+			Name:           req.Name,
+			Description:    req.Description,
+			Criteria:       criteria,
+			PlaybackOrder:  playback.Order,
+			InterleaveSpec: playback.InterleaveSpec,
+			PlaybackSeed:   playback.Seed,
+			CreatedAt:      now,
+			UpdatedAt:      now,
 		}
+		b.FillInterleave()
 		err = db.Exec(r.Context(),
-			"INSERT INTO block (id, tenant_id, name, description, criteria, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-			b.ID, b.TenantID, b.Name, b.Description, b.Criteria, b.CreatedAt, b.UpdatedAt,
+			"INSERT INTO block (id, tenant_id, name, description, criteria, playback_order, interleave_spec, playback_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			b.ID, b.TenantID, b.Name, b.Description, b.Criteria, b.PlaybackOrder, b.InterleaveSpec, b.PlaybackSeed, b.CreatedAt, b.UpdatedAt,
 		)
 		if err != nil {
 			handleDBError(w, err)
@@ -118,6 +133,9 @@ func listBlocks(db storage.DB) http.HandlerFunc {
 			handleDBError(w, err)
 			return
 		}
+		for i := range blocks {
+			blocks[i].FillInterleave()
+		}
 		writeJSON(w, http.StatusOK, blocks)
 	}
 }
@@ -136,7 +154,8 @@ func getBlock(db storage.DB) http.HandlerFunc {
 func updateBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if _, err := fetchBlock(db, r, id); err != nil {
+		prev, err := fetchBlock(db, r, id)
+		if err != nil {
 			handleDBError(w, err)
 			return
 		}
@@ -158,13 +177,25 @@ func updateBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		playback, restart, err := blockitem.NewBlockPlayback(criteria != nil, req.PlaybackOrder, req.Interleave, &prev)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		err = db.Exec(r.Context(),
-			"UPDATE block SET name = ?, description = ?, criteria = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
-			req.Name, req.Description, criteria, time.Now().UnixMilli(), DefaultTenantID, id,
+			"UPDATE block SET name = ?, description = ?, criteria = ?, playback_order = ?, interleave_spec = ?, playback_seed = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+			req.Name, req.Description, criteria, playback.Order, playback.InterleaveSpec, playback.Seed, time.Now().UnixMilli(), DefaultTenantID, id,
 		)
 		if err != nil {
 			handleDBError(w, err)
 			return
+		}
+		if restart {
+			if err := blockitem.RestartBlockCursor(r.Context(), db, DefaultTenantID, id); err != nil {
+				handleDBError(w, err)
+				return
+			}
+			mat.Trigger()
 		}
 		// The criteria was just replaced, so a pending legacy criteria review
 		// no longer applies.
@@ -228,6 +259,10 @@ type criteriaItemRequest struct {
 	Query         json.RawMessage           `json:"query"`
 	PlaybackOrder string                    `json:"playback_order"`
 	Amount        *domain.SeriesAmountInput `json:"amount"`
+	// Interleave configures the interleaved order: per_round (episodes per
+	// series per round, default 1), on_exhaustion (restart, the default, or
+	// drop) and series_order (title, release_date, random, shuffle).
+	Interleave *domain.InterleaveInput `json:"interleave"`
 }
 
 // seriesItemRequest identifies a series (media source plus external id or
@@ -345,7 +380,7 @@ func addBlockItem(db storage.DB, mat *materializer.Materializer) http.HandlerFun
 				writeError(w, http.StatusBadRequest, "criteria is required for item_type criteria")
 				return
 			}
-			spec, err := blockitem.NewCriteriaSpec(req.Criteria.Query, req.Criteria.PlaybackOrder, req.Criteria.Amount)
+			spec, err := blockitem.NewCriteriaSpec(req.Criteria.Query, req.Criteria.PlaybackOrder, req.Criteria.Amount, req.Criteria.Interleave)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
@@ -437,6 +472,9 @@ type blockItemUpdateRequest struct {
 	Amount *domain.SeriesAmountInput `json:"amount"`
 	// Query replaces the condition tree of a criteria item (criteria items only).
 	Query json.RawMessage `json:"query"`
+	// Interleave overlays the interleave parameters of a criteria item (criteria
+	// items with the interleaved order only).
+	Interleave *domain.InterleaveInput `json:"interleave"`
 }
 
 // updateBlockItem edits one item of a manual block: position (a reorder that
@@ -465,12 +503,12 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 			return
 		}
 		hasQuery := len(req.Query) > 0 && string(req.Query) != "null"
-		if req.Position == nil && req.TrimDurationMs == nil && req.PlaybackOrder == nil && req.Amount == nil && !hasQuery {
-			writeError(w, http.StatusBadRequest, "position, trim_duration_ms, playback_order, amount or query is required")
+		if req.Position == nil && req.TrimDurationMs == nil && req.PlaybackOrder == nil && req.Amount == nil && !hasQuery && req.Interleave == nil {
+			writeError(w, http.StatusBadRequest, "position, trim_duration_ms, playback_order, amount, query or interleave is required")
 			return
 		}
 		if req.PlaybackOrder != nil && !domain.ValidPlaybackOrder(*req.PlaybackOrder) && !domain.ValidCriteriaOrder(*req.PlaybackOrder) {
-			writeError(w, http.StatusBadRequest, "playback_order must be one of original, random, shuffle, release_date (series) or title, release_date, random, shuffle (criteria)")
+			writeError(w, http.StatusBadRequest, "playback_order must be one of original, random, shuffle, release_date (series) or title, release_date, random, shuffle, interleaved (criteria)")
 			return
 		}
 		if req.TrimDurationMs != nil && *req.TrimDurationMs <= 0 {
@@ -513,13 +551,17 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 			writeError(w, http.StatusBadRequest, "amount is only valid for a series or criteria item")
 			return
 		}
+		if req.Interleave != nil && !target.IsCriteria() {
+			writeError(w, http.StatusBadRequest, "interleave is only valid for a criteria item")
+			return
+		}
 		if hasQuery && !target.IsCriteria() {
 			writeError(w, http.StatusBadRequest, "query is only valid for a criteria item")
 			return
 		}
 		if target.IsCriteria() {
 			if req.PlaybackOrder != nil && !domain.ValidCriteriaOrder(*req.PlaybackOrder) {
-				writeError(w, http.StatusBadRequest, "playback_order must be one of title, release_date, random, shuffle for a criteria item")
+				writeError(w, http.StatusBadRequest, "playback_order must be one of title, release_date, random, shuffle, interleaved for a criteria item")
 				return
 			}
 			spec, err := blockitem.ParseCriteriaSpec(target.Spec)
@@ -527,7 +569,7 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 				writeError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
-			updated, orderChanged, err := blockitem.UpdateCriteriaSpec(spec, req.Query, req.PlaybackOrder, req.Amount)
+			updated, orderChanged, err := blockitem.UpdateCriteriaSpec(spec, req.Query, req.PlaybackOrder, req.Amount, req.Interleave)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return

@@ -354,7 +354,13 @@ func emitSeries(
 	reached := func() bool {
 		switch visit.Amount.Mode {
 		case domain.AmountCount:
-			return aired >= visit.Amount.Count
+			if aired >= visit.Amount.Count {
+				return true
+			}
+			// An interleaved walk set to drop treats the end of the playback
+			// cycle as the end of the list: a visit stops there instead of
+			// rolling into the next cycle.
+			return run.il != nil && run.il.OnExhaustion == domain.OnExhaustionDrop && aired > 0 && run.cycleDone()
 		case domain.AmountSeriesEnd:
 			if run.order == domain.OrderRandom {
 				return aired >= len(run.episodes)
@@ -382,6 +388,11 @@ func emitSeries(
 			continue
 		}
 		cycle := slot.Cycle
+		var round *int
+		if run.il != nil {
+			rd := slot.Round
+			round = &rd
+		}
 		itemID := blockItemID
 		e := domain.EpgEntry{
 			ID:                   uuid.NewString(),
@@ -395,6 +406,7 @@ func emitSeries(
 			GeneratedAt:          generatedAt,
 			SourceBlockItemID:    &itemID,
 			SeriesCycle:          &cycle,
+			SeriesRound:          round,
 		}
 		run.commit(startMs, slot)
 		aired++

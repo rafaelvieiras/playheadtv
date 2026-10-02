@@ -453,3 +453,80 @@ func TestMigration0011_ExistingSeriesItemsKeepUntilSlotEnd(t *testing.T) {
 		t.Errorf("spec that already had an amount was rewritten: %s", got["bs2"])
 	}
 }
+
+// TestMigration0013_ExistingBlocksKeepTheirBehavior proves the playback
+// settings migration leaves what exists untouched: a dynamic and a manual
+// block read back with the default title order, no interleave parameters and
+// no seed, and the new column and table accept an interleaved block.
+func TestMigration0013_ExistingBlocksKeepTheirBehavior(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "playheadtv.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	pre := fstest.MapFS{}
+	entries, _ := fs.ReadDir(migrations.FS, ".")
+	for _, e := range entries {
+		if e.Name() >= "0013_" {
+			continue
+		}
+		content, err := fs.ReadFile(migrations.FS, e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pre[e.Name()] = &fstest.MapFile{Data: content}
+	}
+	if err := RunMigrations(ctx, db, pre); err != nil {
+		t.Fatalf("RunMigrations (pre-0013): %v", err)
+	}
+	for _, q := range []string{
+		"INSERT INTO tenant (id, name, tier, created_at) VALUES ('t1', 'Test', 'self_hosted', 1)",
+		"INSERT INTO channel (id, tenant_id, number, name, timezone, created_at, updated_at) VALUES ('c1', 't1', 1, 'Channel', 'UTC', 1, 1)",
+		`INSERT INTO block (id, tenant_id, name, criteria, created_at, updated_at) VALUES ('dyn', 't1', 'Dynamic', '{"version":1,"all":[{"field":"kind","op":"equals","value":"episode"}]}', 1, 1)`,
+		"INSERT INTO block (id, tenant_id, name, created_at, updated_at) VALUES ('man', 't1', 'Manual', 1, 1)",
+	} {
+		if err := db.Exec(ctx, q); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+
+	if err := RunMigrations(ctx, db, migrations.FS); err != nil {
+		t.Fatalf("RunMigrations (0013): %v", err)
+	}
+	var rows []struct {
+		ID             string
+		PlaybackOrder  string
+		InterleaveSpec *string
+		PlaybackSeed   int64
+	}
+	if err := db.Query(ctx, &rows, "SELECT id, playback_order, interleave_spec, playback_seed FROM block ORDER BY id"); err != nil {
+		t.Fatalf("query block: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("blocks = %d, want 2", len(rows))
+	}
+	for _, r := range rows {
+		if r.PlaybackOrder != "title" || r.InterleaveSpec != nil || r.PlaybackSeed != 0 {
+			t.Errorf("block %s = %+v, want the title default with no interleave", r.ID, r)
+		}
+	}
+	if err := db.Exec(ctx, `UPDATE block SET playback_order = 'interleaved', interleave_spec = '{"per_round":1}', playback_seed = 5 WHERE id = 'dyn'`); err != nil {
+		t.Fatalf("set interleaved: %v", err)
+	}
+	if err := db.Exec(ctx, "INSERT INTO block_cursor (tenant_id, channel_id, block_id, origin_ms) VALUES ('t1', 'c1', 'dyn', 7)"); err != nil {
+		t.Fatalf("insert block_cursor: %v", err)
+	}
+	if err := db.Exec(ctx, "INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, generated_at, series_round) VALUES ('e1', 't1', 'c1', 'program', 'x', 1, 2, 1, 3)"); err == nil {
+		t.Error("epg_entry accepted an unknown catalog item (foreign key off?)")
+	}
+	// The cursor goes with its block.
+	if err := db.Exec(ctx, "DELETE FROM block WHERE id = 'dyn'"); err != nil {
+		t.Fatal(err)
+	}
+	var n []int
+	if err := db.Query(ctx, &n, "SELECT COUNT(*) FROM block_cursor"); err != nil || n[0] != 0 {
+		t.Fatalf("block_cursor after block delete = %v (%v), want 0", n, err)
+	}
+}

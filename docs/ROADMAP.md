@@ -141,6 +141,12 @@ actionable checklist.
       `docs/ARCHITECTURE.md` "Catalog queries". Not yet: the `collection`
       entity (stage 2), a text syntax, series slicing (a query on
       `season_number`/`episode_number` covers part of it).
+- [x] Interleaved-by-series playback order (round-robin across series) for
+      criteria items and for dynamic blocks (`block.playback_order`,
+      migration `0013`; default `title` keeps the old looped-by-title
+      behavior), with `per_round`, `on_exhaustion` (`restart`/`drop`) and
+      `series_order`; REST, MCP (`create_block`/`update_block`), block editor.
+      Query fields `actor` and `director` next to `person`.
 - [x] Series item amount per visit (`amount: {mode, count}` in the item's
       spec, REST/MCP/block editor): a number of episodes (default 1), until
       the end of the slot, or until the series ends (rest of the cycle in

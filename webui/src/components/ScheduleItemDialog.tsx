@@ -14,7 +14,9 @@ import {
 } from '@/components/ui/dialog'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import type { BlockPlaybackDraft } from '@/components/BlockPlaybackFields'
 import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
+import { blockPlaybackPayload, DEFAULT_INTERLEAVE, validateInterleave } from '@/lib/interleave'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { validateQuery, type Query } from '@/lib/query'
@@ -136,6 +138,7 @@ export function ScheduleItemDialog({
   const [newBlock, setNewBlock] = useState(false)
   const [newBlockName, setNewBlockName] = useState('')
   const [newBlockCriteria, setNewBlockCriteria] = useState<Query | null>(null)
+  const [newBlockPlayback, setNewBlockPlayback] = useState<BlockPlaybackDraft>({ order: 'title', interleave: DEFAULT_INTERLEAVE })
   const isEditing = item !== undefined
 
   useEffect(() => {
@@ -145,6 +148,7 @@ export function ScheduleItemDialog({
       setNewBlock(false)
       setNewBlockName('')
       setNewBlockCriteria(null)
+      setNewBlockPlayback({ order: 'title', interleave: DEFAULT_INTERLEAVE })
     }
   }, [open, item])
 
@@ -162,6 +166,7 @@ export function ScheduleItemDialog({
           name: newBlockName.trim(),
           description: null,
           criteria: newBlockCriteria,
+          ...(newBlockCriteria ? blockPlaybackPayload(newBlockPlayback.order, newBlockPlayback.interleave) : {}),
         })
         payload = { ...payload, block_id: createdBlock.id }
       }
@@ -199,7 +204,10 @@ export function ScheduleItemDialog({
     let validationError: string | undefined
     if (newBlock) {
       if (newBlockName.trim() === '') validationError = 'Enter a name for the new block.'
-      else validationError = validateQuery(newBlockCriteria)
+      else
+        validationError =
+          validateQuery(newBlockCriteria) ??
+          (newBlockCriteria && newBlockPlayback.order === 'interleaved' ? validateInterleave(newBlockPlayback.interleave) : undefined)
     } else if (!form.block_id) {
       validationError = 'Select a block.'
     }
@@ -270,6 +278,7 @@ export function ScheduleItemDialog({
                   value={newBlockCriteria}
                   onChange={setNewBlockCriteria}
                   idPrefix="schedule-item-new-block-criteria"
+                  playback={{ value: newBlockPlayback, onChange: setNewBlockPlayback }}
                 />
                 <Button
                   type="button"

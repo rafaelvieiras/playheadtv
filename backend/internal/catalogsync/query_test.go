@@ -163,6 +163,10 @@ func TestQueryOperators(t *testing.T) {
 		{"overview contains folds accents", tree(cond("overview", "contains", `"cafe"`)), []string{"alien"}},
 		{"person contains matches director", tree(cond("person", "contains", `"RIDLEY"`)), []string{"alien"}},
 		{"person contains matches cast", tree(cond("person", "contains", `"weaver"`)), []string{"alien"}},
+		{"actor contains matches cast", tree(cond("actor", "contains", `"WEAVER"`)), []string{"alien"}},
+		{"actor contains does not match a director", tree(cond("actor", "contains", `"ridley"`)), nil},
+		{"director contains matches director", tree(cond("director", "contains", `"Ridley"`)), []string{"alien"}},
+		{"director contains does not match cast", tree(cond("director", "contains", `"weaver"`)), nil},
 		// Enumerations: exact.
 		{"kind equals episode", tree(cond("kind", "equals", `"episode"`)), []string{"pilot", "special"}},
 		{"kind in", tree(cond("kind", "in", `["episode","movie"]`)), allExt},

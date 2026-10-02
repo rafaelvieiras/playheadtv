@@ -15,6 +15,8 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
+import type { BlockPlaybackDraft } from '@/components/BlockPlaybackFields'
+import { blockPlaybackPayload, DEFAULT_INTERLEAVE, validateInterleave } from '@/lib/interleave'
 import { validateQuery } from '@/lib/query'
 import { api } from '@/lib/http'
 import type { Block, BlockInput } from '@/lib/types'
@@ -30,23 +32,30 @@ const emptyForm: BlockInput = {
   criteria: null,
 }
 
+const emptyPlayback: BlockPlaybackDraft = { order: 'title', interleave: DEFAULT_INTERLEAVE }
+
 // Quick create only: editing a block happens on its own page (/blocks/:id),
 // which this dialog navigates to after the block is created.
 export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [form, setForm] = useState<BlockInput>(emptyForm)
+  const [playback, setPlayback] = useState<BlockPlaybackDraft>(emptyPlayback)
   const [error, setError] = useState<string | undefined>(undefined)
 
   useEffect(() => {
     if (open) {
       setForm(emptyForm)
+      setPlayback(emptyPlayback)
       setError(undefined)
     }
   }, [open])
 
   const mutation = useMutation({
-    mutationFn: () => api.post<Block>('/blocks', form),
+    mutationFn: () => api.post<Block>('/blocks', {
+        ...form,
+        ...(form.criteria ? blockPlaybackPayload(playback.order, playback.interleave) : {}),
+      }),
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['blocks'] })
       toast.success('Block created.')
@@ -60,7 +69,8 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    const validationError = validateQuery(form.criteria)
+    const validationError =
+      validateQuery(form.criteria) ?? (form.criteria && playback.order === 'interleaved' ? validateInterleave(playback.interleave) : undefined)
     if (validationError) {
       setError(validationError)
       return
@@ -102,6 +112,7 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
               value={form.criteria}
               onChange={(criteria) => setForm((f) => ({ ...f, criteria }))}
               idPrefix="block-criteria"
+              playback={{ value: playback, onChange: setPlayback }}
             />
 
             {error && <p className="text-sm text-destructive">{error}</p>}

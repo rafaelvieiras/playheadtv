@@ -258,6 +258,35 @@ rest of the playback cycle". The query is re-evaluated on every materializer
 run. Changing the order restarts the item; changing the query or amount keeps
 the cursor. A random item can differ between a dry-run and a later reset.
 
+**Interleaved by series** is a fifth order (`interleaved`) for criteria items
+and for dynamic blocks: round-robin across the series the matches belong to.
+Each match belongs to a series (media source plus external id, else title; a
+movie, a bumper or an episode with no series is a one-item series). A round
+visits every series once in turn, each airing `per_round` episodes (default 1)
+in natural order (season, episode; specials first, missing numbers last); the
+rounds repeat. `series_order` sequences the series within a round: `title`
+(default), `release_date` (earliest premiere), `shuffle` (fixed within a
+cycle) or `random` (fresh each round, never opening with the series that
+closed the previous round). `on_exhaustion` is `restart` (default) or `drop`:
+a series that has run out waits (or leaves) while the others carry on, and
+once every episode of the cycle has aired the cycle ends. `restart` then opens
+the next cycle at once, so every series starts over and the rounds begin
+again; `drop` hands over to the block's own repeat behavior: a dynamic block
+loops (the same result), while a `count` visit of a criteria item stops at the
+end of the cycle instead of rolling into the next one. The walk is the series
+cursor above with one more persisted column, `epg_entry.series_round`, so a
+catalog change mid-run behaves sensibly: a series gained joins when its turn in
+the round comes up, a removed one leaves with no hole.
+
+A dynamic block's order is `block.playback_order` (`title`, the default and
+exactly the old behavior, or `interleaved`) with `interleave_spec` (JSON) and a
+`playback_seed` (migration `0013`; PUT is a full replace, omitted means
+`title`). An interleaved dynamic block is walked as one stand-in criteria item
+that airs until the slot ends; since its `block_item` rows are recreated on
+every catalog change, its cursor is `block_cursor` (per channel and block) and
+its entries record the block id in `source_block_item_id`. Changing the order,
+`per_round` or `series_order` restarts the cursor.
+
 ## Scheduling model
 
 Loosely inspired by ErsatzTV's Block Schedule + filler model

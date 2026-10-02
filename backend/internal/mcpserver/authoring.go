@@ -24,7 +24,8 @@ func registerAuthoringTools(s *mcp.Server, db storage.DB, mat *materializer.Mate
 		Name: "update_block_item",
 		Description: "Reorder (position), trim (trim_duration_ms, catalog items only) and/or change the playback order " +
 			"(playback_order, series and criteria items; restarts the item) and/or the amount (amount {mode, count}, series " +
-			"and criteria items; the cursor is kept) and/or the query (criteria items; the cursor is kept) of one item of a manual block; " +
+			"and criteria items; the cursor is kept) and/or the query (criteria items; the cursor is kept) and/or the interleave " +
+			"parameters (criteria items with playback_order interleaved; per_round or series_order restart the item) of one item of a manual block; " +
 			"positions stay contiguous. Dynamic blocks are rejected. Triggers EPG regeneration. " +
 			"Mirrors PUT /blocks/{id}/items/{item_id}.",
 	}, updateBlockItemHandler(db, mat))
@@ -63,9 +64,10 @@ type updateBlockItemInput struct {
 	ItemID         string                  `json:"item_id" jsonschema:"the block item to edit"`
 	Position       *int                    `json:"position,omitempty" jsonschema:"new 0-based position; the item is moved there"`
 	TrimDurationMs *int64                  `json:"trim_duration_ms,omitempty" jsonschema:"new trimmed duration in milliseconds (positive); catalog items only"`
-	PlaybackOrder  *string                 `json:"playback_order,omitempty" jsonschema:"series items: original, random, shuffle or release_date; criteria items: title, release_date, random or shuffle"`
+	PlaybackOrder  *string                 `json:"playback_order,omitempty" jsonschema:"series items: original, random, shuffle or release_date; criteria items: title, release_date, random, shuffle or interleaved"`
 	Amount         *blockSeriesAmountInput `json:"amount,omitempty" jsonschema:"series items: how much to air per visit; mode count (with count, default 1), slot_end or series_end; criteria items: mode count (with count) or all"`
 	Query          map[string]any          `json:"query,omitempty" jsonschema:"criteria items only: a new condition tree"`
+	Interleave     *blockInterleaveInput   `json:"interleave,omitempty" jsonschema:"criteria items with the interleaved order only: parameters to change (omitted ones are kept)"`
 }
 
 func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[updateBlockItemInput, domain.BlockItem] {
@@ -73,11 +75,11 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 		if in.BlockID == "" || in.ItemID == "" {
 			return nil, domain.BlockItem{}, errors.New("block_id and item_id are required")
 		}
-		if in.Position == nil && in.TrimDurationMs == nil && in.PlaybackOrder == nil && in.Amount == nil && in.Query == nil {
-			return nil, domain.BlockItem{}, errors.New("position, trim_duration_ms, playback_order, amount or query is required")
+		if in.Position == nil && in.TrimDurationMs == nil && in.PlaybackOrder == nil && in.Amount == nil && in.Query == nil && in.Interleave == nil {
+			return nil, domain.BlockItem{}, errors.New("position, trim_duration_ms, playback_order, amount, query or interleave is required")
 		}
 		if in.PlaybackOrder != nil && !domain.ValidPlaybackOrder(*in.PlaybackOrder) && !domain.ValidCriteriaOrder(*in.PlaybackOrder) {
-			return nil, domain.BlockItem{}, errors.New("playback_order must be one of original, random, shuffle, release_date (series) or title, release_date, random, shuffle (criteria)")
+			return nil, domain.BlockItem{}, errors.New("playback_order must be one of original, random, shuffle, release_date (series) or title, release_date, random, shuffle, interleaved (criteria)")
 		}
 		if in.TrimDurationMs != nil && *in.TrimDurationMs <= 0 {
 			return nil, domain.BlockItem{}, errors.New("trim_duration_ms must be positive")
@@ -117,6 +119,9 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 		if in.Amount != nil && !target.IsWalked() {
 			return nil, domain.BlockItem{}, errors.New("amount is only valid for a series or criteria item")
 		}
+		if in.Interleave != nil && !target.IsCriteria() {
+			return nil, domain.BlockItem{}, errors.New("interleave is only valid for a criteria item")
+		}
 		if in.Query != nil && !target.IsCriteria() {
 			return nil, domain.BlockItem{}, errors.New("query is only valid for a criteria item")
 		}
@@ -131,7 +136,7 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 					return nil, domain.BlockItem{}, errors.New("query must be a JSON object")
 				}
 			}
-			updated, orderChanged, err := blockitem.UpdateCriteriaSpec(spec, rawQuery, in.PlaybackOrder, in.Amount.domain())
+			updated, orderChanged, err := blockitem.UpdateCriteriaSpec(spec, rawQuery, in.PlaybackOrder, in.Amount.domain(), in.Interleave.domain())
 			if err != nil {
 				return nil, domain.BlockItem{}, err
 			}

@@ -104,6 +104,8 @@ var queryFields = map[string]fieldSpec{
 	"title":             {typ: typeText, column: "search_text"},
 	"overview":          {typ: typeText, column: "overview_norm"},
 	"person":            {typ: typeText, link: "catalog_item_person", dim: "person", dimCol: "person_id"},
+	"actor":             {typ: typeText, link: "catalog_item_person", dim: "person", dimCol: "person_id", kindCol: "kind", kindVal: "actor"},
+	"director":          {typ: typeText, link: "catalog_item_person", dim: "person", dimCol: "person_id", kindCol: "kind", kindVal: "director"},
 	"kind":              {typ: typeEnum, column: "kind"},
 	"content_rating":    {typ: typeEnum, column: "content_rating", maxLen: 32},
 	"year":              {typ: typeNumber, column: "production_year", integer: true},
@@ -119,7 +121,7 @@ var queryFields = map[string]fieldSpec{
 // QueryFieldNames lists the queryable fields, for error messages and docs.
 func QueryFieldNames() []string {
 	return []string{
-		"genre", "studio", "tag", "audio_language", "subtitle_language", "title", "overview", "person",
+		"genre", "studio", "tag", "audio_language", "subtitle_language", "title", "overview", "person", "actor", "director",
 		"kind", "content_rating", "year", "duration", "community_rating", "critic_rating",
 		"season_number", "episode_number", "premiere_date", "date_added",
 	}

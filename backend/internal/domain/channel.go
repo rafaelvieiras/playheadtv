@@ -34,8 +34,38 @@ type Block struct {
 	Name        string  `json:"name"`
 	Description *string `json:"description"`
 	Criteria    *string `json:"criteria"`
-	CreatedAt   int64   `json:"created_at"`
-	UpdatedAt   int64   `json:"updated_at"`
+	// PlaybackOrder is how a dynamic block walks its matches: OrderTitle (the
+	// default, and what every block did before the setting existed: all
+	// matches by title, looped) or OrderInterleaved. Meaningless for a manual
+	// block, whose items carry their own orders.
+	PlaybackOrder string `json:"playback_order"`
+	// InterleaveSpec is the stored JSON of Interleave, set iff PlaybackOrder is
+	// OrderInterleaved; PlaybackSeed makes its shuffle/random series order
+	// reproducible. Both internal: clients read Interleave.
+	InterleaveSpec *string `json:"-"`
+	PlaybackSeed   int64   `json:"-"`
+	// Interleave is the decoded InterleaveSpec, filled by FillInterleave; nil
+	// unless the block is interleaved.
+	Interleave *Interleave `json:"interleave"`
+	CreatedAt  int64       `json:"created_at"`
+	UpdatedAt  int64       `json:"updated_at"`
+}
+
+// FillInterleave decodes InterleaveSpec into Interleave and normalizes an
+// empty PlaybackOrder to OrderTitle (a row stored before the setting existed).
+func (b *Block) FillInterleave() {
+	if b.PlaybackOrder == "" {
+		b.PlaybackOrder = OrderTitle
+	}
+	b.Interleave = nil
+	if b.InterleaveSpec == nil {
+		return
+	}
+	var il Interleave
+	if err := json.Unmarshal([]byte(*b.InterleaveSpec), &il); err == nil {
+		il = il.Normalized()
+		b.Interleave = &il
+	}
 }
 
 // BlockItem types. A block item is one catalog item, a series, or a criteria
@@ -61,13 +91,72 @@ const (
 	// OrderTitle plays by title, accent- and case-insensitive. Criteria items
 	// only; a series has season and episode order instead.
 	OrderTitle = "title"
+	// OrderInterleaved is round-robin across series: per round, every series
+	// (an item without one counts as a one-item series) airs Interleave.PerRound
+	// episodes in turn, and rounds repeat. Criteria items and dynamic blocks only.
+	OrderInterleaved = "interleaved"
 )
 
-// ValidCriteriaOrder reports whether o is a playback order a criteria item
-// accepts: by title, by release date, random, or shuffle without repeat.
-func ValidCriteriaOrder(o string) bool {
+// What an interleaved walk does once every series has been fully played.
+const (
+	// OnExhaustionRestart: every series restarts from its first episode and the
+	// rounds begin again (a series that ran out earlier waits until then).
+	OnExhaustionRestart = "restart"
+	// OnExhaustionDrop: an exhausted series leaves the rounds and the others
+	// continue until all are done; then the block's own repeat behavior applies
+	// (a dynamic block loops, a manual block ends the item's visit there).
+	OnExhaustionDrop = "drop"
+)
+
+// Interleave configures OrderInterleaved. PerRound is the number of episodes
+// a series airs per turn (at least 1). OnExhaustion is OnExhaustionRestart (the
+// default) or OnExhaustionDrop. SeriesOrder is how the series are sequenced in
+// a round: title (default), release_date (earliest premiere of the series),
+// random (fresh every round) or shuffle (fixed within a playback cycle).
+type Interleave struct {
+	PerRound     int    `json:"per_round"`
+	OnExhaustion string `json:"on_exhaustion"`
+	SeriesOrder  string `json:"series_order"`
+}
+
+// InterleaveInput is Interleave as a client sends it: every field optional,
+// per_round a pointer so an absent value differs from an invalid 0.
+type InterleaveInput struct {
+	PerRound     *int   `json:"per_round"`
+	OnExhaustion string `json:"on_exhaustion"`
+	SeriesOrder  string `json:"series_order"`
+}
+
+// Normalized fills the defaults of unset fields: one episode per round,
+// restart on exhaustion, series by title.
+func (i Interleave) Normalized() Interleave {
+	if i.PerRound < 1 {
+		i.PerRound = 1
+	}
+	if i.OnExhaustion == "" {
+		i.OnExhaustion = OnExhaustionRestart
+	}
+	if i.SeriesOrder == "" {
+		i.SeriesOrder = OrderTitle
+	}
+	return i
+}
+
+// ValidSeriesOrder reports whether o can sequence the series of a round.
+func ValidSeriesOrder(o string) bool {
 	switch o {
 	case OrderTitle, OrderReleaseDate, OrderRandom, OrderShuffle:
+		return true
+	}
+	return false
+}
+
+// ValidCriteriaOrder reports whether o is a playback order a criteria item
+// accepts: by title, by release date, random, shuffle without repeat, or
+// interleaved by series.
+func ValidCriteriaOrder(o string) bool {
+	switch o {
+	case OrderTitle, OrderReleaseDate, OrderRandom, OrderShuffle, OrderInterleaved:
 		return true
 	}
 	return false
@@ -125,6 +214,9 @@ type SeriesSpec struct {
 	// Amount is how much one visit airs. A spec stored before amounts existed
 	// has none and means AmountSlotEnd (see EffectiveAmount).
 	Amount *SeriesAmount `json:"amount,omitempty"`
+	// Interleave configures OrderInterleaved. Only the materializer's walk of
+	// a criteria item or dynamic block sets it; never stored on a series item.
+	Interleave *Interleave `json:"interleave,omitempty"`
 }
 
 // EffectiveAmount is the spec's amount, with the legacy "no amount stored"
@@ -179,6 +271,8 @@ type CriteriaSpec struct {
 	PlaybackOrder string          `json:"playback_order"`
 	Seed          int64           `json:"seed"`
 	Amount        CriteriaAmount  `json:"amount"`
+	// Interleave is set iff PlaybackOrder is OrderInterleaved.
+	Interleave *Interleave `json:"interleave,omitempty"`
 }
 
 // CriteriaItemView is the client-facing shape of a criteria block item: the
@@ -190,6 +284,7 @@ type CriteriaItemView struct {
 	Query           any            `json:"query"`
 	PlaybackOrder   string         `json:"playback_order"`
 	Amount          CriteriaAmount `json:"amount"`
+	Interleave      *Interleave    `json:"interleave,omitempty"`
 	MatchCount      int            `json:"match_count"`
 	TotalDurationMs int64          `json:"total_duration_ms"`
 }

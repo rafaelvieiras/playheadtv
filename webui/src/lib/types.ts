@@ -131,6 +131,10 @@ export interface Block {
   name: string
   description: string | null
   criteria: string | null // raw JSON string (a condition tree, see lib/query.ts) or null
+  // Dynamic blocks only: how the matches are walked ('title': all by title,
+  // looped, the default; 'interleaved': round-robin across series).
+  playback_order: BlockPlaybackOrder
+  interleave: Interleave | null // set iff playback_order is 'interleaved'
   created_at: number
   updated_at: number
 }
@@ -140,6 +144,40 @@ export interface BlockInput {
   name: string
   description: string | null
   criteria: Query | null
+  // PUT is a full replace: omitted means 'title'. Dynamic blocks only.
+  playback_order?: BlockPlaybackOrder
+  interleave?: Interleave
+}
+
+// Mirrors backend/internal/domain.Block.PlaybackOrder.
+export type BlockPlaybackOrder = 'title' | 'interleaved'
+
+export const BLOCK_PLAYBACK_ORDER_LABELS: Record<BlockPlaybackOrder, string> = {
+  title: 'By title, looped',
+  interleaved: 'Interleaved by series',
+}
+
+// Mirrors backend/internal/domain.Interleave: the parameters of the
+// interleaved order (round-robin across series).
+export type OnExhaustion = 'restart' | 'drop'
+export type SeriesOrder = 'title' | 'release_date' | 'random' | 'shuffle'
+
+export interface Interleave {
+  per_round: number
+  on_exhaustion: OnExhaustion
+  series_order: SeriesOrder
+}
+
+export const ON_EXHAUSTION_LABELS: Record<OnExhaustion, string> = {
+  restart: 'Start over when all are done',
+  drop: 'Drop finished series',
+}
+
+export const SERIES_ORDER_LABELS: Record<SeriesOrder, string> = {
+  title: 'By series title',
+  release_date: 'By earliest release',
+  random: 'Random each round',
+  shuffle: 'Shuffled, fixed order',
 }
 
 // Mirrors backend/internal/domain.PlaybackOrder values: how a series block
@@ -200,13 +238,14 @@ export interface BlockItem {
 
 // Orders a criteria item walks its matches in (backend/internal/domain
 // ValidCriteriaOrder): by title, by release date, random, or shuffle without repeat.
-export type CriteriaOrder = 'title' | 'release_date' | 'random' | 'shuffle'
+export type CriteriaOrder = 'title' | 'release_date' | 'random' | 'shuffle' | 'interleaved'
 
 export const CRITERIA_ORDER_LABELS: Record<CriteriaOrder, string> = {
   title: 'By title',
   release_date: 'By release date',
   random: 'Random',
   shuffle: 'Shuffle (no repeats)',
+  interleaved: 'Interleaved by series',
 }
 
 // How many matches one visit of the block rotation airs: N of them, or every
@@ -225,6 +264,7 @@ export interface CriteriaItemView {
   query: Query
   playback_order: CriteriaOrder
   amount: CriteriaAmount
+  interleave?: Interleave // set iff playback_order is 'interleaved'
   match_count: number
   total_duration_ms: number
 }
@@ -239,6 +279,7 @@ export interface BlockItemInput {
     query: Query
     playback_order?: CriteriaOrder
     amount: CriteriaAmount
+    interleave?: Interleave
   }
   series?: {
     media_source_id: string
@@ -510,6 +551,9 @@ export interface BlockItemUpdateInput {
   amount?: SeriesAmount | CriteriaAmount
   // Criteria items only: replaces the condition tree (the cursor is kept).
   query?: Query
+  // Criteria items with the interleaved order only: parameters to change.
+  // per_round or series_order restart the item; on_exhaustion keeps the cursor.
+  interleave?: Partial<Interleave>
 }
 
 // FillerPoolItemUpdateInput is the body of

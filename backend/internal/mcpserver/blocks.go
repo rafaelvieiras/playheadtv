@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/blockitem"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/series"
@@ -17,14 +18,29 @@ import (
 // blockColumns/blockItemColumns mirror internal/api/blocks.go's constants of
 // the same name — duplicated rather than imported, see mcpserver.go's
 // package comment.
-const blockColumns = "id, tenant_id, name, description, criteria, created_at, updated_at"
+const blockColumns = "id, tenant_id, name, description, criteria, playback_order, interleave_spec, playback_seed, created_at, updated_at"
 const blockItemColumns = "id, block_id, position, item_type, COALESCE(catalog_item_id, '') AS catalog_item_id, trim_duration_ms, spec"
 
 func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Materializer) {
 	mcp.AddTool(s, &mcp.Tool{
-		Name:        "create_block",
-		Description: "Create a new (initially empty) content block — a named, ordered playlist of catalog items. Mirrors POST /blocks.",
-	}, createBlockHandler(db))
+		Name: "create_block",
+		Description: "Create a new content block — a named, ordered playlist of catalog items (initially empty). With criteria " +
+			"(a condition tree as in preview_criteria) the block is dynamic: its items are every current match, owned by the " +
+			"system, aired in a loop by title. Only for a dynamic block, playback_order interleaved airs the matches " +
+			"round-robin across series instead (interleave: per_round episodes per series per round, default 1; " +
+			"on_exhaustion restart (default: when every series has been fully played they all start over) or drop " +
+			"(an exhausted series leaves the rounds, the others continue; then the block loops); series_order title " +
+			"(default), release_date, random or shuffle sequences the series within a round). Items without a series " +
+			"count as one-item series. Mirrors POST /blocks.",
+	}, createBlockHandler(db, mat))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "update_block",
+		Description: "Replace a block's name, description, criteria and playback settings (a full replace like PUT: omitting " +
+			"criteria makes the block manual, omitting playback_order means title). See create_block for the fields. " +
+			"Changing the interleaved order or its per_round or series_order restarts the block's cursor. " +
+			"Mirrors PUT /blocks/{id}.",
+	}, updateBlockHandler(db, mat))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "add_block_item",
@@ -34,8 +50,9 @@ func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Material
 			"the block rotation air count episodes (mode count, the default, 1 episode), until the end of the " +
 			"schedule slot (slot_end; items after it never air) or the rest of the playback cycle (series_end); no trim). " +
 			"The series cursor is shared across visits. Use search_series to find a series. Or a criteria item " +
-			"(criteria: query = a condition tree as in preview_criteria, playback_order title|release_date|random|shuffle, " +
-			"default title; amount, required: {mode count, count N} to air N matches per visit or {mode all} for every " +
+			"(criteria: query = a condition tree as in preview_criteria, playback_order title|release_date|random|shuffle|interleaved, " +
+			"default title (interleaved: round-robin across series, with interleave {per_round, on_exhaustion restart|drop, " +
+			"series_order}, see create_block); amount, required: {mode count, count N} to air N matches per visit or {mode all} for every " +
 			"match once; no trim): the block plays that many matches of the live query, then moves on. " +
 			"Reorder with update_block_item. " +
 			"Triggers EPG regeneration. Mirrors POST /blocks/{id}/items.",
@@ -67,32 +84,137 @@ func fetchBlockExists(ctx context.Context, db storage.DB, id string) error {
 	)
 }
 
-type createBlockInput struct {
-	Name        string  `json:"name" jsonschema:"block display name"`
-	Description *string `json:"description,omitempty" jsonschema:"optional free-text description"`
+type blockInterleaveInput struct {
+	PerRound     *int   `json:"per_round,omitempty" jsonschema:"episodes a series airs per round (positive integer), default 1"`
+	OnExhaustion string `json:"on_exhaustion,omitempty" jsonschema:"restart (default: once every series has been fully played they all start over) or drop (an exhausted series leaves the rounds; when all are done the block repeats as it normally does)"`
+	SeriesOrder  string `json:"series_order,omitempty" jsonschema:"how the series are sequenced within a round: title (default), release_date (earliest premiere), random (fresh every round) or shuffle (fixed within a playback cycle)"`
 }
 
-func createBlockHandler(db storage.DB) mcp.ToolHandlerFor[createBlockInput, domain.Block] {
+func (i *blockInterleaveInput) domain() *domain.InterleaveInput {
+	if i == nil {
+		return nil
+	}
+	return &domain.InterleaveInput{PerRound: i.PerRound, OnExhaustion: i.OnExhaustion, SeriesOrder: i.SeriesOrder}
+}
+
+type createBlockInput struct {
+	Name          string                `json:"name" jsonschema:"block display name"`
+	Description   *string               `json:"description,omitempty" jsonschema:"optional free-text description"`
+	Criteria      map[string]any        `json:"criteria,omitempty" jsonschema:"makes the block dynamic: a condition tree, see preview_criteria"`
+	PlaybackOrder string                `json:"playback_order,omitempty" jsonschema:"dynamic blocks only: title (default, every match by title, looped) or interleaved (round-robin across series)"`
+	Interleave    *blockInterleaveInput `json:"interleave,omitempty" jsonschema:"parameters of the interleaved order; only with playback_order interleaved"`
+}
+
+// parseBlockCriteria validates the optional criteria of a block write and
+// returns the canonical condition tree JSON to store (nil: manual block).
+func parseBlockCriteria(c map[string]any) (*string, error) {
+	if c == nil {
+		return nil, nil
+	}
+	raw, err := json.Marshal(c)
+	if err != nil {
+		return nil, errors.New("criteria must be a JSON object")
+	}
+	q, err := catalogsync.ParseQuery(raw)
+	if err != nil {
+		return nil, errors.New("criteria: " + err.Error())
+	}
+	s := q.JSON()
+	return &s, nil
+}
+
+func createBlockHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[createBlockInput, domain.Block] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in createBlockInput) (*mcp.CallToolResult, domain.Block, error) {
 		if in.Name == "" {
 			return nil, domain.Block{}, errors.New("name is required")
 		}
+		criteria, err := parseBlockCriteria(in.Criteria)
+		if err != nil {
+			return nil, domain.Block{}, err
+		}
+		playback, _, err := blockitem.NewBlockPlayback(criteria != nil, in.PlaybackOrder, in.Interleave.domain(), nil)
+		if err != nil {
+			return nil, domain.Block{}, err
+		}
 		now := nowMillis()
 		b := domain.Block{
-			ID:          uuid.NewString(),
-			TenantID:    defaultTenantID,
-			Name:        in.Name,
-			Description: in.Description,
-			CreatedAt:   now,
-			UpdatedAt:   now,
+			ID:             uuid.NewString(),
+			TenantID:       defaultTenantID,
+			Name:           in.Name,
+			Description:    in.Description,
+			Criteria:       criteria,
+			PlaybackOrder:  playback.Order,
+			InterleaveSpec: playback.InterleaveSpec,
+			PlaybackSeed:   playback.Seed,
+			CreatedAt:      now,
+			UpdatedAt:      now,
 		}
-		err := db.Exec(ctx,
-			"INSERT INTO block (id, tenant_id, name, description, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
-			b.ID, b.TenantID, b.Name, b.Description, b.CreatedAt, b.UpdatedAt,
+		b.FillInterleave()
+		err = db.Exec(ctx,
+			"INSERT INTO block (id, tenant_id, name, description, criteria, playback_order, interleave_spec, playback_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			b.ID, b.TenantID, b.Name, b.Description, b.Criteria, b.PlaybackOrder, b.InterleaveSpec, b.PlaybackSeed, b.CreatedAt, b.UpdatedAt,
 		)
 		if err != nil {
 			return nil, domain.Block{}, err
 		}
+		if b.Criteria != nil {
+			if err := catalogsync.ResolveDynamicBlocks(ctx, db, defaultTenantID); err != nil {
+				return nil, domain.Block{}, err
+			}
+			mat.Trigger()
+		}
+		return nil, b, nil
+	}
+}
+
+type updateBlockInput struct {
+	BlockID string `json:"block_id" jsonschema:"the block to replace"`
+	createBlockInput
+}
+
+func updateBlockHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[updateBlockInput, domain.Block] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in updateBlockInput) (*mcp.CallToolResult, domain.Block, error) {
+		if in.BlockID == "" || in.Name == "" {
+			return nil, domain.Block{}, errors.New("block_id and name are required")
+		}
+		var prev domain.Block
+		if err := db.Query(ctx, &prev, "SELECT "+blockColumns+" FROM block WHERE tenant_id = ? AND id = ?", defaultTenantID, in.BlockID); err != nil {
+			return nil, domain.Block{}, err
+		}
+		prev.FillInterleave()
+		criteria, err := parseBlockCriteria(in.Criteria)
+		if err != nil {
+			return nil, domain.Block{}, err
+		}
+		playback, restart, err := blockitem.NewBlockPlayback(criteria != nil, in.PlaybackOrder, in.Interleave.domain(), &prev)
+		if err != nil {
+			return nil, domain.Block{}, err
+		}
+		if err := db.Exec(ctx,
+			"UPDATE block SET name = ?, description = ?, criteria = ?, playback_order = ?, interleave_spec = ?, playback_seed = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+			in.Name, in.Description, criteria, playback.Order, playback.InterleaveSpec, playback.Seed, nowMillis(), defaultTenantID, in.BlockID,
+		); err != nil {
+			return nil, domain.Block{}, err
+		}
+		if err := catalogsync.ClearCriteriaReview(ctx, db, defaultTenantID, catalogsync.OwnerBlock, in.BlockID); err != nil {
+			return nil, domain.Block{}, err
+		}
+		if restart {
+			if err := blockitem.RestartBlockCursor(ctx, db, defaultTenantID, in.BlockID); err != nil {
+				return nil, domain.Block{}, err
+			}
+		}
+		if criteria != nil {
+			if err := catalogsync.ResolveDynamicBlocks(ctx, db, defaultTenantID); err != nil {
+				return nil, domain.Block{}, err
+			}
+		}
+		mat.Trigger()
+		var b domain.Block
+		if err := db.Query(ctx, &b, "SELECT "+blockColumns+" FROM block WHERE tenant_id = ? AND id = ?", defaultTenantID, in.BlockID); err != nil {
+			return nil, domain.Block{}, err
+		}
+		b.FillInterleave()
 		return nil, b, nil
 	}
 }
@@ -127,8 +249,9 @@ type addBlockItemInput struct {
 
 type addBlockCriteriaInput struct {
 	Query         map[string]any          `json:"query" jsonschema:"the condition tree, see preview_criteria"`
-	PlaybackOrder string                  `json:"playback_order,omitempty" jsonschema:"title (default), release_date, random or shuffle (every match once before repeats)"`
+	PlaybackOrder string                  `json:"playback_order,omitempty" jsonschema:"title (default), release_date, random, shuffle (every match once before repeats) or interleaved (round-robin across series)"`
 	Amount        *blockSeriesAmountInput `json:"amount" jsonschema:"required: mode count with count N, or mode all (every match once)"`
+	Interleave    *blockInterleaveInput   `json:"interleave,omitempty" jsonschema:"parameters of the interleaved order; only with playback_order interleaved"`
 }
 
 func addBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[addBlockItemInput, domain.BlockItem] {
@@ -163,7 +286,7 @@ func addBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.Tool
 			if err != nil {
 				return nil, domain.BlockItem{}, errors.New("criteria.query must be a JSON object")
 			}
-			spec, err := blockitem.NewCriteriaSpec(rawQuery, in.Criteria.PlaybackOrder, in.Criteria.Amount.domain())
+			spec, err := blockitem.NewCriteriaSpec(rawQuery, in.Criteria.PlaybackOrder, in.Criteria.Amount.domain(), in.Criteria.Interleave.domain())
 			if err != nil {
 				return nil, domain.BlockItem{}, err
 			}

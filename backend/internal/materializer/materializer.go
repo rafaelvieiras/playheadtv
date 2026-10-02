@@ -13,6 +13,7 @@ package materializer
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"sort"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/blockitem"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/series"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
@@ -276,6 +278,9 @@ func (m *Materializer) resetChannels(ctx context.Context, tenantID string, chann
 		if err := m.db.Exec(ctx, "UPDATE series_cursor SET origin_ms = ? WHERE tenant_id = ? AND channel_id = ?", nowMs, tenantID, ch.ID); err != nil {
 			return fmt.Errorf("reset series cursor: %w", err)
 		}
+		if err := m.db.Exec(ctx, "UPDATE block_cursor SET origin_ms = ? WHERE tenant_id = ? AND channel_id = ?", nowMs, tenantID, ch.ID); err != nil {
+			return fmt.Errorf("reset block cursor: %w", err)
+		}
 		if err := m.materializeChannel(ctx, ch, tenantID, now, now.Add(-scanLookback), windowEnd, newCatalogDurationCache(m.db), newSelectionState()); err != nil {
 			return err
 		}
@@ -322,6 +327,11 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 	}
 
 	dynamicBlockIDs := make(map[string]bool, len(blockIDs))
+	// dynamicWalks holds the dynamic blocks set to an interleaved order: their
+	// item list is replaced by one walked item that stands for the block, and
+	// the walk is keyed by the block (block_cursor), not by a block_item, since
+	// a dynamic block's items are recreated on every catalog change.
+	dynamicWalks := make(map[string]dynamicWalk)
 	if len(blockIDs) > 0 {
 		ids := make([]string, 0, len(blockIDs))
 		for id := range blockIDs {
@@ -334,13 +344,40 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		for _, id := range ids {
 			args = append(args, id)
 		}
-		var dynIDs []string
-		query := fmt.Sprintf("SELECT id FROM block WHERE tenant_id = ? AND criteria IS NOT NULL AND id IN (%s)", placeholders)
-		if err := m.db.Query(ctx, &dynIDs, query, args...); err != nil {
+		var dyn []struct {
+			ID             string
+			Criteria       string
+			PlaybackOrder  string
+			InterleaveSpec *string
+			PlaybackSeed   int64
+		}
+		query := fmt.Sprintf("SELECT id, criteria, playback_order, interleave_spec, playback_seed FROM block WHERE tenant_id = ? AND criteria IS NOT NULL AND id IN (%s)", placeholders)
+		if err := m.db.Query(ctx, &dyn, query, args...); err != nil {
 			return channelInput{}, fmt.Errorf("list dynamic block ids: %w", err)
 		}
-		for _, id := range dynIDs {
-			dynamicBlockIDs[id] = true
+		for _, d := range dyn {
+			dynamicBlockIDs[d.ID] = true
+			if d.PlaybackOrder != domain.OrderInterleaved {
+				continue
+			}
+			var il domain.Interleave
+			if d.InterleaveSpec != nil {
+				if err := json.Unmarshal([]byte(*d.InterleaveSpec), &il); err != nil {
+					log.Printf("materializer: block %s: bad interleave spec, using defaults: %v", d.ID, err)
+				}
+			}
+			il = il.Normalized()
+			if _, err := catalogsync.ParseQuery([]byte(d.Criteria)); err != nil {
+				// A legacy criteria still held for review cannot be walked.
+				log.Printf("materializer: block %s: interleaved order needs a condition tree, playing by title: %v", d.ID, err)
+				continue
+			}
+			amount := domain.SeriesAmount{Mode: domain.AmountSlotEnd}
+			dynamicWalks[d.ID] = dynamicWalk{
+				Criteria: domain.CriteriaSpec{Query: json.RawMessage(d.Criteria)},
+				Spec:     domain.SeriesSpec{PlaybackOrder: domain.OrderInterleaved, Seed: d.PlaybackSeed, Amount: &amount, Interleave: &il},
+			}
+			blockItems[d.ID] = []domain.BlockItem{{ID: d.ID, BlockID: d.ID, ItemType: domain.BlockItemCriteria}}
 		}
 	}
 
@@ -407,7 +444,7 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		}
 	}
 
-	runs, err := m.loadSeriesRuns(ctx, ch, tenantID, blockItems, now, scanFrom, preview)
+	runs, err := m.loadSeriesRuns(ctx, ch, tenantID, blockItems, dynamicWalks, now, scanFrom, preview)
 	if err != nil {
 		return channelInput{}, err
 	}
@@ -562,9 +599,9 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 	}
 	for _, e := range toInsert {
 		if err := m.db.Exec(ctx,
-			`INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at, rotation_next, source_block_item_id, series_cycle)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			e.ID, e.TenantID, e.ChannelID, string(e.Kind), e.CatalogItemID, e.StartAt, e.EndAt, e.SourceScheduleItemID, e.GeneratedAt, e.RotationNext, e.SourceBlockItemID, e.SeriesCycle,
+			`INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at, rotation_next, source_block_item_id, series_cycle, series_round)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			e.ID, e.TenantID, e.ChannelID, string(e.Kind), e.CatalogItemID, e.StartAt, e.EndAt, e.SourceScheduleItemID, e.GeneratedAt, e.RotationNext, e.SourceBlockItemID, e.SeriesCycle, e.SeriesRound,
 		); err != nil {
 			return fmt.Errorf("insert epg_entry: %w", err)
 		}
@@ -642,13 +679,22 @@ func (c *catalogDurationCache) Get(ctx context.Context, catalogItemID string) (i
 	return durations[0], nil
 }
 
+// dynamicWalk is the interleaved walk of a dynamic block: the query it
+// matches and the spec the walk is built from.
+type dynamicWalk struct {
+	Criteria domain.CriteriaSpec
+	Spec     domain.SeriesSpec
+}
+
 // loadSeriesRuns builds the walk of every series item in the channel's
 // blocks. The cursor of each is rebuilt from the epg_entry rows the item
 // already produced on this channel (see seriesRun); its origin comes from
 // series_cursor, created the first time the item is met (a preview never
 // writes, it just treats "now" as the origin and ignores stored rows, like
-// the reset it simulates).
-func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, tenantID string, blockItems map[string][]domain.BlockItem, now, scanFrom time.Time, preview bool) (map[string]*seriesRun, error) {
+// the reset it simulates). dynamic holds the walked stand-in item of each
+// interleaved dynamic block (keyed by block id, which is also the id its
+// entries record), whose origin comes from block_cursor instead.
+func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, tenantID string, blockItems map[string][]domain.BlockItem, dynamic map[string]dynamicWalk, now, scanFrom time.Time, preview bool) (map[string]*seriesRun, error) {
 	runs := make(map[string]*seriesRun)
 	for _, items := range blockItems {
 		for _, it := range items {
@@ -660,7 +706,15 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 			}
 			var spec domain.SeriesSpec
 			var episodes []series.Episode
-			if it.IsCriteria() {
+			dw, isDynamic := dynamic[it.ID]
+			if isDynamic {
+				var err error
+				spec = dw.Spec
+				if episodes, err = blockitem.Episodes(ctx, m.db, tenantID, dw.Criteria); err != nil {
+					log.Printf("materializer: block %s: query: %v", it.ID, err)
+					continue
+				}
+			} else if it.IsCriteria() {
 				// A criteria item is walked exactly like a series: its matches
 				// play the part of the episodes, in the item's playback order.
 				cs, err := blockitem.ParseCriteriaSpec(it.Spec)
@@ -684,12 +738,16 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 				}
 			}
 
+			cursorTable, cursorCol := "series_cursor", "block_item_id"
+			if isDynamic {
+				cursorTable, cursorCol = "block_cursor", "block_id"
+			}
 			originMs := now.UnixMilli()
 			var history, ahead []seriesRow
 			if !preview {
 				var origins []int64
 				if err := m.db.Query(ctx, &origins,
-					"SELECT origin_ms FROM series_cursor WHERE tenant_id = ? AND channel_id = ? AND block_item_id = ?",
+					"SELECT origin_ms FROM "+cursorTable+" WHERE tenant_id = ? AND channel_id = ? AND "+cursorCol+" = ?",
 					tenantID, ch.ID, it.ID,
 				); err != nil {
 					return nil, fmt.Errorf("read series cursor: %w", err)
@@ -697,7 +755,7 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 				if len(origins) > 0 {
 					originMs = origins[0]
 				} else if err := m.db.Exec(ctx,
-					"INSERT OR IGNORE INTO series_cursor (tenant_id, channel_id, block_item_id, origin_ms) VALUES (?, ?, ?, ?)",
+					"INSERT OR IGNORE INTO "+cursorTable+" (tenant_id, channel_id, "+cursorCol+", origin_ms) VALUES (?, ?, ?, ?)",
 					tenantID, ch.ID, it.ID, originMs,
 				); err != nil {
 					return nil, fmt.Errorf("create series cursor: %w", err)
@@ -706,19 +764,23 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 					StartAt       int64
 					CatalogItemID string
 					SeriesCycle   *int
+					SeriesRound   *int
 				}
 				if err := m.db.Query(ctx, &rows,
-					"SELECT start_at, catalog_item_id, series_cycle FROM epg_entry WHERE tenant_id = ? AND channel_id = ? AND source_block_item_id = ? AND start_at >= ? ORDER BY start_at",
+					"SELECT start_at, catalog_item_id, series_cycle, series_round FROM epg_entry WHERE tenant_id = ? AND channel_id = ? AND source_block_item_id = ? AND start_at >= ? ORDER BY start_at",
 					tenantID, ch.ID, it.ID, originMs,
 				); err != nil {
 					return nil, fmt.Errorf("read series entries: %w", err)
 				}
 				for _, r := range rows {
-					cycle := 0
+					cycle, round := 0, 0
 					if r.SeriesCycle != nil {
 						cycle = *r.SeriesCycle
 					}
-					row := seriesRow{StartAt: r.StartAt, CatalogItemID: r.CatalogItemID, Cycle: cycle}
+					if r.SeriesRound != nil {
+						round = *r.SeriesRound
+					}
+					row := seriesRow{StartAt: r.StartAt, CatalogItemID: r.CatalogItemID, Cycle: cycle, Round: round}
 					if r.StartAt < scanFrom.UnixMilli() {
 						history = append(history, row)
 					} else {

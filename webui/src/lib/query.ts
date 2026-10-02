@@ -45,6 +45,8 @@ export const FIELDS: FieldDef[] = [
   { name: 'title', label: 'Title', type: 'text', hint: 'Also matches the series title.' },
   { name: 'overview', label: 'Overview', type: 'text' },
   { name: 'person', label: 'Person (cast or director)', type: 'text' },
+  { name: 'actor', label: 'Actor (cast only)', type: 'text' },
+  { name: 'director', label: 'Director (directors only)', type: 'text' },
   { name: 'content_rating', label: 'Content rating', type: 'enum', hint: 'Exact value, for example PG-13.' },
   { name: 'year', label: 'Year', type: 'number', integer: true },
   { name: 'duration', label: 'Duration', type: 'number', unit: 'minutes' },

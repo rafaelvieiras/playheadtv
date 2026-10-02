@@ -43,48 +43,86 @@ func TestNewCriteriaAmount(t *testing.T) {
 }
 
 func TestNewCriteriaSpecDefaultsAndValidation(t *testing.T) {
-	spec, err := NewCriteriaSpec(json.RawMessage(testQuery), "", &domain.SeriesAmountInput{Mode: "all"})
+	spec, err := NewCriteriaSpec(json.RawMessage(testQuery), "", &domain.SeriesAmountInput{Mode: "all"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if spec.PlaybackOrder != domain.OrderTitle || spec.Seed <= 0 || spec.Amount.Mode != "all" || string(spec.Query) != testQuery {
 		t.Errorf("spec = %+v", spec)
 	}
-	other, _ := NewCriteriaSpec(json.RawMessage(testQuery), "shuffle", &domain.SeriesAmountInput{Mode: "all"})
+	other, _ := NewCriteriaSpec(json.RawMessage(testQuery), "shuffle", &domain.SeriesAmountInput{Mode: "all"}, nil)
 	if other.Seed == spec.Seed {
 		t.Error("two specs got the same seed")
 	}
 	for _, order := range []string{"original", "nope"} {
-		if _, err := NewCriteriaSpec(json.RawMessage(testQuery), order, &domain.SeriesAmountInput{Mode: "all"}); err == nil {
+		if _, err := NewCriteriaSpec(json.RawMessage(testQuery), order, &domain.SeriesAmountInput{Mode: "all"}, nil); err == nil {
 			t.Errorf("order %q accepted", order)
 		}
 	}
-	if _, err := NewCriteriaSpec(json.RawMessage(`{"kind":"movie"}`), "", &domain.SeriesAmountInput{Mode: "all"}); err == nil {
+	if _, err := NewCriteriaSpec(json.RawMessage(`{"kind":"movie"}`), "", &domain.SeriesAmountInput{Mode: "all"}, nil); err == nil {
 		t.Error("legacy query accepted")
 	}
-	if _, err := NewCriteriaSpec(nil, "", &domain.SeriesAmountInput{Mode: "all"}); err == nil {
+	if _, err := NewCriteriaSpec(nil, "", &domain.SeriesAmountInput{Mode: "all"}, nil); err == nil {
 		t.Error("missing query accepted")
 	}
 }
 
 func TestUpdateCriteriaSpec(t *testing.T) {
-	spec, _ := NewCriteriaSpec(json.RawMessage(testQuery), "title", &domain.SeriesAmountInput{Mode: "count", Count: intp(1)})
+	spec, _ := NewCriteriaSpec(json.RawMessage(testQuery), "title", &domain.SeriesAmountInput{Mode: "count", Count: intp(1)}, nil)
 	seed := spec.Seed
 	order := "title"
-	got, changed, err := UpdateCriteriaSpec(spec, nil, &order, nil)
+	got, changed, err := UpdateCriteriaSpec(spec, nil, &order, nil, nil)
 	if err != nil || changed || got.Seed != seed {
 		t.Errorf("same order: %+v changed=%v %v", got, changed, err)
 	}
 	order = "random"
-	got, changed, err = UpdateCriteriaSpec(spec, json.RawMessage(`{"version":1,"all":[{"field":"year","op":"gt","value":2000}]}`), &order, &domain.SeriesAmountInput{Mode: "all"})
+	got, changed, err = UpdateCriteriaSpec(spec, json.RawMessage(`{"version":1,"all":[{"field":"year","op":"gt","value":2000}]}`), &order, &domain.SeriesAmountInput{Mode: "all"}, nil)
 	if err != nil || !changed || got.PlaybackOrder != "random" || got.Amount.Mode != "all" || got.Seed != seed || string(got.Query) == testQuery {
 		t.Errorf("update: %+v changed=%v %v", got, changed, err)
 	}
 	bad := "original"
-	if _, _, err := UpdateCriteriaSpec(spec, nil, &bad, nil); err == nil {
+	if _, _, err := UpdateCriteriaSpec(spec, nil, &bad, nil, nil); err == nil {
 		t.Error("series order accepted")
 	}
-	if _, _, err := UpdateCriteriaSpec(spec, json.RawMessage(`{"version":1,"all":[]}`), nil, nil); err == nil {
+	if _, _, err := UpdateCriteriaSpec(spec, json.RawMessage(`{"version":1,"all":[]}`), nil, nil, nil); err == nil {
 		t.Error("invalid query accepted")
+	}
+}
+
+func TestInterleaveSpecAndBlockPlayback(t *testing.T) {
+	all := &domain.SeriesAmountInput{Mode: "all"}
+	spec, err := NewCriteriaSpec(json.RawMessage(testQuery), "interleaved", all, nil)
+	if err != nil || spec.Interleave == nil || *spec.Interleave != (domain.Interleave{PerRound: 1, OnExhaustion: "restart", SeriesOrder: "title"}) {
+		t.Fatalf("defaults: %+v %v", spec.Interleave, err)
+	}
+	if _, err := NewCriteriaSpec(json.RawMessage(testQuery), "title", all, &domain.InterleaveInput{PerRound: intp(2)}); err == nil {
+		t.Error("interleave accepted with the title order")
+	}
+	for _, in := range []domain.InterleaveInput{{PerRound: intp(0)}, {OnExhaustion: "x"}, {SeriesOrder: "interleaved"}, {SeriesOrder: "original"}} {
+		in := in
+		if _, err := NewCriteriaSpec(json.RawMessage(testQuery), "interleaved", all, &in); err == nil {
+			t.Errorf("%+v accepted", in)
+		}
+	}
+	// Only on_exhaustion changing keeps the cursor.
+	order := "interleaved"
+	got, restart, err := UpdateCriteriaSpec(spec, nil, &order, nil, &domain.InterleaveInput{OnExhaustion: "drop"})
+	if err != nil || restart || got.Interleave.OnExhaustion != "drop" {
+		t.Errorf("on_exhaustion: %+v restart=%v %v", got.Interleave, restart, err)
+	}
+	if _, restart, _ = UpdateCriteriaSpec(spec, nil, nil, nil, &domain.InterleaveInput{PerRound: intp(2)}); !restart {
+		t.Error("per_round change did not restart")
+	}
+
+	bp, restart, err := NewBlockPlayback(true, "", nil, nil)
+	if err != nil || bp.Order != "title" || bp.InterleaveSpec != nil || restart {
+		t.Errorf("default block playback: %+v restart=%v %v", bp, restart, err)
+	}
+	if _, _, err := NewBlockPlayback(false, "interleaved", nil, nil); err == nil {
+		t.Error("interleaved accepted for a manual block")
+	}
+	bp, restart, err = NewBlockPlayback(true, "interleaved", nil, nil)
+	if err != nil || bp.Order != "interleaved" || bp.InterleaveSpec == nil || bp.Seed == 0 || !restart {
+		t.Errorf("interleaved block playback: %+v restart=%v %v", bp, restart, err)
 	}
 }

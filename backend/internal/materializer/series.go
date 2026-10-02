@@ -22,6 +22,7 @@ type seriesRow struct {
 	StartAt       int64
 	CatalogItemID string
 	Cycle         int
+	Round         int // interleaved walks only
 }
 
 // seriesRun is the walk of one series block item on one channel during one
@@ -52,6 +53,29 @@ type seriesRun struct {
 	lastEp  string
 	ordinal int
 	emitted int
+
+	// Interleaved walks (il != nil, order == OrderInterleaved): the series the
+	// items group into, the group each episode belongs to, and the position in
+	// the rounds: the round in progress, the group that aired last (-1: none
+	// yet this cycle) and how many episodes it aired in its turn.
+	il        *domain.Interleave
+	groups    []*walkGroup
+	groupOf   map[string]int
+	round     int
+	lastGroup int
+	turn      int
+	orderKey  [2]int // (cycle, round) the cached roundOrder was computed for
+	orderMemo []int
+}
+
+// walkGroup is one series of an interleaved walk (or a lone item with none):
+// its episodes in natural order.
+type walkGroup struct {
+	key         string
+	title       string // folded, for ordering
+	eps         []series.Episode
+	minPremiere *int64
+	keyHash     uint64
 }
 
 func hashString(s string) uint64 {
@@ -145,24 +169,64 @@ func sortEpisodes(eps []series.Episode, order string) {
 // Rows before originMs are ignored.
 func newSeriesRun(spec domain.SeriesSpec, channelID string, episodes []series.Episode, originMs int64, history, ahead []seriesRow, adoptUntilMs int64) *seriesRun {
 	eps := append([]series.Episode(nil), episodes...)
-	sortEpisodes(eps, spec.PlaybackOrder)
+	if spec.PlaybackOrder == domain.OrderInterleaved {
+		// Natural order (season, episode, ...) is the order within a series;
+		// the groups are carved out of it below.
+		sortEpisodes(eps, domain.OrderOriginal)
+	} else {
+		sortEpisodes(eps, spec.PlaybackOrder)
+	}
 	r := &seriesRun{
-		order:    spec.PlaybackOrder,
-		amount:   spec.EffectiveAmount(),
-		seed:     splitmix64(uint64(spec.Seed) ^ hashString(channelID)),
-		episodes: eps,
-		byID:     make(map[string]int, len(eps)),
-		originMs: originMs,
-		adopt:    make(map[int64]seriesRow),
-		consumed: make(map[int64]bool),
-		played:   make(map[string]bool),
+		lastGroup: -1,
+		orderKey:  [2]int{-1, -1},
+		order:     spec.PlaybackOrder,
+		amount:    spec.EffectiveAmount(),
+		seed:      splitmix64(uint64(spec.Seed) ^ hashString(channelID)),
+		episodes:  eps,
+		byID:      make(map[string]int, len(eps)),
+		originMs:  originMs,
+		adopt:     make(map[int64]seriesRow),
+		consumed:  make(map[int64]bool),
+		played:    make(map[string]bool),
 	}
 	for i, e := range eps {
 		r.byID[e.ID] = i
 	}
+	if spec.PlaybackOrder == domain.OrderInterleaved {
+		il := domain.Interleave{}.Normalized()
+		if spec.Interleave != nil {
+			il = spec.Interleave.Normalized()
+		}
+		r.il = &il
+		r.groupOf = make(map[string]int, len(eps))
+		byKey := make(map[string]int)
+		for _, e := range eps {
+			key := e.GroupKey
+			if key == "" {
+				key = "i:" + e.ID
+			}
+			gi, ok := byKey[key]
+			if !ok {
+				gi = len(r.groups)
+				byKey[key] = gi
+				title := e.GroupTitle
+				if title == "" {
+					title = e.Title
+				}
+				r.groups = append(r.groups, &walkGroup{key: key, title: catalogsync.FoldText(title), keyHash: hashString(key)})
+			}
+			g := r.groups[gi]
+			g.eps = append(g.eps, e)
+			if e.PremiereDate != nil && (g.minPremiere == nil || *e.PremiereDate < *g.minPremiere) {
+				v := *e.PremiereDate
+				g.minPremiere = &v
+			}
+			r.groupOf[e.ID] = gi
+		}
+	}
 	for _, h := range history {
 		if h.StartAt >= originMs {
-			r.apply(h.CatalogItemID, h.Cycle)
+			r.applyRound(h.CatalogItemID, h.Cycle, h.Round)
 		}
 	}
 	for _, a := range ahead {
@@ -196,23 +260,166 @@ func (r *seriesRun) empty() bool { return len(r.episodes) == 0 }
 
 // apply records that episode id aired in cycle: a higher cycle than the
 // current one starts a fresh played set.
-func (r *seriesRun) apply(id string, cycle int) {
+func (r *seriesRun) apply(id string, cycle int) { r.applyRound(id, cycle, 0) }
+
+// applyRound is apply for an interleaved walk, which also records the round.
+// An episode the catalog no longer holds still counts as played but tells
+// nothing about whose turn it was, so the position in the rounds is kept.
+func (r *seriesRun) applyRound(id string, cycle, round int) {
 	if cycle != r.cycle {
 		r.cycle = cycle
 		r.played = make(map[string]bool)
+		r.round, r.lastGroup, r.turn = 0, -1, 0
 	}
 	r.played[id] = true
 	r.lastEp = id
 	r.ordinal++
+	if r.il == nil {
+		return
+	}
+	gi, ok := r.groupOf[id]
+	if !ok {
+		return
+	}
+	if gi == r.lastGroup && round == r.round {
+		r.turn++
+	} else {
+		r.turn = 1
+	}
+	r.lastGroup, r.round = gi, round
+}
+
+// roundOrder is the sequence the series take their turns in during a round of
+// a cycle: by title (or earliest premiere) the same every round, a shuffle
+// fixed within the cycle, or a fresh random sequence every round. Ties break
+// on the series key so the order is total.
+func (r *seriesRun) roundOrder(cycle, round int) []int {
+	if r.il.SeriesOrder != domain.OrderRandom {
+		round = 0 // the same sequence every round
+	}
+	if r.orderKey == [2]int{cycle, round} && r.orderMemo != nil {
+		return r.orderMemo
+	}
+	order := make([]int, len(r.groups))
+	for i := range order {
+		order[i] = i
+	}
+	hashOf := func(g *walkGroup) uint64 {
+		h := r.seed ^ splitmix64(uint64(cycle)+1) ^ g.keyHash
+		if r.il.SeriesOrder == domain.OrderRandom {
+			h ^= splitmix64(uint64(round) + 0x51ed)
+		}
+		return splitmix64(h)
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		a, b := r.groups[order[i]], r.groups[order[j]]
+		switch r.il.SeriesOrder {
+		case domain.OrderShuffle, domain.OrderRandom:
+			if ha, hb := hashOf(a), hashOf(b); ha != hb {
+				return ha < hb
+			}
+		case domain.OrderReleaseDate:
+			if l, d := lessNilLast(a.minPremiere, b.minPremiere); d {
+				return l
+			}
+			fallthrough
+		default:
+			if a.title != b.title {
+				return a.title < b.title
+			}
+		}
+		return a.key < b.key
+	})
+	if r.il.SeriesOrder == domain.OrderRandom && round > 0 && len(order) > 1 {
+		// A fresh random order must not open with the series that closed the
+		// previous round (when it is still in the rounds, which it is unless
+		// the catalog changed): swap it with the second.
+		prev := r.roundOrder(cycle, round-1)
+		if order[0] == prev[len(prev)-1] {
+			order[0], order[1] = order[1], order[0]
+		}
+	}
+	r.orderKey, r.orderMemo = [2]int{cycle, round}, order
+	return order
+}
+
+func (r *seriesRun) firstUnplayed(g *walkGroup, played map[string]bool) (series.Episode, bool) {
+	for _, e := range g.eps {
+		if !played[e.ID] {
+			return e, true
+		}
+	}
+	return series.Episode{}, false
+}
+
+// nextInterleaved picks the episode that airs next in an interleaved walk:
+// the same series while its turn (PerRound episodes) is not over, else the
+// next series of the round that still has an unplayed episode, else the first
+// such series of the next round. When every episode of the cycle has aired a
+// new cycle opens, which is how a "restart" walk begins again (a series that
+// ran out earlier simply waited its turn out; a series the catalog gained
+// mid-cycle is unplayed and takes its place the next time its turn comes up).
+func (r *seriesRun) nextInterleaved() (ep series.Episode, cycle, round int, ok bool) {
+	cycle, round = r.cycle, r.round
+	played, last, turn := r.played, r.lastGroup, r.turn
+	if r.cycleDone() {
+		cycle++
+		played, last, turn, round = nil, -1, 0, 0
+	}
+	if last >= 0 && turn < r.il.PerRound {
+		if e, ok := r.firstUnplayed(r.groups[last], played); ok {
+			return e, cycle, round, true
+		}
+	}
+	order := r.roundOrder(cycle, round)
+	start := 0
+	if last >= 0 {
+		for i, gi := range order {
+			if gi == last {
+				start = i + 1
+				break
+			}
+		}
+	}
+	for _, gi := range order[start:] {
+		if e, ok := r.firstUnplayed(r.groups[gi], played); ok {
+			return e, cycle, round, true
+		}
+	}
+	// The round is over: the next one starts with its first series that still
+	// has an episode to play.
+	round++
+	for _, gi := range r.roundOrder(cycle, round) {
+		if e, ok := r.firstUnplayed(r.groups[gi], played); ok {
+			return e, cycle, round, true
+		}
+	}
+	return series.Episode{}, cycle, round, false
 }
 
 // next returns the episode that airs next and the cycle it belongs to,
 // without changing the state. ok is false for a series with no episodes.
 func (r *seriesRun) next() (ep series.Episode, cycle int, ok bool) {
+	ep, cycle, _, ok = r.nextRound()
+	return ep, cycle, ok
+}
+
+// nextRound is next for every order; round is only meaningful (and non-zero)
+// for an interleaved walk.
+func (r *seriesRun) nextRound() (ep series.Episode, cycle, round int, ok bool) {
 	n := len(r.episodes)
 	if n == 0 {
-		return series.Episode{}, 0, false
+		return series.Episode{}, 0, 0, false
 	}
+	if r.il != nil {
+		return r.nextInterleaved()
+	}
+	ep, cycle, ok = r.nextLinear()
+	return ep, cycle, 0, ok
+}
+
+func (r *seriesRun) nextLinear() (ep series.Episode, cycle int, ok bool) {
+	n := len(r.episodes)
 	if r.order == domain.OrderRandom {
 		idx := int(splitmix64(r.seed^splitmix64(uint64(r.ordinal))) % uint64(n))
 		return r.episodes[idx], 0, true
@@ -270,22 +477,23 @@ func (r *seriesRun) next() (ep series.Episode, cycle int, ok bool) {
 
 // adoptAt returns the episode a persisted row already assigned to a slot
 // starting at startMs, if that episode still exists.
-func (r *seriesRun) adoptAt(startMs int64) (series.Episode, int, bool) {
+func (r *seriesRun) adoptAt(startMs int64) (series.Episode, int, int, bool) {
 	row, ok := r.adopt[startMs]
 	if !ok {
-		return series.Episode{}, 0, false
+		return series.Episode{}, 0, 0, false
 	}
 	idx, exists := r.byID[row.CatalogItemID]
 	if !exists {
-		return series.Episode{}, 0, false
+		return series.Episode{}, 0, 0, false
 	}
-	return r.episodes[idx], row.Cycle, true
+	return r.episodes[idx], row.Cycle, row.Round, true
 }
 
 // slot is the series' decision for a slot starting at startMs.
 type seriesSlot struct {
 	Episode series.Episode
 	Cycle   int
+	Round   int // interleaved walks only
 	// Skip is set when the slot ended before the cursor existed: time passes
 	// by the episode's length, but nothing is emitted and nothing consumed.
 	Skip bool
@@ -294,17 +502,17 @@ type seriesSlot struct {
 
 // plan decides the slot starting at startMs without consuming it.
 func (r *seriesRun) plan(startMs int64) (seriesSlot, bool) {
-	if ep, cycle, ok := r.adoptAt(startMs); ok {
-		return seriesSlot{Episode: ep, Cycle: cycle}, true
+	if ep, cycle, round, ok := r.adoptAt(startMs); ok {
+		return seriesSlot{Episode: ep, Cycle: cycle, Round: round}, true
 	}
-	ep, cycle, ok := r.next()
+	ep, cycle, round, ok := r.nextRound()
 	if !ok {
 		return seriesSlot{}, false
 	}
 	if startMs+ep.DurationMs <= r.originMs {
-		return seriesSlot{Episode: ep, Cycle: cycle, Skip: true}, true
+		return seriesSlot{Episode: ep, Cycle: cycle, Round: round, Skip: true}, true
 	}
-	return seriesSlot{Episode: ep, Cycle: cycle}, true
+	return seriesSlot{Episode: ep, Cycle: cycle, Round: round}, true
 }
 
 // commit consumes a planned, emitted slot.
@@ -312,7 +520,7 @@ func (r *seriesRun) commit(startMs int64, s seriesSlot) {
 	if _, ok := r.adopt[startMs]; ok {
 		r.consumed[startMs] = true
 	}
-	r.apply(s.Episode.ID, s.Cycle)
+	r.applyRound(s.Episode.ID, s.Cycle, s.Round)
 	r.emitted++
 }
 
@@ -329,7 +537,7 @@ func (r *seriesRun) catchUp(t int64) {
 		}
 		r.consumed[row.StartAt] = true
 		if _, ok := r.byID[row.CatalogItemID]; ok {
-			r.apply(row.CatalogItemID, row.Cycle)
+			r.applyRound(row.CatalogItemID, row.Cycle, row.Round)
 		}
 	}
 }
@@ -342,5 +550,5 @@ func criteriaWalkSpec(cs domain.CriteriaSpec) domain.SeriesSpec {
 	if cs.Amount.Mode == domain.CriteriaAmountCount {
 		amount = domain.SeriesAmount{Mode: domain.AmountCount, Count: cs.Amount.Count}
 	}
-	return domain.SeriesSpec{PlaybackOrder: cs.PlaybackOrder, Seed: cs.Seed, Amount: &amount}
+	return domain.SeriesSpec{PlaybackOrder: cs.PlaybackOrder, Seed: cs.Seed, Amount: &amount, Interleave: cs.Interleave}
 }
