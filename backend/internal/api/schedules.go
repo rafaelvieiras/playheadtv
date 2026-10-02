@@ -193,10 +193,29 @@ func validateScheduleItemRequest(req scheduleItemRequest) (string, bool) {
 		if req.StartAt == nil {
 			return "start_at is required for once recurrence", false
 		}
+	case domain.RecurrenceContinuous:
+		// No time fields: the item fills whatever the timed items leave.
+		// "At most one per schedule" is checked against the DB by the handlers.
 	default:
-		return "recurrence_type must be one of weekly, once", false
+		return "recurrence_type must be one of weekly, once, continuous", false
 	}
 	return "", true
+}
+
+// errSecondContinuous is the message for the one-continuous-item-per-schedule
+// rule (see checkSingleContinuous).
+const errSecondContinuous = "a schedule can have at most one continuous item"
+
+// checkSingleContinuous reports whether adding (or changing the item with id
+// excludeID into) a continuous item would leave the schedule with exactly one.
+// Inactive items count too, so re-activating one can never break the rule.
+func checkSingleContinuous(db storage.DB, r *http.Request, scheduleID, excludeID string) (bool, error) {
+	var ids []string
+	err := db.Query(r.Context(), &ids,
+		"SELECT id FROM schedule_item WHERE tenant_id = ? AND schedule_id = ? AND recurrence_type = 'continuous' AND id != ?",
+		DefaultTenantID, scheduleID, excludeID,
+	)
+	return len(ids) == 0, err
 }
 
 func fetchScheduleItem(db storage.DB, r *http.Request, id string) (domain.ScheduleItem, error) {
@@ -223,6 +242,18 @@ func createScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 		if msg, ok := validateScheduleItemRequest(req); !ok {
 			writeError(w, http.StatusBadRequest, msg)
 			return
+		}
+		if req.RecurrenceType == string(domain.RecurrenceContinuous) {
+			ok, err := checkSingleContinuous(db, r, scheduleID, "")
+			if err != nil {
+				handleDBError(w, err)
+				return
+			}
+			if !ok {
+				writeError(w, http.StatusConflict, errSecondContinuous)
+				return
+			}
+			req.DayOfWeek, req.StartTimeLocal, req.StartAt = nil, nil, nil
 		}
 		active := true
 		if req.Active != nil {
@@ -291,7 +322,8 @@ func getScheduleItem(db storage.DB) http.HandlerFunc {
 func updateScheduleItem(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if _, err := fetchScheduleItem(db, r, id); err != nil {
+		existing, err := fetchScheduleItem(db, r, id)
+		if err != nil {
 			handleDBError(w, err)
 			return
 		}
@@ -304,12 +336,24 @@ func updateScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 			writeError(w, http.StatusBadRequest, msg)
 			return
 		}
+		if req.RecurrenceType == string(domain.RecurrenceContinuous) {
+			ok, err := checkSingleContinuous(db, r, existing.ScheduleID, id)
+			if err != nil {
+				handleDBError(w, err)
+				return
+			}
+			if !ok {
+				writeError(w, http.StatusConflict, errSecondContinuous)
+				return
+			}
+			req.DayOfWeek, req.StartTimeLocal, req.StartAt = nil, nil, nil
+		}
 		active := true
 		if req.Active != nil {
 			active = *req.Active
 		}
 		// scheduleID is immutable via PUT (items don't move between schedules).
-		err := db.Exec(r.Context(),
+		err = db.Exec(r.Context(),
 			`UPDATE schedule_item SET block_id = ?, recurrence_type = ?, day_of_week = ?,
 			 start_time_local = ?, start_at = ?, active = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`,
 			req.BlockID, req.RecurrenceType, req.DayOfWeek, req.StartTimeLocal, req.StartAt,

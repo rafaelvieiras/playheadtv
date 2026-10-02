@@ -5,6 +5,10 @@ type RecurrenceType string
 const (
 	RecurrenceWeekly RecurrenceType = "weekly"
 	RecurrenceOnce   RecurrenceType = "once"
+	// RecurrenceContinuous has no time at all: the item fills every instant
+	// not claimed by a timed item, resuming its block rotation where it left
+	// off. At most one per Schedule (enforced by the API).
+	RecurrenceContinuous RecurrenceType = "continuous"
 )
 
 // Schedule is a reusable, named group of recurrence rules (its ScheduleItems)
@@ -66,6 +70,10 @@ type EpgEntry struct {
 	EndAt                int64        `json:"end_at"`
 	SourceScheduleItemID *string      `json:"source_schedule_item_id"` // nil for fallback entries
 	GeneratedAt          int64        `json:"generated_at"`
+	// RotationNext is the persisted rotation position of a continuous
+	// schedule item: the block-item index its next program takes. Internal
+	// bookkeeping, never served to clients; nil for every other entry.
+	RotationNext *int `json:"-"`
 }
 
 // EpgRevision is the one-row-per-tenant version marker GET /epg/meta serves,

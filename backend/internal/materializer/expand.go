@@ -31,6 +31,17 @@ type channelInput struct {
 	PoolItems       map[string][]domain.FillerPoolItem // filler_pool_id -> ordered by rowid (insertion order)
 	CatalogDuration map[string]int64                   // catalog_item_id -> duration_ms
 	DynamicBlockIDs map[string]bool                    // blockID -> true iff block.criteria is non-NULL
+
+	// ContinuousStart is the persisted rotation position the continuous
+	// schedule item (if any) resumes from: the block-item index its next
+	// program takes. Zero starts the rotation from the beginning.
+	ContinuousStart int
+	// KeptUntil is non-zero when the channel's already-materialized head is
+	// being kept (grid stability): it is the end of the last kept entry.
+	// Nothing is generated for the continuous item before it, and any
+	// generated entry starting before it is dropped, since the kept rows
+	// already cover that span.
+	KeptUntil time.Time
 }
 
 // selectionState carries the mutable, ephemeral bookkeeping a single Run()
@@ -327,6 +338,7 @@ func fillLoopingBlock(
 	var entries []domain.EpgEntry
 	for {
 		idx := state.seqCursor[cursorKey] % len(items)
+		next := (idx + 1) % len(items)
 		bi := items[idx]
 		durMs := effectiveDuration(bi, catalogDuration)
 		if durMs <= 0 {
@@ -346,6 +358,7 @@ func fillLoopingBlock(
 			EndAt:                end.UnixMilli(),
 			SourceScheduleItemID: sourceScheduleItemID,
 			GeneratedAt:          generatedAt,
+			RotationNext:         &next,
 		})
 		cursor = end
 		state.seqCursor[cursorKey] = idx + 1
@@ -373,13 +386,57 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 	occurrences := buildOccurrences(in.ScheduleItems, loc, scanFrom, windowEnd)
 	generatedAt := now.UnixMilli()
 
+	// The continuous item (at most one per schedule, validated by the API)
+	// is the base layer: it airs in every gap the timed items leave, in
+	// place of the channel's fallback filler.
+	var continuous *domain.ScheduleItem
+	for i := range in.ScheduleItems {
+		if in.ScheduleItems[i].Recurrence == domain.RecurrenceContinuous {
+			continuous = &in.ScheduleItems[i]
+			break
+		}
+	}
+	continuousKey := ""
+	// Never generate the continuous item in the past or inside the kept head.
+	continuousFloor := now
+	if in.KeptUntil.After(continuousFloor) {
+		continuousFloor = in.KeptUntil
+	}
+	if continuous != nil {
+		continuousKey = in.ChannelID + "|continuous|" + continuous.ID
+		state.seqCursor[continuousKey] = in.ContinuousStart
+	}
+
 	var entries []domain.EpgEntry
 	cursor := scanFrom
 
-	fillFallbackGap := func(from, to time.Time) {
+	fillFallbackOnly := func(from, to time.Time) {
 		rule := resolveFillerRule(in.FillerRules, domain.FillerFallback, "", in.ChannelID)
 		gapEntries, _ := fillGap(rule, in.PoolItems, in.CatalogDuration, from, to, domain.EpgFallback, in.TenantID, in.ChannelID, generatedAt, nil, state)
 		entries = append(entries, gapEntries...)
+	}
+
+	// fillFallbackGap fills a span no timed item claims: with the continuous
+	// item's rotation when the schedule has one (whole programs only, so a
+	// residual shorter than the next program is handed to the fallback rule),
+	// otherwise with the channel-scoped fallback rule alone.
+	fillFallbackGap := func(from, to time.Time) {
+		if continuous == nil {
+			fillFallbackOnly(from, to)
+			return
+		}
+		start := from
+		if start.Before(continuousFloor) {
+			start = continuousFloor
+		}
+		if !start.Before(to) {
+			return
+		}
+		loopEntries, end := fillLoopingBlock(in.BlockItems[continuous.BlockID], in.CatalogDuration, start, to, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, continuousKey, state)
+		entries = append(entries, loopEntries...)
+		if end.Before(to) {
+			fillFallbackOnly(end, to)
+		}
 	}
 
 	for i, occ := range occurrences {
@@ -542,6 +599,17 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 
 	if cursor.Before(windowEnd) {
 		fillFallbackGap(cursor, windowEnd)
+	}
+
+	if !in.KeptUntil.IsZero() {
+		keptMs := in.KeptUntil.UnixMilli()
+		kept := entries[:0]
+		for _, e := range entries {
+			if e.StartAt >= keptMs {
+				kept = append(kept, e)
+			}
+		}
+		entries = kept
 	}
 
 	return entries

@@ -244,13 +244,39 @@ the continuation). A dynamic (looping) block never had this problem to begin
 with — `fillLoopingBlock` already stops exactly at the boundary by
 construction.
 
+### Continuous schedule items and grid stability
+
+A `schedule_item` with `recurrence_type = continuous` has no time: it is the
+base layer of a channel, airing in every span the timed items leave (and
+rotating through its block, whole programs only, with a residual too short for
+the next program handed to the channel's fallback rule). At most one per
+schedule, enforced by the API (`409` otherwise). A timed item still starts at
+its nominal time; the continuous item resumes right after it where its
+rotation left off. A continuous item has no preroll/midroll/postroll/tail.
+
+A channel whose schedule has a continuous item is not fully regenerated on
+every run. The materializer keeps the rows already materialized that start
+before `now + freeze margin` (3h by default, `PLAYHEADTV_EPG_FREEZE_MARGIN`
+overrides it, exposed as `freeze_margin_ms` in `GET /epg/meta`) and only
+recomputes what starts after, continuing from the end of the last kept row.
+The rotation position is persisted on the entries themselves
+(`epg_entry.rotation_next`, the block-item index the next program takes), so
+it survives runs and restarts and never depends on in-memory state. Channels
+with only timed items keep the full-window regeneration described above.
+
+`POST /channels/{id}/reset-epg` force-resets one channel: it discards the
+materialized future and the entry on the air, clears the persisted rotation
+(it restarts from the first block item) and regenerates synchronously. It is
+the only way a change inside the freeze margin takes effect early. The web UI
+exposes it on the channel list behind a confirmation dialog.
+
 ### API
 
 - `GET /epg`: the full materialized schedule for every channel in the
   tenant, over a configurable window (default 24h). This is the "XMLTV" of
   the project, as JSON — one bulk fetch instead of a client polling
   per-channel or per-minute.
-- `GET /epg/meta`: `{revision, valid_until}` only — cheap enough to poll
+- `GET /epg/meta`: `{revision, valid_until, freeze_margin_ms}` only — cheap enough to poll
   often. Clients cache the full `/epg` response locally and only refetch it
   when `revision` changes or `valid_until` is close.
 

@@ -113,7 +113,7 @@ export interface BlockItemInput {
 }
 
 // Mirrors backend/internal/domain.RecurrenceType.
-export type RecurrenceType = 'weekly' | 'once'
+export type RecurrenceType = 'weekly' | 'once' | 'continuous'
 
 // Mirrors backend/internal/domain.Schedule (backend/internal/api/schedules.go)
 // — a reusable, named group of ScheduleItems, not tied to a channel. Issue

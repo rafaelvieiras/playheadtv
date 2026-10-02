@@ -89,6 +89,15 @@ func run() error {
 	}
 
 	mat := materializer.New(db, epgWindow)
+	// PLAYHEADTV_EPG_FREEZE_MARGIN (a Go duration, e.g. "3h") overrides the
+	// default freeze margin; an invalid value is logged and ignored.
+	if v := os.Getenv("PLAYHEADTV_EPG_FREEZE_MARGIN"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			mat.SetFreezeMargin(d)
+		} else {
+			log.Printf("materializer: ignoring invalid PLAYHEADTV_EPG_FREEZE_MARGIN %q", v)
+		}
+	}
 	// Run once synchronously at boot so GET /epg has something to serve as
 	// soon as the server comes up, without blocking startup on a broken
 	// schedule forever — a failure here is logged, not fatal.

@@ -211,3 +211,73 @@ func TestChannelInvalidScheduleFK(t *testing.T) {
 		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestScheduleItemContinuousAtMostOnePerSchedule(t *testing.T) {
+	_, mux := newTestDB(t)
+	_, blockID := setupChannelAndBlock(t, mux)
+	scheduleID := setupSchedule(t, mux)
+	otherScheduleID := setupSchedule(t, mux)
+
+	body := fmt.Sprintf(`{"block_id":%q,"recurrence_type":"continuous"}`, blockID)
+	rec := doRequest(t, mux, "POST", "/schedules/"+scheduleID+"/items", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("first continuous: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var first domain.ScheduleItem
+	json.Unmarshal(rec.Body.Bytes(), &first)
+	if first.Recurrence != domain.RecurrenceContinuous || first.DayOfWeek != nil || first.StartAt != nil {
+		t.Fatalf("unexpected continuous item: %+v", first)
+	}
+
+	rec = doRequest(t, mux, "POST", "/schedules/"+scheduleID+"/items", body)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("second continuous: status = %d, want 409, body = %s", rec.Code, rec.Body.String())
+	}
+
+	// Another schedule may have its own.
+	rec = doRequest(t, mux, "POST", "/schedules/"+otherScheduleID+"/items", body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("continuous in another schedule: status = %d", rec.Code)
+	}
+
+	// Turning a timed item into a second continuous one is rejected too...
+	weekly := fmt.Sprintf(`{"block_id":%q,"recurrence_type":"weekly","day_of_week":1,"start_time_local":"08:00"}`, blockID)
+	rec = doRequest(t, mux, "POST", "/schedules/"+scheduleID+"/items", weekly)
+	var timed domain.ScheduleItem
+	json.Unmarshal(rec.Body.Bytes(), &timed)
+	rec = doRequest(t, mux, "PUT", "/schedule-items/"+timed.ID, body)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("PUT to second continuous: status = %d, want 409", rec.Code)
+	}
+	// ...but re-saving the existing continuous item is fine.
+	rec = doRequest(t, mux, "PUT", "/schedule-items/"+first.ID, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT existing continuous: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestResetChannelEPG(t *testing.T) {
+	_, mux := newTestDB(t)
+	channelID, _ := setupChannelAndBlock(t, mux)
+
+	rec := doRequest(t, mux, "POST", "/channels/"+channelID+"/reset-epg", "")
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("reset: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	rec = doRequest(t, mux, "POST", "/channels/does-not-exist/reset-epg", "")
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("reset unknown channel: status = %d, want 404", rec.Code)
+	}
+}
+
+func TestEPGMetaExposesFreezeMargin(t *testing.T) {
+	_, mux := newTestDB(t)
+	rec := doRequest(t, mux, "GET", "/epg/meta", "")
+	var meta struct {
+		FreezeMarginMs int64 `json:"freeze_margin_ms"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &meta)
+	if meta.FreezeMarginMs != 3*60*60*1000 {
+		t.Fatalf("freeze_margin_ms = %d, want 3h in ms (body %s)", meta.FreezeMarginMs, rec.Body.String())
+	}
+}

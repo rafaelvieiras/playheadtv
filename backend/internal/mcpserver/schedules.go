@@ -62,7 +62,7 @@ func createScheduleHandler(db storage.DB) mcp.ToolHandlerFor[createScheduleInput
 type createScheduleItemInput struct {
 	ScheduleID     string  `json:"schedule_id" jsonschema:"the Schedule this item belongs to"`
 	BlockID        string  `json:"block_id" jsonschema:"the block that airs"`
-	RecurrenceType string  `json:"recurrence_type" jsonschema:"one of: weekly, once"`
+	RecurrenceType string  `json:"recurrence_type" jsonschema:"one of: weekly, once, continuous (no time fields; fills whatever timed items leave, resuming its block rotation; at most one per schedule)"`
 	DayOfWeek      *int    `json:"day_of_week,omitempty" jsonschema:"0 (Sunday)-6; required and only valid for recurrence_type=weekly"`
 	StartTimeLocal *string `json:"start_time_local,omitempty" jsonschema:"local time of day as HH:MM; required and only valid for recurrence_type=weekly"`
 	StartAt        *int64  `json:"start_at,omitempty" jsonschema:"epoch millis; required and only valid for recurrence_type=once"`
@@ -101,8 +101,12 @@ func validateCreateScheduleItemInput(in createScheduleItemInput) error {
 		if in.DayOfWeek != nil || in.StartTimeLocal != nil {
 			return errors.New("day_of_week/start_time_local must not be set for once recurrence")
 		}
+	case domain.RecurrenceContinuous:
+		if in.DayOfWeek != nil || in.StartTimeLocal != nil || in.StartAt != nil {
+			return errors.New("day_of_week/start_time_local/start_at must not be set for continuous recurrence")
+		}
 	default:
-		return errors.New("recurrence_type must be one of weekly, once")
+		return errors.New("recurrence_type must be one of weekly, once, continuous")
 	}
 	return nil
 }
@@ -111,6 +115,18 @@ func createScheduleItemHandler(db storage.DB, mat *materializer.Materializer) mc
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in createScheduleItemInput) (*mcp.CallToolResult, domain.ScheduleItem, error) {
 		if err := validateCreateScheduleItemInput(in); err != nil {
 			return nil, domain.ScheduleItem{}, err
+		}
+		if domain.RecurrenceType(in.RecurrenceType) == domain.RecurrenceContinuous {
+			var ids []string
+			if err := db.Query(ctx, &ids,
+				"SELECT id FROM schedule_item WHERE tenant_id = ? AND schedule_id = ? AND recurrence_type = 'continuous'",
+				defaultTenantID, in.ScheduleID,
+			); err != nil {
+				return nil, domain.ScheduleItem{}, err
+			}
+			if len(ids) > 0 {
+				return nil, domain.ScheduleItem{}, errors.New("a schedule can have at most one continuous item")
+			}
 		}
 		active := true
 		if in.Active != nil {

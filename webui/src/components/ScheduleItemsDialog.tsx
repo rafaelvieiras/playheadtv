@@ -34,6 +34,7 @@ interface ScheduleItemsDialogProps {
 const DAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
 function summarizeRecurrence(item: ScheduleItem): string {
+  if (item.recurrence_type === 'continuous') return 'Continuous (whenever no timed item airs)'
   if (item.recurrence_type === 'weekly') {
     const day = item.day_of_week !== null ? DAY_LABELS[item.day_of_week] : '?'
     return `Every ${day} at ${item.start_time_local ?? '?'}`
@@ -44,6 +45,19 @@ function summarizeRecurrence(item: ScheduleItem): string {
     hour: '2-digit',
     minute: '2-digit',
   })}`
+}
+
+// A schedule made of seven weekly items at 00:00 (one per weekday) pointing
+// to the same dynamic block is the old way of faking a 24/7 rotation; it can
+// be replaced by one continuous item. Returns that block's id, else undefined.
+function legacyDailyDynamicBlock(items: ScheduleItem[], blocksById: Map<string, Block>): string | undefined {
+  if (items.length !== 7) return undefined
+  if (!items.every((i) => i.recurrence_type === 'weekly' && i.start_time_local === '00:00')) return undefined
+  const days = new Set(items.map((i) => i.day_of_week))
+  if (days.size !== 7 || ![0, 1, 2, 3, 4, 5, 6].every((d) => days.has(d))) return undefined
+  const blockId = items[0].block_id
+  if (!items.every((i) => i.block_id === blockId)) return undefined
+  return blocksById.get(blockId)?.criteria ? blockId : undefined
 }
 
 export function ScheduleItemsDialog({ open, onOpenChange, schedule }: ScheduleItemsDialogProps) {
@@ -65,6 +79,41 @@ export function ScheduleItemsDialog({ open, onOpenChange, schedule }: ScheduleIt
   const [itemDialogOpen, setItemDialogOpen] = useState(false)
   const [editingItem, setEditingItem] = useState<ScheduleItem | undefined>(undefined)
   const [deletingItem, setDeletingItem] = useState<ScheduleItem | undefined>(undefined)
+  const [convertOpen, setConvertOpen] = useState(false)
+
+  const legacyBlockId = useMemo(
+    () => (items ? legacyDailyDynamicBlock(items, blocksById) : undefined),
+    [items, blocksById],
+  )
+
+  // Creates the continuous item first, then drops the seven weekly ones, so a
+  // failure midway never leaves the schedule empty.
+  const convertMutation = useMutation({
+    mutationFn: async () => {
+      if (!legacyBlockId || !items) return
+      await api.post(`/schedules/${scheduleId}/items`, {
+        block_id: legacyBlockId,
+        recurrence_type: 'continuous',
+        day_of_week: null,
+        start_time_local: null,
+        start_at: null,
+        active: true,
+      })
+      for (const item of items) {
+        await api.delete(`/schedule-items/${item.id}`)
+      }
+    },
+    onSuccess: () => {
+      toast.success('Schedule converted to a continuous item.')
+      setConvertOpen(false)
+    },
+    onError: () => {
+      toast.error('Could not convert the schedule.')
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ['schedule-items', scheduleId] })
+    },
+  })
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/schedule-items/${id}`),
@@ -107,6 +156,21 @@ export function ScheduleItemsDialog({ open, onOpenChange, schedule }: ScheduleIt
             </div>
 
             {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+
+            {legacyBlockId && (
+              <div
+                data-testid="legacy-daily-banner"
+                className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm"
+              >
+                <span>
+                  This schedule has seven 00:00 items (one per weekday) for the same dynamic block. A single
+                  continuous item does the same without restarting the rotation every day.
+                </span>
+                <Button size="sm" variant="outline" onClick={() => setConvertOpen(true)}>
+                  Convert to continuous
+                </Button>
+              </div>
+            )}
 
             {items && (
               <Table>
@@ -162,6 +226,30 @@ export function ScheduleItemsDialog({ open, onOpenChange, schedule }: ScheduleIt
           item={editingItem}
         />
       )}
+
+      <AlertDialog open={convertOpen} onOpenChange={setConvertOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Convert to a continuous item?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The seven weekly 00:00 items will be replaced by one continuous item for the same block. The grid
+              already published is kept; the change applies to what is generated after the freeze margin.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault()
+                convertMutation.mutate()
+              }}
+              disabled={convertMutation.isPending}
+            >
+              Convert
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={deletingItem !== undefined} onOpenChange={(o) => !o && setDeletingItem(undefined)}>
         <AlertDialogContent>

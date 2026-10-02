@@ -19,6 +19,7 @@ func registerChannels(mux *http.ServeMux, db storage.DB, mat *materializer.Mater
 	mux.HandleFunc("GET /channels/{id}", getChannel(db))
 	mux.HandleFunc("PUT /channels/{id}", updateChannel(db, mat))
 	mux.HandleFunc("DELETE /channels/{id}", deleteChannel(db))
+	mux.HandleFunc("POST /channels/{id}/reset-epg", resetChannelEPG(db, mat))
 }
 
 const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, schedule_id, created_at, updated_at"
@@ -171,6 +172,25 @@ func deleteChannel(db storage.DB) http.HandlerFunc {
 		}
 		if err := db.Exec(r.Context(), "DELETE FROM channel WHERE tenant_id = ? AND id = ?", DefaultTenantID, id); err != nil {
 			handleDBError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}
+}
+
+// resetChannelEPG force-resets one channel's grid: the materialized future and
+// the program currently on the air are discarded, continuous rotations restart
+// from the beginning, and the channel is regenerated before the response is
+// sent. Viewers switch program immediately.
+func resetChannelEPG(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ch, err := fetchChannel(db, r, r.PathValue("id"))
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		if err := mat.ResetChannel(r.Context(), DefaultTenantID, ch); err != nil {
+			writeError(w, http.StatusInternalServerError, "could not reset the channel grid")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)

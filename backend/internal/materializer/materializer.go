@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
@@ -26,6 +27,12 @@ import (
 // occurrences that might still be on the air (e.g. a long block that started
 // yesterday). Fixed rather than configurable — see docs/ROADMAP.md.
 const scanLookback = 24 * time.Hour
+
+// DefaultFreezeMargin is how far ahead of "now" a channel driven by a
+// continuous schedule item keeps its already-materialized programs untouched:
+// a regeneration only recomputes what starts after now + margin, so the guide
+// viewers have already seen does not shift under them.
+const DefaultFreezeMargin = 3 * time.Hour
 
 // triggerDebounce coalesces a burst of Trigger() calls (e.g. adding several
 // block_item rows back to back) into a single regeneration.
@@ -54,7 +61,11 @@ const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, sc
 type Materializer struct {
 	db      storage.DB
 	window  time.Duration
+	freeze  time.Duration
 	trigger chan struct{}
+	// mu serializes Run and ResetChannel: both rewrite epg_entry rows with
+	// multi-statement sequences that must not interleave.
+	mu sync.Mutex
 }
 
 // New creates a Materializer. window is how far ahead of "now" epg_entry is
@@ -64,9 +75,21 @@ func New(db storage.DB, window time.Duration) *Materializer {
 	return &Materializer{
 		db:      db,
 		window:  window,
+		freeze:  DefaultFreezeMargin,
 		trigger: make(chan struct{}, 1),
 	}
 }
+
+// SetFreezeMargin overrides DefaultFreezeMargin; call before Start.
+// Non-positive values are ignored.
+func (m *Materializer) SetFreezeMargin(d time.Duration) {
+	if d > 0 {
+		m.freeze = d
+	}
+}
+
+// FreezeMargin reports the margin clients are told about (GET /epg/meta).
+func (m *Materializer) FreezeMargin() time.Duration { return m.freeze }
 
 // Trigger asks for a regeneration as soon as possible, without blocking the
 // caller. Safe to call before Start (e.g. from tests that only exercise Run
@@ -142,6 +165,8 @@ func (m *Materializer) runLogged(ctx context.Context) {
 // tradeoff, not silent data loss — the previous materialization for that
 // channel is left untouched until the next successful Run()).
 func (m *Materializer) Run(ctx context.Context) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	now := time.Now().UTC()
 	windowEnd := now.Add(m.window)
 	scanFrom := now.Add(-scanLookback)
@@ -178,6 +203,30 @@ func (m *Materializer) runTenant(ctx context.Context, tenantID string, now, scan
 	if err := m.bumpRevision(ctx, tenantID, now, windowEnd); err != nil {
 		log.Printf("materializer: tenant %s: bump epg_revision: %v", tenantID, err)
 	}
+}
+
+// ResetChannel force-resets one channel's grid: it discards the channel's
+// materialized future AND the entry currently on the air, restarts every
+// continuous rotation from the beginning (the persisted positions are
+// cleared), and regenerates immediately, synchronously. Viewers switch
+// program right away. History (entries fully in the past) is kept.
+func (m *Materializer) ResetChannel(ctx context.Context, tenantID string, ch domain.Channel) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now().UTC()
+	nowMs := now.UnixMilli()
+
+	if err := m.db.Exec(ctx, "UPDATE epg_entry SET rotation_next = NULL WHERE channel_id = ?", ch.ID); err != nil {
+		return fmt.Errorf("clear rotation: %w", err)
+	}
+	if err := m.db.Exec(ctx, "DELETE FROM epg_entry WHERE channel_id = ? AND end_at > ?", ch.ID, nowMs); err != nil {
+		return fmt.Errorf("discard epg_entry: %w", err)
+	}
+	windowEnd := now.Add(m.window)
+	if err := m.materializeChannel(ctx, ch, tenantID, now, now.Add(-scanLookback), windowEnd, newCatalogDurationCache(m.db), newSelectionState()); err != nil {
+		return err
+	}
+	return m.bumpRevision(ctx, tenantID, now, windowEnd)
 }
 
 func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel, tenantID string, now, scanFrom, windowEnd time.Time, cache *catalogDurationCache, state *selectionState) error {
@@ -295,6 +344,44 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 		}
 	}
 
+	// Grid stability, continuous channels only: keep the already-materialized
+	// head (everything starting before now + freeze margin) and resume the
+	// rotation from the position persisted on the last kept entry. A channel
+	// with only timed items keeps regenerating its whole window as before.
+	nowMs := now.UnixMilli()
+	frozenUntilMs := now.Add(m.freeze).UnixMilli()
+	var keptUntil time.Time
+	continuousStart := 0
+	var continuousID string
+	for _, si := range scheduleItems {
+		if si.Recurrence == domain.RecurrenceContinuous {
+			continuousID = si.ID
+			break
+		}
+	}
+	if continuousID != "" {
+		var keptEnds []int64
+		if err := m.db.Query(ctx, &keptEnds,
+			"SELECT end_at FROM epg_entry WHERE channel_id = ? AND end_at > ? AND start_at < ? ORDER BY end_at DESC LIMIT 1",
+			ch.ID, nowMs, frozenUntilMs,
+		); err != nil {
+			return fmt.Errorf("read kept epg_entry: %w", err)
+		}
+		if len(keptEnds) > 0 {
+			keptUntil = time.UnixMilli(keptEnds[0]).UTC()
+		}
+		var rotations []int64
+		if err := m.db.Query(ctx, &rotations,
+			"SELECT rotation_next FROM epg_entry WHERE channel_id = ? AND source_schedule_item_id = ? AND rotation_next IS NOT NULL AND start_at < ? ORDER BY start_at DESC LIMIT 1",
+			ch.ID, continuousID, frozenUntilMs,
+		); err != nil {
+			return fmt.Errorf("read rotation position: %w", err)
+		}
+		if len(rotations) > 0 {
+			continuousStart = int(rotations[0])
+		}
+	}
+
 	in := channelInput{
 		ChannelID:       ch.ID,
 		TenantID:        tenantID,
@@ -305,10 +392,11 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 		PoolItems:       poolItems,
 		CatalogDuration: catalogDuration,
 		DynamicBlockIDs: dynamicBlockIDs,
+		ContinuousStart: continuousStart,
+		KeptUntil:       keptUntil,
 	}
 	generated := expandChannel(in, now, scanFrom, windowEnd, state)
 
-	nowMs := now.UnixMilli()
 	toInsert := make([]domain.EpgEntry, 0, len(generated))
 	for _, e := range generated {
 		// Entries entirely in the past only exist because of the lookback
@@ -322,14 +410,19 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 	// Deleting only end_at > now preserves history (anything fully in the
 	// past) while safely regenerating everything still relevant, including
 	// whatever is airing right now.
-	if err := m.db.Exec(ctx, "DELETE FROM epg_entry WHERE channel_id = ? AND end_at > ?", ch.ID, nowMs); err != nil {
+	deleteSQL, deleteArg := "DELETE FROM epg_entry WHERE channel_id = ? AND end_at > ?", nowMs
+	if !keptUntil.IsZero() {
+		// Keep the frozen head; only what starts at or after the margin goes.
+		deleteSQL, deleteArg = "DELETE FROM epg_entry WHERE channel_id = ? AND start_at >= ?", frozenUntilMs
+	}
+	if err := m.db.Exec(ctx, deleteSQL, ch.ID, deleteArg); err != nil {
 		return fmt.Errorf("delete stale epg_entry: %w", err)
 	}
 	for _, e := range toInsert {
 		if err := m.db.Exec(ctx,
-			`INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			e.ID, e.TenantID, e.ChannelID, string(e.Kind), e.CatalogItemID, e.StartAt, e.EndAt, e.SourceScheduleItemID, e.GeneratedAt,
+			`INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at, rotation_next)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			e.ID, e.TenantID, e.ChannelID, string(e.Kind), e.CatalogItemID, e.StartAt, e.EndAt, e.SourceScheduleItemID, e.GeneratedAt, e.RotationNext,
 		); err != nil {
 			return fmt.Errorf("insert epg_entry: %w", err)
 		}

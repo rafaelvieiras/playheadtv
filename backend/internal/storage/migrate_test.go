@@ -24,7 +24,7 @@ func preMigration006FS(t *testing.T) fs.FS {
 	}
 	out := fstest.MapFS{}
 	for _, e := range entries {
-		if e.Name() == "0006_schedule_playout_split.sql" {
+		if e.Name() >= "0006_" { // 0006 and every later migration
 			continue
 		}
 		content, err := fs.ReadFile(migrations.FS, e.Name())
@@ -144,6 +144,17 @@ func TestMigration0006_MigratesScheduleEntryData(t *testing.T) {
 	}
 	if len(scheduleEntryCount) != 1 || scheduleEntryCount[0] != 0 {
 		t.Fatalf("schedule_entry table still exists after migration")
+	}
+
+	// 0007 (rebuilt schedule_item with the 'continuous' recurrence): the
+	// rebuild kept FK enforcement on and the new type is accepted.
+	var fk []int
+	if err := db.Query(ctx, &fk, "PRAGMA foreign_keys"); err != nil || len(fk) != 1 || fk[0] != 1 {
+		t.Fatalf("foreign_keys after migrations = %v (err %v), want [1]", fk, err)
+	}
+	if err := db.Exec(ctx, `INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, recurrence_type, active, created_at, updated_at)
+	      VALUES ('sc1', 't1', 'migrated-c1', 'b1', 'continuous', 1, 1, 1)`); err != nil {
+		t.Fatalf("insert continuous schedule_item: %v", err)
 	}
 
 	// Running the full migration set again must still be a no-op.

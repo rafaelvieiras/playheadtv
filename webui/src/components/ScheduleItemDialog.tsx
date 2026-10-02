@@ -15,7 +15,7 @@ import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { api } from '@/lib/http'
+import { api, ApiError } from '@/lib/http'
 import type { Block, RecurrenceType, ScheduleItem, ScheduleItemInput } from '@/lib/types'
 
 interface ScheduleItemDialogProps {
@@ -72,6 +72,7 @@ function itemToForm(item: ScheduleItem): FormState {
 // round trip to the API.
 function validate(form: FormState): string | undefined {
   if (!form.block_id) return 'Select a block.'
+  if (form.recurrence_type === 'continuous') return undefined
   if (form.recurrence_type === 'weekly') {
     if (form.day_of_week < 0 || form.day_of_week > 6) return 'Invalid day of the week.'
     if (!/^\d{2}:\d{2}$/.test(form.start_time_local)) return 'Enter a time in HH:MM format.'
@@ -82,6 +83,16 @@ function validate(form: FormState): string | undefined {
 }
 
 function buildPayload(form: FormState): ScheduleItemInput {
+  if (form.recurrence_type === 'continuous') {
+    return {
+      block_id: form.block_id,
+      recurrence_type: 'continuous',
+      day_of_week: null,
+      start_time_local: null,
+      start_at: null,
+      active: form.active,
+    }
+  }
   if (form.recurrence_type === 'weekly') {
     return {
       block_id: form.block_id,
@@ -131,7 +142,13 @@ export function ScheduleItemDialog({ open, onOpenChange, scheduleId, item }: Sch
       toast.success(isEditing ? 'Schedule item updated.' : 'Schedule item created.')
       onOpenChange(false)
     },
-    onError: () => {
+    onError: (err) => {
+      // 409: the schedule already has its one continuous item; the server's
+      // message says so.
+      if (err instanceof ApiError && err.status === 409) {
+        toast.error(err.message)
+        return
+      }
       toast.error(isEditing ? 'Could not update the schedule item.' : 'Could not create the schedule item.')
     },
   })
@@ -195,10 +212,25 @@ export function ScheduleItemDialog({ open, onOpenChange, scheduleId, item }: Sch
                 >
                   Once
                 </Button>
+                <Button
+                  type="button"
+                  variant={form.recurrence_type === 'continuous' ? 'default' : 'outline'}
+                  size="sm"
+                  className="flex-1"
+                  onClick={() => setForm((f) => ({ ...f, recurrence_type: 'continuous' }))}
+                >
+                  Continuous
+                </Button>
               </div>
+              {form.recurrence_type === 'continuous' && (
+                <p className="text-sm text-muted-foreground">
+                  No fixed time: airs whenever no timed item does, resuming its rotation where it left off. A schedule
+                  can have only one.
+                </p>
+              )}
             </Field>
 
-            {form.recurrence_type === 'weekly' ? (
+            {form.recurrence_type === 'continuous' ? null : form.recurrence_type === 'weekly' ? (
               <>
                 <Field>
                   <FieldLabel htmlFor="schedule-item-day">Day of the week</FieldLabel>

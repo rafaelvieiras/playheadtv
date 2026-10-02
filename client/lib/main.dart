@@ -162,6 +162,11 @@ const epgThumbnailMargin = 24.0;
 const epgThumbnailWidth = 320.0;
 const epgThumbnailHeight = 180.0;
 
+// Fallback for the backend's EPG freeze margin (GET /epg/meta
+// `freeze_margin_ms`): how far ahead the guide of a continuous-schedule channel
+// is frozen. Used when the backend does not report one.
+const epgFreezeMarginFallback = Duration(hours: 3);
+
 // Playback buffer window handed to mdk (see _createController).
 const playbackBufferMinMs = 2000;
 const playbackBufferMaxMs = 30000;

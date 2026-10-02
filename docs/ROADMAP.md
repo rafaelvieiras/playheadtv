@@ -296,6 +296,18 @@ actionable checklist.
       the *window's* end) — this is exactly what `hasNextOccurrence` fixes;
       confirmed the fix rather than loosening the test.
 
+- [x] Continuous schedule items: `recurrence_type = continuous` (migration
+      `0007`), one per schedule, filling whatever timed items leave and
+      resuming its rotation; grid stability via a 3h freeze margin
+      (`PLAYHEADTV_EPG_FREEZE_MARGIN`, `freeze_margin_ms` in `GET /epg/meta`)
+      with the rotation persisted in `epg_entry.rotation_next`; per-channel
+      force reset (`POST /channels/{id}/reset-epg`); web UI continuous option,
+      "Convert to continuous" for schedules made of seven 00:00 weekly items on
+      one dynamic block, and a "Reset grid" button. Known tradeoffs: the freeze
+      only applies to channels that have a continuous item; the client only
+      carries a 3h fallback constant (`epgFreezeMarginFallback`), it does not
+      act on the margin.
+
 ## Phase 2 — MCP surface
 
 - [x] MCP server (`github.com/modelcontextprotocol/go-sdk` v1.8.0) in the same

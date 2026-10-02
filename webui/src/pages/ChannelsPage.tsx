@@ -28,6 +28,19 @@ export function ChannelsPage() {
   const [dialogOpen, setDialogOpen] = useState(false)
   const [editingChannel, setEditingChannel] = useState<Channel | undefined>(undefined)
   const [deletingChannel, setDeletingChannel] = useState<Channel | undefined>(undefined)
+  const [resettingChannel, setResettingChannel] = useState<Channel | undefined>(undefined)
+
+  const resetMutation = useMutation({
+    mutationFn: (id: string) => api.post(`/channels/${id}/reset-epg`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['epg'] })
+      toast.success('Channel grid reset.')
+      setResettingChannel(undefined)
+    },
+    onError: () => {
+      toast.error('Could not reset the channel grid.')
+    },
+  })
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/channels/${id}`),
@@ -88,6 +101,14 @@ export function ChannelsPage() {
                   <Button variant="outline" size="sm" onClick={() => openEditDialog(channel)}>
                     Edit
                   </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    data-testid={`reset-grid-${channel.number}`}
+                    onClick={() => setResettingChannel(channel)}
+                  >
+                    Reset grid
+                  </Button>
                   <Button variant="destructive" size="sm" onClick={() => setDeletingChannel(channel)}>
                     Delete
                   </Button>
@@ -99,6 +120,31 @@ export function ChannelsPage() {
       )}
 
       <ChannelDialog open={dialogOpen} onOpenChange={setDialogOpen} channel={editingChannel} />
+
+      <AlertDialog open={resettingChannel !== undefined} onOpenChange={(open) => !open && setResettingChannel(undefined)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reset the grid of this channel?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This discards the upcoming programs of "{resettingChannel?.name}" and the one on air right now,
+              restarts its rotation from the beginning and regenerates immediately. Viewers switch program right
+              away.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault()
+                if (resettingChannel) resetMutation.mutate(resettingChannel.id)
+              }}
+              disabled={resetMutation.isPending}
+            >
+              Reset grid
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <AlertDialog open={deletingChannel !== undefined} onOpenChange={(open) => !open && setDeletingChannel(undefined)}>
         <AlertDialogContent>
