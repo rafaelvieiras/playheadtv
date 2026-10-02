@@ -30,7 +30,7 @@ func registerChannelTools(s *mcp.Server, db storage.DB, mat *materializer.Materi
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "assign_channel_schedule",
 		Description: "Assign a Schedule to a channel (or clear it, by omitting schedule_id), driving " +
-			"what that channel airs — issue #7's Schedule/Playout split. Triggers EPG regeneration. " +
+			"what that channel airs — issue #7's Schedule/Playout split. Resets the channel's EPG grid immediately (same as reset-epg). " +
 			"Mirrors the schedule_id field of PUT /channels/{id}.",
 	}, assignChannelScheduleHandler(db, mat))
 }
@@ -119,7 +119,7 @@ func assignChannelScheduleHandler(db storage.DB, mat *materializer.Materializer)
 		); err != nil {
 			return nil, domain.Channel{}, err
 		}
-		mat.Trigger()
+		mat.ResetAfterChannelEdit(ctx, defaultTenantID, ch)
 		return nil, ch, nil
 	}
 }

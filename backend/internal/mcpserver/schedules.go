@@ -23,8 +23,8 @@ func registerScheduleTools(s *mcp.Server, db storage.DB, mat *materializer.Mater
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "create_schedule_item",
 		Description: "Add one recurrence rule (a block airing either weekly, via day_of_week + " +
-			"start_time_local, or once, via start_at epoch millis) to a Schedule. Triggers EPG " +
-			"regeneration for every channel that Schedule is assigned to. Mirrors POST " +
+			"start_time_local, or once, via start_at epoch millis) to a Schedule. Resets the " +
+			"EPG grid of every channel that Schedule is assigned to (same as reset-epg). Mirrors POST " +
 			"/schedules/{id}/items.",
 	}, createScheduleItemHandler(db, mat))
 }
@@ -155,7 +155,7 @@ func createScheduleItemHandler(db storage.DB, mat *materializer.Materializer) mc
 		if err != nil {
 			return nil, domain.ScheduleItem{}, err
 		}
-		mat.Trigger()
+		mat.ResetAfterScheduleEdit(ctx, defaultTenantID, si.ScheduleID)
 		return nil, si, nil
 	}
 }

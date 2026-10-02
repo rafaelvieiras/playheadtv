@@ -303,7 +303,9 @@ actionable checklist.
       with the rotation persisted in `epg_entry.rotation_next`; per-channel
       force reset (`POST /channels/{id}/reset-epg`); web UI continuous option,
       "Convert to continuous" for schedules made of seven 00:00 weekly items on
-      one dynamic block, and a "Reset grid" button. Known tradeoffs: the freeze
+      one dynamic block, and a "Reset grid" button. Schedule edits (item
+      create/update/delete, channel schedule assignment) reset the affected
+      channels automatically and frozen gaps are regenerated. Known tradeoffs: the freeze
       only applies to channels that have a continuous item; the client only
       carries a 3h fallback constant (`epgFreezeMarginFallback`), it does not
       act on the margin.

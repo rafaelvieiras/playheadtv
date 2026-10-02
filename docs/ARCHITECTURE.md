@@ -263,12 +263,23 @@ The rotation position is persisted on the entries themselves
 (`epg_entry.rotation_next`, the block-item index the next program takes), so
 it survives runs and restarts and never depends on in-memory state. Channels
 with only timed items keep the full-window regeneration described above.
+A gap inside the kept head (nothing on air, or a hole between two kept rows)
+is not preserved: the run drops the kept rows from the hole onwards and
+regenerates them from the current schedule.
 
 `POST /channels/{id}/reset-epg` force-resets one channel: it discards the
 materialized future and the entry on the air, clears the persisted rotation
 (it restarts from the first block item) and regenerates synchronously. It is
-the only way a change inside the freeze margin takes effect early. The web UI
+the way a change inside the freeze margin takes effect early. The web UI
 exposes it on the channel list behind a confirmation dialog.
+
+Schedule edits trigger the same reset automatically, for every channel they
+affect: creating, updating or deleting a schedule item resets every channel
+using its schedule, and assigning, swapping or clearing a channel's schedule
+resets that channel (REST and MCP alike). The reset runs synchronously inside
+the request, like the endpoint above, and waits at most for a materializer run
+already in progress (they share one mutex). Catalog-only changes (sync,
+catalog edits) never reset; they keep the freeze margin.
 
 ### API
 

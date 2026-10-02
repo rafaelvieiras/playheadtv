@@ -80,7 +80,7 @@ func createChannel(db storage.DB, mat *materializer.Materializer) http.HandlerFu
 			return
 		}
 		if ch.ScheduleID != nil {
-			mat.Trigger()
+			mat.ResetAfterChannelEdit(r.Context(), DefaultTenantID, ch)
 		}
 		writeJSON(w, http.StatusCreated, ch)
 	}
@@ -157,7 +157,7 @@ func updateChannel(db storage.DB, mat *materializer.Materializer) http.HandlerFu
 		scheduleChanged := (before.ScheduleID == nil) != (ch.ScheduleID == nil) ||
 			(before.ScheduleID != nil && ch.ScheduleID != nil && *before.ScheduleID != *ch.ScheduleID)
 		if scheduleChanged {
-			mat.Trigger()
+			mat.ResetAfterChannelEdit(r.Context(), DefaultTenantID, ch)
 		}
 		writeJSON(w, http.StatusOK, ch)
 	}

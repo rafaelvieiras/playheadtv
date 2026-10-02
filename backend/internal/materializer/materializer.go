@@ -211,20 +211,65 @@ func (m *Materializer) runTenant(ctx context.Context, tenantID string, now, scan
 // cleared), and regenerates immediately, synchronously. Viewers switch
 // program right away. History (entries fully in the past) is kept.
 func (m *Materializer) ResetChannel(ctx context.Context, tenantID string, ch domain.Channel) error {
+	return m.resetChannels(ctx, tenantID, []domain.Channel{ch})
+}
+
+// ResetSchedule resets the grid of every channel currently using the given
+// schedule, with the same effect as ResetChannel on each. Schedule edits
+// (items created/updated/deleted) call it so the already-materialized grid
+// never lingers from the previous rules. A schedule no channel uses is a
+// no-op.
+func (m *Materializer) ResetSchedule(ctx context.Context, tenantID, scheduleID string) error {
+	var channels []domain.Channel
+	if err := m.db.Query(ctx, &channels,
+		"SELECT "+channelColumns+" FROM channel WHERE tenant_id = ? AND schedule_id = ?",
+		tenantID, scheduleID,
+	); err != nil {
+		return fmt.Errorf("list channels of schedule %s: %w", scheduleID, err)
+	}
+	return m.resetChannels(ctx, tenantID, channels)
+}
+
+// ResetAfterScheduleEdit resets the given schedule's channels and, if that
+// fails, logs the error and falls back to an asynchronous Trigger so the edit
+// that already committed still ends up regenerated (just under the freeze
+// margin rules). Handlers use it because the write itself has succeeded.
+func (m *Materializer) ResetAfterScheduleEdit(ctx context.Context, tenantID, scheduleID string) {
+	if err := m.ResetSchedule(ctx, tenantID, scheduleID); err != nil {
+		log.Printf("materializer: reset after schedule edit: %v", err)
+		m.Trigger()
+	}
+}
+
+// ResetAfterChannelEdit is ResetAfterScheduleEdit for one channel whose
+// schedule assignment just changed (assigned, swapped or cleared).
+func (m *Materializer) ResetAfterChannelEdit(ctx context.Context, tenantID string, ch domain.Channel) {
+	if err := m.ResetChannel(ctx, tenantID, ch); err != nil {
+		log.Printf("materializer: reset after channel schedule change: %v", err)
+		m.Trigger()
+	}
+}
+
+func (m *Materializer) resetChannels(ctx context.Context, tenantID string, channels []domain.Channel) error {
+	if len(channels) == 0 {
+		return nil
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := time.Now().UTC()
 	nowMs := now.UnixMilli()
-
-	if err := m.db.Exec(ctx, "UPDATE epg_entry SET rotation_next = NULL WHERE channel_id = ?", ch.ID); err != nil {
-		return fmt.Errorf("clear rotation: %w", err)
-	}
-	if err := m.db.Exec(ctx, "DELETE FROM epg_entry WHERE channel_id = ? AND end_at > ?", ch.ID, nowMs); err != nil {
-		return fmt.Errorf("discard epg_entry: %w", err)
-	}
 	windowEnd := now.Add(m.window)
-	if err := m.materializeChannel(ctx, ch, tenantID, now, now.Add(-scanLookback), windowEnd, newCatalogDurationCache(m.db), newSelectionState()); err != nil {
-		return err
+
+	for _, ch := range channels {
+		if err := m.db.Exec(ctx, "UPDATE epg_entry SET rotation_next = NULL WHERE channel_id = ?", ch.ID); err != nil {
+			return fmt.Errorf("clear rotation: %w", err)
+		}
+		if err := m.db.Exec(ctx, "DELETE FROM epg_entry WHERE channel_id = ? AND end_at > ?", ch.ID, nowMs); err != nil {
+			return fmt.Errorf("discard epg_entry: %w", err)
+		}
+		if err := m.materializeChannel(ctx, ch, tenantID, now, now.Add(-scanLookback), windowEnd, newCatalogDurationCache(m.db), newSelectionState()); err != nil {
+			return err
+		}
 	}
 	return m.bumpRevision(ctx, tenantID, now, windowEnd)
 }
@@ -359,21 +404,49 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 			break
 		}
 	}
+	// keptCutMs bounds what is kept: rows starting at or after it are
+	// regenerated. Normally that is the freeze margin; a hole inside the kept
+	// head moves it back to the hole's start so the hole gets regenerated.
+	keptCutMs := frozenUntilMs
 	if continuousID != "" {
-		var keptEnds []int64
-		if err := m.db.Query(ctx, &keptEnds,
-			"SELECT end_at FROM epg_entry WHERE channel_id = ? AND end_at > ? AND start_at < ? ORDER BY end_at DESC LIMIT 1",
+		type keptRow struct {
+			StartAt int64
+			EndAt   int64
+		}
+		var kept []keptRow
+		if err := m.db.Query(ctx, &kept,
+			"SELECT start_at, end_at FROM epg_entry WHERE channel_id = ? AND end_at > ? AND start_at < ? ORDER BY start_at",
 			ch.ID, nowMs, frozenUntilMs,
 		); err != nil {
 			return fmt.Errorf("read kept epg_entry: %w", err)
 		}
-		if len(keptEnds) > 0 {
-			keptUntil = time.UnixMilli(keptEnds[0]).UTC()
+		// Walk the kept rows: a gap before the first one (nothing on air) or
+		// between two of them is not preserved. A head hole discards the
+		// whole kept head; an interior hole discards from the hole onwards.
+		contiguousEnd := nowMs
+		headHole := false
+		for i, k := range kept {
+			if k.StartAt > contiguousEnd {
+				if i == 0 {
+					headHole = true
+				} else {
+					keptCutMs = contiguousEnd
+				}
+				break
+			}
+			if k.EndAt > contiguousEnd {
+				contiguousEnd = k.EndAt
+			}
+		}
+		if headHole {
+			keptCutMs = nowMs
+		} else if len(kept) > 0 {
+			keptUntil = time.UnixMilli(contiguousEnd).UTC()
 		}
 		var rotations []int64
 		if err := m.db.Query(ctx, &rotations,
 			"SELECT rotation_next FROM epg_entry WHERE channel_id = ? AND source_schedule_item_id = ? AND rotation_next IS NOT NULL AND start_at < ? ORDER BY start_at DESC LIMIT 1",
-			ch.ID, continuousID, frozenUntilMs,
+			ch.ID, continuousID, keptCutMs,
 		); err != nil {
 			return fmt.Errorf("read rotation position: %w", err)
 		}
@@ -413,7 +486,7 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 	deleteSQL, deleteArg := "DELETE FROM epg_entry WHERE channel_id = ? AND end_at > ?", nowMs
 	if !keptUntil.IsZero() {
 		// Keep the frozen head; only what starts at or after the margin goes.
-		deleteSQL, deleteArg = "DELETE FROM epg_entry WHERE channel_id = ? AND start_at >= ?", frozenUntilMs
+		deleteSQL, deleteArg = "DELETE FROM epg_entry WHERE channel_id = ? AND start_at >= ?", keptCutMs
 	}
 	if err := m.db.Exec(ctx, deleteSQL, ch.ID, deleteArg); err != nil {
 		return fmt.Errorf("delete stale epg_entry: %w", err)

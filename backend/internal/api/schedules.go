@@ -156,11 +156,28 @@ func deleteSchedule(db storage.DB, mat *materializer.Materializer) http.HandlerF
 		// migration didn't need), so a channel still pointing at it would
 		// violate the FK — surfaced as a normal handleDBError, same as any
 		// other in-use-reference delete in this codebase.
+		var users []string
+		if err := db.Query(r.Context(), &users, "SELECT id FROM channel WHERE tenant_id = ? AND schedule_id = ?", DefaultTenantID, id); err != nil {
+			handleDBError(w, err)
+			return
+		}
+		if len(users) == 0 {
+			// Materialized rows reference their source item (no ON DELETE
+			// action); detach them so the cascade can proceed. Only done
+			// when the delete will go through, so a refused delete never
+			// loses the linkage.
+			if err := db.Exec(r.Context(),
+				"UPDATE epg_entry SET source_schedule_item_id = NULL WHERE source_schedule_item_id IN (SELECT id FROM schedule_item WHERE schedule_id = ?)", id,
+			); err != nil {
+				handleDBError(w, err)
+				return
+			}
+		}
 		if err := db.Exec(r.Context(), "DELETE FROM schedule WHERE tenant_id = ? AND id = ?", DefaultTenantID, id); err != nil {
 			handleDBError(w, err)
 			return
 		}
-		mat.Trigger()
+		mat.ResetAfterScheduleEdit(r.Context(), DefaultTenantID, id)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
@@ -283,7 +300,7 @@ func createScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 			handleDBError(w, err)
 			return
 		}
-		mat.Trigger()
+		mat.ResetAfterScheduleEdit(r.Context(), DefaultTenantID, scheduleID)
 		writeJSON(w, http.StatusCreated, si)
 	}
 }
@@ -363,7 +380,7 @@ func updateScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 			handleDBError(w, err)
 			return
 		}
-		mat.Trigger()
+		mat.ResetAfterScheduleEdit(r.Context(), DefaultTenantID, existing.ScheduleID)
 		si, err := fetchScheduleItem(db, r, id)
 		if err != nil {
 			handleDBError(w, err)
@@ -376,7 +393,14 @@ func updateScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 func deleteScheduleItem(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if _, err := fetchScheduleItem(db, r, id); err != nil {
+		existing, err := fetchScheduleItem(db, r, id)
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		// Materialized rows reference their source item (no ON DELETE
+		// action); detach them first, the reset below regenerates the grid.
+		if err := db.Exec(r.Context(), "UPDATE epg_entry SET source_schedule_item_id = NULL WHERE source_schedule_item_id = ?", id); err != nil {
 			handleDBError(w, err)
 			return
 		}
@@ -384,7 +408,7 @@ func deleteScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 			handleDBError(w, err)
 			return
 		}
-		mat.Trigger()
+		mat.ResetAfterScheduleEdit(r.Context(), DefaultTenantID, existing.ScheduleID)
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
