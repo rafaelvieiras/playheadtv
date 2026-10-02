@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -13,10 +14,13 @@ import {
 } from '@/components/ui/dialog'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
+import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
+import { validateCriteria } from '@/lib/criteria'
+import { DAY_LABELS } from '@/lib/schedule'
 import { api, ApiError } from '@/lib/http'
-import type { Block, RecurrenceType, ScheduleItem, ScheduleItemInput } from '@/lib/types'
+import type { Block, DynamicCriteria, RecurrenceType, ScheduleItem, ScheduleItemInput } from '@/lib/types'
 
 interface ScheduleItemDialogProps {
   open: boolean
@@ -24,9 +28,11 @@ interface ScheduleItemDialogProps {
   scheduleId: string
   // Present when editing an existing item, absent when creating one.
   item?: ScheduleItem
+  // True when the schedule already has a continuous item other than `item`;
+  // the form then rejects a second one before the round trip (the backend
+  // enforces the same rule with a 409).
+  hasOtherContinuous?: boolean
 }
-
-const DAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
 // Internal form shape: always keeps both recurrence branches' fields around
 // so the toggle doesn't lose what the user typed, and only one branch is
@@ -70,8 +76,10 @@ function itemToForm(item: ScheduleItem): FormState {
 // Mirrors validateScheduleItemRequest in backend/internal/api/schedules.go —
 // keep in sync so the client rejects the same invalid combinations before a
 // round trip to the API.
-function validate(form: FormState): string | undefined {
-  if (!form.block_id) return 'Select a block.'
+function validate(form: FormState, hasOtherContinuous: boolean): string | undefined {
+  if (form.recurrence_type === 'continuous' && hasOtherContinuous) {
+    return 'This schedule already has a continuous item; edit or delete it first.'
+  }
   if (form.recurrence_type === 'continuous') return undefined
   if (form.recurrence_type === 'weekly') {
     if (form.day_of_week < 0 || form.day_of_week > 6) return 'Invalid day of the week.'
@@ -113,16 +121,30 @@ function buildPayload(form: FormState): ScheduleItemInput {
   }
 }
 
-export function ScheduleItemDialog({ open, onOpenChange, scheduleId, item }: ScheduleItemDialogProps) {
+export function ScheduleItemDialog({
+  open,
+  onOpenChange,
+  scheduleId,
+  item,
+  hasOtherContinuous = false,
+}: ScheduleItemDialogProps) {
   const queryClient = useQueryClient()
+  const navigate = useNavigate()
   const [form, setForm] = useState<FormState>(emptyForm)
   const [error, setError] = useState<string | undefined>(undefined)
+  // Create-and-attach: a brand-new block made together with the item.
+  const [newBlock, setNewBlock] = useState(false)
+  const [newBlockName, setNewBlockName] = useState('')
+  const [newBlockCriteria, setNewBlockCriteria] = useState<DynamicCriteria | null>(null)
   const isEditing = item !== undefined
 
   useEffect(() => {
     if (open) {
       setForm(item ? itemToForm(item) : emptyForm)
       setError(undefined)
+      setNewBlock(false)
+      setNewBlockName('')
+      setNewBlockCriteria(null)
     }
   }, [open, item])
 
@@ -133,14 +155,34 @@ export function ScheduleItemDialog({ open, onOpenChange, scheduleId, item }: Sch
   })
 
   const mutation = useMutation({
-    mutationFn: (payload: ScheduleItemInput) =>
-      isEditing
-        ? api.put<ScheduleItem>(`/schedule-items/${item.id}`, payload)
-        : api.post<ScheduleItem>(`/schedules/${scheduleId}/items`, payload),
-    onSuccess: () => {
+    mutationFn: async ({ payload }: { payload: ScheduleItemInput; openEditor: boolean }) => {
+      let createdBlock: Block | undefined
+      if (newBlock) {
+        createdBlock = await api.post<Block>('/blocks', {
+          name: newBlockName.trim(),
+          description: null,
+          criteria: newBlockCriteria,
+        })
+        payload = { ...payload, block_id: createdBlock.id }
+      }
+      try {
+        const saved = isEditing
+          ? await api.put<ScheduleItem>(`/schedule-items/${item.id}`, payload)
+          : await api.post<ScheduleItem>(`/schedules/${scheduleId}/items`, payload)
+        return { saved, createdBlock }
+      } catch (err) {
+        // Don't leave an orphan block behind when the item itself is rejected.
+        if (createdBlock) await api.delete(`/blocks/${createdBlock.id}`).catch(() => undefined)
+        throw err
+      }
+    },
+    onSuccess: ({ createdBlock }, { openEditor }) => {
       queryClient.invalidateQueries({ queryKey: ['schedule-items', scheduleId] })
+      queryClient.invalidateQueries({ queryKey: ['schedules', scheduleId, 'items'] })
+      if (createdBlock) queryClient.invalidateQueries({ queryKey: ['blocks'] })
       toast.success(isEditing ? 'Schedule item updated.' : 'Schedule item created.')
       onOpenChange(false)
+      if (createdBlock && openEditor) navigate(`/blocks/${createdBlock.id}`)
     },
     onError: (err) => {
       // 409: the schedule already has its one continuous item; the server's
@@ -153,20 +195,31 @@ export function ScheduleItemDialog({ open, onOpenChange, scheduleId, item }: Sch
     },
   })
 
-  function handleSubmit(e: FormEvent) {
-    e.preventDefault()
-    const validationError = validate(form)
+  function submit(openEditor: boolean) {
+    let validationError: string | undefined
+    if (newBlock) {
+      if (newBlockName.trim() === '') validationError = 'Enter a name for the new block.'
+      else validationError = validateCriteria(newBlockCriteria)
+    } else if (!form.block_id) {
+      validationError = 'Select a block.'
+    }
+    validationError = validationError ?? validate(form, hasOtherContinuous)
     if (validationError) {
       setError(validationError)
       return
     }
     setError(undefined)
-    mutation.mutate(buildPayload(form))
+    mutation.mutate({ payload: buildPayload(form), openEditor })
+  }
+
+  function handleSubmit(e: FormEvent) {
+    e.preventDefault()
+    submit(false)
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>{isEditing ? 'Edit schedule item' : 'New schedule item'}</DialogTitle>
@@ -175,21 +228,60 @@ export function ScheduleItemDialog({ open, onOpenChange, scheduleId, item }: Sch
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
-            <Field>
-              <FieldLabel htmlFor="schedule-item-block">Block</FieldLabel>
-              <Select value={form.block_id} onValueChange={(v) => setForm((f) => ({ ...f, block_id: v }))}>
-                <SelectTrigger id="schedule-item-block" className="w-full">
-                  <SelectValue placeholder="Select a block" />
-                </SelectTrigger>
-                <SelectContent>
-                  {blocks?.map((block) => (
-                    <SelectItem key={block.id} value={block.id}>
-                      {block.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </Field>
+            {!newBlock ? (
+              <Field>
+                <FieldLabel htmlFor="schedule-item-block">Block</FieldLabel>
+                <Select value={form.block_id} onValueChange={(v) => setForm((f) => ({ ...f, block_id: v }))}>
+                  <SelectTrigger id="schedule-item-block" className="w-full">
+                    <SelectValue placeholder="Select a block" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {blocks?.map((block) => (
+                      <SelectItem key={block.id} value={block.id}>
+                        {block.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {!isEditing && (
+                  <Button
+                    type="button"
+                    variant="link"
+                    size="sm"
+                    className="self-start px-0"
+                    data-testid="new-block-toggle"
+                    onClick={() => setNewBlock(true)}
+                  >
+                    Create a new block instead
+                  </Button>
+                )}
+              </Field>
+            ) : (
+              <div className="flex flex-col gap-3 rounded-md border p-3" data-testid="new-block-fields">
+                <Field>
+                  <FieldLabel htmlFor="schedule-item-new-block-name">New block name</FieldLabel>
+                  <Input
+                    id="schedule-item-new-block-name"
+                    value={newBlockName}
+                    onChange={(e) => setNewBlockName(e.target.value)}
+                  />
+                </Field>
+                <DynamicCriteriaFields
+                  value={newBlockCriteria}
+                  onChange={setNewBlockCriteria}
+                  idPrefix="schedule-item-new-block-criteria"
+                />
+                <Button
+                  type="button"
+                  variant="link"
+                  size="sm"
+                  className="self-start px-0"
+                  onClick={() => setNewBlock(false)}
+                >
+                  Use an existing block instead
+                </Button>
+              </div>
+            )}
 
             <Field>
               <FieldLabel>Recurrence</FieldLabel>
@@ -289,6 +381,17 @@ export function ScheduleItemDialog({ open, onOpenChange, scheduleId, item }: Sch
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel
             </Button>
+            {newBlock && (
+              <Button
+                type="button"
+                variant="secondary"
+                data-testid="save-and-edit-block"
+                disabled={mutation.isPending}
+                onClick={() => submit(true)}
+              >
+                Save and edit block
+              </Button>
+            )}
             <Button type="submit" disabled={mutation.isPending}>
               {mutation.isPending ? 'Saving…' : 'Save'}
             </Button>

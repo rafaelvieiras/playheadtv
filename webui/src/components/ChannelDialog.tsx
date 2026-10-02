@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
@@ -20,8 +21,6 @@ import type { Channel, ChannelInput, Schedule } from '@/lib/types'
 interface ChannelDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
-  // Present when editing an existing channel, absent when creating one.
-  channel?: Channel
 }
 
 // NONE_VALUE stands in for schedule_id: null — Radix Select can't use an
@@ -36,10 +35,10 @@ const emptyForm: ChannelInput = {
   schedule_id: null,
 }
 
-export function ChannelDialog({ open, onOpenChange, channel }: ChannelDialogProps) {
+export function ChannelDialog({ open, onOpenChange }: ChannelDialogProps) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<ChannelInput>(emptyForm)
-  const isEditing = channel !== undefined
+  const navigate = useNavigate()
 
   const { data: schedules } = useQuery({
     queryKey: ['schedules'],
@@ -49,32 +48,20 @@ export function ChannelDialog({ open, onOpenChange, channel }: ChannelDialogProp
 
   useEffect(() => {
     if (open) {
-      setForm(
-        channel
-          ? {
-              number: channel.number,
-              name: channel.name,
-              guide_art_url: channel.guide_art_url,
-              timezone: channel.timezone,
-              schedule_id: channel.schedule_id,
-            }
-          : emptyForm
-      )
+      setForm(emptyForm)
     }
-  }, [open, channel])
+  }, [open])
 
   const mutation = useMutation({
-    mutationFn: () =>
-      isEditing
-        ? api.put<Channel>(`/channels/${channel.id}`, form)
-        : api.post<Channel>('/channels', form),
-    onSuccess: () => {
+    mutationFn: () => api.post<Channel>('/channels', form),
+    onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['channels'] })
-      toast.success(isEditing ? 'Channel updated.' : 'Channel created.')
+      toast.success('Channel created.')
       onOpenChange(false)
+      navigate(`/channels/${created.id}`)
     },
     onError: () => {
-      toast.error(isEditing ? 'Could not update the channel.' : 'Could not create the channel.')
+      toast.error('Could not create the channel.')
     },
   })
 
@@ -88,9 +75,9 @@ export function ChannelDialog({ open, onOpenChange, channel }: ChannelDialogProp
       <DialogContent>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>{isEditing ? 'Edit channel' : 'New channel'}</DialogTitle>
+            <DialogTitle>New channel</DialogTitle>
             <DialogDescription>
-              {isEditing ? 'Update the channel details.' : 'Fill in the details of the new channel.'}
+              Create the channel, then set up its programming on its page.
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">

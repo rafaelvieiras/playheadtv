@@ -21,6 +21,8 @@ interface ScheduleDialogProps {
   onOpenChange: (open: boolean) => void
   // Present when editing an existing schedule, absent when creating one.
   schedule?: Schedule
+  // Called with the saved schedule (e.g. to select a freshly created one).
+  onSaved?: (schedule: Schedule) => void
 }
 
 const emptyForm: ScheduleInput = {
@@ -28,7 +30,7 @@ const emptyForm: ScheduleInput = {
   description: null,
 }
 
-export function ScheduleDialog({ open, onOpenChange, schedule }: ScheduleDialogProps) {
+export function ScheduleDialog({ open, onOpenChange, schedule, onSaved }: ScheduleDialogProps) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<ScheduleInput>(emptyForm)
   const isEditing = schedule !== undefined
@@ -44,10 +46,11 @@ export function ScheduleDialog({ open, onOpenChange, schedule }: ScheduleDialogP
       isEditing
         ? api.put<Schedule>(`/schedules/${schedule.id}`, form)
         : api.post<Schedule>('/schedules', form),
-    onSuccess: () => {
+    onSuccess: (saved) => {
       queryClient.invalidateQueries({ queryKey: ['schedules'] })
       toast.success(isEditing ? 'Schedule updated.' : 'Schedule created.')
       onOpenChange(false)
+      onSaved?.(saved)
     },
     onError: () => {
       toast.error(isEditing ? 'Could not update the schedule.' : 'Could not create the schedule.')
@@ -67,8 +70,8 @@ export function ScheduleDialog({ open, onOpenChange, schedule }: ScheduleDialogP
             <DialogTitle>{isEditing ? 'Edit schedule' : 'New schedule'}</DialogTitle>
             <DialogDescription>
               {isEditing
-                ? 'Update this schedule. Manage its recurrence rules from "Items".'
-                : 'A reusable, named group of recurrence rules — assign it to a channel from "Channels" once created.'}
+                ? 'Rename this schedule or change its description.'
+                : 'A reusable, named group of recurrence rules. It is selected for the channel when created; save the channel settings to assign it.'}
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">

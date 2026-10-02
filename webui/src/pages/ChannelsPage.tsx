@@ -16,6 +16,7 @@ import {
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ChannelDialog } from '@/components/ChannelDialog'
+import { ResetGridDialog } from '@/components/ResetGridDialog'
 import { api } from '@/lib/http'
 import type { Channel } from '@/lib/types'
 
@@ -27,21 +28,8 @@ export function ChannelsPage() {
   })
 
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [editingChannel, setEditingChannel] = useState<Channel | undefined>(undefined)
   const [deletingChannel, setDeletingChannel] = useState<Channel | undefined>(undefined)
   const [resettingChannel, setResettingChannel] = useState<Channel | undefined>(undefined)
-
-  const resetMutation = useMutation({
-    mutationFn: (id: string) => api.post(`/channels/${id}/reset-epg`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['epg'] })
-      toast.success('Channel grid reset.')
-      setResettingChannel(undefined)
-    },
-    onError: () => {
-      toast.error('Could not reset the channel grid.')
-    },
-  })
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/channels/${id}`),
@@ -56,12 +44,6 @@ export function ChannelsPage() {
   })
 
   function openCreateDialog() {
-    setEditingChannel(undefined)
-    setDialogOpen(true)
-  }
-
-  function openEditDialog(channel: Channel) {
-    setEditingChannel(channel)
     setDialogOpen(true)
   }
 
@@ -103,8 +85,8 @@ export function ChannelsPage() {
                 </TableCell>
                 <TableCell>{channel.timezone}</TableCell>
                 <TableCell className="flex justify-end gap-2 text-right">
-                  <Button variant="outline" size="sm" onClick={() => openEditDialog(channel)}>
-                    Edit
+                  <Button asChild variant="outline" size="sm">
+                    <Link to={`/channels/${channel.id}`}>Open</Link>
                   </Button>
                   <Button
                     variant="outline"
@@ -124,32 +106,9 @@ export function ChannelsPage() {
         </Table>
       )}
 
-      <ChannelDialog open={dialogOpen} onOpenChange={setDialogOpen} channel={editingChannel} />
+      <ChannelDialog open={dialogOpen} onOpenChange={setDialogOpen} />
 
-      <AlertDialog open={resettingChannel !== undefined} onOpenChange={(open) => !open && setResettingChannel(undefined)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Reset the grid of this channel?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This discards the upcoming programs of "{resettingChannel?.name}" and the one on air right now,
-              restarts its rotation from the beginning and regenerates immediately. Viewers switch program right
-              away.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(e) => {
-                e.preventDefault()
-                if (resettingChannel) resetMutation.mutate(resettingChannel.id)
-              }}
-              disabled={resetMutation.isPending}
-            >
-              Reset grid
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ResetGridDialog channel={resettingChannel} onClose={() => setResettingChannel(undefined)} />
 
       <AlertDialog open={deletingChannel !== undefined} onOpenChange={(open) => !open && setDeletingChannel(undefined)}>
         <AlertDialogContent>
