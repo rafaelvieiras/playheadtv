@@ -275,11 +275,11 @@ func TestChannelEPGPreviewIsReadOnly(t *testing.T) {
 	}
 
 	// Window filter and validation.
-	rec = doRequest(t, mux, "GET", fmt.Sprintf("/channels/%s/epg-preview?start=%d", ch.ID, preview[len(preview)-1].EndAt+1), "")
+	rec = doRequest(t, mux, "GET", fmt.Sprintf("/channels/%s/epg-preview?start=%d", ch.ID, now+10*3600*1000), "")
 	var windowed []domain.EpgEntry
 	mustDecode(t, rec.Body.Bytes(), &windowed)
 	if len(windowed) != 0 {
-		t.Errorf("window past the grid has %d entries, want 0", len(windowed))
+		t.Errorf("window beyond the materialization horizon has %d entries, want 0", len(windowed))
 	}
 	if rec := doRequest(t, mux, "GET", "/channels/"+ch.ID+"/epg-preview?start=x", ""); rec.Code != http.StatusBadRequest {
 		t.Errorf("bad start: %d", rec.Code)
