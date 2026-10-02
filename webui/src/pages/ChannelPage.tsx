@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useParams, useSearchParams } from 'react-router-dom'
 
+import { ChannelGuide } from '@/components/ChannelGuide'
 import { ChannelFillerRules } from '@/components/ChannelFillerRules'
 import { ChannelProgramming } from '@/components/ChannelProgramming'
 import { ChannelSettings } from '@/components/ChannelSettings'
@@ -67,9 +68,7 @@ export function ChannelPage() {
             <ChannelFillerRules channelId={channel.id} />
           </TabsContent>
           <TabsContent value="guide" forceMount className={hidden}>
-            <p className="text-sm text-muted-foreground" data-testid="guide-placeholder">
-              Guide: this channel's grid with a dry-run preview is not built yet.
-            </p>
+            <ChannelGuide channel={channel} active={tab === 'guide'} />
           </TabsContent>
           <TabsContent value="settings" forceMount className={hidden}>
             {/* Remounted after a save (updated_at changes) so the draft resets. */}
