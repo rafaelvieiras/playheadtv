@@ -125,6 +125,16 @@ class PlayheadApi {
   final http.Client _client;
   final Duration timeout;
 
+  // Callers fan out one request per EPG entry (a channel of short items can
+  // mean hundreds), and every in-flight request holds a socket: unbounded,
+  // that exhausts the process's file descriptors ("Too many open files").
+  static const maxConcurrentRequests = 6;
+  int _inFlight = 0;
+  final _waiting = <Completer<void>>[];
+  // Catalog items are looked up repeatedly (same item across entries, across
+  // channels, across EPG slices); one request per id per session is enough.
+  final _catalogItems = <String, Future<CatalogItemInfo>>{};
+
   PlayheadApi({
     required this.baseUrl,
     this.deviceToken,
@@ -140,12 +150,34 @@ class PlayheadApi {
     return {'Authorization': 'Bearer $token'};
   }
 
+  Future<void> _acquire() async {
+    if (_inFlight < maxConcurrentRequests) {
+      _inFlight++;
+      return;
+    }
+    final slot = Completer<void>();
+    _waiting.add(slot);
+    await slot.future;
+  }
+
+  void _release() {
+    if (_waiting.isEmpty) {
+      _inFlight--;
+    } else {
+      // The slot passes straight to the next waiter.
+      _waiting.removeAt(0).complete();
+    }
+  }
+
   Future<dynamic> _getJson(Uri uri) async {
     final http.Response response;
+    await _acquire();
     try {
       response = await _client.get(uri, headers: _headers).timeout(timeout);
     } catch (e) {
       throw Exception('failed to connect to $uri: $e');
+    } finally {
+      _release();
     }
     if (response.statusCode != 200) {
       throw Exception('$uri responded ${response.statusCode}: ${response.body}');
@@ -180,7 +212,20 @@ class PlayheadApi {
     return entries;
   }
 
-  Future<CatalogItemInfo> getCatalogItem(String id) async {
+  Future<CatalogItemInfo> getCatalogItem(String id) {
+    final cached = _catalogItems[id];
+    if (cached != null) return cached;
+    final fetch = _fetchCatalogItem(id);
+    _catalogItems[id] = fetch;
+    // A failed lookup must not stay cached.
+    fetch.catchError((Object _) {
+      _catalogItems.remove(id);
+      return Future<CatalogItemInfo>.error('unreachable');
+    }).ignore();
+    return fetch;
+  }
+
+  Future<CatalogItemInfo> _fetchCatalogItem(String id) async {
     final data = await _getJson(Uri.parse('$_normalizedBaseUrl/catalog-items/$id'));
     if (data is! Map<String, dynamic>) {
       throw Exception('GET /catalog-items/$id: expected an object, got ${data.runtimeType}');

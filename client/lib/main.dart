@@ -1590,13 +1590,18 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
               Positioned(
                 left: 16,
                 top: 16,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  color: Colors.black54,
-                  child: Text(
-                    key: const Key('debug-status'),
-                    '$channelLabel\n$_status',
-                    style: const TextStyle(color: Colors.white, fontSize: 16),
+                child: ConstrainedBox(
+                  // Long errors (full URLs, OS messages) wrap inside the
+                  // screen instead of running off it.
+                  constraints: BoxConstraints(maxWidth: MediaQuery.sizeOf(context).width - 32),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    color: Colors.black54,
+                    child: Text(
+                      key: const Key('debug-status'),
+                      '$channelLabel\n$_status',
+                      style: const TextStyle(color: Colors.white, fontSize: 16),
+                    ),
                   ),
                 ),
               ),
