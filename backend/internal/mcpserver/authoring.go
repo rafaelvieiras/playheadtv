@@ -2,10 +2,12 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/blockitem"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
@@ -21,8 +23,8 @@ func registerAuthoringTools(s *mcp.Server, db storage.DB, mat *materializer.Mate
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "update_block_item",
 		Description: "Reorder (position), trim (trim_duration_ms, catalog items only) and/or change the playback order " +
-			"(playback_order, series items only; restarts the series) and/or the amount (amount {mode, count}, series items " +
-			"only; the series cursor is kept) of one item of a manual block; " +
+			"(playback_order, series and criteria items; restarts the item) and/or the amount (amount {mode, count}, series " +
+			"and criteria items; the cursor is kept) and/or the query (criteria items; the cursor is kept) of one item of a manual block; " +
 			"positions stay contiguous. Dynamic blocks are rejected. Triggers EPG regeneration. " +
 			"Mirrors PUT /blocks/{id}/items/{item_id}.",
 	}, updateBlockItemHandler(db, mat))
@@ -35,9 +37,18 @@ func registerAuthoringTools(s *mcp.Server, db storage.DB, mat *materializer.Mate
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "preview_criteria",
-		Description: "Report what a block/pool criteria would match right now (match count, total duration, " +
-			"up to 20 sample items) without persisting anything. Mirrors POST /catalog-items/preview-criteria.",
+		Description: "Report what a condition tree (block/pool criteria, or the query of a criteria block item) would " +
+			"match right now (match count, total duration, up to 20 sample items) without persisting anything. " +
+			"Mirrors POST /catalog-items/preview-criteria.",
 	}, previewCriteriaHandler(db))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "list_criteria_migration_review",
+		Description: "List the dynamic blocks and filler pools whose legacy criteria ({kind, genres, year_from, year_to}) " +
+			"could not be converted to a condition tree without changing what they match: each entry has the proposed " +
+			"query and the items that would be added or dropped. The legacy criteria keeps working until the block/pool " +
+			"is updated with a query. Mirrors GET /criteria-migration-review.",
+	}, listCriteriaReviewHandler(db))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "preview_channel_grid_reset",
@@ -52,8 +63,9 @@ type updateBlockItemInput struct {
 	ItemID         string                  `json:"item_id" jsonschema:"the block item to edit"`
 	Position       *int                    `json:"position,omitempty" jsonschema:"new 0-based position; the item is moved there"`
 	TrimDurationMs *int64                  `json:"trim_duration_ms,omitempty" jsonschema:"new trimmed duration in milliseconds (positive); catalog items only"`
-	PlaybackOrder  *string                 `json:"playback_order,omitempty" jsonschema:"series items only: original, random, shuffle or release_date"`
-	Amount         *blockSeriesAmountInput `json:"amount,omitempty" jsonschema:"series items only: how much to air per visit; mode count (with count, default 1), slot_end or series_end"`
+	PlaybackOrder  *string                 `json:"playback_order,omitempty" jsonschema:"series items: original, random, shuffle or release_date; criteria items: title, release_date, random or shuffle"`
+	Amount         *blockSeriesAmountInput `json:"amount,omitempty" jsonschema:"series items: how much to air per visit; mode count (with count, default 1), slot_end or series_end; criteria items: mode count (with count) or all"`
+	Query          map[string]any          `json:"query,omitempty" jsonschema:"criteria items only: a new condition tree"`
 }
 
 func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[updateBlockItemInput, domain.BlockItem] {
@@ -61,19 +73,11 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 		if in.BlockID == "" || in.ItemID == "" {
 			return nil, domain.BlockItem{}, errors.New("block_id and item_id are required")
 		}
-		if in.Position == nil && in.TrimDurationMs == nil && in.PlaybackOrder == nil && in.Amount == nil {
-			return nil, domain.BlockItem{}, errors.New("position, trim_duration_ms, playback_order or amount is required")
+		if in.Position == nil && in.TrimDurationMs == nil && in.PlaybackOrder == nil && in.Amount == nil && in.Query == nil {
+			return nil, domain.BlockItem{}, errors.New("position, trim_duration_ms, playback_order, amount or query is required")
 		}
-		var newAmount *domain.SeriesAmount
-		if in.Amount != nil {
-			a, err := series.NewAmount(in.Amount.domain())
-			if err != nil {
-				return nil, domain.BlockItem{}, err
-			}
-			newAmount = &a
-		}
-		if in.PlaybackOrder != nil && !domain.ValidPlaybackOrder(*in.PlaybackOrder) {
-			return nil, domain.BlockItem{}, errors.New("playback_order must be one of original, random, shuffle, release_date")
+		if in.PlaybackOrder != nil && !domain.ValidPlaybackOrder(*in.PlaybackOrder) && !domain.ValidCriteriaOrder(*in.PlaybackOrder) {
+			return nil, domain.BlockItem{}, errors.New("playback_order must be one of original, random, shuffle, release_date (series) or title, release_date, random, shuffle (criteria)")
 		}
 		if in.TrimDurationMs != nil && *in.TrimDurationMs <= 0 {
 			return nil, domain.BlockItem{}, errors.New("trim_duration_ms must be positive")
@@ -101,17 +105,64 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 		if target == nil {
 			return nil, domain.BlockItem{}, errors.New("block item not found")
 		}
-		if in.TrimDurationMs != nil && target.IsSeries() {
-			return nil, domain.BlockItem{}, errors.New("trim_duration_ms is not valid for a series item")
+		if in.TrimDurationMs != nil && target.IsWalked() {
+			return nil, domain.BlockItem{}, errors.New("trim_duration_ms is not valid for a series or criteria item")
 		}
-		if in.PlaybackOrder != nil && !target.IsSeries() {
-			return nil, domain.BlockItem{}, errors.New("playback_order is only valid for a series item")
+		if in.PlaybackOrder != nil && !target.IsWalked() {
+			return nil, domain.BlockItem{}, errors.New("playback_order is only valid for a series or criteria item")
 		}
 		if in.Position != nil && (*in.Position < 0 || *in.Position >= len(items)) {
 			return nil, domain.BlockItem{}, errors.New("position must be between 0 and the number of items minus one")
 		}
-		if newAmount != nil && !target.IsSeries() {
-			return nil, domain.BlockItem{}, errors.New("amount is only valid for a series item")
+		if in.Amount != nil && !target.IsWalked() {
+			return nil, domain.BlockItem{}, errors.New("amount is only valid for a series or criteria item")
+		}
+		if in.Query != nil && !target.IsCriteria() {
+			return nil, domain.BlockItem{}, errors.New("query is only valid for a criteria item")
+		}
+		if target.IsCriteria() {
+			spec, err := blockitem.ParseCriteriaSpec(target.Spec)
+			if err != nil {
+				return nil, domain.BlockItem{}, err
+			}
+			var rawQuery json.RawMessage
+			if in.Query != nil {
+				if rawQuery, err = json.Marshal(in.Query); err != nil {
+					return nil, domain.BlockItem{}, errors.New("query must be a JSON object")
+				}
+			}
+			updated, orderChanged, err := blockitem.UpdateCriteriaSpec(spec, rawQuery, in.PlaybackOrder, in.Amount.domain())
+			if err != nil {
+				return nil, domain.BlockItem{}, err
+			}
+			encoded, err := blockitem.EncodeCriteriaSpec(updated)
+			if err != nil {
+				return nil, domain.BlockItem{}, err
+			}
+			if err := db.Exec(ctx, "UPDATE block_item SET spec = ? WHERE block_id = ? AND id = ?", encoded, in.BlockID, in.ItemID); err != nil {
+				return nil, domain.BlockItem{}, err
+			}
+			target.Spec = &encoded
+			if orderChanged {
+				nowMs := nowMillis()
+				if err := db.Exec(ctx, "UPDATE series_cursor SET origin_ms = ? WHERE tenant_id = ? AND block_item_id = ?", nowMs, defaultTenantID, in.ItemID); err != nil {
+					return nil, domain.BlockItem{}, err
+				}
+				if err := db.Exec(ctx, "DELETE FROM epg_entry WHERE tenant_id = ? AND source_block_item_id = ? AND end_at > ?", defaultTenantID, in.ItemID, nowMs); err != nil {
+					return nil, domain.BlockItem{}, err
+				}
+			}
+		}
+		var newAmount *domain.SeriesAmount
+		if in.Amount != nil && target.IsSeries() {
+			a, err := series.NewAmount(in.Amount.domain())
+			if err != nil {
+				return nil, domain.BlockItem{}, err
+			}
+			newAmount = &a
+		}
+		if in.PlaybackOrder != nil && target.IsSeries() && !domain.ValidPlaybackOrder(*in.PlaybackOrder) {
+			return nil, domain.BlockItem{}, errors.New("playback_order must be one of original, random, shuffle, release_date")
 		}
 		if newAmount != nil {
 			spec, err := series.ParseSpec(target.Spec)
@@ -128,7 +179,7 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 			}
 			target.Spec = &encoded
 		}
-		if in.PlaybackOrder != nil {
+		if in.PlaybackOrder != nil && target.IsSeries() {
 			spec, err := series.ParseSpec(target.Spec)
 			if err != nil {
 				return nil, domain.BlockItem{}, err
@@ -186,7 +237,7 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 			return nil, domain.BlockItem{}, err
 		}
 		updated := []domain.BlockItem{item}
-		if err := series.Decorate(ctx, db, defaultTenantID, updated); err != nil {
+		if err := blockitem.Decorate(ctx, db, defaultTenantID, updated); err != nil {
 			return nil, domain.BlockItem{}, err
 		}
 		mat.Trigger()
@@ -232,23 +283,20 @@ func updateFillerPoolItemHandler(db storage.DB, mat *materializer.Materializer) 
 }
 
 type previewCriteriaInput struct {
-	Kind     string   `json:"kind" jsonschema:"one of: movie, episode"`
-	Genres   []string `json:"genres,omitempty" jsonschema:"match any of these genre substrings"`
-	YearFrom *int     `json:"year_from,omitempty" jsonschema:"inclusive lower production year"`
-	YearTo   *int     `json:"year_to,omitempty" jsonschema:"inclusive upper production year"`
+	Query map[string]any `json:"query" jsonschema:"a versioned condition tree: {version: 1, all|any: [node, ...] | not: node | field/op/value}; fields: genre, studio, tag, audio_language, subtitle_language (equals|in, exact normalized names), title, overview, person (contains), kind (movie|episode), content_rating (equals|in), year, duration (minutes), community_rating, critic_rating, season_number, episode_number (equals|lt|lte|gt|gte|between), premiere_date, date_added (same, YYYY-MM-DD)"`
 }
 
 func previewCriteriaHandler(db storage.DB) mcp.ToolHandlerFor[previewCriteriaInput, catalogsync.CriteriaPreview] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in previewCriteriaInput) (*mcp.CallToolResult, catalogsync.CriteriaPreview, error) {
-		switch domain.CatalogItemKind(in.Kind) {
-		case domain.CatalogMovie, domain.CatalogEpisode:
-		default:
-			return nil, catalogsync.CriteriaPreview{}, errors.New("criteria.kind must be one of movie, episode")
+		raw, err := json.Marshal(in.Query)
+		if err != nil {
+			return nil, catalogsync.CriteriaPreview{}, errors.New("query must be a JSON object")
 		}
-		if len(in.Genres) == 0 && in.YearFrom == nil && in.YearTo == nil {
-			return nil, catalogsync.CriteriaPreview{}, errors.New("criteria requires at least one of genres, year_from, year_to")
+		q, err := catalogsync.ParseQuery(raw)
+		if err != nil {
+			return nil, catalogsync.CriteriaPreview{}, fmt.Errorf("criteria: %w", err)
 		}
-		res, err := catalogsync.PreviewCriteria(ctx, db, defaultTenantID, in.Kind, in.Genres, in.YearFrom, in.YearTo, 20)
+		res, err := catalogsync.PreviewQuery(ctx, db, defaultTenantID, q, 20)
 		return nil, res, err
 	}
 }
@@ -273,5 +321,18 @@ func previewChannelGridResetHandler(db storage.DB, mat *materializer.Materialize
 			return nil, previewEPGOutput{}, err
 		}
 		return nil, previewEPGOutput{Entries: entries}, nil
+	}
+}
+
+type listCriteriaReviewInput struct{}
+
+type listCriteriaReviewOutput struct {
+	Items []catalogsync.ReviewItem `json:"items"`
+}
+
+func listCriteriaReviewHandler(db storage.DB) mcp.ToolHandlerFor[listCriteriaReviewInput, listCriteriaReviewOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, _ listCriteriaReviewInput) (*mcp.CallToolResult, listCriteriaReviewOutput, error) {
+		items, err := catalogsync.ListCriteriaReview(ctx, db, defaultTenantID)
+		return nil, listCriteriaReviewOutput{Items: items}, err
 	}
 }

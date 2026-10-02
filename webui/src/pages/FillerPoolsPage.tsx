@@ -17,7 +17,7 @@ import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { FillerPoolDialog } from '@/components/FillerPoolDialog'
 import { api } from '@/lib/http'
-import { summarizeCriteria } from '@/lib/filler'
+import { summarizeStoredCriteria } from '@/lib/query'
 import type { FillerPool } from '@/lib/types'
 
 function DynamicBadge({ dynamic }: { dynamic: boolean }) {
@@ -97,7 +97,7 @@ export function FillerPoolsPage() {
                   <DynamicBadge dynamic={pool.criteria != null} />
                 </TableCell>
                 <TableCell className="max-w-96 truncate text-muted-foreground">
-                  {pool.criteria ? summarizeCriteria(pool.criteria) : '—'}
+                  {pool.criteria ? summarizeStoredCriteria(pool.criteria) : '—'}
                 </TableCell>
                 <TableCell className="flex justify-end gap-2 text-right">
                   <Button asChild variant="outline" size="sm">

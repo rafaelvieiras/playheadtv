@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
@@ -179,6 +180,10 @@ func seedGenreBlockCatalogItem(t *testing.T, db storage.DB, id, genres string) s
 	); err != nil {
 		t.Fatalf("seed catalog_item: %v", err)
 	}
+	// The genre field of a query reads the genre links, which a sync writes.
+	if err := catalogsync.BackfillGenreLinks(ctx, db); err != nil {
+		t.Fatalf("backfill genre links: %v", err)
+	}
 	return itemID
 }
 
@@ -189,7 +194,7 @@ func TestBlockWithCriteriaPopulatesItems(t *testing.T) {
 	seedGenreBlockCatalogItem(t, db, "2", "Action") // shouldn't match
 
 	rec := doRequest(t, mux, "POST", "/blocks",
-		`{"name":"Comedy Channel","criteria":{"kind":"movie","genres":["Comedy"]}}`)
+		`{"name":"Comedy Channel","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -212,7 +217,7 @@ func TestBlockWithCriteriaRejectsManualItemWrites(t *testing.T) {
 	item := seedGenreBlockCatalogItem(t, db, "1", "Comedy")
 
 	rec := doRequest(t, mux, "POST", "/blocks",
-		`{"name":"Comedy Channel","criteria":{"kind":"movie","genres":["Comedy"]}}`)
+		`{"name":"Comedy Channel","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
 	var block domain.Block
 	json.Unmarshal(rec.Body.Bytes(), &block)
 
@@ -234,17 +239,36 @@ func TestBlockWithCriteriaRejectsManualItemWrites(t *testing.T) {
 }
 
 func TestBlockCriteriaValidation(t *testing.T) {
-	_, mux := newTestDB(t)
+	db, mux := newTestDB(t)
 
-	rec := doRequest(t, mux, "POST", "/blocks", `{"name":"Bad","criteria":{"kind":"bogus","genres":["x"]}}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("bad kind: status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	for name, criteria := range invalidCriteria {
+		rec := doRequest(t, mux, "POST", "/blocks", `{"name":"Bad","criteria":`+criteria+`}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400, body = %s", name, rec.Code, rec.Body.String())
+		}
+		rec = doRequest(t, mux, "PUT", "/blocks/does-not-matter", `{"name":"Bad","criteria":`+criteria+`}`)
+		if rec.Code == http.StatusOK || rec.Code == http.StatusCreated {
+			t.Errorf("%s: PUT accepted invalid criteria", name)
+		}
 	}
+	var n []int
+	if err := db.Query(context.Background(), &n, "SELECT COUNT(*) FROM block"); err != nil || n[0] != 0 {
+		t.Errorf("blocks after rejected writes = %v %v, want 0", n, err)
+	}
+}
 
-	rec = doRequest(t, mux, "POST", "/blocks", `{"name":"Bad","criteria":{"kind":"movie"}}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("empty criteria: status = %d, want 400, body = %s", rec.Code, rec.Body.String())
-	}
+// invalidCriteria are criteria values every write endpoint must reject with a
+// 400: the legacy shape, unknown fields/operators, bad values, empty groups.
+var invalidCriteria = map[string]string{
+	"legacy shape":   `{"kind":"movie","genres":["Comedy"]}`,
+	"legacy empty":   `{"kind":"movie"}`,
+	"no version":     `{"all":[{"field":"kind","op":"equals","value":"movie"}]}`,
+	"unknown field":  `{"version":1,"all":[{"field":"bogus","op":"equals","value":"x"}]}`,
+	"bad operator":   `{"version":1,"all":[{"field":"year","op":"contains","value":"x"}]}`,
+	"bad kind value": `{"version":1,"all":[{"field":"kind","op":"equals","value":"bogus"}]}`,
+	"empty group":    `{"version":1,"all":[]}`,
+	"not an object":  `"movie"`,
+	"mixed group":    `{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"}],"any":[{"field":"kind","op":"equals","value":"movie"}]}`,
 }
 
 // TestBlockUpdatePutRevertsToManual proves updateBlock's PUT-is-full-replace
@@ -255,7 +279,7 @@ func TestBlockUpdatePutRevertsToManual(t *testing.T) {
 	item := seedGenreBlockCatalogItem(t, db, "1", "Comedy")
 
 	rec := doRequest(t, mux, "POST", "/blocks",
-		`{"name":"Comedy Channel","criteria":{"kind":"movie","genres":["Comedy"]}}`)
+		`{"name":"Comedy Channel","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
 	var block domain.Block
 	json.Unmarshal(rec.Body.Bytes(), &block)
 

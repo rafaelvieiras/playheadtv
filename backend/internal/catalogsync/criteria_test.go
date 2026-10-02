@@ -191,7 +191,7 @@ func TestResolveDynamicPoolsYearRange(t *testing.T) {
 	seedItem(t, db, "c3", "movie", "New Movie", "", int64Ptr(2020))
 
 	yearFrom, yearTo := 1990, 2000
-	encoded, err := json.Marshal(poolCriteria{Kind: "movie", YearFrom: &yearFrom, YearTo: &yearTo})
+	encoded, err := json.Marshal(legacyCriteria{Kind: "movie", YearFrom: &yearFrom, YearTo: &yearTo})
 	if err != nil {
 		t.Fatalf("marshal criteria: %v", err)
 	}
@@ -292,7 +292,7 @@ func TestResolveDynamicBlocksYearRange(t *testing.T) {
 	seedItem(t, db, "c3", "movie", "New Movie", "", int64Ptr(2020))
 
 	yearFrom, yearTo := 1990, 2000
-	encoded, err := json.Marshal(poolCriteria{Kind: "movie", YearFrom: &yearFrom, YearTo: &yearTo})
+	encoded, err := json.Marshal(legacyCriteria{Kind: "movie", YearFrom: &yearFrom, YearTo: &yearTo})
 	if err != nil {
 		t.Fatalf("marshal criteria: %v", err)
 	}
@@ -334,7 +334,7 @@ func TestResolveDynamicBlocksSkipsManualBlocks(t *testing.T) {
 }
 
 // TestResolveDynamicBlocksPositionIsSequential proves block_item.position
-// comes out 0..N-1 in the same order matchCriteria (ORDER BY title) returns,
+// comes out 0..N-1 in the same order MatchQuery (ORDER BY title) returns,
 // not just "some order" — the materializer's fillLoopingBlock walk depends
 // on position being a stable, gap-free sequence to loop over.
 func TestResolveDynamicBlocksPositionIsSequential(t *testing.T) {
@@ -374,7 +374,7 @@ func TestResolveDynamicBlocksPositionIsSequential(t *testing.T) {
 	}
 }
 
-func TestPreviewCriteriaMatchesResolution(t *testing.T) {
+func TestPreviewQueryMatchesResolution(t *testing.T) {
 	db := newTestDB(t)
 	ctx := context.Background()
 	y := func(v int64) *int64 { return &v }
@@ -382,21 +382,23 @@ func TestPreviewCriteriaMatchesResolution(t *testing.T) {
 	seedItem(t, db, "b", "movie", "B", "Comedy, Drama", y(2005))
 	seedItem(t, db, "c", "movie", "C", "Horror", y(2005))
 	seedItem(t, db, "d", "episode", "D", "Comedy", y(2005))
+	if err := BackfillGenreLinks(ctx, db); err != nil {
+		t.Fatal(err)
+	}
 
-	from := 2000
-	c := poolCriteria{Kind: "movie", Genres: []string{"Comedy"}, YearFrom: &from}
-	ids, err := matchCriteria(ctx, db, testTenantID, c)
+	q := mustQuery(t, `{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"},{"field":"year","op":"gte","value":2000}]}`)
+	ids, err := MatchQuery(ctx, db, testTenantID, q)
 	if err != nil {
 		t.Fatal(err)
 	}
-	res, err := PreviewCriteria(ctx, db, testTenantID, c.Kind, c.Genres, c.YearFrom, c.YearTo, 1)
+	res, err := PreviewQuery(ctx, db, testTenantID, q, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.MatchCount != len(ids) || res.MatchCount != 1 || res.TotalDurationMs != 1000 {
-		t.Errorf("preview = %+v, matchCriteria ids = %v", res, ids)
+		t.Errorf("preview = %+v, MatchQuery ids = %v", res, ids)
 	}
-	if len(res.Sample) != 1 || res.Sample[0].ID != ids[0] {
-		t.Errorf("sample = %+v, want item %v", res.Sample, ids)
+	if len(res.Sample) != 1 || res.Sample[0].ID != ids[0] || ids[0] != "b" {
+		t.Errorf("sample = %+v, want item b (%v)", res.Sample, ids)
 	}
 }

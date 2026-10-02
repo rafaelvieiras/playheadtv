@@ -108,11 +108,19 @@ func TestMCPAuthoringTools(t *testing.T) {
 	prev := callTool[struct {
 		MatchCount      int   `json:"match_count"`
 		TotalDurationMs int64 `json:"total_duration_ms"`
-	}](t, ctx, session, "preview_criteria", map[string]any{"kind": "movie", "genres": []string{""}}) // push sync carries no genres; an empty substring matches every item
+	}](t, ctx, session, "preview_criteria", map[string]any{"query": map[string]any{
+		"version": 1,
+		"all": []any{
+			map[string]any{"field": "kind", "op": "equals", "value": "movie"},
+			map[string]any{"field": "duration", "op": "gte", "value": 30},
+		},
+	}})
 	if prev.MatchCount != 2 || prev.TotalDurationMs != 5_400_000 {
 		t.Errorf("preview_criteria = %+v", prev)
 	}
-	callToolExpectError(t, ctx, session, "preview_criteria", map[string]any{"kind": "movie"})
+	// The legacy shape and an invalid tree are rejected.
+	callToolExpectError(t, ctx, session, "preview_criteria", map[string]any{"query": map[string]any{"kind": "movie", "genres": []string{"x"}}})
+	callToolExpectError(t, ctx, session, "preview_criteria", map[string]any{"query": map[string]any{"version": 1, "all": []any{}}})
 
 	block := callTool[domain.Block](t, ctx, session, "create_block", map[string]any{"name": "B"})
 	bi1 := callTool[domain.BlockItem](t, ctx, session, "add_block_item", map[string]any{"block_id": block.ID, "catalog_item_id": found.Items[0].ID})

@@ -4,7 +4,10 @@ import { ArrowDown, ArrowUp } from 'lucide-react'
 import { useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
+import { CriteriaAmountControl, CriteriaOrderSelect } from '@/components/CriteriaItemControls'
+import { CriteriaReviewNotice } from '@/components/CriteriaReviewNotice'
 import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
+import { QueryBuilder } from '@/components/QueryBuilder'
 import { InlineWarning } from '@/components/InlineWarning'
 import { PageHeader } from '@/components/PageHeader'
 import { SaveBar } from '@/components/SaveBar'
@@ -17,7 +20,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { Textarea } from '@/components/ui/textarea'
 import { authoringKeys, usePreviewCriteria, useUpdateBlockItem } from '@/lib/authoring'
 import { formatCatalogTitle } from '@/lib/catalog'
-import { formatDuration, parseCriteriaJson, validateCriteria } from '@/lib/criteria'
+import { formatDuration } from '@/lib/criteria'
+import { emptyQuery, parseStoredCriteria, queryKey, summarizeQuery, validateQuery, type Query } from '@/lib/query'
 import { airsUntilSlotEnd } from '@/lib/guide'
 import { ApiError, api } from '@/lib/http'
 import { SeriesAmountControl } from '@/components/SeriesAmountControl'
@@ -29,15 +33,12 @@ import {
   type BlockItem,
   type BlockItemInput,
   type CatalogItem,
-  type DynamicCriteria,
+  type CriteriaAmount,
+  type CriteriaOrder,
   type PlaybackOrder,
   type SeriesAmount,
   type SeriesSummary,
 } from '@/lib/types'
-
-function parseCriteria(raw: string | null): DynamicCriteria | null {
-  return parseCriteriaJson(raw)
-}
 
 // seriesKey identifies a GET /series row: media source plus external id or title.
 function seriesKey(s: SeriesSummary): string {
@@ -87,22 +88,32 @@ export function BlockEditorPage() {
 
 function BlockDetailsForm({ block }: { block: Block }) {
   const queryClient = useQueryClient()
-  const initial = useMemo<BlockInput>(
+  const stored = useMemo(() => parseStoredCriteria(block.criteria), [block.criteria])
+  // A block still holding old-format criteria is dynamic but has no query to
+  // edit until someone reviews the proposed one (see CriteriaReviewNotice).
+  const initial = useMemo<BlockInput & { keepLegacy: boolean }>(
     () => ({
       name: block.name,
       description: block.description,
-      criteria: parseCriteria(block.criteria),
+      criteria: stored?.type === 'query' ? stored.query : null,
+      keepLegacy: stored?.type === 'legacy',
     }),
-    [block]
+    [block, stored]
   )
-  const [draft, setDraft] = useState<BlockInput>(initial)
+  const [draft, setDraft] = useState(initial)
   const [error, setError] = useState<string | null>(null)
   const isDynamic = block.criteria !== null
+  const unreviewed = draft.keepLegacy && draft.criteria === null
 
-  const dirty = JSON.stringify(draft) !== JSON.stringify(initial)
+  const dirty =
+    draft.name !== initial.name ||
+    draft.description !== initial.description ||
+    queryKey(draft.criteria) !== queryKey(initial.criteria) ||
+    draft.keepLegacy !== initial.keepLegacy
 
   const saveMutation = useMutation({
-    mutationFn: () => api.put<Block>(`/blocks/${block.id}`, draft),
+    mutationFn: () =>
+      api.put<Block>(`/blocks/${block.id}`, { name: draft.name, description: draft.description, criteria: draft.criteria } satisfies BlockInput),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['blocks'] })
       toast.success('Block saved.')
@@ -115,7 +126,11 @@ function BlockDetailsForm({ block }: { block: Block }) {
       setError('Name is required.')
       return
     }
-    const criteriaError = validateCriteria(draft.criteria)
+    if (unreviewed) {
+      setError('Review the old criteria first: use the proposed query or write a new one.')
+      return
+    }
+    const criteriaError = validateQuery(draft.criteria)
     if (criteriaError) {
       setError(criteriaError)
       return
@@ -148,7 +163,7 @@ function BlockDetailsForm({ block }: { block: Block }) {
             onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value || null }))}
           />
         </Field>
-        {isDynamic && (
+        {isDynamic && !unreviewed && (
           <DynamicCriteriaFields
             value={draft.criteria}
             onChange={(criteria) => setDraft((d) => ({ ...d, criteria }))}
@@ -156,6 +171,15 @@ function BlockDetailsForm({ block }: { block: Block }) {
           />
         )}
       </FieldGroup>
+
+      {isDynamic && unreviewed && (
+        <CriteriaReviewNotice
+          ownerType="block"
+          ownerId={block.id}
+          onUseProposed={(criteria) => setDraft((d) => ({ ...d, criteria, keepLegacy: false }))}
+          onWriteNew={() => setDraft((d) => ({ ...d, criteria: emptyQuery(), keepLegacy: false }))}
+        />
+      )}
 
       {isDynamic && draft.criteria && <CriteriaPreviewPanel criteria={draft.criteria} />}
 
@@ -165,15 +189,15 @@ function BlockDetailsForm({ block }: { block: Block }) {
 }
 
 // Live, debounced preview of what the draft criteria match right now.
-function CriteriaPreviewPanel({ criteria }: { criteria: DynamicCriteria }) {
+function CriteriaPreviewPanel({ criteria, empty }: { criteria: Query; empty?: string }) {
   const preview = usePreviewCriteria()
   const { mutate } = preview
-  const invalid = validateCriteria(criteria)
+  const invalid = validateQuery(criteria)
   const key = JSON.stringify(criteria)
 
   useEffect(() => {
     if (invalid) return
-    const handle = setTimeout(() => mutate(JSON.parse(key) as DynamicCriteria), 500)
+    const handle = setTimeout(() => mutate(JSON.parse(key) as Query), 500)
     return () => clearTimeout(handle)
   }, [key, invalid, mutate])
 
@@ -196,7 +220,7 @@ function CriteriaPreviewPanel({ criteria }: { criteria: DynamicCriteria }) {
           </p>
           {data.match_count === 0 && (
             <InlineWarning title="No matches">
-              These criteria match nothing in the catalog right now, so the block would be empty.
+              {empty ?? 'These criteria match nothing in the catalog right now, so the block would be empty.'}
             </InlineWarning>
           )}
           {data.sample.length > 0 && (
@@ -234,7 +258,7 @@ function BlockItemsSection({ block }: { block: Block }) {
   const sorted = useMemo(() => [...(items ?? [])].sort((a, b) => a.position - b.position), [items])
 
   const catalogIds = useMemo(
-    () => [...new Set(sorted.flatMap((i) => (i.item_type === 'series' || !i.catalog_item_id ? [] : [i.catalog_item_id])))],
+    () => [...new Set(sorted.flatMap((i) => (i.item_type !== 'catalog' || !i.catalog_item_id ? [] : [i.catalog_item_id])))],
     [sorted]
   )
   const catalogQueries = useQueries({
@@ -347,6 +371,73 @@ function BlockItemsSection({ block }: { block: Block }) {
     )
   }
 
+  function setCriteriaOrder(item: BlockItem, order: CriteriaOrder) {
+    updateMutation.mutate(
+      { itemId: item.id, playback_order: order },
+      {
+        onSuccess: () => toast.success('Playback order changed, the item restarts.'),
+        onError: (err) => toast.error(errorMessage(err, 'Could not change the playback order.')),
+      }
+    )
+  }
+
+  function setCriteriaAmount(item: BlockItem, amount: CriteriaAmount | null) {
+    if (!amount) return
+    updateMutation.mutate(
+      { itemId: item.id, amount },
+      {
+        onSuccess: () => toast.success('Amount saved.'),
+        onError: (err) => toast.error(errorMessage(err, 'Could not save the amount.')),
+      }
+    )
+  }
+
+  // The criteria item whose query is being edited, and the draft of it.
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [editQuery, setEditQuery] = useState<Query | null>(null)
+
+  function saveQuery(item: BlockItem) {
+    if (!editQuery) return
+    const invalid = validateQuery(editQuery)
+    if (invalid) {
+      toast.error(invalid)
+      return
+    }
+    updateMutation.mutate(
+      { itemId: item.id, query: editQuery },
+      {
+        onSuccess: () => {
+          toast.success('Query saved.')
+          setEditingId(null)
+          setEditQuery(null)
+        },
+        onError: (err) => toast.error(errorMessage(err, 'Could not save the query.')),
+      }
+    )
+  }
+
+  // New criteria item: a query, an order and an amount, all chosen before it is added.
+  const [newQuery, setNewQuery] = useState<Query>(emptyQuery)
+  const [newCriteriaOrder, setNewCriteriaOrder] = useState<CriteriaOrder>('title')
+  const [newCriteriaAmount, setNewCriteriaAmount] = useState<CriteriaAmount | null>(null)
+  const [newCriteriaKey, setNewCriteriaKey] = useState(0)
+  const newQueryError = validateQuery(newQuery)
+
+  function addCriteria() {
+    if (newQueryError || !newCriteriaAmount) return
+    addMutation.mutate(
+      { criteria: { query: newQuery, playback_order: newCriteriaOrder, amount: newCriteriaAmount } },
+      {
+        onSuccess: () => {
+          setNewQuery(emptyQuery())
+          setNewCriteriaOrder('title')
+          setNewCriteriaAmount(null)
+          setNewCriteriaKey((k) => k + 1)
+        },
+      }
+    )
+  }
+
   function setOrder(item: BlockItem, order: PlaybackOrder) {
     updateMutation.mutate(
       { itemId: item.id, playback_order: order },
@@ -377,7 +468,7 @@ function BlockItemsSection({ block }: { block: Block }) {
     )
   }
 
-  const catalogItems = sorted.filter((i) => i.item_type !== 'series')
+  const catalogItems = sorted.filter((i) => i.item_type === 'catalog')
   const seriesCount = sorted.length - catalogItems.length
   const totalMs = catalogItems.reduce((sum, item) => {
     const full = catalogById.get(item.catalog_item_id ?? '')?.duration_ms ?? 0
@@ -426,6 +517,7 @@ function BlockItemsSection({ block }: { block: Block }) {
           <TableBody>
             {sorted.map((item, index) => {
               const isSeries = item.item_type === 'series'
+              const isCriteria = item.item_type === 'criteria'
               const catalog = catalogById.get(item.catalog_item_id ?? '')
               return (
                 <TableRow key={item.id} data-testid="block-item-row">
@@ -436,6 +528,13 @@ function BlockItemsSection({ block }: { block: Block }) {
                         <Badge variant="secondary">Series</Badge>
                         <span className="truncate">{item.series?.series_title || 'Series'}</span>
                       </span>
+                    ) : isCriteria ? (
+                      <span className="flex items-center gap-2" title={item.criteria ? summarizeQuery(item.criteria.query) : undefined}>
+                        <Badge variant="secondary">Criteria</Badge>
+                        <span className="truncate" data-testid="criteria-item-summary">
+                          {item.criteria ? summarizeQuery(item.criteria.query) : 'Criteria'}
+                        </span>
+                      </span>
                     ) : catalog ? (
                       formatCatalogTitle(catalog)
                     ) : (
@@ -443,7 +542,11 @@ function BlockItemsSection({ block }: { block: Block }) {
                     )}
                   </TableCell>
                   <TableCell data-testid="item-length">
-                    {isSeries
+                    {isCriteria
+                      ? item.criteria
+                        ? `${item.criteria.match_count} match${item.criteria.match_count === 1 ? '' : 'es'}, ${formatDuration(item.criteria.total_duration_ms)}`
+                        : '—'
+                      : isSeries
                       ? item.series
                         ? `${item.series.episode_count} episode${item.series.episode_count === 1 ? '' : 's'}, ${formatDuration(item.series.total_duration_ms)}`
                         : '—'
@@ -452,7 +555,23 @@ function BlockItemsSection({ block }: { block: Block }) {
                         : '—'}
                   </TableCell>
                   <TableCell>
-                    {isSeries ? (
+                    {isCriteria ? (
+                      <div className="flex flex-col gap-2">
+                        <CriteriaOrderSelect
+                          value={item.criteria?.playback_order ?? 'title'}
+                          onChange={(o) => setCriteriaOrder(item, o)}
+                          disabled={busy}
+                          testId="criteria-order"
+                        />
+                        <CriteriaAmountControl
+                          key={`${item.id}-${item.criteria?.amount?.mode}-${item.criteria?.amount?.count}`}
+                          value={item.criteria?.amount ?? null}
+                          onChange={(a) => setCriteriaAmount(item, a)}
+                          disabled={busy}
+                          testIdPrefix="criteria"
+                        />
+                      </div>
+                    ) : isSeries ? (
                       <div className="flex flex-col gap-2">
                         <Select
                           value={item.series?.playback_order ?? 'original'}
@@ -489,6 +608,20 @@ function BlockItemsSection({ block }: { block: Block }) {
                     )}
                   </TableCell>
                   <TableCell className="flex justify-end gap-1 text-right">
+                    {isCriteria && item.criteria && (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        data-testid="criteria-edit-query"
+                        disabled={busy}
+                        onClick={() => {
+                          setEditingId(item.id)
+                          setEditQuery(item.criteria?.query ?? null)
+                        }}
+                      >
+                        Edit query
+                      </Button>
+                    )}
                     <Button
                       variant="outline"
                       size="icon-sm"
@@ -521,6 +654,37 @@ function BlockItemsSection({ block }: { block: Block }) {
             })}
           </TableBody>
         </Table>
+      )}
+
+      {editingId && editQuery && (
+        <div className="flex flex-col gap-3 rounded-lg border border-border p-4" data-testid="criteria-edit-panel">
+          <h3 className="text-sm font-medium">Edit the query of item {sorted.findIndex((i) => i.id === editingId) + 1}</h3>
+          <QueryBuilder value={editQuery} onChange={setEditQuery} idPrefix="edit-criteria" />
+          <CriteriaPreviewPanel criteria={editQuery} empty="This query matches nothing right now, so the item would be skipped." />
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              data-testid="criteria-edit-save"
+              disabled={busy || !!validateQuery(editQuery)}
+              onClick={() => {
+                const item = sorted.find((i) => i.id === editingId)
+                if (item) saveQuery(item)
+              }}
+            >
+              Save query
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => {
+                setEditingId(null)
+                setEditQuery(null)
+              }}
+            >
+              Cancel
+            </Button>
+          </div>
+        </div>
       )}
 
       <Field>
@@ -567,6 +731,43 @@ function BlockItemsSection({ block }: { block: Block }) {
           />
         </div>
       </Field>
+
+      <div className="flex flex-col gap-3 rounded-lg border border-border p-4" data-testid="add-criteria">
+        <div>
+          <h3 className="text-sm font-medium">Add a criteria item</h3>
+          <p className="text-sm text-muted-foreground">
+            Plays the number of matches you choose from a live query of the catalog, then moves on to the next item.
+          </p>
+        </div>
+        <QueryBuilder value={newQuery} onChange={setNewQuery} idPrefix="new-criteria" />
+        {!newQueryError && <CriteriaPreviewPanel criteria={newQuery} empty="This query matches nothing right now, so the item would be skipped." />}
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <CriteriaOrderSelect value={newCriteriaOrder} onChange={setNewCriteriaOrder} testId="new-criteria-order" />
+          <CriteriaAmountControl
+            key={newCriteriaKey}
+            value={newCriteriaAmount}
+            onChange={setNewCriteriaAmount}
+            eager
+            testIdPrefix="new-criteria"
+          />
+        </div>
+        {newQueryError && <p className="text-sm text-destructive" data-testid="new-criteria-error">{newQueryError}</p>}
+        {!newCriteriaAmount && (
+          <p className="text-xs text-muted-foreground">
+            Choose how many matches to play per visit, or all of them. There is no default.
+          </p>
+        )}
+        <div>
+          <Button
+            size="sm"
+            data-testid="add-criteria-button"
+            disabled={addMutation.isPending || !!newQueryError || !newCriteriaAmount}
+            onClick={addCriteria}
+          >
+            Add criteria item
+          </Button>
+        </div>
+      </div>
     </section>
   )
 }

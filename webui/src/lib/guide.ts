@@ -124,15 +124,31 @@ function seriesVisitEstimateMs(bi: BlockItem): number {
   return series.total_duration_ms
 }
 
+// Estimated airtime of one visit of a criteria item: N average matches, or all
+// of them.
+function criteriaVisitEstimateMs(bi: BlockItem): number {
+  const c = bi.criteria
+  if (!c || c.match_count <= 0) return 0
+  if (c.amount?.mode === 'count') {
+    return Math.round(((c.amount.count ?? 1) * c.total_duration_ms) / c.match_count)
+  }
+  return c.total_duration_ms
+}
+
 // Total airtime of a manual block, or undefined when any item's duration is
 // unknown (not loaded yet). A series item that airs "until the end of the slot"
 // has no length of its own, so counting stops there: only what comes before it
 // can overrun the slot. Any other series item has a bounded length that
 // depends on which episodes come up: it counts as that many average episodes
-// (or the whole series for "until the series ends"), an estimate.
+// (or the whole series for "until the series ends"), an estimate; a criteria
+// item counts the same way over its matches.
 export function blockTotalDurationMs(items: BlockItem[], catalog: Map<string, CatalogItem>): number | undefined {
   let total = 0
   for (const bi of items) {
+    if (bi.item_type === 'criteria') {
+      total += criteriaVisitEstimateMs(bi)
+      continue
+    }
     if (bi.item_type === 'series') {
       if (airsUntilSlotEnd(bi)) break
       total += seriesVisitEstimateMs(bi)

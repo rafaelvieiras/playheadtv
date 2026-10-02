@@ -453,7 +453,7 @@ func fillLoopingBlock(
 		idx := state.seqCursor[cursorKey] % len(items)
 		next := (idx + 1) % len(items)
 		bi := items[idx]
-		if bi.IsSeries() {
+		if bi.IsWalked() {
 			// A "slot_end" series stays on the air until target: the rotation
 			// sits on it (every entry stores idx), so the next gap resumes
 			// it. A "count"/"series_end" visit airs its amount and then the
@@ -710,7 +710,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		}
 
 		for idx, bi := range items {
-			if bi.IsSeries() {
+			if bi.IsWalked() {
 				// A series item airs its amount per visit. "slot_end" airs
 				// until the boundary (the next occurrence, reserving
 				// postroll, or the window's end), so nothing after it in the

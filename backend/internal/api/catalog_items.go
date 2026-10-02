@@ -2,6 +2,8 @@ package api
 
 import (
 	"database/sql"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
 
@@ -83,20 +85,26 @@ func listCatalogItems(db storage.DB) http.HandlerFunc {
 // /catalog-items/preview-criteria returns as a sample.
 const criteriaPreviewSampleSize = 20
 
-// previewCriteria takes the same criteria object as block/pool criteria
-// (same validation) and reports what it matches right now, persisting nothing.
+// previewCriteria takes a condition tree (the body is the query itself, same
+// validation as block/pool criteria) and reports what it matches right now,
+// persisting nothing.
 func previewCriteria(db storage.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var req fillerPoolCriteriaRequest
-		if err := decodeJSON(r, &req); err != nil {
+		body, err := io.ReadAll(io.LimitReader(r.Body, maxQueryBodyBytes))
+		if err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		if msg, ok := validatePoolCriteria(&req); !ok {
-			writeError(w, http.StatusBadRequest, msg)
+		q, err := catalogsync.ParseQuery(body)
+		if err != nil {
+			if errors.Is(err, catalogsync.ErrLegacyCriteria) {
+				writeError(w, http.StatusBadRequest, err.Error())
+			} else {
+				writeError(w, http.StatusBadRequest, "criteria: "+err.Error())
+			}
 			return
 		}
-		res, err := catalogsync.PreviewCriteria(r.Context(), db, DefaultTenantID, req.Kind, req.Genres, req.YearFrom, req.YearTo, criteriaPreviewSampleSize)
+		res, err := catalogsync.PreviewQuery(r.Context(), db, DefaultTenantID, q, criteriaPreviewSampleSize)
 		if err != nil {
 			handleDBError(w, err)
 			return
@@ -104,6 +112,9 @@ func previewCriteria(db storage.DB) http.HandlerFunc {
 		writeJSON(w, http.StatusOK, res)
 	}
 }
+
+// maxQueryBodyBytes bounds the body of a query preview.
+const maxQueryBodyBytes = 64 << 10
 
 // getCatalogItem returns one item with everything GET /catalog-items returns
 // plus the detail-only fields: cast, directors, production_locations and

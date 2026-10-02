@@ -1,5 +1,4 @@
-import { parseCriteriaJson } from '@/lib/criteria'
-import type { Block, DynamicCriteria, ScheduleItem } from '@/lib/types'
+import type { Block, ScheduleItem } from '@/lib/types'
 
 export const DAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
 
@@ -30,20 +29,6 @@ export function groupItemsByKind(items: ScheduleItem[]) {
     weekly: items.filter((i) => i.recurrence_type === 'weekly').sort(byTime),
     once: items.filter((i) => i.recurrence_type === 'once').sort(byTime),
   }
-}
-
-export function parseBlockCriteria(block: Block): DynamicCriteria | null {
-  return parseCriteriaJson(block.criteria)
-}
-
-export function summarizeCriteria(c: DynamicCriteria): string {
-  const parts: string[] = [c.kind === 'movie' ? 'Movies' : 'Episodes']
-  const genres = c.genres ?? []
-  if (genres.length > 0) parts.push(genres.join(', '))
-  if (c.year_from !== null && c.year_to !== null) parts.push(`${c.year_from}-${c.year_to}`)
-  else if (c.year_from !== null) parts.push(`from ${c.year_from}`)
-  else if (c.year_to !== null) parts.push(`until ${c.year_to}`)
-  return parts.join(' · ')
 }
 
 // A schedule made of seven weekly items at 00:00 (one per weekday) pointing

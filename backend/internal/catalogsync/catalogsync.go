@@ -57,12 +57,12 @@ func Upsert(ctx context.Context, db storage.DB, tenantID, mediaSourceID string, 
 		   season_number, episode_number, episode_number_end, series_external_id, season_name, original_title, sort_title, premiere_date, date_added,
 		   overview, tagline, content_rating, community_rating, critic_rating, imdb_id, tmdb_id, tvdb_id,
 		   width, height, video_codec, container, bitrate, production_locations, chapters,
-		   image_primary_tag, image_backdrop_tag, image_thumb_tag, series_image_primary_tag)
+		   image_primary_tag, image_backdrop_tag, image_thumb_tag, series_image_primary_tag, overview_norm)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 		   ?, ?, ?, ?, ?, ?, ?, ?, ?,
 		   ?, ?, ?, ?, ?, ?, ?, ?,
 		   ?, ?, ?, ?, ?, ?, ?,
-		   ?, ?, ?, ?)
+		   ?, ?, ?, ?, ?)
 		 ON CONFLICT (media_source_id, external_id) DO UPDATE SET
 		   kind = excluded.kind, title = excluded.title, series_title = excluded.series_title,
 		   duration_ms = excluded.duration_ms, source_modified_at = excluded.source_modified_at,
@@ -79,7 +79,8 @@ func Upsert(ctx context.Context, db storage.DB, tenantID, mediaSourceID string, 
 		   container = excluded.container, bitrate = excluded.bitrate,
 		   production_locations = excluded.production_locations, chapters = excluded.chapters,
 		   image_primary_tag = excluded.image_primary_tag, image_backdrop_tag = excluded.image_backdrop_tag,
-		   image_thumb_tag = excluded.image_thumb_tag, series_image_primary_tag = excluded.series_image_primary_tag`,
+		   image_thumb_tag = excluded.image_thumb_tag, series_image_primary_tag = excluded.series_image_primary_tag,
+		   overview_norm = excluded.overview_norm`,
 		uuid.NewString(), tenantID, mediaSourceID, item.ExternalID, string(item.Kind), item.Title,
 		item.SeriesTitle, item.DurationMs, item.SourceModifiedAt, item.Genres, item.ProductionYear, now,
 		SearchText(item.Title, item.SeriesTitle),
@@ -89,6 +90,7 @@ func Upsert(ctx context.Context, db storage.DB, tenantID, mediaSourceID string, 
 		item.ImdbID, item.TmdbID, item.TvdbID,
 		item.Width, item.Height, item.VideoCodec, item.Container, item.Bitrate, locations, chapters,
 		item.ImagePrimaryTag, item.ImageBackdropTag, item.ImageThumbTag, item.SeriesImagePrimaryTag,
+		overviewNorm(item.Overview),
 	)
 	if err != nil {
 		return err
@@ -154,4 +156,14 @@ func TouchLastSynced(ctx context.Context, db storage.DB, tenantID, mediaSourceID
 		"UPDATE media_source SET last_synced_at = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
 		now, now, tenantID, mediaSourceID,
 	)
+}
+
+// overviewNorm is the folded overview stored in catalog_item.overview_norm
+// (NULL when the item has none), what the overview field of a query matches.
+func overviewNorm(overview *string) *string {
+	if overview == nil {
+		return nil
+	}
+	s := FoldText(*overview)
+	return &s
 }

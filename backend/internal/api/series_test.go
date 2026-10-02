@@ -163,7 +163,7 @@ func TestAddSeriesBlockItemValidation(t *testing.T) {
 	ms := seedSeries(t, db, "a", "Show", 2)
 	movie := seedCatalogItem(t, db, "m")
 	blockID := newBlock(t, mux, `{"name":"B"}`)
-	dynamic := newBlock(t, mux, `{"name":"Dyn","criteria":{"kind":"movie","genres":["Comedy"]}}`)
+	dynamic := newBlock(t, mux, `{"name":"Dyn","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
 
 	post := func(block, body string) *httptest.ResponseRecorder {
 		return doRequest(t, mux, "POST", "/blocks/"+block+"/items", body)
@@ -305,7 +305,7 @@ func TestSeriesBlockItemAmount(t *testing.T) {
 	ms := seedSeries(t, db, "a", "Show", 3)
 	movie := seedCatalogItem(t, db, "m")
 	blockID := newBlock(t, mux, `{"name":"B"}`)
-	dynamic := newBlock(t, mux, `{"name":"Dyn","criteria":{"kind":"movie","genres":["Comedy"]}}`)
+	dynamic := newBlock(t, mux, `{"name":"Dyn","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
 	post := func(block, amount string) *httptest.ResponseRecorder {
 		extra := ""
 		if amount != "" {

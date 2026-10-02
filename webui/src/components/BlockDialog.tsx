@@ -15,7 +15,7 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
-import { validateCriteria } from '@/lib/criteria'
+import { validateQuery } from '@/lib/query'
 import { api } from '@/lib/http'
 import type { Block, BlockInput } from '@/lib/types'
 
@@ -60,7 +60,7 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    const validationError = validateCriteria(form.criteria)
+    const validationError = validateQuery(form.criteria)
     if (validationError) {
       setError(validationError)
       return

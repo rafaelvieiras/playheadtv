@@ -22,10 +22,9 @@ import { api } from '@/lib/http'
 import {
   groupItemsByKind,
   legacyDailyDynamicBlock,
-  parseBlockCriteria,
-  summarizeCriteria,
   summarizeRecurrence,
 } from '@/lib/schedule'
+import { summarizeStoredCriteria } from '@/lib/query'
 import type { Block, BlockItem, Channel, Schedule, ScheduleItem } from '@/lib/types'
 
 // Programming tab: the items of the channel's schedule, grouped by kind and
@@ -230,7 +229,6 @@ export function ChannelProgramming({
                 <TableBody>
                   {section.rows.map((item) => {
                     const block = blocksById.get(item.block_id)
-                    const criteria = block ? parseBlockCriteria(block) : null
                     const count = countByBlock.get(item.block_id)
                     return (
                       <TableRow key={item.id} data-testid="schedule-item-row">
@@ -247,10 +245,10 @@ export function ChannelProgramming({
                         <TableCell data-testid="item-fill">
                           {!block ? (
                             '—'
-                          ) : criteria ? (
+                          ) : block.criteria ? (
                             <span>
                               <Badge variant="default">Dynamic</Badge>{' '}
-                              <span className="text-muted-foreground">{summarizeCriteria(criteria)}</span>
+                              <span className="text-muted-foreground">{summarizeStoredCriteria(block.criteria)}</span>
                             </span>
                           ) : (
                             <span>

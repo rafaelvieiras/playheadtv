@@ -115,7 +115,7 @@ func TestUpdateBlockItemErrors(t *testing.T) {
 	}
 
 	seedGenreBlockCatalogItem(t, db, "d1", "Comedy")
-	rec := doRequest(t, mux, "POST", "/blocks", `{"name":"Dyn","criteria":{"kind":"movie","genres":["Comedy"]}}`)
+	rec := doRequest(t, mux, "POST", "/blocks", `{"name":"Dyn","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
 	var dyn domain.Block
 	mustDecode(t, rec.Body.Bytes(), &dyn)
 	dynItems := listItems(t, mux, dyn.ID)
@@ -169,7 +169,7 @@ func TestUpdateFillerPoolItem(t *testing.T) {
 	}
 
 	seedGenreBlockCatalogItem(t, db, "g1", "Comedy")
-	rec = doRequest(t, mux, "POST", "/filler-pools", `{"name":"Dyn","criteria":{"kind":"movie","genres":["Comedy"]}}`)
+	rec = doRequest(t, mux, "POST", "/filler-pools", `{"name":"Dyn","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
 	var dyn domain.FillerPool
 	mustDecode(t, rec.Body.Bytes(), &dyn)
 	rec = doRequest(t, mux, "GET", "/filler-pools/"+dyn.ID+"/items", "")
@@ -195,7 +195,7 @@ func TestPreviewCriteria(t *testing.T) {
 	}
 	before := countRows()
 
-	rec := doRequest(t, mux, "POST", "/catalog-items/preview-criteria", `{"kind":"movie","genres":["Comedy"]}`)
+	rec := doRequest(t, mux, "POST", "/catalog-items/preview-criteria", `{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, %s", rec.Code, rec.Body.String())
 	}
@@ -205,7 +205,7 @@ func TestPreviewCriteria(t *testing.T) {
 		t.Errorf("preview = count %d dur %d sample %d", res.MatchCount, res.TotalDurationMs, len(res.Sample))
 	}
 
-	rec = doRequest(t, mux, "POST", "/catalog-items/preview-criteria", `{"kind":"movie","genres":["Nope"]}`)
+	rec = doRequest(t, mux, "POST", "/catalog-items/preview-criteria", `{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Nope"}]}`)
 	mustDecode(t, rec.Body.Bytes(), &res)
 	if res.MatchCount != 0 || res.TotalDurationMs != 0 || res.Sample == nil || len(res.Sample) != 0 {
 		t.Errorf("empty preview = %+v", res)
@@ -214,14 +214,32 @@ func TestPreviewCriteria(t *testing.T) {
 		t.Errorf("empty sample should serialize as []: %s", rec.Body.String())
 	}
 
-	for name, body := range map[string]string{
-		"bad kind":    `{"kind":"other","genres":["Comedy"]}`,
-		"no criteria": `{"kind":"movie"}`,
-		"bad json":    `x`,
-	} {
+	// The legacy shape is rejected with a pointer to the new one.
+	rec = doRequest(t, mux, "POST", "/catalog-items/preview-criteria", `{"kind":"movie","genres":["Comedy"]}`)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "legacy") {
+		t.Errorf("legacy shape: status = %d, %s", rec.Code, rec.Body.String())
+	}
+	bodies := map[string]string{"bad json": `x`, "empty body": ``}
+	for name, criteria := range invalidCriteria {
+		bodies[name] = criteria
+	}
+	for name, body := range bodies {
 		if rec := doRequest(t, mux, "POST", "/catalog-items/preview-criteria", body); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status = %d, want 400", name, rec.Code)
 		}
+	}
+	// Condition errors name the offending node.
+	rec = doRequest(t, mux, "POST", "/catalog-items/preview-criteria", `{"version":1,"all":[{"field":"year","op":"contains","value":"x"}]}`)
+	if !strings.Contains(rec.Body.String(), "all[0]") {
+		t.Errorf("error should locate the node: %s", rec.Body.String())
+	}
+
+	// Composition, ranges and negation through the endpoint.
+	rec = doRequest(t, mux, "POST", "/catalog-items/preview-criteria",
+		`{"version":1,"all":[{"field":"genre","op":"in","value":["Comedy","Horror"]},{"not":{"field":"genre","op":"equals","value":"Horror"}},{"field":"duration","op":"lt","value":1}]}`)
+	mustDecode(t, rec.Body.Bytes(), &res)
+	if rec.Code != http.StatusOK || res.MatchCount != 25 {
+		t.Errorf("composed preview: status %d, count %d, want 25", rec.Code, res.MatchCount)
 	}
 	if after := countRows(); after != before {
 		t.Errorf("preview persisted rows: %d -> %d", before, after)

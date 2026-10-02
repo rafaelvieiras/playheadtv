@@ -44,36 +44,14 @@ const fillerPoolItemColumns = "id, filler_pool_id, catalog_item_id, weight"
 // spell out to the DB's column names.
 const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, filler_pool_id, selection_strategy AS selection, position, created_at"
 
-// fillerPoolCriteriaRequest is the JSON shape a client sends/receives for a
-// dynamic pool's criteria — mirrors catalogsync's internal poolCriteria
-// (kept as a separate type since that one is unexported and this package
-// shouldn't reach into catalogsync's internals just to reuse a struct).
-type fillerPoolCriteriaRequest struct {
-	Kind     string   `json:"kind"`
-	Genres   []string `json:"genres"`
-	YearFrom *int     `json:"year_from"`
-	YearTo   *int     `json:"year_to"`
-}
-
 type fillerPoolRequest struct {
 	Name string `json:"name"`
 	// Criteria is optional. nil (the JSON field absent or explicitly null)
 	// means a manually managed pool; a non-nil value makes it dynamic —
 	// its filler_pool_item rows are then owned by
-	// catalogsync.ResolveDynamicPools, not by POST/DELETE .../items.
-	Criteria *fillerPoolCriteriaRequest `json:"criteria"`
-}
-
-func validatePoolCriteria(c *fillerPoolCriteriaRequest) (string, bool) {
-	switch domain.CatalogItemKind(c.Kind) {
-	case domain.CatalogMovie, domain.CatalogEpisode:
-	default:
-		return "criteria.kind must be one of movie, episode", false
-	}
-	if len(c.Genres) == 0 && c.YearFrom == nil && c.YearTo == nil {
-		return "criteria requires at least one of genres, year_from, year_to", false
-	}
-	return "", true
+	// catalogsync.ResolveDynamicPools, not by POST/DELETE .../items. It is a
+	// versioned condition tree (catalogsync.Query).
+	Criteria json.RawMessage `json:"criteria"`
 }
 
 func fetchFillerPool(db storage.DB, r *http.Request, id string) (domain.FillerPool, error) {
@@ -96,19 +74,10 @@ func createFillerPool(db storage.DB, mat *materializer.Materializer) http.Handle
 			writeError(w, http.StatusBadRequest, "name is required")
 			return
 		}
-		var criteria *string
-		if req.Criteria != nil {
-			if msg, ok := validatePoolCriteria(req.Criteria); !ok {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-			encoded, err := json.Marshal(req.Criteria)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "internal error")
-				return
-			}
-			s := string(encoded)
-			criteria = &s
+		criteria, err := parseCriteriaField(req.Criteria)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		p := domain.FillerPool{
 			ID:        uuid.NewString(),
@@ -117,7 +86,7 @@ func createFillerPool(db storage.DB, mat *materializer.Materializer) http.Handle
 			Criteria:  criteria,
 			CreatedAt: time.Now().UnixMilli(),
 		}
-		err := db.Exec(r.Context(),
+		err = db.Exec(r.Context(),
 			"INSERT INTO filler_pool (id, tenant_id, name, criteria, created_at) VALUES (?, ?, ?, ?, ?)",
 			p.ID, p.TenantID, p.Name, p.Criteria, p.CreatedAt,
 		)
@@ -181,24 +150,21 @@ func updateFillerPool(db storage.DB, mat *materializer.Materializer) http.Handle
 		// PUT is a full replace, same semantics name already has: omitting
 		// criteria here reverts a previously dynamic pool to manual, even if
 		// it already had one — intentional, not an accidental partial update.
-		var criteria *string
-		if req.Criteria != nil {
-			if msg, ok := validatePoolCriteria(req.Criteria); !ok {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-			encoded, err := json.Marshal(req.Criteria)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "internal error")
-				return
-			}
-			s := string(encoded)
-			criteria = &s
+		criteria, err := parseCriteriaField(req.Criteria)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		if err := db.Exec(r.Context(),
 			"UPDATE filler_pool SET name = ?, criteria = ? WHERE tenant_id = ? AND id = ?",
 			req.Name, criteria, DefaultTenantID, id,
 		); err != nil {
+			handleDBError(w, err)
+			return
+		}
+		// Whatever the pool held before is replaced, so a pending legacy
+		// criteria review no longer applies.
+		if err := clearReview(r.Context(), db, catalogsync.OwnerFillerPool, id); err != nil {
 			handleDBError(w, err)
 			return
 		}
@@ -226,6 +192,10 @@ func deleteFillerPool(db storage.DB) http.HandlerFunc {
 			return
 		}
 		if err := db.Exec(r.Context(), "DELETE FROM filler_pool WHERE tenant_id = ? AND id = ?", DefaultTenantID, id); err != nil {
+			handleDBError(w, err)
+			return
+		}
+		if err := clearReview(r.Context(), db, catalogsync.OwnerFillerPool, id); err != nil {
 			handleDBError(w, err)
 			return
 		}

@@ -19,8 +19,7 @@ import {
   type BlockWarning,
 } from '@/lib/guide'
 import { api } from '@/lib/http'
-import { parseBlockCriteria } from '@/lib/schedule'
-import { validateCriteria } from '@/lib/criteria'
+import { storedQuery, validateQuery } from '@/lib/query'
 import type {
   Block,
   BlockItem,
@@ -113,7 +112,8 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
   }, [active, blocksById])
   const manual = useMemo(() => usedBlocks.filter((b) => !b.criteria), [usedBlocks])
   const dynamic = useMemo(
-    () => usedBlocks.filter((b) => b.criteria && !validateCriteria(parseBlockCriteria(b))),
+    // Old-format criteria (not yet migrated) cannot be previewed; they are skipped.
+    () => usedBlocks.filter((b) => b.criteria && storedQuery(b.criteria) && !validateQuery(storedQuery(b.criteria))),
     [usedBlocks],
   )
 
@@ -136,7 +136,7 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
   const criteriaQueries = useQueries({
     queries: dynamic.map((b) => ({
       queryKey: ['criteria-preview', b.criteria],
-      queryFn: () => api.post<CriteriaPreview>('/catalog-items/preview-criteria', parseBlockCriteria(b)),
+      queryFn: () => api.post<CriteriaPreview>('/catalog-items/preview-criteria', storedQuery(b.criteria)),
       staleTime: 0,
     })),
   })

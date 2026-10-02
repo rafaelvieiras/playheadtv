@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
@@ -172,6 +173,10 @@ func seedGenreCatalogItem(t *testing.T, db storage.DB, id, genres string) string
 	); err != nil {
 		t.Fatalf("seed catalog_item: %v", err)
 	}
+	// The genre field of a query reads the genre links, which a sync writes.
+	if err := catalogsync.BackfillGenreLinks(ctx, db); err != nil {
+		t.Fatalf("backfill genre links: %v", err)
+	}
 	return itemID
 }
 
@@ -182,7 +187,7 @@ func TestFillerPoolWithCriteriaPopulatesItems(t *testing.T) {
 	seedGenreCatalogItem(t, db, "2", "Action") // shouldn't match
 
 	rec := doRequest(t, mux, "POST", "/filler-pools",
-		`{"name":"Comedy Block","criteria":{"kind":"movie","genres":["Comedy"]}}`)
+		`{"name":"Comedy Block","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -205,7 +210,7 @@ func TestFillerPoolWithCriteriaRejectsManualItemWrites(t *testing.T) {
 	item := seedGenreCatalogItem(t, db, "1", "Comedy")
 
 	rec := doRequest(t, mux, "POST", "/filler-pools",
-		`{"name":"Comedy Block","criteria":{"kind":"movie","genres":["Comedy"]}}`)
+		`{"name":"Comedy Block","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
 	var pool domain.FillerPool
 	json.Unmarshal(rec.Body.Bytes(), &pool)
 
@@ -227,15 +232,16 @@ func TestFillerPoolWithCriteriaRejectsManualItemWrites(t *testing.T) {
 }
 
 func TestFillerPoolCriteriaValidation(t *testing.T) {
-	_, mux := newTestDB(t)
+	db, mux := newTestDB(t)
 
-	rec := doRequest(t, mux, "POST", "/filler-pools", `{"name":"Bad","criteria":{"kind":"bogus","genres":["x"]}}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("bad kind: status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	for name, criteria := range invalidCriteria {
+		rec := doRequest(t, mux, "POST", "/filler-pools", `{"name":"Bad","criteria":`+criteria+`}`)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400, body = %s", name, rec.Code, rec.Body.String())
+		}
 	}
-
-	rec = doRequest(t, mux, "POST", "/filler-pools", `{"name":"Bad","criteria":{"kind":"movie"}}`)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("empty criteria: status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	var n []int
+	if err := db.Query(context.Background(), &n, "SELECT COUNT(*) FROM filler_pool"); err != nil || n[0] != 0 {
+		t.Errorf("pools after rejected writes = %v %v, want 0", n, err)
 	}
 }

@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { CriteriaPreviewPanel } from '@/components/CriteriaPreviewPanel'
+import { CriteriaReviewNotice } from '@/components/CriteriaReviewNotice'
 import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
 import { FillerPoolItems } from '@/components/FillerPoolItems'
 import { PageHeader } from '@/components/PageHeader'
@@ -12,18 +13,16 @@ import { Badge } from '@/components/ui/badge'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { parsePoolCriteria, validateCriteria } from '@/lib/filler'
 import { api, ApiError } from '@/lib/http'
-import type { DynamicCriteria, FillerPool, FillerPoolInput, FillerRule } from '@/lib/types'
+import { emptyQuery, parseStoredCriteria, queryKey, validateQuery, type Query } from '@/lib/query'
+import type { FillerPool, FillerPoolInput, FillerRule } from '@/lib/types'
 
 interface Draft {
   name: string
-  criteria: DynamicCriteria | null
-}
-
-function normalize(criteria: DynamicCriteria | null): string {
-  if (!criteria) return ''
-  return JSON.stringify([criteria.kind, criteria.genres, criteria.year_from, criteria.year_to])
+  criteria: Query | null
+  // The pool still holds old-format criteria that nobody has reviewed yet:
+  // dynamic, but with no query to edit. Saving needs a query first.
+  keepLegacy: boolean
 }
 
 export function FillerPoolEditorPage() {
@@ -74,13 +73,28 @@ export function FillerPoolEditorPage() {
     )
   }
 
-  const loaded: Draft = { name: pool.name, criteria: parsePoolCriteria(pool) }
+  const stored = parseStoredCriteria(pool.criteria)
+  const loaded: Draft = {
+    name: pool.name,
+    criteria: stored?.type === 'query' ? stored.query : null,
+    keepLegacy: stored?.type === 'legacy',
+  }
   const current = draft ?? loaded
-  const dynamic = current.criteria !== null
-  const criteriaError = validateCriteria(current.criteria)
+  const dynamic = current.criteria !== null || current.keepLegacy
+  const unreviewed = current.keepLegacy && current.criteria === null
+  const criteriaError = validateQuery(current.criteria)
   const nameMissing = current.name.trim() === ''
-  const dirty = current.name !== loaded.name || normalize(current.criteria) !== normalize(loaded.criteria)
+  const dirty =
+    current.name !== loaded.name ||
+    queryKey(current.criteria) !== queryKey(loaded.criteria) ||
+    current.keepLegacy !== loaded.keepLegacy
   const usedBy = (rules ?? []).filter((r) => r.filler_pool_id === pool.id)
+
+  function selectTab(toDynamic: boolean) {
+    if (!toDynamic) patch({ criteria: null, keepLegacy: false })
+    else if (loaded.keepLegacy) patch({ criteria: null, keepLegacy: true })
+    else patch({ criteria: emptyQuery(), keepLegacy: false })
+  }
 
   function patch(next: Partial<Draft>) {
     setDraft({ ...current, ...next })
@@ -90,6 +104,10 @@ export function FillerPoolEditorPage() {
   function handleSave() {
     if (nameMissing) {
       setSaveError('Name is required.')
+      return
+    }
+    if (unreviewed) {
+      setSaveError('Review the old criteria first: use the proposed query or write a new one.')
       return
     }
     if (criteriaError) {
@@ -105,7 +123,7 @@ export function FillerPoolEditorPage() {
         title={
           <span className="flex items-center gap-2">
             {pool.name}
-            <Badge variant={loaded.criteria ? 'default' : 'secondary'}>{loaded.criteria ? 'Dynamic' : 'Manual'}</Badge>
+            <Badge variant={pool.criteria ? 'default' : 'secondary'}>{pool.criteria ? 'Dynamic' : 'Manual'}</Badge>
           </span>
         }
         breadcrumb={breadcrumb}
@@ -136,13 +154,13 @@ export function FillerPoolEditorPage() {
         )}
       </FieldGroup>
 
-      <Tabs value={dynamic ? 'dynamic' : 'manual'} onValueChange={(v) => patch({ criteria: v === 'dynamic' ? emptyCriteria() : null })}>
+      <Tabs value={dynamic ? 'dynamic' : 'manual'} onValueChange={(v) => selectTab(v === 'dynamic')}>
         <TabsList>
           <TabsTrigger value="manual">Manual items</TabsTrigger>
           <TabsTrigger value="dynamic">Dynamic criteria</TabsTrigger>
         </TabsList>
         <TabsContent value="manual" className="pt-4">
-          {loaded.criteria ? (
+          {pool.criteria ? (
             <p className="text-sm text-muted-foreground" data-testid="pool-manual-pending">
               Save to turn this dynamic pool back into a manual one, then add items here.
             </p>
@@ -154,9 +172,18 @@ export function FillerPoolEditorPage() {
           <p className="text-sm text-muted-foreground">
             A dynamic pool is filled automatically from the catalog; its items cannot be edited by hand.
           </p>
-          <FieldGroup>
-            <DynamicCriteriaFields value={current.criteria} onChange={(criteria) => patch({ criteria })} idPrefix="pool-criteria" />
-          </FieldGroup>
+          {unreviewed ? (
+            <CriteriaReviewNotice
+              ownerType="filler_pool"
+              ownerId={pool.id}
+              onUseProposed={(criteria) => patch({ criteria, keepLegacy: false })}
+              onWriteNew={() => patch({ criteria: emptyQuery(), keepLegacy: false })}
+            />
+          ) : (
+            <FieldGroup>
+              <DynamicCriteriaFields value={current.criteria} onChange={(criteria) => patch({ criteria })} idPrefix="pool-criteria" />
+            </FieldGroup>
+          )}
           {criteriaError && (
             <p className="text-sm text-destructive" data-testid="criteria-error">
               {criteriaError}
@@ -178,8 +205,4 @@ export function FillerPoolEditorPage() {
       />
     </div>
   )
-}
-
-function emptyCriteria(): DynamicCriteria {
-  return { kind: 'movie', genres: [], year_from: null, year_to: null }
 }

@@ -129,6 +129,18 @@ actionable checklist.
       block editor "Add a series". Not yet: the slice spec is stored as a
       reserved empty field (see the slicing item below); series items in
       filler pools are not decided.
+- [x] Composable catalog queries, stage 1: `block.criteria` and
+      `filler_pool.criteria` hold a versioned JSON condition tree
+      (`all`/`any`/`not` over field conditions, strict validation) instead of
+      the fixed `{kind, genres, year_from, year_to}` shape; a third block item
+      type, `criteria`, plays N matches (or all) of a query inside a manual
+      block. `POST /catalog-items/preview-criteria` takes a tree, startup
+      migration converts old criteria and holds back any whose matched set
+      would change (`GET /criteria-migration-review`), web UI query builder,
+      MCP `preview_criteria`/`add_block_item`/`update_block_item`. See
+      `docs/ARCHITECTURE.md` "Catalog queries". Not yet: the `collection`
+      entity (stage 2), a text syntax, series slicing (a query on
+      `season_number`/`episode_number` covers part of it).
 - [x] Series item amount per visit (`amount: {mode, count}` in the item's
       spec, REST/MCP/block editor): a number of episodes (default 1), until
       the end of the slot, or until the series ends (rest of the cycle in

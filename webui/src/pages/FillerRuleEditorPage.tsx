@@ -13,7 +13,8 @@ import { Combobox } from '@/components/ui/combobox'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { KIND_LABELS, SCOPE_LABELS, STRATEGY_LABELS, summarizeCriteria } from '@/lib/filler'
+import { KIND_LABELS, SCOPE_LABELS, STRATEGY_LABELS } from '@/lib/filler'
+import { summarizeStoredCriteria } from '@/lib/query'
 import { api, ApiError } from '@/lib/http'
 import type {
   Block,
@@ -276,7 +277,7 @@ export function FillerRuleEditorPage() {
             </Link>
           </div>
           {pool.criteria && (
-            <p className="text-sm text-muted-foreground">Criteria: {summarizeCriteria(pool.criteria)}</p>
+            <p className="text-sm text-muted-foreground">Criteria: {summarizeStoredCriteria(pool.criteria)}</p>
           )}
           <FillerPoolItems poolId={pool.id} editable={false} />
         </section>

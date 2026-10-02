@@ -4,6 +4,7 @@ import (
 	"hash/fnv"
 	"sort"
 
+	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/series"
 )
@@ -84,8 +85,22 @@ func lessNilLast(a, b *int64) (less, decided bool) {
 // sortEpisodes puts episodes in the canonical order of the playback order:
 // original is season then episode, release_date is premiere date first; both
 // fall back to the other keys, then title and id so the order is total.
-// shuffle and random only need a stable base, so they sort by id.
+// shuffle and random only need a stable base, so they sort by id. A criteria
+// item's title order sorts by folded title, then id.
 func sortEpisodes(eps []series.Episode, order string) {
+	if order == domain.OrderTitle {
+		keys := make(map[string]string, len(eps))
+		for _, e := range eps {
+			keys[e.ID] = catalogsync.FoldText(e.Title)
+		}
+		sort.SliceStable(eps, func(i, j int) bool {
+			if ki, kj := keys[eps[i].ID], keys[eps[j].ID]; ki != kj {
+				return ki < kj
+			}
+			return eps[i].ID < eps[j].ID
+		})
+		return
+	}
 	sort.SliceStable(eps, func(i, j int) bool {
 		a, b := eps[i], eps[j]
 		switch order {
@@ -317,4 +332,15 @@ func (r *seriesRun) catchUp(t int64) {
 			r.apply(row.CatalogItemID, row.Cycle)
 		}
 	}
+}
+
+// criteriaWalkSpec maps a criteria item's spec onto the series spec the walk
+// is built from: the same order, seed and amount, with "all matches" being
+// the rest of the playback cycle in progress.
+func criteriaWalkSpec(cs domain.CriteriaSpec) domain.SeriesSpec {
+	amount := domain.SeriesAmount{Mode: domain.AmountSeriesEnd}
+	if cs.Amount.Mode == domain.CriteriaAmountCount {
+		amount = domain.SeriesAmount{Mode: domain.AmountCount, Count: cs.Amount.Count}
+	}
+	return domain.SeriesSpec{PlaybackOrder: cs.PlaybackOrder, Seed: cs.Seed, Amount: &amount}
 }

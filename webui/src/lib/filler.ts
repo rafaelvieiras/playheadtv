@@ -1,7 +1,6 @@
 // Shared bits for the filler pool and rule editors: labels, criteria helpers
 // and the small formatters used on both pages.
-import { parseCriteriaJson } from '@/lib/criteria'
-import type { DynamicCriteria, FillerKind, FillerPool, FillerScope, SelectionStrategy } from '@/lib/types'
+import type { FillerKind, FillerScope, SelectionStrategy } from '@/lib/types'
 
 export const KIND_LABELS: Record<FillerKind, string> = {
   preroll: 'PreRoll',
@@ -29,33 +28,4 @@ export function formatDurationMs(ms: number): string {
   if (hours === 0) return `${minutes}min`
   if (minutes === 0) return `${hours}h`
   return `${hours}h ${minutes}min`
-}
-
-export function parsePoolCriteria(pool: Pick<FillerPool, 'criteria'>): DynamicCriteria | null {
-  return parseCriteriaJson(pool.criteria)
-}
-
-// Same rule the backend enforces: dynamic criteria need a genre or a year
-// bound. Returns a message, or undefined when the criteria are valid (or the
-// pool is manual).
-export function validateCriteria(criteria: DynamicCriteria | null): string | undefined {
-  if (!criteria) return undefined
-  const hasGenres = (criteria.genres ?? []).length > 0
-  const hasYearRange = criteria.year_from !== null || criteria.year_to !== null
-  if (!hasGenres && !hasYearRange) {
-    return 'Enter at least one genre or a year range for the dynamic criteria.'
-  }
-  return undefined
-}
-
-export function summarizeCriteria(raw: string): string {
-  const criteria = parsePoolCriteria({ criteria: raw })
-  if (!criteria) return '—'
-  const parts: string[] = [criteria.kind]
-  const genres = criteria.genres ?? []
-  if (genres.length > 0) parts.push(genres.join(', '))
-  if (criteria.year_from !== null || criteria.year_to !== null) {
-    parts.push(`${criteria.year_from ?? '…'}–${criteria.year_to ?? '…'}`)
-  }
-  return parts.join(' · ')
 }

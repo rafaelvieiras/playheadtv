@@ -1,11 +1,13 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/blockitem"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
@@ -46,9 +48,9 @@ type blockRequest struct {
 	// means a manually managed block; a non-nil value makes it dynamic —
 	// its block_item rows are then owned by catalogsync.ResolveDynamicBlocks,
 	// not by POST/DELETE .../items. Reuses fillerPoolCriteriaRequest/
-	// validatePoolCriteria (internal/api/filler.go) — same JSON shape, same
-	// validation rules, no reason to duplicate either.
-	Criteria *fillerPoolCriteriaRequest `json:"criteria"`
+	// parseCriteriaField (criteria.go): a versioned condition tree, the same
+	// one filler pools take.
+	Criteria json.RawMessage `json:"criteria"`
 }
 
 func fetchBlock(db storage.DB, r *http.Request, id string) (domain.Block, error) {
@@ -71,19 +73,10 @@ func createBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 			writeError(w, http.StatusBadRequest, "name is required")
 			return
 		}
-		var criteria *string
-		if req.Criteria != nil {
-			if msg, ok := validatePoolCriteria(req.Criteria); !ok {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-			encoded, err := json.Marshal(req.Criteria)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "internal error")
-				return
-			}
-			s := string(encoded)
-			criteria = &s
+		criteria, err := parseCriteriaField(req.Criteria)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		now := time.Now().UnixMilli()
 		b := domain.Block{
@@ -95,7 +88,7 @@ func createBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 			CreatedAt:   now,
 			UpdatedAt:   now,
 		}
-		err := db.Exec(r.Context(),
+		err = db.Exec(r.Context(),
 			"INSERT INTO block (id, tenant_id, name, description, criteria, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
 			b.ID, b.TenantID, b.Name, b.Description, b.Criteria, b.CreatedAt, b.UpdatedAt,
 		)
@@ -160,25 +153,22 @@ func updateBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 		// omitting criteria here reverts a previously dynamic block to
 		// manual, even if it already had one — intentional, not an
 		// accidental partial update.
-		var criteria *string
-		if req.Criteria != nil {
-			if msg, ok := validatePoolCriteria(req.Criteria); !ok {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-			encoded, err := json.Marshal(req.Criteria)
-			if err != nil {
-				writeError(w, http.StatusInternalServerError, "internal error")
-				return
-			}
-			s := string(encoded)
-			criteria = &s
+		criteria, err := parseCriteriaField(req.Criteria)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
-		err := db.Exec(r.Context(),
+		err = db.Exec(r.Context(),
 			"UPDATE block SET name = ?, description = ?, criteria = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
 			req.Name, req.Description, criteria, time.Now().UnixMilli(), DefaultTenantID, id,
 		)
 		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		// The criteria was just replaced, so a pending legacy criteria review
+		// no longer applies.
+		if err := clearReview(r.Context(), db, catalogsync.OwnerBlock, id); err != nil {
 			handleDBError(w, err)
 			return
 		}
@@ -209,19 +199,35 @@ func deleteBlock(db storage.DB) http.HandlerFunc {
 			handleDBError(w, err)
 			return
 		}
+		if err := clearReview(r.Context(), db, catalogsync.OwnerBlock, id); err != nil {
+			handleDBError(w, err)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}
 }
 
 // blockItemRequest adds a block item. item_type is "catalog" (the default,
-// unless series is given) or "series". A catalog item takes catalog_item_id
-// and optionally trim_duration_ms; a series item takes the series object and
-// no trim (every episode plays in full).
+// unless series or criteria is given), "series" or "criteria". A catalog item
+// takes catalog_item_id and optionally trim_duration_ms; a series item takes
+// the series object and no trim (every episode plays in full); a criteria item
+// takes the criteria object and no trim either.
 type blockItemRequest struct {
-	ItemType       string             `json:"item_type"`
-	CatalogItemID  string             `json:"catalog_item_id"`
-	TrimDurationMs *int64             `json:"trim_duration_ms"`
-	Series         *seriesItemRequest `json:"series"`
+	ItemType       string               `json:"item_type"`
+	CatalogItemID  string               `json:"catalog_item_id"`
+	TrimDurationMs *int64               `json:"trim_duration_ms"`
+	Series         *seriesItemRequest   `json:"series"`
+	Criteria       *criteriaItemRequest `json:"criteria"`
+}
+
+// criteriaItemRequest is a criteria item: a condition tree (query), the order
+// its matches are walked in (title, release_date, random or shuffle; default
+// title) and how many of them one visit of the block rotation airs. amount is
+// required: {"mode":"count","count":N} or {"mode":"all"}.
+type criteriaItemRequest struct {
+	Query         json.RawMessage           `json:"query"`
+	PlaybackOrder string                    `json:"playback_order"`
+	Amount        *domain.SeriesAmountInput `json:"amount"`
 }
 
 // seriesItemRequest identifies a series (media source plus external id or
@@ -240,7 +246,7 @@ type seriesItemRequest struct {
 // decorateItems fills the series view (episode count, total duration) of the
 // series items in items.
 func decorateItems(r *http.Request, db storage.DB, items []domain.BlockItem) error {
-	return series.Decorate(r.Context(), db, DefaultTenantID, items)
+	return blockitem.Decorate(r.Context(), db, DefaultTenantID, items)
 }
 
 func addBlockItem(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
@@ -266,6 +272,9 @@ func addBlockItem(db storage.DB, mat *materializer.Materializer) http.HandlerFun
 			if req.Series != nil {
 				itemType = domain.BlockItemSeries
 			}
+			if req.Criteria != nil {
+				itemType = domain.BlockItemCriteria
+			}
 		}
 		var specJSON *string
 		switch itemType {
@@ -274,11 +283,19 @@ func addBlockItem(db storage.DB, mat *materializer.Materializer) http.HandlerFun
 				writeError(w, http.StatusBadRequest, "series is only valid for item_type series")
 				return
 			}
+			if req.Criteria != nil {
+				writeError(w, http.StatusBadRequest, "criteria is only valid for item_type criteria")
+				return
+			}
 			if req.CatalogItemID == "" {
 				writeError(w, http.StatusBadRequest, "catalog_item_id is required")
 				return
 			}
 		case domain.BlockItemSeries:
+			if req.Criteria != nil {
+				writeError(w, http.StatusBadRequest, "criteria is only valid for item_type criteria")
+				return
+			}
 			if req.CatalogItemID != "" {
 				writeError(w, http.StatusBadRequest, "catalog_item_id is not valid for a series item")
 				return
@@ -311,8 +328,36 @@ func addBlockItem(db storage.DB, mat *materializer.Materializer) http.HandlerFun
 				return
 			}
 			specJSON = &encoded
+		case domain.BlockItemCriteria:
+			if req.CatalogItemID != "" {
+				writeError(w, http.StatusBadRequest, "catalog_item_id is not valid for a criteria item")
+				return
+			}
+			if req.Series != nil {
+				writeError(w, http.StatusBadRequest, "series is only valid for item_type series")
+				return
+			}
+			if req.TrimDurationMs != nil {
+				writeError(w, http.StatusBadRequest, "trim_duration_ms is not valid for a criteria item; add a trimmed item as its own item before it")
+				return
+			}
+			if req.Criteria == nil {
+				writeError(w, http.StatusBadRequest, "criteria is required for item_type criteria")
+				return
+			}
+			spec, err := blockitem.NewCriteriaSpec(req.Criteria.Query, req.Criteria.PlaybackOrder, req.Criteria.Amount)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			encoded, err := blockitem.EncodeCriteriaSpec(spec)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			specJSON = &encoded
 		default:
-			writeError(w, http.StatusBadRequest, "item_type must be catalog or series")
+			writeError(w, http.StatusBadRequest, "item_type must be catalog, series or criteria")
 			return
 		}
 
@@ -388,16 +433,19 @@ type blockItemUpdateRequest struct {
 	Position       *int    `json:"position"`
 	TrimDurationMs *int64  `json:"trim_duration_ms"`
 	PlaybackOrder  *string `json:"playback_order"`
-	// Amount sets how much a series item airs per visit (series items only).
+	// Amount sets how much a series or criteria item airs per visit.
 	Amount *domain.SeriesAmountInput `json:"amount"`
+	// Query replaces the condition tree of a criteria item (criteria items only).
+	Query json.RawMessage `json:"query"`
 }
 
 // updateBlockItem edits one item of a manual block: position (a reorder that
 // leaves the block's positions contiguous 0..N-1), trim_duration_ms (a
-// positive value, catalog items only) and/or playback_order (series items
-// only; it restarts the series on every channel using the block) and/or amount
-// (series items only; the series cursor is kept). An absent or null field is
-// left unchanged.
+// positive value, catalog items only) and/or playback_order (series and
+// criteria items; it restarts the item's cursor on every channel using the
+// block) and/or amount (series and criteria items; the cursor is kept) and/or
+// query (criteria items; the cursor is kept). An absent or null field is left
+// unchanged.
 func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		blockID := r.PathValue("id")
@@ -416,21 +464,13 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		if req.Position == nil && req.TrimDurationMs == nil && req.PlaybackOrder == nil && req.Amount == nil {
-			writeError(w, http.StatusBadRequest, "position, trim_duration_ms, playback_order or amount is required")
+		hasQuery := len(req.Query) > 0 && string(req.Query) != "null"
+		if req.Position == nil && req.TrimDurationMs == nil && req.PlaybackOrder == nil && req.Amount == nil && !hasQuery {
+			writeError(w, http.StatusBadRequest, "position, trim_duration_ms, playback_order, amount or query is required")
 			return
 		}
-		var newAmount *domain.SeriesAmount
-		if req.Amount != nil {
-			a, err := series.NewAmount(req.Amount)
-			if err != nil {
-				writeError(w, http.StatusBadRequest, err.Error())
-				return
-			}
-			newAmount = &a
-		}
-		if req.PlaybackOrder != nil && !domain.ValidPlaybackOrder(*req.PlaybackOrder) {
-			writeError(w, http.StatusBadRequest, "playback_order must be one of original, random, shuffle, release_date")
+		if req.PlaybackOrder != nil && !domain.ValidPlaybackOrder(*req.PlaybackOrder) && !domain.ValidCriteriaOrder(*req.PlaybackOrder) {
+			writeError(w, http.StatusBadRequest, "playback_order must be one of original, random, shuffle, release_date (series) or title, release_date, random, shuffle (criteria)")
 			return
 		}
 		if req.TrimDurationMs != nil && *req.TrimDurationMs <= 0 {
@@ -461,16 +501,65 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 		}
 
 		target := items[from]
-		if req.TrimDurationMs != nil && target.IsSeries() {
-			writeError(w, http.StatusBadRequest, "trim_duration_ms is not valid for a series item")
+		if req.TrimDurationMs != nil && target.IsWalked() {
+			writeError(w, http.StatusBadRequest, "trim_duration_ms is not valid for a series or criteria item")
 			return
 		}
-		if req.PlaybackOrder != nil && !target.IsSeries() {
-			writeError(w, http.StatusBadRequest, "playback_order is only valid for a series item")
+		if req.PlaybackOrder != nil && !target.IsWalked() {
+			writeError(w, http.StatusBadRequest, "playback_order is only valid for a series or criteria item")
 			return
 		}
-		if newAmount != nil && !target.IsSeries() {
-			writeError(w, http.StatusBadRequest, "amount is only valid for a series item")
+		if req.Amount != nil && !target.IsWalked() {
+			writeError(w, http.StatusBadRequest, "amount is only valid for a series or criteria item")
+			return
+		}
+		if hasQuery && !target.IsCriteria() {
+			writeError(w, http.StatusBadRequest, "query is only valid for a criteria item")
+			return
+		}
+		if target.IsCriteria() {
+			if req.PlaybackOrder != nil && !domain.ValidCriteriaOrder(*req.PlaybackOrder) {
+				writeError(w, http.StatusBadRequest, "playback_order must be one of title, release_date, random, shuffle for a criteria item")
+				return
+			}
+			spec, err := blockitem.ParseCriteriaSpec(target.Spec)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			updated, orderChanged, err := blockitem.UpdateCriteriaSpec(spec, req.Query, req.PlaybackOrder, req.Amount)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			encoded, err := blockitem.EncodeCriteriaSpec(updated)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			if err := db.Exec(r.Context(), "UPDATE block_item SET spec = ? WHERE block_id = ? AND id = ?", encoded, blockID, itemID); err != nil {
+				handleDBError(w, err)
+				return
+			}
+			target.Spec = &encoded
+			if orderChanged {
+				if err := restartItemCursor(r.Context(), db, itemID); err != nil {
+					handleDBError(w, err)
+					return
+				}
+			}
+		}
+		var newAmount *domain.SeriesAmount
+		if req.Amount != nil && target.IsSeries() {
+			a, err := series.NewAmount(req.Amount)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			newAmount = &a
+		}
+		if req.PlaybackOrder != nil && target.IsSeries() && !domain.ValidPlaybackOrder(*req.PlaybackOrder) {
+			writeError(w, http.StatusBadRequest, "playback_order must be one of original, random, shuffle, release_date")
 			return
 		}
 		if newAmount != nil {
@@ -491,7 +580,7 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 			}
 			target.Spec = &encoded
 		}
-		if req.PlaybackOrder != nil {
+		if req.PlaybackOrder != nil && target.IsSeries() {
 			spec, err := series.ParseSpec(target.Spec)
 			if err != nil {
 				writeError(w, http.StatusInternalServerError, "internal error")
@@ -504,19 +593,11 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 					writeError(w, http.StatusInternalServerError, "internal error")
 					return
 				}
-				nowMs := time.Now().UnixMilli()
 				if err := db.Exec(r.Context(), "UPDATE block_item SET spec = ? WHERE block_id = ? AND id = ?", encoded, blockID, itemID); err != nil {
 					handleDBError(w, err)
 					return
 				}
-				// The cursor restarts under the new order: its origin moves
-				// to now and what is still to air from this item is dropped
-				// (the regeneration below rebuilds it).
-				if err := db.Exec(r.Context(), "UPDATE series_cursor SET origin_ms = ? WHERE tenant_id = ? AND block_item_id = ?", nowMs, DefaultTenantID, itemID); err != nil {
-					handleDBError(w, err)
-					return
-				}
-				if err := db.Exec(r.Context(), "DELETE FROM epg_entry WHERE tenant_id = ? AND source_block_item_id = ? AND end_at > ?", DefaultTenantID, itemID, nowMs); err != nil {
+				if err := restartItemCursor(r.Context(), db, itemID); err != nil {
 					handleDBError(w, err)
 					return
 				}
@@ -579,6 +660,17 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 		mat.Trigger()
 		writeJSON(w, http.StatusOK, item)
 	}
+}
+
+// restartItemCursor restarts a walked (series or criteria) item under a new
+// playback order: the cursor's origin moves to now and what is still to air
+// from the item is dropped (the regeneration that follows rebuilds it).
+func restartItemCursor(ctx context.Context, db storage.DB, itemID string) error {
+	nowMs := time.Now().UnixMilli()
+	if err := db.Exec(ctx, "UPDATE series_cursor SET origin_ms = ? WHERE tenant_id = ? AND block_item_id = ?", nowMs, DefaultTenantID, itemID); err != nil {
+		return err
+	}
+	return db.Exec(ctx, "DELETE FROM epg_entry WHERE tenant_id = ? AND source_block_item_id = ? AND end_at > ?", DefaultTenantID, itemID, nowMs)
 }
 
 func deleteBlockItem(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {

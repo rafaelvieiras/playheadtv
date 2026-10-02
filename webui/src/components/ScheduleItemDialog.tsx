@@ -17,10 +17,10 @@ import { Input } from '@/components/ui/input'
 import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { validateCriteria } from '@/lib/criteria'
+import { validateQuery, type Query } from '@/lib/query'
 import { DAY_LABELS } from '@/lib/schedule'
 import { api, ApiError } from '@/lib/http'
-import type { Block, DynamicCriteria, RecurrenceType, ScheduleItem, ScheduleItemInput } from '@/lib/types'
+import type { Block, RecurrenceType, ScheduleItem, ScheduleItemInput } from '@/lib/types'
 
 interface ScheduleItemDialogProps {
   open: boolean
@@ -135,7 +135,7 @@ export function ScheduleItemDialog({
   // Create-and-attach: a brand-new block made together with the item.
   const [newBlock, setNewBlock] = useState(false)
   const [newBlockName, setNewBlockName] = useState('')
-  const [newBlockCriteria, setNewBlockCriteria] = useState<DynamicCriteria | null>(null)
+  const [newBlockCriteria, setNewBlockCriteria] = useState<Query | null>(null)
   const isEditing = item !== undefined
 
   useEffect(() => {
@@ -199,7 +199,7 @@ export function ScheduleItemDialog({
     let validationError: string | undefined
     if (newBlock) {
       if (newBlockName.trim() === '') validationError = 'Enter a name for the new block.'
-      else validationError = validateCriteria(newBlockCriteria)
+      else validationError = validateQuery(newBlockCriteria)
     } else if (!form.block_id) {
       validationError = 'Select a block.'
     }

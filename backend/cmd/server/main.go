@@ -67,6 +67,15 @@ func run() error {
 	if err := catalogsync.BackfillSearchText(ctx, db); err != nil {
 		return err
 	}
+	if err := catalogsync.BackfillOverviewNorm(ctx, db); err != nil {
+		return err
+	}
+	// Convert legacy {kind, genres, year_from, year_to} criteria of dynamic
+	// blocks and pools into condition trees, holding back (and recording for
+	// review) any whose matched set would change.
+	if _, err := catalogsync.MigrateLegacyCriteria(ctx, db); err != nil {
+		return err
+	}
 
 	// TODO: multi-tenant once Auth exists. Until then every handler in
 	// internal/api operates on this one implicit tenant.

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/crypto"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 )
@@ -386,8 +387,11 @@ func TestCatalogSyncPushResolvesDynamicPools(t *testing.T) {
 	); err != nil {
 		t.Fatalf("set genres directly: %v", err)
 	}
+	if err := catalogsync.BackfillGenreLinks(context.Background(), db); err != nil {
+		t.Fatalf("backfill genre links: %v", err)
+	}
 
-	rec = doRequest(t, mux, "POST", "/filler-pools", `{"name":"Comedy","criteria":{"kind":"movie","genres":["Comedy"]}}`)
+	rec = doRequest(t, mux, "POST", "/filler-pools", `{"name":"Comedy","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
 	var pool domain.FillerPool
 	json.Unmarshal(rec.Body.Bytes(), &pool)
 

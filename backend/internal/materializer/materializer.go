@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rafaelvieiras/playheadtv/backend/internal/blockitem"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/series"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
@@ -390,7 +391,7 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 	}
 	for _, items := range blockItems {
 		for _, it := range items {
-			if it.IsSeries() {
+			if it.IsWalked() {
 				continue
 			}
 			if err := collect(it.CatalogItemID); err != nil {
@@ -505,7 +506,7 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 		// much of the visit already aired.
 		if items := in.BlockItems[continuousBlockID]; len(items) > 0 && !keptUntil.IsZero() {
 			idx := continuousStart % len(items)
-			if run := in.Series[items[idx].ID]; items[idx].IsSeries() && run != nil && run.amount.Mode == domain.AmountCount {
+			if run := in.Series[items[idx].ID]; items[idx].IsWalked() && run != nil && run.amount.Mode == domain.AmountCount {
 				var tail []struct {
 					StartAt           int64
 					EndAt             int64
@@ -651,20 +652,36 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 	runs := make(map[string]*seriesRun)
 	for _, items := range blockItems {
 		for _, it := range items {
-			if !it.IsSeries() {
+			if !it.IsWalked() {
 				continue
 			}
 			if _, done := runs[it.ID]; done {
 				continue
 			}
-			spec, err := series.ParseSpec(it.Spec)
-			if err != nil {
-				log.Printf("materializer: block_item %s: %v", it.ID, err)
-				continue
-			}
-			episodes, err := series.Episodes(ctx, m.db, tenantID, spec)
-			if err != nil {
-				return nil, fmt.Errorf("list episodes of block_item %s: %w", it.ID, err)
+			var spec domain.SeriesSpec
+			var episodes []series.Episode
+			if it.IsCriteria() {
+				// A criteria item is walked exactly like a series: its matches
+				// play the part of the episodes, in the item's playback order.
+				cs, err := blockitem.ParseCriteriaSpec(it.Spec)
+				if err != nil {
+					log.Printf("materializer: block_item %s: %v", it.ID, err)
+					continue
+				}
+				spec = criteriaWalkSpec(cs)
+				if episodes, err = blockitem.Episodes(ctx, m.db, tenantID, cs); err != nil {
+					log.Printf("materializer: block_item %s: query: %v", it.ID, err)
+					continue
+				}
+			} else {
+				var err error
+				if spec, err = series.ParseSpec(it.Spec); err != nil {
+					log.Printf("materializer: block_item %s: %v", it.ID, err)
+					continue
+				}
+				if episodes, err = series.Episodes(ctx, m.db, tenantID, spec); err != nil {
+					return nil, fmt.Errorf("list episodes of block_item %s: %w", it.ID, err)
+				}
 			}
 
 			originMs := now.UnixMilli()

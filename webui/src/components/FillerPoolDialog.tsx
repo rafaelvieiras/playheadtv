@@ -14,9 +14,9 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
-import { validateCriteria } from '@/lib/filler'
 import { api } from '@/lib/http'
-import type { DynamicCriteria, FillerPool, FillerPoolInput } from '@/lib/types'
+import { validateQuery, type Query } from '@/lib/query'
+import type { FillerPool, FillerPoolInput } from '@/lib/types'
 
 interface FillerPoolDialogProps {
   open: boolean
@@ -31,7 +31,7 @@ interface FillerPoolDialogProps {
 export function FillerPoolDialog({ open, onOpenChange, onCreated }: FillerPoolDialogProps) {
   const queryClient = useQueryClient()
   const [name, setName] = useState('')
-  const [criteria, setCriteria] = useState<DynamicCriteria | null>(null)
+  const [criteria, setCriteria] = useState<Query | null>(null)
   const [error, setError] = useState<string | undefined>(undefined)
 
   useEffect(() => {
@@ -57,7 +57,7 @@ export function FillerPoolDialog({ open, onOpenChange, onCreated }: FillerPoolDi
     // Nested inside another page's form tree? Never submit the outer one.
     e.preventDefault()
     e.stopPropagation()
-    const validationError = validateCriteria(criteria)
+    const validationError = validateQuery(criteria)
     if (validationError) {
       setError(validationError)
       return

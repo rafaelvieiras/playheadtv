@@ -4,11 +4,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { api } from '@/lib/http'
+import type { Query } from '@/lib/query'
 import type {
   BlockItem,
   BlockItemUpdateInput,
   CriteriaPreview,
-  DynamicCriteria,
+  CriteriaReviewItem,
   EpgEntry,
   FillerPoolItem,
   FillerPoolItemUpdateInput,
@@ -52,7 +53,7 @@ export function useUpdateFillerPoolItem(poolId: string) {
 // `mutate` (e.g. debounced) as the user edits the criteria.
 export function usePreviewCriteria() {
   return useMutation({
-    mutationFn: (criteria: DynamicCriteria) =>
+    mutationFn: (criteria: Query) =>
       api.post<CriteriaPreview>('/catalog-items/preview-criteria', criteria),
   })
 }
@@ -78,5 +79,15 @@ export function useChannelEpgPreview(
     enabled: enabled && !!channelId,
     staleTime: 0,
     gcTime: 0,
+  })
+}
+
+// GET /criteria-migration-review — dynamic blocks and pools whose old-format
+// criteria could not be converted without changing what they match.
+export function useCriteriaReview(enabled = true) {
+  return useQuery({
+    queryKey: ['criteria-migration-review'],
+    queryFn: () => api.get<CriteriaReviewItem[]>('/criteria-migration-review'),
+    enabled,
   })
 }

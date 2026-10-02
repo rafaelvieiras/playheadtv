@@ -1,3 +1,5 @@
+import type { Query } from '@/lib/query'
+
 // Wire types mirroring backend/internal/domain and the API contracts in
 // backend/internal/api/{auth,channels}.go. Kept minimal — only what this
 // slice of the web UI (auth + channels) touches.
@@ -122,23 +124,13 @@ export interface CatalogChapter {
   start_ms: number
 }
 
-// Mirrors backend/internal/api's fillerPoolCriteriaRequest / poolCriteria —
-// the shape sent when WRITING a pool's or block's criteria (POST/PUT). Not
-// what GET returns (see FillerPool.criteria/Block.criteria below).
-export interface DynamicCriteria {
-  kind: 'movie' | 'episode'
-  genres: string[]
-  year_from: number | null
-  year_to: number | null
-}
-
 // Mirrors backend/internal/domain.Block (backend/internal/api/blocks.go).
 export interface Block {
   id: string
   tenant_id: string
   name: string
   description: string | null
-  criteria: string | null // raw JSON string or null — see DynamicCriteria
+  criteria: string | null // raw JSON string (a condition tree, see lib/query.ts) or null
   created_at: number
   updated_at: number
 }
@@ -147,7 +139,7 @@ export interface Block {
 export interface BlockInput {
   name: string
   description: string | null
-  criteria: DynamicCriteria | null
+  criteria: Query | null
 }
 
 // Mirrors backend/internal/domain.PlaybackOrder values: how a series block
@@ -199,10 +191,42 @@ export interface BlockItem {
   id: string
   block_id: string
   position: number
-  item_type: 'catalog' | 'series'
+  item_type: 'catalog' | 'series' | 'criteria'
   catalog_item_id?: string
   trim_duration_ms: number | null
   series?: SeriesItemView
+  criteria?: CriteriaItemView
+}
+
+// Orders a criteria item walks its matches in (backend/internal/domain
+// ValidCriteriaOrder): by title, by release date, random, or shuffle without repeat.
+export type CriteriaOrder = 'title' | 'release_date' | 'random' | 'shuffle'
+
+export const CRITERIA_ORDER_LABELS: Record<CriteriaOrder, string> = {
+  title: 'By title',
+  release_date: 'By release date',
+  random: 'Random',
+  shuffle: 'Shuffle (no repeats)',
+}
+
+// How many matches one visit of the block rotation airs: N of them, or every
+// match once. Required; "all" must be chosen explicitly.
+export type CriteriaAmountMode = 'count' | 'all'
+
+export interface CriteriaAmount {
+  mode: CriteriaAmountMode
+  count?: number
+}
+
+// Mirrors backend/internal/domain.CriteriaItemView: the query and order of a
+// criteria block item plus what the query currently matches (items with a
+// positive duration).
+export interface CriteriaItemView {
+  query: Query
+  playback_order: CriteriaOrder
+  amount: CriteriaAmount
+  match_count: number
+  total_duration_ms: number
 }
 
 // BlockItemInput is the body shape for POST /blocks/{id}/items: a catalog item
@@ -210,6 +234,12 @@ export interface BlockItem {
 export interface BlockItemInput {
   catalog_item_id?: string
   trim_duration_ms?: number | null
+  // A criteria item: a query expanded into some of its matches. The amount is required.
+  criteria?: {
+    query: Query
+    playback_order?: CriteriaOrder
+    amount: CriteriaAmount
+  }
   series?: {
     media_source_id: string
     series_external_id?: string
@@ -361,7 +391,7 @@ export interface CreateDeviceResponse {
 
 // Mirrors backend/internal/domain.FillerPool. criteria is the raw JSON string
 // stored in the DB (null for a manually managed pool) — JSON.parse it to get
-// a DynamicCriteria when editing.
+// a Query when editing.
 export interface FillerPool {
   id: string
   tenant_id: string
@@ -375,7 +405,7 @@ export interface FillerPool {
 // unlike FillerPool.criteria above which is the raw string GET returns.
 export interface FillerPoolInput {
   name: string
-  criteria: DynamicCriteria | null
+  criteria: Query | null
 }
 
 // Mirrors backend/internal/domain.FillerPoolItem.
@@ -476,8 +506,10 @@ export interface StreamPreferenceRuleInput {
 export interface BlockItemUpdateInput {
   position?: number
   trim_duration_ms?: number
-  playback_order?: PlaybackOrder
-  amount?: SeriesAmount
+  playback_order?: PlaybackOrder | CriteriaOrder
+  amount?: SeriesAmount | CriteriaAmount
+  // Criteria items only: replaces the condition tree (the cursor is kept).
+  query?: Query
 }
 
 // FillerPoolItemUpdateInput is the body of
@@ -493,4 +525,27 @@ export interface CriteriaPreview {
   match_count: number
   total_duration_ms: number
   sample: CatalogItem[]
+}
+
+// One entry of GET /criteria-migration-review (backend catalogsync.ReviewItem):
+// a dynamic block or filler pool whose old-format criteria could not be
+// converted to a condition tree without changing what it matches. The old
+// criteria keeps working until the block or pool is saved with a query.
+export interface CriteriaReviewRef {
+  id: string
+  title: string
+  series_title: string | null
+}
+
+export interface CriteriaReviewItem {
+  owner_type: 'block' | 'filler_pool'
+  owner_id: string
+  owner_name: string
+  legacy_criteria: unknown
+  proposed_query: Query | null
+  problem: string | null
+  before_count: number
+  after_count: number
+  only_before: CriteriaReviewRef[]
+  only_after: CriteriaReviewRef[]
 }

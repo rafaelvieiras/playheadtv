@@ -199,6 +199,65 @@ FTS5 is a follow-up once catalogs grow.
 `media_source.last_synced_at` is surfaced in the web UI (both pull and push)
 so staleness is visible, not hidden.
 
+### Catalog queries (migration `0012`)
+
+A query is a versioned JSON condition tree, the one stored form of
+`block.criteria`, `filler_pool.criteria` and the spec of a `criteria` block
+item: `{"version": 1, ...}` plus exactly one of `all: [node]`, `any: [node]`,
+`not: node` or a condition `{field, op, value}` at every level. Parsing is
+strict (`catalogsync.ParseQuery`): unknown keys, fields or operators, wrong
+value shapes, empty groups and trees deeper than 6 levels or larger than 64
+nodes are rejected, and the stored form is the canonical re-serialization. Every
+value is a bind argument and every identifier comes from a fixed field table,
+so compiling to SQL (`Query.Where`) is injection-safe. The old fixed shape is
+refused with a pointer to the new one.
+
+Fields and operators:
+
+- Curated lists, exact match on the normalized name (`FoldText`, so case and
+  accents are ignored) through the link and dimension tables of migration
+  `0009`, never a substring: `genre`, `studio`, `tag`, `audio_language`,
+  `subtitle_language`; operators `equals`, `in`.
+- Free text, accent- and case-insensitive `contains` (`%`/`_` are literal):
+  `title` (the catalog search text, so it also reads the series title),
+  `overview` (the folded copy in `catalog_item.overview_norm`), `person`
+  (cast or director).
+- Enumerations, exact: `kind` (movie, episode), `content_rating`; `equals`, `in`.
+- Numbers: `year`, `duration` (minutes), `community_rating`, `critic_rating`,
+  `season_number`, `episode_number`; dates `premiere_date`, `date_added`
+  (`YYYY-MM-DD`, UTC, compared by whole day); operators `equals`, `lt`, `lte`,
+  `gt`, `gte`, `between` (inclusive).
+
+A condition never matches an item that lacks the field, so `not` of a
+comparison includes such items. Dynamic blocks and pools resolve a query to
+every match ordered by title, as before.
+
+Migration of existing criteria: SQL cannot compare matched sets, so
+`catalogsync.MigrateLegacyCriteria` runs at startup (after backfilling genre
+links and `overview_norm` for rows that predate them). For each legacy value it
+translates to a tree (genres become an exact `genre` condition) and compares the
+matched set before (the old substring rule) and after. Equal sets: the value is
+rewritten. Any difference, or an untranslatable value: nothing is applied, the
+legacy value keeps resolving as before, and a `criteria_migration_review` row
+records both counts and the items that would be added or dropped. They are listed by
+`GET /criteria-migration-review` (MCP `list_criteria_migration_review`) and the
+block and pool editors; applying one is a normal PUT with the proposed (or an
+edited) query, which clears the row. A held value is re-evaluated at every
+startup.
+
+Criteria block items (`item_type = 'criteria'`, `block_item.spec` =
+`{query, playback_order, seed, amount}`) live in manual blocks next to catalog
+and series items. A visit airs `amount` matches (`{mode: count, count: N}`,
+required, or `{mode: all}`, which must be chosen explicitly: every match once),
+then the rotation moves on. Orders: `title` (the default), `release_date`,
+`random`, `shuffle`. The materializer walks them with the same cursor as a
+series (`seriesRun`: `series_cursor`, `epg_entry.source_block_item_id` and
+`series_cycle`, seed mixed with the channel id), the matches playing the part
+of episodes (items with a non-positive duration are left out), so `all` is "the
+rest of the playback cycle". The query is re-evaluated on every materializer
+run. Changing the order restarts the item; changing the query or amount keeps
+the cursor. A random item can differ between a dry-run and a later reset.
+
 ## Scheduling model
 
 Loosely inspired by ErsatzTV's Block Schedule + filler model
@@ -209,8 +268,8 @@ edges):
 - **`block`**: a reusable programming template — an ordered list of
   `catalog_item`s (`block_item`). A block's `block_item` rows are either
   curated by hand (the default, via `POST`/`PUT`/`DELETE /blocks/{id}/items`) or,
-  when `block.criteria` is set (the same JSON `{kind, genres, year_from,
-  year_to}` shape as `filler_pool.criteria`), owned entirely by
+  when `block.criteria` is set (a condition tree, see "Catalog queries", the
+  same as `filler_pool.criteria`), owned entirely by
   `catalogsync.ResolveDynamicBlocks`: it recomputes that block's membership
   against the current `catalog_item` table every time the catalog changes,
   sharing the matching query with `ResolveDynamicPools` (both call the same
@@ -284,7 +343,7 @@ edges):
   drawing from a pool with a selection strategy (sequential/random/weighted).
   A pool's `filler_pool_item` rows are either curated by hand (the default,
   via `POST`/`PUT`/`DELETE /filler-pools/{id}/items`) or, when `filler_pool.criteria`
-  is set (a JSON `{kind, genres, year_from, year_to}` blob), owned entirely by
+  is set (a condition tree, see "Catalog queries"), owned entirely by
   `catalogsync.ResolveDynamicPools`: it recomputes that pool's membership
   against the current `catalog_item` table every time the catalog changes
   (both push's `catalog-sync` handler and pull's `SyncOne` call it right after
@@ -408,11 +467,11 @@ catalog edits) never reset; they keep the freeze margin.
   regeneration like the other item writes.
 - `PUT /filler-pools/{id}/items/{item_id}` with `{weight}` (positive
   integer): manual pools only, 409 on a dynamic pool.
-- `POST /catalog-items/preview-criteria` with the block/pool criteria object
+- `POST /catalog-items/preview-criteria` with a condition tree as the body
   (same validation as `blocks.criteria`/`filler_pool.criteria`): returns
   `{match_count, total_duration_ms, sample}` where `sample` is up to 20
   matching catalog items ordered by title. It uses the same matching clause
-  (`catalogsync.criteriaWhere`) as dynamic block/pool resolution and persists
+  (`catalogsync.Query.Where`) as dynamic block/pool resolution and persists
   nothing.
 - `GET /channels/{id}/epg-preview?start&end` (epoch millis, both optional,
   same overlap filter as `GET /epg`): a dry-run of `reset-epg`. It runs the

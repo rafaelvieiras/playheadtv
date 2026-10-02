@@ -38,10 +38,12 @@ type Block struct {
 	UpdatedAt   int64   `json:"updated_at"`
 }
 
-// BlockItem types. A block item is either one catalog item or a series.
+// BlockItem types. A block item is one catalog item, a series, or a criteria
+// (a condition tree expanded into some of its matches).
 const (
-	BlockItemCatalog = "catalog"
-	BlockItemSeries  = "series"
+	BlockItemCatalog  = "catalog"
+	BlockItemSeries   = "series"
+	BlockItemCriteria = "criteria"
 )
 
 // Series playback orders: how a series item walks its episodes.
@@ -56,7 +58,20 @@ const (
 	OrderShuffle = "shuffle"
 	// OrderReleaseDate plays by premiere date (episodes without one last).
 	OrderReleaseDate = "release_date"
+	// OrderTitle plays by title, accent- and case-insensitive. Criteria items
+	// only; a series has season and episode order instead.
+	OrderTitle = "title"
 )
+
+// ValidCriteriaOrder reports whether o is a playback order a criteria item
+// accepts: by title, by release date, random, or shuffle without repeat.
+func ValidCriteriaOrder(o string) bool {
+	switch o {
+	case OrderTitle, OrderReleaseDate, OrderRandom, OrderShuffle:
+		return true
+	}
+	return false
+}
 
 // ValidPlaybackOrder reports whether o is a known series playback order.
 func ValidPlaybackOrder(o string) bool {
@@ -138,10 +153,52 @@ type SeriesItemView struct {
 	TotalDurationMs  int64           `json:"total_duration_ms"`
 }
 
+// Amounts of a criteria item per visit.
+const (
+	// CriteriaAmountCount airs Count items of the query, then the rotation
+	// moves on. Count is required (at least 1).
+	CriteriaAmountCount = "count"
+	// CriteriaAmountAll airs every match once (the rest of the playback cycle
+	// in progress), then the rotation moves on. It must be chosen explicitly.
+	CriteriaAmountAll = "all"
+)
+
+// CriteriaAmount is how much a criteria item airs per visit. Count is only
+// set for CriteriaAmountCount.
+type CriteriaAmount struct {
+	Mode  string `json:"mode"`
+	Count int    `json:"count,omitempty"`
+}
+
+// CriteriaSpec is the stored configuration of a criteria block item
+// (block_item.spec): the condition tree (as stored by catalogsync.Query), how
+// its matches are ordered, and how much one visit airs. Seed makes the
+// shuffle and random orders reproducible and is never shown to clients.
+type CriteriaSpec struct {
+	Query         json.RawMessage `json:"query"`
+	PlaybackOrder string          `json:"playback_order"`
+	Seed          int64           `json:"seed"`
+	Amount        CriteriaAmount  `json:"amount"`
+}
+
+// CriteriaItemView is the client-facing shape of a criteria block item: the
+// query and order, plus what the query currently matches (items with a
+// positive duration, the ones that can be scheduled).
+type CriteriaItemView struct {
+	// Query is the condition tree as a decoded JSON value (not a RawMessage,
+	// so the MCP output schema accepts it).
+	Query           any            `json:"query"`
+	PlaybackOrder   string         `json:"playback_order"`
+	Amount          CriteriaAmount `json:"amount"`
+	MatchCount      int            `json:"match_count"`
+	TotalDurationMs int64          `json:"total_duration_ms"`
+}
+
 // BlockItem is one entry of a block. ItemType selects what it is:
-// BlockItemCatalog (CatalogItemID set, TrimDurationMs optional) or
+// BlockItemCatalog (CatalogItemID set, TrimDurationMs optional),
 // BlockItemSeries (Spec holds the SeriesSpec JSON, Series is its view, filled
-// on read). An empty ItemType means a catalog item.
+// on read) or BlockItemCriteria (Spec holds the CriteriaSpec JSON, Criteria is
+// its view). An empty ItemType means a catalog item.
 type BlockItem struct {
 	ID       string `json:"id"`
 	BlockID  string `json:"block_id"`
@@ -153,9 +210,18 @@ type BlockItem struct {
 	// artificial trims used in the client crossfade spike). Catalog items only.
 	TrimDurationMs *int64 `json:"trim_duration_ms"`
 	// Spec is the raw type-specific JSON; internal.
-	Spec   *string         `json:"-"`
-	Series *SeriesItemView `json:"series,omitempty"`
+	Spec     *string           `json:"-"`
+	Series   *SeriesItemView   `json:"series,omitempty"`
+	Criteria *CriteriaItemView `json:"criteria,omitempty"`
 }
 
 // IsSeries reports whether the item is a series item.
 func (b BlockItem) IsSeries() bool { return b.ItemType == BlockItemSeries }
+
+// IsCriteria reports whether the item is a criteria item.
+func (b BlockItem) IsCriteria() bool { return b.ItemType == BlockItemCriteria }
+
+// IsWalked reports whether the item expands into many catalog items that the
+// materializer walks with a persistent cursor (series and criteria items),
+// as opposed to one fixed catalog item.
+func (b BlockItem) IsWalked() bool { return b.IsSeries() || b.IsCriteria() }

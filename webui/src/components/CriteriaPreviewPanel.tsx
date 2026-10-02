@@ -4,14 +4,14 @@ import { useEffect, useRef } from 'react'
 import { InlineWarning } from '@/components/InlineWarning'
 import { usePreviewCriteria } from '@/lib/authoring'
 import { formatDurationMs } from '@/lib/filler'
-import type { DynamicCriteria } from '@/lib/types'
+import type { Query } from '@/lib/query'
 
 const DEBOUNCE_MS = 400
 
 // Live match preview for a draft criteria object: debounced POST to
 // /catalog-items/preview-criteria. `criteria` must already be valid (the
 // caller passes null while its own validation fails); null shows nothing.
-export function CriteriaPreviewPanel({ criteria }: { criteria: DynamicCriteria | null }) {
+export function CriteriaPreviewPanel({ criteria }: { criteria: Query | null }) {
   const preview = usePreviewCriteria()
   const mutate = useRef(preview.mutate)
   mutate.current = preview.mutate
@@ -24,7 +24,7 @@ export function CriteriaPreviewPanel({ criteria }: { criteria: DynamicCriteria |
       reset.current()
       return
     }
-    const handle = setTimeout(() => mutate.current(JSON.parse(key) as DynamicCriteria), DEBOUNCE_MS)
+    const handle = setTimeout(() => mutate.current(JSON.parse(key) as Query), DEBOUNCE_MS)
     return () => clearTimeout(handle)
   }, [key])
 

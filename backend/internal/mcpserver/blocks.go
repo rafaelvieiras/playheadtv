@@ -2,10 +2,12 @@ package mcpserver
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/blockitem"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/series"
@@ -31,7 +33,11 @@ func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Material
 			"playback_order original|random|shuffle|release_date, default original; amount {mode, count}: per visit of " +
 			"the block rotation air count episodes (mode count, the default, 1 episode), until the end of the " +
 			"schedule slot (slot_end; items after it never air) or the rest of the playback cycle (series_end); no trim). " +
-			"The series cursor is shared across visits. Use search_series to find a series. Reorder with update_block_item. " +
+			"The series cursor is shared across visits. Use search_series to find a series. Or a criteria item " +
+			"(criteria: query = a condition tree as in preview_criteria, playback_order title|release_date|random|shuffle, " +
+			"default title; amount, required: {mode count, count N} to air N matches per visit or {mode all} for every " +
+			"match once; no trim): the block plays that many matches of the live query, then moves on. " +
+			"Reorder with update_block_item. " +
 			"Triggers EPG regeneration. Mirrors POST /blocks/{id}/items.",
 	}, addBlockItemHandler(db, mat))
 
@@ -112,10 +118,17 @@ func (a *blockSeriesAmountInput) domain() *domain.SeriesAmountInput {
 }
 
 type addBlockItemInput struct {
-	BlockID        string               `json:"block_id" jsonschema:"the block to append to"`
-	CatalogItemID  string               `json:"catalog_item_id,omitempty" jsonschema:"the catalog item to append (omit when adding a series)"`
-	TrimDurationMs *int64               `json:"trim_duration_ms,omitempty" jsonschema:"optional trimmed duration in milliseconds, overriding the catalog item's full duration; not valid for a series"`
-	Series         *addBlockSeriesInput `json:"series,omitempty" jsonschema:"add a whole series instead of a catalog item"`
+	BlockID        string                 `json:"block_id" jsonschema:"the block to append to"`
+	CatalogItemID  string                 `json:"catalog_item_id,omitempty" jsonschema:"the catalog item to append (omit when adding a series)"`
+	TrimDurationMs *int64                 `json:"trim_duration_ms,omitempty" jsonschema:"optional trimmed duration in milliseconds, overriding the catalog item's full duration; not valid for a series"`
+	Series         *addBlockSeriesInput   `json:"series,omitempty" jsonschema:"add a whole series instead of a catalog item"`
+	Criteria       *addBlockCriteriaInput `json:"criteria,omitempty" jsonschema:"add a criteria item (a query expanded into some of its matches) instead of a catalog item"`
+}
+
+type addBlockCriteriaInput struct {
+	Query         map[string]any          `json:"query" jsonschema:"the condition tree, see preview_criteria"`
+	PlaybackOrder string                  `json:"playback_order,omitempty" jsonschema:"title (default), release_date, random or shuffle (every match once before repeats)"`
+	Amount        *blockSeriesAmountInput `json:"amount" jsonschema:"required: mode count with count N, or mode all (every match once)"`
 }
 
 func addBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[addBlockItemInput, domain.BlockItem] {
@@ -135,7 +148,31 @@ func addBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.Tool
 
 		itemType := domain.BlockItemCatalog
 		var specJSON *string
-		if in.Series != nil {
+		if in.Series != nil && in.Criteria != nil {
+			return nil, domain.BlockItem{}, errors.New("series and criteria cannot both be set")
+		}
+		if in.Criteria != nil {
+			itemType = domain.BlockItemCriteria
+			if in.CatalogItemID != "" {
+				return nil, domain.BlockItem{}, errors.New("catalog_item_id is not valid for a criteria item")
+			}
+			if in.TrimDurationMs != nil {
+				return nil, domain.BlockItem{}, errors.New("trim_duration_ms is not valid for a criteria item; add a trimmed item as its own item before it")
+			}
+			rawQuery, err := json.Marshal(in.Criteria.Query)
+			if err != nil {
+				return nil, domain.BlockItem{}, errors.New("criteria.query must be a JSON object")
+			}
+			spec, err := blockitem.NewCriteriaSpec(rawQuery, in.Criteria.PlaybackOrder, in.Criteria.Amount.domain())
+			if err != nil {
+				return nil, domain.BlockItem{}, err
+			}
+			encoded, err := blockitem.EncodeCriteriaSpec(spec)
+			if err != nil {
+				return nil, domain.BlockItem{}, err
+			}
+			specJSON = &encoded
+		} else if in.Series != nil {
 			itemType = domain.BlockItemSeries
 			if in.CatalogItemID != "" {
 				return nil, domain.BlockItem{}, errors.New("catalog_item_id is not valid for a series item")
@@ -160,7 +197,7 @@ func addBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.Tool
 			}
 			specJSON = &encoded
 		} else if in.CatalogItemID == "" {
-			return nil, domain.BlockItem{}, errors.New("catalog_item_id or series is required")
+			return nil, domain.BlockItem{}, errors.New("catalog_item_id, series or criteria is required")
 		}
 
 		var maxPosition []int
@@ -195,7 +232,7 @@ func addBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.Tool
 			return nil, domain.BlockItem{}, err
 		}
 		items := []domain.BlockItem{item}
-		if err := series.Decorate(ctx, db, defaultTenantID, items); err != nil {
+		if err := blockitem.Decorate(ctx, db, defaultTenantID, items); err != nil {
 			return nil, domain.BlockItem{}, err
 		}
 		mat.Trigger()
@@ -294,7 +331,7 @@ func listBlockItemsHandler(db storage.DB) mcp.ToolHandlerFor[listBlockItemsInput
 		if err != nil {
 			return nil, listBlockItemsOutput{}, err
 		}
-		if err := series.Decorate(ctx, db, defaultTenantID, items); err != nil {
+		if err := blockitem.Decorate(ctx, db, defaultTenantID, items); err != nil {
 			return nil, listBlockItemsOutput{}, err
 		}
 		return nil, listBlockItemsOutput{Items: items}, nil
