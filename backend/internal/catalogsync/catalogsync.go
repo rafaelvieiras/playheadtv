@@ -39,15 +39,16 @@ type Item struct {
 // existed.
 func Upsert(ctx context.Context, db storage.DB, tenantID, mediaSourceID string, item Item, now int64) error {
 	return db.Exec(ctx,
-		`INSERT INTO catalog_item (id, tenant_id, media_source_id, external_id, kind, title, series_title, duration_ms, source_modified_at, genres, production_year, synced_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`INSERT INTO catalog_item (id, tenant_id, media_source_id, external_id, kind, title, series_title, duration_ms, source_modified_at, genres, production_year, synced_at, search_text)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		 ON CONFLICT (media_source_id, external_id) DO UPDATE SET
 		   kind = excluded.kind, title = excluded.title, series_title = excluded.series_title,
 		   duration_ms = excluded.duration_ms, source_modified_at = excluded.source_modified_at,
 		   genres = excluded.genres, production_year = excluded.production_year,
-		   synced_at = excluded.synced_at`,
+		   synced_at = excluded.synced_at, search_text = excluded.search_text`,
 		uuid.NewString(), tenantID, mediaSourceID, item.ExternalID, string(item.Kind), item.Title,
 		item.SeriesTitle, item.DurationMs, item.SourceModifiedAt, item.Genres, item.ProductionYear, now,
+		SearchText(item.Title, item.SeriesTitle),
 	)
 }
 

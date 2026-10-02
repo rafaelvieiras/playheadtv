@@ -300,6 +300,8 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 		"items": []map[string]any{
 			{"external_id": "ext-1", "kind": "movie", "title": "Movie One", "duration_ms": 5_400_000},
 			{"external_id": "ext-2", "kind": "movie", "title": "Filler Short", "duration_ms": 60_000},
+			// Accented title/series are deliberate test data for accent-insensitive search.
+			{"external_id": "ext-3", "kind": "episode", "title": "Episódio Final", "series_title": "Minha Série", "duration_ms": 60_000},
 		},
 	})
 
@@ -333,6 +335,15 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 		t.Fatalf("search_catalog(query=Movie): unexpected result %+v", searchOut.Items)
 	}
 	movieItemID := searchOut.Items[0].ID
+
+	for _, q := range []string{"episodio", "EPISÓDIO", "minha serie"} {
+		accentOut := callTool[struct {
+			Items []domain.CatalogItem `json:"items"`
+		}](t, ctx, session, "search_catalog", map[string]any{"query": q})
+		if len(accentOut.Items) != 1 || accentOut.Items[0].Title != "Episódio Final" {
+			t.Fatalf("search_catalog(query=%q): unexpected result %+v", q, accentOut.Items)
+		}
+	}
 
 	searchAllOut := callTool[struct {
 		Items []domain.CatalogItem `json:"items"`

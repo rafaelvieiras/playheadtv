@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/api"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/crypto"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
@@ -63,6 +64,9 @@ func run() error {
 		return err
 	}
 	log.Printf("storage: migrations applied (db=%s)", dbPath)
+	if err := catalogsync.BackfillSearchText(ctx, db); err != nil {
+		return err
+	}
 
 	// TODO: multi-tenant once Auth exists. Until then every handler in
 	// internal/api operates on this one implicit tenant.

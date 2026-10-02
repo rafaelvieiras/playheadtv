@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
@@ -22,13 +23,13 @@ const (
 func registerCatalogTools(s *mcp.Server, db storage.DB) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "search_catalog",
-		Description: "Search/browse synced catalog items (movies, episodes, etc.) by title, to find " +
+		Description: "Search/browse synced catalog items (movies, episodes, etc.) by title or series title (case- and accent-insensitive), to find " +
 			"catalog_item_id values for building blocks and filler pools. Mirrors GET /catalog-items.",
 	}, searchCatalogHandler(db))
 }
 
 type searchCatalogInput struct {
-	Query  string `json:"query,omitempty" jsonschema:"substring to match against catalog item titles; omit to browse all"`
+	Query  string `json:"query,omitempty" jsonschema:"substring to match against catalog item titles and series titles, ignoring case and accents; omit to browse all"`
 	Limit  *int   `json:"limit,omitempty" jsonschema:"max results to return, 1-200 (default 50)"`
 	Offset *int   `json:"offset,omitempty" jsonschema:"results to skip, for pagination (default 0)"`
 }
@@ -54,8 +55,9 @@ func searchCatalogHandler(db storage.DB) mcp.ToolHandlerFor[searchCatalogInput, 
 		query := "SELECT " + catalogItemColumns + " FROM catalog_item WHERE tenant_id = ?"
 		args := []any{defaultTenantID}
 		if in.Query != "" {
-			query += " AND title LIKE ?"
-			args = append(args, "%"+in.Query+"%")
+			clause, arg := catalogsync.SearchClause(in.Query)
+			query += clause
+			args = append(args, arg)
 		}
 		query += " ORDER BY title LIMIT ? OFFSET ?"
 		args = append(args, limit, offset)

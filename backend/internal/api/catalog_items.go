@@ -52,8 +52,9 @@ func listCatalogItems(db storage.DB) http.HandlerFunc {
 		args := []any{DefaultTenantID}
 
 		if title := q.Get("q"); title != "" {
-			query += " AND title LIKE ?"
-			args = append(args, "%"+title+"%")
+			clause, arg := catalogsync.SearchClause(title)
+			query += clause
+			args = append(args, arg)
 		}
 		if mediaSourceID := q.Get("media_source_id"); mediaSourceID != "" {
 			query += " AND media_source_id = ?"

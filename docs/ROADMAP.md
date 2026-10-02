@@ -345,7 +345,7 @@ actionable checklist.
       (probes real Jellyfin connectivity — `GET <base_url>/System/Info/Public`,
       5s timeout — to decide `sync_mode` pull/push, same as the REST handler;
       encrypts an optional `credential` with the same `encKey`), `search_catalog`
-      (title substring search, default/max limits 50/200, same as REST),
+      (title/series-title substring search, case- and accent-insensitive via `catalog_item.search_text`, default/max limits 50/200, same as REST),
       `create_block` + `add_block_item` (position always `MAX(position)+1`;
       `update_block_item` reorders/trims, mirroring `PUT /blocks/{id}/items/{item_id}`)
       + `list_block_items` (added beyond the literal REST 1:1 mapping so an
