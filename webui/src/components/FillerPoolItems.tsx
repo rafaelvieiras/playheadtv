@@ -1,3 +1,4 @@
+import { formatCatalogTitle } from '@/lib/catalog'
 import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
@@ -72,11 +73,11 @@ export function FillerPoolItems({ poolId, editable }: { poolId: string; editable
                 const catalogItem = catalogById.get(item.catalog_item_id)
                 return (
                   <TableRow key={item.id} data-testid="pool-item-row">
-                    <TableCell className="max-w-64 truncate">{catalogItem?.title ?? '…'}</TableCell>
+                    <TableCell className="max-w-64 truncate">{catalogItem ? formatCatalogTitle(catalogItem) : '…'}</TableCell>
                     <TableCell>{catalogItem ? formatDurationMs(catalogItem.duration_ms) : '—'}</TableCell>
                     <TableCell>
                       {editable ? (
-                        <WeightInput poolId={poolId} item={item} title={catalogItem?.title} />
+                        <WeightInput poolId={poolId} item={item} title={catalogItem ? formatCatalogTitle(catalogItem) : undefined} />
                       ) : (
                         item.weight
                       )}
@@ -86,7 +87,7 @@ export function FillerPoolItems({ poolId, editable }: { poolId: string; editable
                         <Button
                           variant="destructive"
                           size="sm"
-                          aria-label={`Remove ${catalogItem?.title ?? 'item'}`}
+                          aria-label={`Remove ${catalogItem ? formatCatalogTitle(catalogItem) : 'item'}`}
                           onClick={() => removeMutation.mutate(item.id)}
                           disabled={removeMutation.isPending}
                         >
@@ -203,12 +204,12 @@ function CatalogSearchAdd({ poolId, existingIds }: { poolId: string; existingIds
               className="flex items-center justify-between gap-2 rounded-md border border-border px-2 py-1.5"
             >
               <div className="flex min-w-0 flex-col">
-                <span className="truncate text-sm">{result.title}</span>
+                <span className="truncate text-sm">{formatCatalogTitle(result)}</span>
                 <span className="text-xs text-muted-foreground">{formatDurationMs(result.duration_ms)}</span>
               </div>
               <Button
                 size="sm"
-                aria-label={`Add ${result.title}`}
+                aria-label={`Add ${formatCatalogTitle(result)}`}
                 onClick={() => addMutation.mutate(result.id)}
                 disabled={addMutation.isPending || existing.has(result.id)}
               >

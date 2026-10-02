@@ -1,3 +1,4 @@
+import { formatCatalogTitle } from '@/lib/catalog'
 import { useEffect, useRef } from 'react'
 
 import { InlineWarning } from '@/components/InlineWarning'
@@ -49,7 +50,7 @@ export function CriteriaPreviewPanel({ criteria }: { criteria: DynamicCriteria |
           <ul className="flex flex-col gap-1 text-sm" data-testid="criteria-preview-sample">
             {data.sample.map((item) => (
               <li key={item.id} className="flex justify-between gap-2 rounded-md border border-border px-2 py-1">
-                <span className="truncate">{item.title}</span>
+                <span className="truncate">{formatCatalogTitle(item)}</span>
                 <span className="shrink-0 text-muted-foreground">{formatDurationMs(item.duration_ms)}</span>
               </li>
             ))}

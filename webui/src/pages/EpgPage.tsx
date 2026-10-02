@@ -1,3 +1,4 @@
+import { formatCatalogTitle } from '@/lib/catalog'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
@@ -205,7 +206,8 @@ export function EpgPage() {
                         )}
                         {channelEntries.map((entry) => {
                           const isLive = entry.start_at <= now && now < entry.end_at
-                          const title = catalogItemsById.get(entry.catalog_item_id)?.title ?? '…'
+                          const item = catalogItemsById.get(entry.catalog_item_id)
+                          const title = item ? formatCatalogTitle(item) : '…'
                           const startOffset = Math.max(0, (entry.start_at - windowStart) / 60000)
                           const clampedStart = Math.max(entry.start_at, windowStart)
                           const clampedEnd = Math.min(entry.end_at, windowEnd)

@@ -1,3 +1,4 @@
+import { formatCatalogTitle } from '@/lib/catalog'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
@@ -264,7 +265,8 @@ function GuideGrid({
             ))}
             {sorted.map((entry) => {
               const live = entry.start_at <= now && now < entry.end_at
-              const title = titles.get(entry.catalog_item_id)?.title ?? '…'
+              const item = titles.get(entry.catalog_item_id)
+              const title = item ? formatCatalogTitle(item) : '…'
               return (
                 <div
                   key={entry.id}

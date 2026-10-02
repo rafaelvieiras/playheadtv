@@ -82,7 +82,7 @@ export function DynamicCriteriaFields({
             <Input
               id={`${idPrefix}-genres`}
               placeholder="Comedy, Komedie"
-              value={value.genres.join(', ')}
+              value={(value.genres ?? []).join(', ')}
               onChange={(e) => handleGenresChange(e.target.value)}
             />
             <FieldDescription>

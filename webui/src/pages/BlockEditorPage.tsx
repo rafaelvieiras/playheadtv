@@ -16,12 +16,13 @@ import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
 import { authoringKeys, usePreviewCriteria, useUpdateBlockItem } from '@/lib/authoring'
-import { formatDuration, validateCriteria } from '@/lib/criteria'
+import { formatCatalogTitle } from '@/lib/catalog'
+import { formatDuration, parseCriteriaJson, validateCriteria } from '@/lib/criteria'
 import { ApiError, api } from '@/lib/http'
 import type { Block, BlockInput, BlockItem, CatalogItem, DynamicCriteria } from '@/lib/types'
 
 function parseCriteria(raw: string | null): DynamicCriteria | null {
-  return raw ? (JSON.parse(raw) as DynamicCriteria) : null
+  return parseCriteriaJson(raw)
 }
 
 function errorMessage(err: unknown, fallback: string): string {
@@ -187,7 +188,7 @@ function CriteriaPreviewPanel({ criteria }: { criteria: DynamicCriteria }) {
               <ul className="flex flex-col divide-y divide-border rounded-md border border-border text-sm">
                 {data.sample.map((item) => (
                   <li key={item.id} className="flex items-center justify-between gap-2 px-2 py-1">
-                    <span className="truncate">{item.title}</span>
+                    <span className="truncate">{formatCatalogTitle(item)}</span>
                     <span className="shrink-0 text-xs text-muted-foreground">
                       {formatDuration(item.duration_ms)}
                     </span>
@@ -246,7 +247,7 @@ function BlockItemsSection({ block }: { block: Block }) {
     () =>
       (results ?? []).map((r) => ({
         value: r.id,
-        label: `${r.title} (${formatDuration(r.duration_ms)})`,
+        label: `${formatCatalogTitle(r)} (${formatDuration(r.duration_ms)})`,
       })),
     [results]
   )
@@ -333,7 +334,7 @@ function BlockItemsSection({ block }: { block: Block }) {
                 <TableRow key={item.id} data-testid="block-item-row">
                   <TableCell>{index + 1}</TableCell>
                   <TableCell className="max-w-64 truncate" data-testid="item-title">
-                    {catalog?.title ?? '…'}
+                    {catalog ? formatCatalogTitle(catalog) : '…'}
                   </TableCell>
                   <TableCell>{catalog ? formatDuration(catalog.duration_ms) : '—'}</TableCell>
                   <TableCell>
