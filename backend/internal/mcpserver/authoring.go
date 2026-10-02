@@ -9,6 +9,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/series"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
@@ -19,7 +20,8 @@ import (
 func registerAuthoringTools(s *mcp.Server, db storage.DB, mat *materializer.Materializer) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "update_block_item",
-		Description: "Reorder (position) and/or trim (trim_duration_ms) one item of a manual block; " +
+		Description: "Reorder (position), trim (trim_duration_ms, catalog items only) and/or change the playback order " +
+			"(playback_order, series items only; restarts the series) of one item of a manual block; " +
 			"positions stay contiguous. Dynamic blocks are rejected. Triggers EPG regeneration. " +
 			"Mirrors PUT /blocks/{id}/items/{item_id}.",
 	}, updateBlockItemHandler(db, mat))
@@ -45,10 +47,11 @@ func registerAuthoringTools(s *mcp.Server, db storage.DB, mat *materializer.Mate
 }
 
 type updateBlockItemInput struct {
-	BlockID        string `json:"block_id" jsonschema:"the block the item belongs to"`
-	ItemID         string `json:"item_id" jsonschema:"the block item to edit"`
-	Position       *int   `json:"position,omitempty" jsonschema:"new 0-based position; the item is moved there"`
-	TrimDurationMs *int64 `json:"trim_duration_ms,omitempty" jsonschema:"new trimmed duration in milliseconds (positive)"`
+	BlockID        string  `json:"block_id" jsonschema:"the block the item belongs to"`
+	ItemID         string  `json:"item_id" jsonschema:"the block item to edit"`
+	Position       *int    `json:"position,omitempty" jsonschema:"new 0-based position; the item is moved there"`
+	TrimDurationMs *int64  `json:"trim_duration_ms,omitempty" jsonschema:"new trimmed duration in milliseconds (positive); catalog items only"`
+	PlaybackOrder  *string `json:"playback_order,omitempty" jsonschema:"series items only: original, random, shuffle or release_date"`
 }
 
 func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[updateBlockItemInput, domain.BlockItem] {
@@ -56,8 +59,11 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 		if in.BlockID == "" || in.ItemID == "" {
 			return nil, domain.BlockItem{}, errors.New("block_id and item_id are required")
 		}
-		if in.Position == nil && in.TrimDurationMs == nil {
-			return nil, domain.BlockItem{}, errors.New("position or trim_duration_ms is required")
+		if in.Position == nil && in.TrimDurationMs == nil && in.PlaybackOrder == nil {
+			return nil, domain.BlockItem{}, errors.New("position, trim_duration_ms or playback_order is required")
+		}
+		if in.PlaybackOrder != nil && !domain.ValidPlaybackOrder(*in.PlaybackOrder) {
+			return nil, domain.BlockItem{}, errors.New("playback_order must be one of original, random, shuffle, release_date")
 		}
 		if in.TrimDurationMs != nil && *in.TrimDurationMs <= 0 {
 			return nil, domain.BlockItem{}, errors.New("trim_duration_ms must be positive")
@@ -76,15 +82,47 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 		if err := db.Query(ctx, &items, "SELECT "+blockItemColumns+" FROM block_item WHERE block_id = ? ORDER BY position", in.BlockID); err != nil {
 			return nil, domain.BlockItem{}, err
 		}
-		found := false
-		for _, it := range items {
-			found = found || it.ID == in.ItemID
+		var target *domain.BlockItem
+		for i := range items {
+			if items[i].ID == in.ItemID {
+				target = &items[i]
+			}
 		}
-		if !found {
+		if target == nil {
 			return nil, domain.BlockItem{}, errors.New("block item not found")
+		}
+		if in.TrimDurationMs != nil && target.IsSeries() {
+			return nil, domain.BlockItem{}, errors.New("trim_duration_ms is not valid for a series item")
+		}
+		if in.PlaybackOrder != nil && !target.IsSeries() {
+			return nil, domain.BlockItem{}, errors.New("playback_order is only valid for a series item")
 		}
 		if in.Position != nil && (*in.Position < 0 || *in.Position >= len(items)) {
 			return nil, domain.BlockItem{}, errors.New("position must be between 0 and the number of items minus one")
+		}
+		if in.PlaybackOrder != nil {
+			spec, err := series.ParseSpec(target.Spec)
+			if err != nil {
+				return nil, domain.BlockItem{}, err
+			}
+			if spec.PlaybackOrder != *in.PlaybackOrder {
+				spec.PlaybackOrder = *in.PlaybackOrder
+				encoded, err := series.Encode(spec)
+				if err != nil {
+					return nil, domain.BlockItem{}, err
+				}
+				nowMs := nowMillis()
+				if err := db.Exec(ctx, "UPDATE block_item SET spec = ? WHERE block_id = ? AND id = ?", encoded, in.BlockID, in.ItemID); err != nil {
+					return nil, domain.BlockItem{}, err
+				}
+				// Restart the cursor under the new order (see PUT /blocks/{id}/items/{item_id}).
+				if err := db.Exec(ctx, "UPDATE series_cursor SET origin_ms = ? WHERE tenant_id = ? AND block_item_id = ?", nowMs, defaultTenantID, in.ItemID); err != nil {
+					return nil, domain.BlockItem{}, err
+				}
+				if err := db.Exec(ctx, "DELETE FROM epg_entry WHERE tenant_id = ? AND source_block_item_id = ? AND end_at > ?", defaultTenantID, in.ItemID, nowMs); err != nil {
+					return nil, domain.BlockItem{}, err
+				}
+			}
 		}
 		if in.TrimDurationMs != nil {
 			if err := db.Exec(ctx, "UPDATE block_item SET trim_duration_ms = ? WHERE block_id = ? AND id = ?", *in.TrimDurationMs, in.BlockID, in.ItemID); err != nil {
@@ -119,8 +157,12 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 		if err := db.Query(ctx, &item, "SELECT "+blockItemColumns+" FROM block_item WHERE block_id = ? AND id = ?", in.BlockID, in.ItemID); err != nil {
 			return nil, domain.BlockItem{}, err
 		}
+		updated := []domain.BlockItem{item}
+		if err := series.Decorate(ctx, db, defaultTenantID, updated); err != nil {
+			return nil, domain.BlockItem{}, err
+		}
 		mat.Trigger()
-		return nil, item, nil
+		return nil, updated[0], nil
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/series"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
@@ -54,7 +55,7 @@ const runTimeout = 30 * time.Second
 // depend on internal/api.
 const scheduleItemColumns = "id, tenant_id, schedule_id, block_id, recurrence_type AS recurrence, day_of_week, start_time_local, start_at, active, created_at, updated_at"
 const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, filler_pool_id, selection_strategy AS selection, position, created_at"
-const blockItemColumns = "id, block_id, position, catalog_item_id, trim_duration_ms"
+const blockItemColumns = "id, block_id, position, item_type, COALESCE(catalog_item_id, '') AS catalog_item_id, trim_duration_ms, spec"
 const fillerPoolItemColumns = "id, filler_pool_id, catalog_item_id, weight"
 const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, schedule_id, created_at, updated_at"
 
@@ -268,6 +269,12 @@ func (m *Materializer) resetChannels(ctx context.Context, tenantID string, chann
 		if err := m.db.Exec(ctx, "DELETE FROM epg_entry WHERE channel_id = ? AND end_at > ?", ch.ID, nowMs); err != nil {
 			return fmt.Errorf("discard epg_entry: %w", err)
 		}
+		// A reset restarts every series item of the channel from its first
+		// episode: the cursor's origin moves to now, so entries that aired
+		// before it no longer count.
+		if err := m.db.Exec(ctx, "UPDATE series_cursor SET origin_ms = ? WHERE tenant_id = ? AND channel_id = ?", nowMs, tenantID, ch.ID); err != nil {
+			return fmt.Errorf("reset series cursor: %w", err)
+		}
 		if err := m.materializeChannel(ctx, ch, tenantID, now, now.Add(-scanLookback), windowEnd, newCatalogDurationCache(m.db), newSelectionState()); err != nil {
 			return err
 		}
@@ -281,7 +288,7 @@ func (m *Materializer) resetChannels(ctx context.Context, tenantID string, chann
 // materialization (materializeChannel) and the read-only dry-run
 // (PreviewReset); the grid-stability fields (ContinuousStart, KeptUntil) are
 // left zero for the caller to fill in.
-func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, tenantID string, cache *catalogDurationCache) (channelInput, error) {
+func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, tenantID string, cache *catalogDurationCache, now, scanFrom time.Time, preview bool) (channelInput, error) {
 	// A channel with no Schedule assigned (ch.ScheduleID == nil) has no
 	// schedule_item rows at all — it relies solely on its channel-scoped
 	// fallback filler rule, exactly like today's "24/7 genre loop with no
@@ -383,6 +390,9 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 	}
 	for _, items := range blockItems {
 		for _, it := range items {
+			if it.IsSeries() {
+				continue
+			}
 			if err := collect(it.CatalogItemID); err != nil {
 				return channelInput{}, fmt.Errorf("catalog_item %s: %w", it.CatalogItemID, err)
 			}
@@ -396,7 +406,13 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		}
 	}
 
+	runs, err := m.loadSeriesRuns(ctx, ch, tenantID, blockItems, now, scanFrom, preview)
+	if err != nil {
+		return channelInput{}, err
+	}
+
 	return channelInput{
+		Series:          runs,
 		ChannelID:       ch.ID,
 		TenantID:        tenantID,
 		Timezone:        ch.Timezone,
@@ -410,7 +426,7 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 }
 
 func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel, tenantID string, now, scanFrom, windowEnd time.Time, cache *catalogDurationCache, state *selectionState) error {
-	in, err := m.loadChannelInput(ctx, ch, tenantID, cache)
+	in, err := m.loadChannelInput(ctx, ch, tenantID, cache, now, scanFrom, false)
 	if err != nil {
 		return err
 	}
@@ -509,9 +525,9 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 	}
 	for _, e := range toInsert {
 		if err := m.db.Exec(ctx,
-			`INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at, rotation_next)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			e.ID, e.TenantID, e.ChannelID, string(e.Kind), e.CatalogItemID, e.StartAt, e.EndAt, e.SourceScheduleItemID, e.GeneratedAt, e.RotationNext,
+			`INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at, rotation_next, source_block_item_id, series_cycle)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			e.ID, e.TenantID, e.ChannelID, string(e.Kind), e.CatalogItemID, e.StartAt, e.EndAt, e.SourceScheduleItemID, e.GeneratedAt, e.RotationNext, e.SourceBlockItemID, e.SeriesCycle,
 		); err != nil {
 			return fmt.Errorf("insert epg_entry: %w", err)
 		}
@@ -529,7 +545,7 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 func (m *Materializer) PreviewReset(ctx context.Context, tenantID string, ch domain.Channel, startMs, endMs int64) ([]domain.EpgEntry, error) {
 	now := time.Now().UTC()
 	nowMs := now.UnixMilli()
-	in, err := m.loadChannelInput(ctx, ch, tenantID, newCatalogDurationCache(m.db))
+	in, err := m.loadChannelInput(ctx, ch, tenantID, newCatalogDurationCache(m.db), now, now.Add(-scanLookback), true)
 	if err != nil {
 		return nil, err
 	}
@@ -587,4 +603,78 @@ func (c *catalogDurationCache) Get(ctx context.Context, catalogItemID string) (i
 	}
 	c.cache[catalogItemID] = durations[0]
 	return durations[0], nil
+}
+
+// loadSeriesRuns builds the walk of every series item in the channel's
+// blocks. The cursor of each is rebuilt from the epg_entry rows the item
+// already produced on this channel (see seriesRun); its origin comes from
+// series_cursor, created the first time the item is met (a preview never
+// writes, it just treats "now" as the origin and ignores stored rows, like
+// the reset it simulates).
+func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, tenantID string, blockItems map[string][]domain.BlockItem, now, scanFrom time.Time, preview bool) (map[string]*seriesRun, error) {
+	runs := make(map[string]*seriesRun)
+	for _, items := range blockItems {
+		for _, it := range items {
+			if !it.IsSeries() {
+				continue
+			}
+			if _, done := runs[it.ID]; done {
+				continue
+			}
+			spec, err := series.ParseSpec(it.Spec)
+			if err != nil {
+				log.Printf("materializer: block_item %s: %v", it.ID, err)
+				continue
+			}
+			episodes, err := series.Episodes(ctx, m.db, tenantID, spec)
+			if err != nil {
+				return nil, fmt.Errorf("list episodes of block_item %s: %w", it.ID, err)
+			}
+
+			originMs := now.UnixMilli()
+			var history, ahead []seriesRow
+			if !preview {
+				var origins []int64
+				if err := m.db.Query(ctx, &origins,
+					"SELECT origin_ms FROM series_cursor WHERE tenant_id = ? AND channel_id = ? AND block_item_id = ?",
+					tenantID, ch.ID, it.ID,
+				); err != nil {
+					return nil, fmt.Errorf("read series cursor: %w", err)
+				}
+				if len(origins) > 0 {
+					originMs = origins[0]
+				} else if err := m.db.Exec(ctx,
+					"INSERT OR IGNORE INTO series_cursor (tenant_id, channel_id, block_item_id, origin_ms) VALUES (?, ?, ?, ?)",
+					tenantID, ch.ID, it.ID, originMs,
+				); err != nil {
+					return nil, fmt.Errorf("create series cursor: %w", err)
+				}
+				var rows []struct {
+					StartAt       int64
+					CatalogItemID string
+					SeriesCycle   *int
+				}
+				if err := m.db.Query(ctx, &rows,
+					"SELECT start_at, catalog_item_id, series_cycle FROM epg_entry WHERE tenant_id = ? AND channel_id = ? AND source_block_item_id = ? AND start_at >= ? ORDER BY start_at",
+					tenantID, ch.ID, it.ID, originMs,
+				); err != nil {
+					return nil, fmt.Errorf("read series entries: %w", err)
+				}
+				for _, r := range rows {
+					cycle := 0
+					if r.SeriesCycle != nil {
+						cycle = *r.SeriesCycle
+					}
+					row := seriesRow{StartAt: r.StartAt, CatalogItemID: r.CatalogItemID, Cycle: cycle}
+					if r.StartAt < scanFrom.UnixMilli() {
+						history = append(history, row)
+					} else {
+						ahead = append(ahead, row)
+					}
+				}
+			}
+			runs[it.ID] = newSeriesRun(spec, ch.ID, episodes, originMs, history, ahead, now.UnixMilli())
+		}
+	}
+	return runs, nil
 }

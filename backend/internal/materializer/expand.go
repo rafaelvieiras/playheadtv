@@ -31,6 +31,9 @@ type channelInput struct {
 	PoolItems       map[string][]domain.FillerPoolItem // filler_pool_id -> ordered by rowid (insertion order)
 	CatalogDuration map[string]int64                   // catalog_item_id -> duration_ms
 	DynamicBlockIDs map[string]bool                    // blockID -> true iff block.criteria is non-NULL
+	// Series holds the walk of every series block item the channel's blocks
+	// contain, keyed by block_item.id. Expansion mutates the runs.
+	Series map[string]*seriesRun
 
 	// ContinuousStart is the persisted rotation position the continuous
 	// schedule item (if any) resumes from: the block-item index its next
@@ -305,6 +308,69 @@ func fillGap(
 	return entries, cursor
 }
 
+// emitSeries expands a series block item into consecutive episodes starting
+// at cursor, following the run's playback order, for as long as a slot starts
+// before limit. With strict, an episode that would end after limit is not
+// aired (it and everything after it is dropped, the overrun policy); without
+// it the last episode may run past limit, like the last occurrence of a window
+// does. A series has no length of its own: it keeps going (cycle after cycle)
+// until limit, so only the episodes that fit the window are ever produced.
+// Every entry remembers the block item and cycle it came from, which is how a
+// later run rebuilds the cursor. rotation, when non-nil, is the rotation index
+// stored on every entry (a continuous block stays on the series item).
+func emitSeries(
+	run *seriesRun,
+	blockItemID string,
+	cursor, limit time.Time,
+	strict bool,
+	kind domain.EpgEntryKind,
+	tenantID, channelID string,
+	generatedAt int64,
+	sourceScheduleItemID *string,
+	rotation *int,
+) ([]domain.EpgEntry, time.Time) {
+	var entries []domain.EpgEntry
+	for run.emitted < maxSeriesEntries && cursor.Before(limit) {
+		startMs := cursor.UnixMilli()
+		slot, ok := run.plan(startMs)
+		if !ok {
+			break
+		}
+		end := cursor.Add(time.Duration(slot.Episode.DurationMs) * time.Millisecond)
+		if strict && end.After(limit) {
+			break
+		}
+		if slot.Skip {
+			run.emitted++
+			cursor = end
+			continue
+		}
+		cycle := slot.Cycle
+		itemID := blockItemID
+		e := domain.EpgEntry{
+			ID:                   uuid.NewString(),
+			TenantID:             tenantID,
+			ChannelID:            channelID,
+			Kind:                 kind,
+			CatalogItemID:        slot.Episode.ID,
+			StartAt:              startMs,
+			EndAt:                end.UnixMilli(),
+			SourceScheduleItemID: sourceScheduleItemID,
+			GeneratedAt:          generatedAt,
+			SourceBlockItemID:    &itemID,
+			SeriesCycle:          &cycle,
+		}
+		if rotation != nil {
+			r := *rotation
+			e.RotationNext = &r
+		}
+		entries = append(entries, e)
+		run.commit(startMs, slot)
+		cursor = end
+	}
+	return entries, cursor
+}
+
 // fillLoopingBlock inserts, starting at cursor, entries drawn from a
 // continuous, wrapping walk over items (a dynamic block's block_item list)
 // until target — same "whole items only, never cut short" contract as
@@ -323,6 +389,7 @@ func fillGap(
 // share (and race on) one rotation cursor within a single Run().
 func fillLoopingBlock(
 	items []domain.BlockItem,
+	runs map[string]*seriesRun,
 	catalogDuration map[string]int64,
 	cursor, target time.Time,
 	kind domain.EpgEntryKind,
@@ -336,10 +403,33 @@ func fillLoopingBlock(
 		return nil, cursor
 	}
 	var entries []domain.EpgEntry
+	emptySeries := 0
 	for {
 		idx := state.seqCursor[cursorKey] % len(items)
 		next := (idx + 1) % len(items)
 		bi := items[idx]
+		if bi.IsSeries() {
+			// A series item stays on the air until target: the rotation sits
+			// on it (every entry stores idx), so the next gap resumes it. A
+			// series with no episodes is skipped; if every item is one, stop.
+			run := runs[bi.ID]
+			if run == nil || run.empty() {
+				emptySeries++
+				if emptySeries >= len(items) {
+					break
+				}
+				state.seqCursor[cursorKey] = idx + 1
+				continue
+			}
+			emptySeries = 0
+			run.catchUp(cursor.UnixMilli())
+			rot := idx
+			seriesEntries, end := emitSeries(run, bi.ID, cursor, target, true, kind, tenantID, channelID, generatedAt, sourceScheduleItemID, &rot)
+			entries = append(entries, seriesEntries...)
+			cursor = end
+			break
+		}
+		emptySeries = 0
 		durMs := effectiveDuration(bi, catalogDuration)
 		if durMs <= 0 {
 			break
@@ -432,7 +522,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		if !start.Before(to) {
 			return
 		}
-		loopEntries, end := fillLoopingBlock(in.BlockItems[continuous.BlockID], in.CatalogDuration, start, to, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, continuousKey, state)
+		loopEntries, end := fillLoopingBlock(in.BlockItems[continuous.BlockID], in.Series, in.CatalogDuration, start, to, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, continuousKey, state)
 		entries = append(entries, loopEntries...)
 		if end.Before(to) {
 			fillFallbackOnly(end, to)
@@ -516,7 +606,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			// so two channels sharing this dynamic block via the same Schedule
 			// don't share loop position.
 			cursorKey := in.ChannelID + "|" + occ.BlockID
-			loopEntries, newCursor := fillLoopingBlock(items, in.CatalogDuration, cursor, nominalNextStart, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, cursorKey, state)
+			loopEntries, newCursor := fillLoopingBlock(items, in.Series, in.CatalogDuration, cursor, nominalNextStart, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, cursorKey, state)
 			entries = append(entries, loopEntries...)
 			cursor = newCursor
 			continue
@@ -558,6 +648,19 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		}
 
 		for idx, bi := range items {
+			if bi.IsSeries() {
+				// A series item airs episodes until the boundary (the next
+				// occurrence, reserving postroll, or the window's end), so
+				// nothing after it in the block gets on the air.
+				run := in.Series[bi.ID]
+				if run == nil || run.empty() {
+					continue
+				}
+				seriesEntries, end := emitSeries(run, bi.ID, cursor, itemsCutoff, hasNextOccurrence, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, nil)
+				entries = append(entries, seriesEntries...)
+				cursor = end
+				break
+			}
 			dur := effectiveDuration(bi, in.CatalogDuration)
 			if !fits(dur) {
 				break

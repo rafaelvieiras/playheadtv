@@ -108,11 +108,14 @@ export function computeSlots(items: ScheduleItem[], timeZone: string | undefined
 }
 
 // Total airtime of a manual block, or undefined when any item's duration is
-// unknown (not loaded yet).
+// unknown (not loaded yet). A series item has no length of its own, it airs
+// until the next scheduled item, so counting stops there: only what comes
+// before it can overrun the slot.
 export function blockTotalDurationMs(items: BlockItem[], catalog: Map<string, CatalogItem>): number | undefined {
   let total = 0
   for (const bi of items) {
-    const duration = bi.trim_duration_ms ?? catalog.get(bi.catalog_item_id)?.duration_ms
+    if (bi.item_type === 'series') break
+    const duration = bi.trim_duration_ms ?? catalog.get(bi.catalog_item_id ?? '')?.duration_ms
     if (duration === undefined) return undefined
     total += duration
   }

@@ -121,6 +121,14 @@ actionable checklist.
       MCP `get_catalog_item` carry the full detail, the list endpoint and
       `search_catalog` the compact form; the web UI shows `S01E03` next to
       the series name.
+- [x] Series block items: a manual block can hold a whole series with a
+      playback order (`original`, `random`, `shuffle` without repeats,
+      `release_date`); see `docs/ARCHITECTURE.md` "Series block items".
+      `POST/PUT/DELETE /blocks/{id}/items`, `GET /series`, MCP
+      `add_block_item` (with `series`), `delete_block_item`, `search_series`,
+      block editor "Add a series". Not yet: the slice spec is stored as a
+      reserved empty field (see the slicing item below); series items in
+      filler pools and a per-visit episode count are not decided.
 - [x] Dynamic `filler_pool`s: an optional `filler_pool.criteria`
       (`{kind, genres, year_from, year_to}`) makes `catalogsync.ResolveDynamicPools`
       own that pool's `filler_pool_item` rows, recomputed after every catalog

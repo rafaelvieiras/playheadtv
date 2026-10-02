@@ -146,7 +146,8 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
     const ids: string[] = []
     for (const slot of slots) {
       for (const bi of blockItems.get(slot.item.block_id) ?? []) {
-        if (bi.trim_duration_ms === null) ids.push(bi.catalog_item_id)
+        if (bi.item_type === 'series') break
+        if (bi.trim_duration_ms === null && bi.catalog_item_id) ids.push(bi.catalog_item_id)
       }
     }
     return ids

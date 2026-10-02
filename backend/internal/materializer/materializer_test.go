@@ -398,4 +398,4 @@ func TestMaterializer_EndToEnd_PrerollAppearsBeforeFirstProgram(t *testing.T) {
 
 // epgEntryColumnsForTest mirrors internal/api/epg.go's epgEntryColumns; kept
 // as its own copy since this package must not import internal/api.
-const epgEntryColumnsForTest = "id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at"
+const epgEntryColumnsForTest = "id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at, rotation_next, source_block_item_id, series_cycle"

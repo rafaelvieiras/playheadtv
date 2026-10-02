@@ -228,6 +228,39 @@ edges):
   occurrence; `midroll`/`postroll`/`tail` don't apply to it, since an
   endless loop has no single "end" to hang them off. A manual block is
   unaffected: it still airs its list once and stops, exactly as before.
+- **Series block items** (migration `0010`): `block_item.item_type` is
+  `catalog` (one catalog item, as before, optional `trim_duration_ms`) or
+  `series`. Type-specific data lives in the JSON `spec` column, so further
+  kinds add a type value and a spec shape. A series spec is
+  `{media_source_id, series_external_id?, series_title?, playback_order, seed,
+  slice}`: the series is its media source plus external id (else title), `seed`
+  makes shuffle/random reproducible and is never served, `slice` is reserved
+  for slicing (empty; the API rejects a non-null value). Series items live in
+  manual blocks only (filler pools keep single items or criteria) and take no
+  trim: every episode plays in full. `GET /series?q=` lists the catalog's
+  series with episode count and total duration; block item responses carry a
+  `series` view with the live episode count and total duration.
+  A series item airs its episodes, in order, until its boundary (the next
+  schedule occurrence, reserving postroll, or the end of the window), cycle
+  after cycle, so items after it in the block never air; in a continuous
+  block the rotation stays on it. Orders: `original` is season then episode
+  (specials first, missing numbers last), `release_date` is premiere date
+  (missing last), `random` picks any episode each time, `shuffle` plays every
+  episode once per cycle in an order that is a hash of (seed, cycle, episode
+  id) with the seed mixed with the channel id (two channels never shuffle
+  alike); a new cycle never opens with the previous cycle's last episode. An
+  episode a catalog sync adds mid-cycle is unplayed, so it takes its hashed
+  place among the ones still to play; a removed one just leaves.
+  No cursor is stored apart from `series_cursor.origin_ms` (per channel and
+  item; moved to "now" by `reset-epg` and by a playback order change). Each
+  `epg_entry` a series item produces records `source_block_item_id` and
+  `series_cycle`, and every run rebuilds the cursor (cycle, episodes played in
+  it, count) from those rows since the origin, so grid regeneration continues
+  where it stopped. A slot that already started keeps the episode its row
+  holds even if the catalog changed; later slots are recomputed. Slots that end
+  before the origin (an occurrence under way when the item was added) are
+  skipped without using up episodes. One cap (`maxSeriesEntries`) bounds a
+  single expansion.
 - **`filler_pool`**: a named collection of filler content (commercials,
   bumpers, station IDs). **`filler_rule`** scopes a filler kind
   (preroll/midroll/postroll/tail/fallback) to a channel or a single block,

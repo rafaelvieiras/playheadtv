@@ -150,19 +150,63 @@ export interface BlockInput {
   criteria: DynamicCriteria | null
 }
 
-// Mirrors backend/internal/domain.BlockItem.
+// Mirrors backend/internal/domain.PlaybackOrder values: how a series block
+// item walks its episodes.
+export type PlaybackOrder = 'original' | 'random' | 'shuffle' | 'release_date'
+
+export const PLAYBACK_ORDER_LABELS: Record<PlaybackOrder, string> = {
+  original: 'Original order',
+  random: 'Random',
+  shuffle: 'Shuffle (no repeats)',
+  release_date: 'Release date',
+}
+
+// Mirrors backend/internal/domain.SeriesItemView: the identity and order of a
+// series block item plus what it currently expands to (read live from the
+// catalog). `slice` is reserved and always null for now.
+export interface SeriesItemView {
+  media_source_id: string
+  series_external_id?: string
+  series_title?: string
+  playback_order: PlaybackOrder
+  slice: unknown
+  episode_count: number
+  total_duration_ms: number
+}
+
+// Mirrors backend/internal/domain.BlockItem. A catalog item has
+// catalog_item_id and an optional trim; a series item has `series` and no
+// catalog_item_id (omitted).
 export interface BlockItem {
   id: string
   block_id: string
   position: number
-  catalog_item_id: string
+  item_type: 'catalog' | 'series'
+  catalog_item_id?: string
   trim_duration_ms: number | null
+  series?: SeriesItemView
 }
 
-// BlockItemInput is the body shape for POST /blocks/{id}/items.
+// BlockItemInput is the body shape for POST /blocks/{id}/items: a catalog item
+// or, with `series`, a whole series.
 export interface BlockItemInput {
-  catalog_item_id: string
-  trim_duration_ms: number | null
+  catalog_item_id?: string
+  trim_duration_ms?: number | null
+  series?: {
+    media_source_id: string
+    series_external_id?: string
+    series_title?: string
+    playback_order: PlaybackOrder
+  }
+}
+
+// One row of GET /series (backend/internal/series.Summary).
+export interface SeriesSummary {
+  media_source_id: string
+  series_external_id: string | null
+  series_title: string
+  episode_count: number
+  total_duration_ms: number
 }
 
 // Mirrors backend/internal/domain.RecurrenceType.
@@ -405,10 +449,13 @@ export interface StreamPreferenceRuleInput {
 // BlockItemUpdateInput is the body of PUT /blocks/{id}/items/{item_id}: at
 // least one field is required, an absent/null one is left unchanged.
 // `position` is the new 0-based index (the backend keeps positions contiguous);
-// `trim_duration_ms` must be positive. Manual blocks only (409 on dynamic).
+// `trim_duration_ms` must be positive (catalog items only); `playback_order`
+// is for series items only and restarts the series. Manual blocks only (409 on
+// dynamic).
 export interface BlockItemUpdateInput {
   position?: number
   trim_duration_ms?: number
+  playback_order?: PlaybackOrder
 }
 
 // FillerPoolItemUpdateInput is the body of

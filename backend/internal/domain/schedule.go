@@ -74,6 +74,12 @@ type EpgEntry struct {
 	// schedule item: the block-item index its next program takes. Internal
 	// bookkeeping, never served to clients; nil for every other entry.
 	RotationNext *int `json:"-"`
+	// SourceBlockItemID and SeriesCycle are set on entries a series block
+	// item produced: the item, and the cycle of its playback order the
+	// episode belongs to. The materializer rebuilds a series cursor from them.
+	// Internal bookkeeping, never served to clients.
+	SourceBlockItemID *string `json:"-"`
+	SeriesCycle       *int    `json:"-"`
 }
 
 // EpgRevision is the one-row-per-tenant version marker GET /epg/meta serves,

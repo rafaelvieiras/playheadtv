@@ -22,6 +22,7 @@ func Register(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer,
 	registerChannels(mux, db, mat)
 	registerMediaSources(mux, db, mat, sync, encKey)
 	registerCatalogItems(mux, db)
+	registerSeries(mux, db)
 	registerBlocks(mux, db, mat)
 	registerFiller(mux, db, mat)
 	registerSchedules(mux, db, mat)

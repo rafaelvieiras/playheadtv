@@ -8,14 +8,15 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/series"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
 // blockColumns/blockItemColumns mirror internal/api/blocks.go's constants of
 // the same name — duplicated rather than imported, see mcpserver.go's
 // package comment.
-const blockColumns = "id, tenant_id, name, description, created_at, updated_at"
-const blockItemColumns = "id, block_id, position, catalog_item_id, trim_duration_ms"
+const blockColumns = "id, tenant_id, name, description, criteria, created_at, updated_at"
+const blockItemColumns = "id, block_id, position, item_type, COALESCE(catalog_item_id, '') AS catalog_item_id, trim_duration_ms, spec"
 
 func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Materializer) {
 	mcp.AddTool(s, &mcp.Tool{
@@ -25,10 +26,25 @@ func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Material
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "add_block_item",
-		Description: "Append a catalog item to the end of a block's playlist (position is always " +
-			"MAX(position)+1 — there is no reordering in this v1). Triggers EPG regeneration. Mirrors " +
-			"POST /blocks/{id}/items.",
+		Description: "Append an item to the end of a manual block's playlist: a catalog item (catalog_item_id, optional " +
+			"trim_duration_ms) or a whole series (series: media_source_id plus series_external_id or series_title, and " +
+			"playback_order original|random|shuffle|release_date, default original; no trim). A series item airs its " +
+			"episodes in that order until the next scheduled occurrence or the end of the window, so items after it in " +
+			"the block never get on the air. Use search_series to find a series. Reorder with update_block_item. " +
+			"Triggers EPG regeneration. Mirrors POST /blocks/{id}/items.",
 	}, addBlockItemHandler(db, mat))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "delete_block_item",
+		Description: "Remove one item (catalog or series) from a manual block. Positions are not renumbered. Triggers EPG regeneration. Mirrors DELETE /blocks/{id}/items/{item_id}.",
+	}, deleteBlockItemHandler(db, mat))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "search_series",
+		Description: "List the series in the catalog (episodes grouped by media source and series) with episode count " +
+			"and total duration, optionally filtered by series title (case- and accent-insensitive) or media source. " +
+			"Mirrors GET /series.",
+	}, searchSeriesHandler(db))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_block_items",
@@ -74,10 +90,18 @@ func createBlockHandler(db storage.DB) mcp.ToolHandlerFor[createBlockInput, doma
 	}
 }
 
+type addBlockSeriesInput struct {
+	MediaSourceID    string `json:"media_source_id" jsonschema:"media source the series belongs to"`
+	SeriesExternalID string `json:"series_external_id,omitempty" jsonschema:"the series' id in its media source (preferred)"`
+	SeriesTitle      string `json:"series_title,omitempty" jsonschema:"series title, used when there is no series_external_id"`
+	PlaybackOrder    string `json:"playback_order,omitempty" jsonschema:"original (season, episode), random, shuffle (every episode once before repeats) or release_date; default original"`
+}
+
 type addBlockItemInput struct {
-	BlockID        string `json:"block_id" jsonschema:"the block to append to"`
-	CatalogItemID  string `json:"catalog_item_id" jsonschema:"the catalog item to append"`
-	TrimDurationMs *int64 `json:"trim_duration_ms,omitempty" jsonschema:"optional trimmed duration in milliseconds, overriding the catalog item's full duration"`
+	BlockID        string               `json:"block_id" jsonschema:"the block to append to"`
+	CatalogItemID  string               `json:"catalog_item_id,omitempty" jsonschema:"the catalog item to append (omit when adding a series)"`
+	TrimDurationMs *int64               `json:"trim_duration_ms,omitempty" jsonschema:"optional trimmed duration in milliseconds, overriding the catalog item's full duration; not valid for a series"`
+	Series         *addBlockSeriesInput `json:"series,omitempty" jsonschema:"add a whole series instead of a catalog item"`
 }
 
 func addBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[addBlockItemInput, domain.BlockItem] {
@@ -85,11 +109,44 @@ func addBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.Tool
 		if in.BlockID == "" {
 			return nil, domain.BlockItem{}, errors.New("block_id is required")
 		}
-		if in.CatalogItemID == "" {
-			return nil, domain.BlockItem{}, errors.New("catalog_item_id is required")
-		}
-		if err := fetchBlockExists(ctx, db, in.BlockID); err != nil {
+		var block domain.Block
+		if err := db.Query(ctx, &block,
+			"SELECT "+blockColumns+" FROM block WHERE tenant_id = ? AND id = ?", defaultTenantID, in.BlockID,
+		); err != nil {
 			return nil, domain.BlockItem{}, err
+		}
+		if block.Criteria != nil {
+			return nil, domain.BlockItem{}, errors.New("this block is dynamic; items are managed automatically from its criteria")
+		}
+
+		itemType := domain.BlockItemCatalog
+		var specJSON *string
+		if in.Series != nil {
+			itemType = domain.BlockItemSeries
+			if in.CatalogItemID != "" {
+				return nil, domain.BlockItem{}, errors.New("catalog_item_id is not valid for a series item")
+			}
+			if in.TrimDurationMs != nil {
+				return nil, domain.BlockItem{}, errors.New("trim_duration_ms is not valid for a series item; add a trimmed episode as its own item before the series")
+			}
+			spec, err := series.NewSpec(in.Series.MediaSourceID, in.Series.SeriesExternalID, in.Series.SeriesTitle, in.Series.PlaybackOrder, nil)
+			if err != nil {
+				return nil, domain.BlockItem{}, err
+			}
+			found, err := series.Exists(ctx, db, defaultTenantID, spec)
+			if err != nil {
+				return nil, domain.BlockItem{}, err
+			}
+			if !found {
+				return nil, domain.BlockItem{}, errors.New("no episodes of that series in the catalog")
+			}
+			encoded, err := series.Encode(spec)
+			if err != nil {
+				return nil, domain.BlockItem{}, err
+			}
+			specJSON = &encoded
+		} else if in.CatalogItemID == "" {
+			return nil, domain.BlockItem{}, errors.New("catalog_item_id or series is required")
 		}
 
 		var maxPosition []int
@@ -107,18 +164,95 @@ func addBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.Tool
 			ID:             uuid.NewString(),
 			BlockID:        in.BlockID,
 			Position:       position,
+			ItemType:       itemType,
 			CatalogItemID:  in.CatalogItemID,
 			TrimDurationMs: in.TrimDurationMs,
+			Spec:           specJSON,
+		}
+		var catalogItemID *string
+		if itemType == domain.BlockItemCatalog {
+			catalogItemID = &item.CatalogItemID
 		}
 		err := db.Exec(ctx,
-			"INSERT INTO block_item (id, block_id, position, catalog_item_id, trim_duration_ms) VALUES (?, ?, ?, ?, ?)",
-			item.ID, item.BlockID, item.Position, item.CatalogItemID, item.TrimDurationMs,
+			"INSERT INTO block_item (id, block_id, position, item_type, catalog_item_id, trim_duration_ms, spec) VALUES (?, ?, ?, ?, ?, ?, ?)",
+			item.ID, item.BlockID, item.Position, item.ItemType, catalogItemID, item.TrimDurationMs, item.Spec,
 		)
 		if err != nil {
 			return nil, domain.BlockItem{}, err
 		}
+		items := []domain.BlockItem{item}
+		if err := series.Decorate(ctx, db, defaultTenantID, items); err != nil {
+			return nil, domain.BlockItem{}, err
+		}
 		mat.Trigger()
-		return nil, item, nil
+		return nil, items[0], nil
+	}
+}
+
+type deleteBlockItemInput struct {
+	BlockID string `json:"block_id" jsonschema:"the block the item belongs to"`
+	ItemID  string `json:"item_id" jsonschema:"the block item to remove"`
+}
+
+type deleteBlockItemOutput struct {
+	Deleted bool `json:"deleted"`
+}
+
+func deleteBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[deleteBlockItemInput, deleteBlockItemOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in deleteBlockItemInput) (*mcp.CallToolResult, deleteBlockItemOutput, error) {
+		if in.BlockID == "" || in.ItemID == "" {
+			return nil, deleteBlockItemOutput{}, errors.New("block_id and item_id are required")
+		}
+		var block domain.Block
+		if err := db.Query(ctx, &block,
+			"SELECT "+blockColumns+" FROM block WHERE tenant_id = ? AND id = ?", defaultTenantID, in.BlockID,
+		); err != nil {
+			return nil, deleteBlockItemOutput{}, err
+		}
+		if block.Criteria != nil {
+			return nil, deleteBlockItemOutput{}, errors.New("this block is dynamic; items are managed automatically from its criteria")
+		}
+		var item domain.BlockItem
+		if err := db.Query(ctx, &item,
+			"SELECT "+blockItemColumns+" FROM block_item WHERE block_id = ? AND id = ?", in.BlockID, in.ItemID,
+		); err != nil {
+			return nil, deleteBlockItemOutput{}, err
+		}
+		if err := db.Exec(ctx, "DELETE FROM block_item WHERE block_id = ? AND id = ?", in.BlockID, in.ItemID); err != nil {
+			return nil, deleteBlockItemOutput{}, err
+		}
+		mat.Trigger()
+		return nil, deleteBlockItemOutput{Deleted: true}, nil
+	}
+}
+
+type searchSeriesInput struct {
+	Query         string `json:"query,omitempty" jsonschema:"series title to search (case- and accent-insensitive substring)"`
+	MediaSourceID string `json:"media_source_id,omitempty" jsonschema:"only series of this media source"`
+	Limit         int    `json:"limit,omitempty" jsonschema:"max results, default 50, capped at 200"`
+}
+
+type searchSeriesOutput struct {
+	Series []series.Summary `json:"series"`
+}
+
+func searchSeriesHandler(db storage.DB) mcp.ToolHandlerFor[searchSeriesInput, searchSeriesOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in searchSeriesInput) (*mcp.CallToolResult, searchSeriesOutput, error) {
+		limit := in.Limit
+		if limit <= 0 {
+			limit = 50
+		}
+		if limit > 200 {
+			limit = 200
+		}
+		out, err := series.List(ctx, db, defaultTenantID, in.Query, in.MediaSourceID, limit, 0)
+		if err != nil {
+			return nil, searchSeriesOutput{}, err
+		}
+		if out == nil {
+			out = []series.Summary{}
+		}
+		return nil, searchSeriesOutput{Series: out}, nil
 	}
 }
 
@@ -144,6 +278,9 @@ func listBlockItemsHandler(db storage.DB) mcp.ToolHandlerFor[listBlockItemsInput
 			in.BlockID,
 		)
 		if err != nil {
+			return nil, listBlockItemsOutput{}, err
+		}
+		if err := series.Decorate(ctx, db, defaultTenantID, items); err != nil {
 			return nil, listBlockItemsOutput{}, err
 		}
 		return nil, listBlockItemsOutput{Items: items}, nil

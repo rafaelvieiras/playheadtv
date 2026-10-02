@@ -232,3 +232,141 @@ func TestMigration0009_KeepsExistingCatalogRows(t *testing.T) {
 		t.Fatalf("catalog_item_studio after item delete = %v (%v), want 0", n, err)
 	}
 }
+
+// TestMigration0010_TypedBlockItems proves the typed block item migration on a
+// database that already holds manual blocks: every existing block_item becomes
+// a 'catalog' item with its position, trim and catalog item intact, the new
+// columns and tables work, a series item satisfies the CHECK and a malformed
+// one does not.
+func TestMigration0010_TypedBlockItems(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "playheadtv.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	pre := fstest.MapFS{}
+	entries, _ := fs.ReadDir(migrations.FS, ".")
+	for _, e := range entries {
+		if e.Name() >= "0010_" {
+			continue
+		}
+		content, err := fs.ReadFile(migrations.FS, e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pre[e.Name()] = &fstest.MapFile{Data: content}
+	}
+	if err := RunMigrations(ctx, db, pre); err != nil {
+		t.Fatalf("RunMigrations (pre-0010): %v", err)
+	}
+	for _, q := range []string{
+		"INSERT INTO tenant (id, name, tier, created_at) VALUES ('t1', 'Test', 'self_hosted', 1)",
+		"INSERT INTO media_source (id, tenant_id, type, name, sync_mode, created_at, updated_at) VALUES ('ms1', 't1', 'local_folder', 'Local', 'push', 1, 1)",
+		"INSERT INTO catalog_item (id, tenant_id, media_source_id, external_id, kind, title, duration_ms, synced_at, search_text) VALUES ('ci1', 't1', 'ms1', 'ext1', 'movie', 'One', 60000, 1, 'one')",
+		"INSERT INTO catalog_item (id, tenant_id, media_source_id, external_id, kind, title, duration_ms, synced_at, search_text) VALUES ('ci2', 't1', 'ms1', 'ext2', 'movie', 'Two', 90000, 1, 'two')",
+		"INSERT INTO channel (id, tenant_id, number, name, timezone, created_at, updated_at) VALUES ('c1', 't1', 1, 'Channel', 'UTC', 1, 1)",
+		"INSERT INTO block (id, tenant_id, name, created_at, updated_at) VALUES ('b1', 't1', 'Manual', 1, 1)",
+		"INSERT INTO block (id, tenant_id, name, created_at, updated_at) VALUES ('b2', 't1', 'Other', 1, 1)",
+		"INSERT INTO block_item (id, block_id, position, catalog_item_id, trim_duration_ms) VALUES ('bi1', 'b1', 0, 'ci1', NULL)",
+		"INSERT INTO block_item (id, block_id, position, catalog_item_id, trim_duration_ms) VALUES ('bi2', 'b1', 1, 'ci2', 45000)",
+		"INSERT INTO block_item (id, block_id, position, catalog_item_id, trim_duration_ms) VALUES ('bi3', 'b2', 0, 'ci2', NULL)",
+		"INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, generated_at) VALUES ('e1', 't1', 'c1', 'program', 'ci1', 1, 2, 1)",
+	} {
+		if err := db.Exec(ctx, q); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+
+	if err := RunMigrations(ctx, db, migrations.FS); err != nil {
+		t.Fatalf("RunMigrations (0010): %v", err)
+	}
+
+	var rows []struct {
+		ID             string
+		BlockID        string
+		Position       int
+		ItemType       string
+		CatalogItemID  *string
+		TrimDurationMs *int64
+		Spec           *string
+	}
+	if err := db.Query(ctx, &rows, "SELECT id, block_id, position, item_type, catalog_item_id, trim_duration_ms, spec FROM block_item ORDER BY id"); err != nil {
+		t.Fatalf("query block_item: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("block_item rows = %d, want 3 (the rebuild must not lose rows)", len(rows))
+	}
+	for i, want := range []struct {
+		id, block, catalog string
+		pos                int
+		trim               *int64
+	}{
+		{"bi1", "b1", "ci1", 0, nil},
+		{"bi2", "b1", "ci2", 1, int64Ptr(45000)},
+		{"bi3", "b2", "ci2", 0, nil},
+	} {
+		got := rows[i]
+		if got.ID != want.id || got.BlockID != want.block || got.Position != want.pos || got.ItemType != "catalog" ||
+			got.CatalogItemID == nil || *got.CatalogItemID != want.catalog || got.Spec != nil {
+			t.Errorf("row %d = %+v, want %+v as a catalog item", i, got, want)
+		}
+		if (got.TrimDurationMs == nil) != (want.trim == nil) || (want.trim != nil && *got.TrimDurationMs != *want.trim) {
+			t.Errorf("row %d trim = %v, want %v", i, got.TrimDurationMs, want.trim)
+		}
+	}
+
+	var fk []int
+	if err := db.Query(ctx, &fk, "PRAGMA foreign_keys"); err != nil || len(fk) != 1 || fk[0] != 1 {
+		t.Fatalf("foreign_keys after migrations = %v (err %v), want [1]", fk, err)
+	}
+
+	// A series item: no catalog item, a spec. Unique (block_id, position) still holds.
+	if err := db.Exec(ctx, `INSERT INTO block_item (id, block_id, position, item_type, catalog_item_id, spec) VALUES ('bs1', 'b1', 2, 'series', NULL, '{"media_source_id":"ms1"}')`); err != nil {
+		t.Fatalf("insert series block_item: %v", err)
+	}
+	if err := db.Exec(ctx, `INSERT INTO block_item (id, block_id, position, item_type, catalog_item_id, spec) VALUES ('bs2', 'b1', 2, 'series', NULL, '{}')`); err == nil {
+		t.Errorf("duplicate (block_id, position) was accepted")
+	}
+	// Malformed typed rows are rejected.
+	for _, q := range []string{
+		`INSERT INTO block_item (id, block_id, position, item_type, catalog_item_id) VALUES ('x1', 'b1', 5, 'series', NULL)`,
+		`INSERT INTO block_item (id, block_id, position, item_type, catalog_item_id, spec) VALUES ('x2', 'b1', 6, 'series', 'ci1', '{}')`,
+		`INSERT INTO block_item (id, block_id, position, item_type) VALUES ('x3', 'b1', 7, 'catalog')`,
+		`INSERT INTO block_item (id, block_id, position, item_type, catalog_item_id) VALUES ('x4', 'b1', 8, 'bogus', 'ci1')`,
+	} {
+		if err := db.Exec(ctx, q); err == nil {
+			t.Errorf("malformed block_item accepted: %s", q)
+		}
+	}
+
+	// epg_entry gained the series columns; existing rows read NULL.
+	var cycles []*int
+	if err := db.Query(ctx, &cycles, "SELECT series_cycle FROM epg_entry WHERE id = 'e1'"); err != nil || len(cycles) != 1 || cycles[0] != nil {
+		t.Fatalf("epg_entry.series_cycle = %v (err %v), want [nil]", cycles, err)
+	}
+
+	// series_cursor cascades with its block item.
+	if err := db.Exec(ctx, "INSERT INTO series_cursor (tenant_id, channel_id, block_item_id, origin_ms) VALUES ('t1', 'c1', 'bs1', 5)"); err != nil {
+		t.Fatalf("insert series_cursor: %v", err)
+	}
+	if err := db.Exec(ctx, "DELETE FROM block_item WHERE id = 'bs1'"); err != nil {
+		t.Fatalf("delete block_item: %v", err)
+	}
+	var cursors []int
+	if err := db.Query(ctx, &cursors, "SELECT COUNT(*) FROM series_cursor"); err != nil || cursors[0] != 0 {
+		t.Fatalf("series_cursor rows after item delete = %v (err %v), want 0", cursors, err)
+	}
+
+	// Deleting a block still cascades to its items.
+	if err := db.Exec(ctx, "DELETE FROM block WHERE id = 'b2'"); err != nil {
+		t.Fatalf("delete block: %v", err)
+	}
+	var left []int
+	if err := db.Query(ctx, &left, "SELECT COUNT(*) FROM block_item WHERE block_id = 'b2'"); err != nil || left[0] != 0 {
+		t.Fatalf("block_item rows of deleted block = %v (err %v), want 0", left, err)
+	}
+}
+
+func int64Ptr(v int64) *int64 { return &v }

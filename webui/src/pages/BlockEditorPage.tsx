@@ -19,10 +19,26 @@ import { authoringKeys, usePreviewCriteria, useUpdateBlockItem } from '@/lib/aut
 import { formatCatalogTitle } from '@/lib/catalog'
 import { formatDuration, parseCriteriaJson, validateCriteria } from '@/lib/criteria'
 import { ApiError, api } from '@/lib/http'
-import type { Block, BlockInput, BlockItem, CatalogItem, DynamicCriteria } from '@/lib/types'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import {
+  PLAYBACK_ORDER_LABELS,
+  type Block,
+  type BlockInput,
+  type BlockItem,
+  type BlockItemInput,
+  type CatalogItem,
+  type DynamicCriteria,
+  type PlaybackOrder,
+  type SeriesSummary,
+} from '@/lib/types'
 
 function parseCriteria(raw: string | null): DynamicCriteria | null {
   return parseCriteriaJson(raw)
+}
+
+// seriesKey identifies a GET /series row: media source plus external id or title.
+function seriesKey(s: SeriesSummary): string {
+  return `${s.media_source_id}\u0000${s.series_external_id ?? ''}\u0000${s.series_title}`
 }
 
 function errorMessage(err: unknown, fallback: string): string {
@@ -214,7 +230,10 @@ function BlockItemsSection({ block }: { block: Block }) {
   })
   const sorted = useMemo(() => [...(items ?? [])].sort((a, b) => a.position - b.position), [items])
 
-  const catalogIds = useMemo(() => [...new Set(sorted.map((i) => i.catalog_item_id))], [sorted])
+  const catalogIds = useMemo(
+    () => [...new Set(sorted.flatMap((i) => (i.item_type === 'series' || !i.catalog_item_id ? [] : [i.catalog_item_id])))],
+    [sorted]
+  )
   const catalogQueries = useQueries({
     queries: catalogIds.map((cid) => ({
       queryKey: ['catalog-item', cid],
@@ -256,15 +275,53 @@ function BlockItemsSection({ block }: { block: Block }) {
     queryClient.invalidateQueries({ queryKey: itemsKey })
   }
 
+  // Series picker: GET /series?q=, the chosen series is added with the order
+  // selected next to it.
+  const [seriesSearch, setSeriesSearch] = useState('')
+  const [debouncedSeriesSearch, setDebouncedSeriesSearch] = useState('')
+  const [newSeriesOrder, setNewSeriesOrder] = useState<PlaybackOrder>('original')
+  useEffect(() => {
+    const handle = setTimeout(() => setDebouncedSeriesSearch(seriesSearch.trim()), 300)
+    return () => clearTimeout(handle)
+  }, [seriesSearch])
+  const { data: seriesResults } = useQuery({
+    queryKey: ['series-search', debouncedSeriesSearch],
+    queryFn: () => api.get<SeriesSummary[]>(`/series?q=${encodeURIComponent(debouncedSeriesSearch)}&limit=10`),
+  })
+  const seriesByKey = useMemo(() => {
+    const map = new Map<string, SeriesSummary>()
+    for (const s of seriesResults ?? []) map.set(seriesKey(s), s)
+    return map
+  }, [seriesResults])
+  const seriesOptions = useMemo(
+    () =>
+      (seriesResults ?? []).map((s) => ({
+        value: seriesKey(s),
+        label: `${s.series_title} (${s.episode_count} episode${s.episode_count === 1 ? '' : 's'}, ${formatDuration(s.total_duration_ms)})`,
+      })),
+    [seriesResults]
+  )
+
   const addMutation = useMutation({
-    mutationFn: (catalogItemId: string) =>
-      api.post<BlockItem>(`/blocks/${blockId}/items`, { catalog_item_id: catalogItemId, trim_duration_ms: null }),
+    mutationFn: (body: BlockItemInput) => api.post<BlockItem>(`/blocks/${blockId}/items`, body),
     onSuccess: () => {
       invalidate()
       toast.success('Item added.')
     },
     onError: (err) => toast.error(errorMessage(err, 'Could not add the item.')),
   })
+
+  function addSeries(key: string) {
+    const s = seriesByKey.get(key)
+    if (!s) return
+    addMutation.mutate({
+      series: {
+        media_source_id: s.media_source_id,
+        ...(s.series_external_id ? { series_external_id: s.series_external_id } : { series_title: s.series_title }),
+        playback_order: newSeriesOrder,
+      },
+    })
+  }
 
   const removeMutation = useMutation({
     mutationFn: (itemId: string) => api.delete(`/blocks/${blockId}/items/${itemId}`),
@@ -285,6 +342,16 @@ function BlockItemsSection({ block }: { block: Block }) {
     )
   }
 
+  function setOrder(item: BlockItem, order: PlaybackOrder) {
+    updateMutation.mutate(
+      { itemId: item.id, playback_order: order },
+      {
+        onSuccess: () => toast.success('Playback order changed, the series restarts.'),
+        onError: (err) => toast.error(errorMessage(err, 'Could not change the playback order.')),
+      }
+    )
+  }
+
   function setTrim(item: BlockItem, ms: number) {
     updateMutation.mutate(
       { itemId: item.id, trim_duration_ms: ms },
@@ -295,18 +362,24 @@ function BlockItemsSection({ block }: { block: Block }) {
     )
   }
 
-  const totalMs = sorted.reduce((sum, item) => {
-    const full = catalogById.get(item.catalog_item_id)?.duration_ms ?? 0
+  const catalogItems = sorted.filter((i) => i.item_type !== 'series')
+  const seriesCount = sorted.length - catalogItems.length
+  const totalMs = catalogItems.reduce((sum, item) => {
+    const full = catalogById.get(item.catalog_item_id ?? '')?.duration_ms ?? 0
     return sum + (item.trim_duration_ms ?? full)
   }, 0)
-  const allLoaded = sorted.every((i) => catalogById.has(i.catalog_item_id))
+  const allLoaded = catalogItems.every((i) => catalogById.has(i.catalog_item_id ?? ''))
+  // A series airs until the next scheduled item, so anything after it in the
+  // block never gets on the air.
+  const lastSeriesIndex = sorted.map((i) => i.item_type).lastIndexOf('series')
+  const shadowed = lastSeriesIndex >= 0 && lastSeriesIndex < sorted.length - 1
 
   return (
     <section className="flex flex-col gap-4" data-testid="block-items">
       <div className="flex items-center justify-between">
         <h2 className="text-base font-medium">Items</h2>
         <span className="text-sm text-muted-foreground">
-          Total duration:{' '}
+          Total duration{seriesCount > 0 ? ' (single items)' : ''}:{' '}
           <span data-testid="items-total">{allLoaded ? formatDuration(totalMs) : '…'}</span>
         </span>
       </div>
@@ -316,6 +389,13 @@ function BlockItemsSection({ block }: { block: Block }) {
         <InlineWarning title="This block is empty">Add at least one item below so it has something to play.</InlineWarning>
       )}
 
+      {shadowed && (
+        <InlineWarning title="Items after a series never play">
+          A series item airs its episodes until the next scheduled item or the end of the guide, so the items below it
+          in this block are never reached. Move the series to the end.
+        </InlineWarning>
+      )}
+
       {sorted.length > 0 && (
         <Table>
           <TableHeader>
@@ -323,28 +403,65 @@ function BlockItemsSection({ block }: { block: Block }) {
               <TableHead className="w-12">#</TableHead>
               <TableHead>Title</TableHead>
               <TableHead>Full length</TableHead>
-              <TableHead>Trim (seconds)</TableHead>
+              <TableHead>Trim (seconds) / order</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
             {sorted.map((item, index) => {
-              const catalog = catalogById.get(item.catalog_item_id)
+              const isSeries = item.item_type === 'series'
+              const catalog = catalogById.get(item.catalog_item_id ?? '')
               return (
                 <TableRow key={item.id} data-testid="block-item-row">
                   <TableCell>{index + 1}</TableCell>
                   <TableCell className="max-w-64 truncate" data-testid="item-title">
-                    {catalog ? formatCatalogTitle(catalog) : '…'}
+                    {isSeries ? (
+                      <span className="flex items-center gap-2">
+                        <Badge variant="secondary">Series</Badge>
+                        <span className="truncate">{item.series?.series_title || 'Series'}</span>
+                      </span>
+                    ) : catalog ? (
+                      formatCatalogTitle(catalog)
+                    ) : (
+                      '…'
+                    )}
                   </TableCell>
-                  <TableCell>{catalog ? formatDuration(catalog.duration_ms) : '—'}</TableCell>
+                  <TableCell data-testid="item-length">
+                    {isSeries
+                      ? item.series
+                        ? `${item.series.episode_count} episode${item.series.episode_count === 1 ? '' : 's'}, ${formatDuration(item.series.total_duration_ms)}`
+                        : '—'
+                      : catalog
+                        ? formatDuration(catalog.duration_ms)
+                        : '—'}
+                  </TableCell>
                   <TableCell>
-                    <TrimInput
-                      key={`${item.id}-${item.trim_duration_ms}`}
-                      item={item}
-                      fullMs={catalog?.duration_ms}
-                      disabled={busy}
-                      onCommit={(ms) => setTrim(item, ms)}
-                    />
+                    {isSeries ? (
+                      <Select
+                        value={item.series?.playback_order ?? 'original'}
+                        onValueChange={(v) => setOrder(item, v as PlaybackOrder)}
+                        disabled={busy}
+                      >
+                        <SelectTrigger className="w-48" aria-label="Playback order" data-testid="series-order">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(Object.keys(PLAYBACK_ORDER_LABELS) as PlaybackOrder[]).map((o) => (
+                            <SelectItem key={o} value={o}>
+                              {PLAYBACK_ORDER_LABELS[o]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <TrimInput
+                        key={`${item.id}-${item.trim_duration_ms}`}
+                        item={item}
+                        fullMs={catalog?.duration_ms}
+                        disabled={busy}
+                        onCommit={(ms) => setTrim(item, ms)}
+                      />
+                    )}
                   </TableCell>
                   <TableCell className="flex justify-end gap-1 text-right">
                     <Button
@@ -387,13 +504,42 @@ function BlockItemsSection({ block }: { block: Block }) {
           id="block-add-item"
           options={options}
           value={null}
-          onValueChange={(v) => addMutation.mutate(v)}
+          onValueChange={(v) => addMutation.mutate({ catalog_item_id: v, trim_duration_ms: null })}
           placeholder="Search the catalog by title…"
           searchPlaceholder="Type a title…"
           emptyMessage={debouncedSearch ? 'No items found.' : 'Type to search the catalog.'}
           onSearchChange={setSearch}
           disabled={addMutation.isPending}
         />
+      </Field>
+
+      <Field>
+        <FieldLabel htmlFor="block-add-series">Add a series</FieldLabel>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Select value={newSeriesOrder} onValueChange={(v) => setNewSeriesOrder(v as PlaybackOrder)}>
+            <SelectTrigger className="w-full sm:w-52" aria-label="Order for the new series" data-testid="new-series-order">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {(Object.keys(PLAYBACK_ORDER_LABELS) as PlaybackOrder[]).map((o) => (
+                <SelectItem key={o} value={o}>
+                  {PLAYBACK_ORDER_LABELS[o]}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <Combobox
+            id="block-add-series"
+            options={seriesOptions}
+            value={null}
+            onValueChange={addSeries}
+            placeholder="Search series by title…"
+            searchPlaceholder="Type a series title…"
+            emptyMessage={debouncedSeriesSearch ? 'No series found.' : 'No series in the catalog.'}
+            onSearchChange={setSeriesSearch}
+            disabled={addMutation.isPending}
+          />
+        </div>
       </Field>
     </section>
   )
