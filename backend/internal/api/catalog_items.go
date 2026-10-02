@@ -4,12 +4,14 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
 func registerCatalogItems(mux *http.ServeMux, db storage.DB) {
 	mux.HandleFunc("GET /catalog-items", listCatalogItems(db))
+	mux.HandleFunc("POST /catalog-items/preview-criteria", previewCriteria(db))
 	mux.HandleFunc("GET /catalog-items/{id}", getCatalogItem(db))
 }
 
@@ -70,6 +72,32 @@ func listCatalogItems(db storage.DB) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, items)
+	}
+}
+
+// criteriaPreviewSampleSize is how many matching items POST
+// /catalog-items/preview-criteria returns as a sample.
+const criteriaPreviewSampleSize = 20
+
+// previewCriteria takes the same criteria object as block/pool criteria
+// (same validation) and reports what it matches right now, persisting nothing.
+func previewCriteria(db storage.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req fillerPoolCriteriaRequest
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if msg, ok := validatePoolCriteria(&req); !ok {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+		res, err := catalogsync.PreviewCriteria(r.Context(), db, DefaultTenantID, req.Kind, req.Genres, req.YearFrom, req.YearTo, criteriaPreviewSampleSize)
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/google/uuid"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
@@ -38,18 +39,18 @@ type dynamicBlock struct {
 	Criteria string
 }
 
-// matchCriteria returns the catalog_item ids matching c for tenantID,
-// ordered by title — the same query resolveOnePool/resolveOneBlock use to
-// recompute a dynamic pool's/block's membership.
-func matchCriteria(ctx context.Context, db storage.DB, tenantID string, c poolCriteria) ([]string, error) {
-	query := "SELECT id FROM catalog_item WHERE tenant_id = ? AND kind = ?"
+// criteriaWhere builds the WHERE clause (and args) selecting the catalog
+// items matching c for tenantID — the single definition of "matches" shared
+// by dynamic pool/block resolution and PreviewCriteria.
+func criteriaWhere(tenantID string, c poolCriteria) (string, []any) {
+	where := "tenant_id = ? AND kind = ?"
 	args := []any{tenantID, c.Kind}
 	if c.YearFrom != nil {
-		query += " AND production_year >= ?"
+		where += " AND production_year >= ?"
 		args = append(args, *c.YearFrom)
 	}
 	if c.YearTo != nil {
-		query += " AND production_year <= ?"
+		where += " AND production_year <= ?"
 		args = append(args, *c.YearTo)
 	}
 	if len(c.Genres) > 0 {
@@ -58,15 +59,57 @@ func matchCriteria(ctx context.Context, db storage.DB, tenantID string, c poolCr
 			clauses = append(clauses, "genres LIKE ?")
 			args = append(args, "%"+g+"%")
 		}
-		query += " AND (" + strings.Join(clauses, " OR ") + ")"
+		where += " AND (" + strings.Join(clauses, " OR ") + ")"
 	}
-	query += " ORDER BY title"
+	return where, args
+}
 
+// matchCriteria returns the catalog_item ids matching c for tenantID,
+// ordered by title — the same query resolveOnePool/resolveOneBlock use to
+// recompute a dynamic pool's/block's membership.
+func matchCriteria(ctx context.Context, db storage.DB, tenantID string, c poolCriteria) ([]string, error) {
+	where, args := criteriaWhere(tenantID, c)
 	var catalogItemIDs []string
-	if err := db.Query(ctx, &catalogItemIDs, query, args...); err != nil {
+	if err := db.Query(ctx, &catalogItemIDs, "SELECT id FROM catalog_item WHERE "+where+" ORDER BY title", args...); err != nil {
 		return nil, fmt.Errorf("query matching catalog_item: %w", err)
 	}
 	return catalogItemIDs, nil
+}
+
+// CriteriaPreview is the result of PreviewCriteria.
+type CriteriaPreview struct {
+	MatchCount      int                  `json:"match_count"`
+	TotalDurationMs int64                `json:"total_duration_ms"`
+	Sample          []domain.CatalogItem `json:"sample"`
+}
+
+const previewItemColumns = "id, tenant_id, media_source_id, external_id, kind, title, series_title, duration_ms, source_modified_at, synced_at, genres, production_year"
+
+type previewTotals struct {
+	MatchCount      int
+	TotalDurationMs int64
+}
+
+// PreviewCriteria reports what a criteria would currently match (count, total
+// duration, and the first sampleLimit items ordered by title) without
+// persisting anything. It uses the same matching clause as dynamic
+// pool/block resolution.
+func PreviewCriteria(ctx context.Context, db storage.DB, tenantID, kind string, genres []string, yearFrom, yearTo *int, sampleLimit int) (CriteriaPreview, error) {
+	where, args := criteriaWhere(tenantID, poolCriteria{Kind: kind, Genres: genres, YearFrom: yearFrom, YearTo: yearTo})
+
+	var totals previewTotals
+	if err := db.Query(ctx, &totals,
+		"SELECT COUNT(*) AS match_count, COALESCE(SUM(duration_ms), 0) AS total_duration_ms FROM catalog_item WHERE "+where, args...,
+	); err != nil {
+		return CriteriaPreview{}, fmt.Errorf("preview totals: %w", err)
+	}
+	sample := []domain.CatalogItem{}
+	if err := db.Query(ctx, &sample,
+		"SELECT "+previewItemColumns+" FROM catalog_item WHERE "+where+" ORDER BY title LIMIT ?", append(args, sampleLimit)...,
+	); err != nil {
+		return CriteriaPreview{}, fmt.Errorf("preview sample: %w", err)
+	}
+	return CriteriaPreview{MatchCount: totals.MatchCount, TotalDurationMs: totals.TotalDurationMs, Sample: sample}, nil
 }
 
 // ResolveDynamicPools recomputes filler_pool_item membership for every

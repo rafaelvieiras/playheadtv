@@ -373,3 +373,30 @@ func TestResolveDynamicBlocksPositionIsSequential(t *testing.T) {
 		}
 	}
 }
+
+func TestPreviewCriteriaMatchesResolution(t *testing.T) {
+	db := newTestDB(t)
+	ctx := context.Background()
+	y := func(v int64) *int64 { return &v }
+	seedItem(t, db, "a", "movie", "A", "Comedy", y(1990))
+	seedItem(t, db, "b", "movie", "B", "Comedy, Drama", y(2005))
+	seedItem(t, db, "c", "movie", "C", "Horror", y(2005))
+	seedItem(t, db, "d", "episode", "D", "Comedy", y(2005))
+
+	from := 2000
+	c := poolCriteria{Kind: "movie", Genres: []string{"Comedy"}, YearFrom: &from}
+	ids, err := matchCriteria(ctx, db, testTenantID, c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := PreviewCriteria(ctx, db, testTenantID, c.Kind, c.Genres, c.YearFrom, c.YearTo, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.MatchCount != len(ids) || res.MatchCount != 1 || res.TotalDurationMs != 1000 {
+		t.Errorf("preview = %+v, matchCriteria ids = %v", res, ids)
+	}
+	if len(res.Sample) != 1 || res.Sample[0].ID != ids[0] {
+		t.Errorf("sample = %+v, want item %v", res.Sample, ids)
+	}
+}

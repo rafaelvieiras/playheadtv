@@ -346,8 +346,8 @@ actionable checklist.
       5s timeout — to decide `sync_mode` pull/push, same as the REST handler;
       encrypts an optional `credential` with the same `encKey`), `search_catalog`
       (title substring search, default/max limits 50/200, same as REST),
-      `create_block` + `add_block_item` (position always `MAX(position)+1`,
-      no reordering — same v1 limitation the web UI already documents above)
+      `create_block` + `add_block_item` (position always `MAX(position)+1`;
+      `update_block_item` reorders/trims, mirroring `PUT /blocks/{id}/items/{item_id}`)
       + `list_block_items` (added beyond the literal REST 1:1 mapping so an
       agent can verify its own `build_block` result without leaving MCP),
       `create_filler_pool` + `add_filler_pool_item` + `create_filler_rule` +
@@ -470,10 +470,9 @@ actionable checklist.
       position-ordered list (titles resolved via `GET /catalog-items/{id}`,
       cached with TanStack Query `staleTime: Infinity`, same pattern as
       `EpgPage.tsx`), a debounced (300ms) `GET /catalog-items?q=` search to
-      add an item to the end, and a remove button per item — reordering
-      isn't supported by the API (`POST /blocks/{id}/items` always appends),
-      so the UI doesn't pretend otherwise; the known workaround (remove +
-      re-add) is left as-is, not solved in this slice. The schedule entry
+      add an item to the end, and a remove button per item — the UI does not
+      reorder yet (`PUT /blocks/{id}/items/{item_id}` exists in the API, not
+      wired into this dialog). The schedule entry
       form (`webui/src/components/ScheduleEntryDialog.tsx`) mirrors
       `validateScheduleEntryRequest` from `backend/internal/api/schedules.go`
       client-side: a weekly/once toggle swaps between a day-of-week +

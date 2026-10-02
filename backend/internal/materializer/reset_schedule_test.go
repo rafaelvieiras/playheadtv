@@ -156,3 +156,65 @@ func TestContinuous_CatalogOnlyChangeKeepsFrozenRows(t *testing.T) {
 		}
 	}
 }
+
+func TestPreviewReset_MatchesResetWithoutWriting(t *testing.T) {
+	f := continuousSetup(t)
+	ctx := context.Background()
+	mat := New(f.db, 4*time.Hour)
+	mat.SetFreezeMargin(time.Hour)
+	if err := mat.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Advance the stored grid so a reset would differ from the kept one.
+	shift := int64(90 * 60 * 1000)
+	if err := f.db.Exec(ctx, "UPDATE epg_entry SET start_at = start_at - ?, end_at = end_at - ?", shift, shift); err != nil {
+		t.Fatal(err)
+	}
+	stored := queryEntries(t, f)
+	var revBefore []int64
+	if err := f.db.Query(ctx, &revBefore, "SELECT revision FROM epg_revision WHERE tenant_id = ?", f.tenantID); err != nil {
+		t.Fatal(err)
+	}
+
+	var ch domain.Channel
+	if err := f.db.Query(ctx, &ch, "SELECT "+channelColumns+" FROM channel WHERE tenant_id = ? LIMIT 1", f.tenantID); err != nil {
+		t.Fatal(err)
+	}
+	preview, err := mat.PreviewReset(ctx, f.tenantID, ch, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(preview) == 0 || preview[0].CatalogItemID != "m0" {
+		t.Fatalf("preview should restart the rotation: %+v", preview)
+	}
+	assertContiguous(t, preview)
+
+	var revAfter []int64
+	f.db.Query(ctx, &revAfter, "SELECT revision FROM epg_revision WHERE tenant_id = ?", f.tenantID)
+	if len(revAfter) != len(revBefore) || revAfter[0] != revBefore[0] {
+		t.Errorf("revision bumped: %v -> %v", revBefore, revAfter)
+	}
+	if after := queryEntries(t, f); len(after) != len(stored) {
+		t.Errorf("epg_entry changed: %d -> %d rows", len(stored), len(after))
+	}
+
+	if err := mat.ResetChannel(ctx, f.tenantID, ch); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UnixMilli()
+	var real []domain.EpgEntry
+	for _, e := range queryEntries(t, f) {
+		if e.EndAt > now {
+			real = append(real, e)
+		}
+	}
+	n := len(preview)
+	if len(real) < n {
+		n = len(real)
+	}
+	for i := 0; i < n; i++ {
+		if real[i].CatalogItemID != preview[i].CatalogItemID {
+			t.Errorf("entry %d: reset %s, preview %s", i, real[i].CatalogItemID, preview[i].CatalogItemID)
+		}
+	}
+}

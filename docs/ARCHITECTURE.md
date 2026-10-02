@@ -141,7 +141,7 @@ edges):
 
 - **`block`**: a reusable programming template — an ordered list of
   `catalog_item`s (`block_item`). A block's `block_item` rows are either
-  curated by hand (the default, via `POST`/`DELETE /blocks/{id}/items`) or,
+  curated by hand (the default, via `POST`/`PUT`/`DELETE /blocks/{id}/items`) or,
   when `block.criteria` is set (the same JSON `{kind, genres, year_from,
   year_to}` shape as `filler_pool.criteria`), owned entirely by
   `catalogsync.ResolveDynamicBlocks`: it recomputes that block's membership
@@ -166,7 +166,7 @@ edges):
   (preroll/midroll/postroll/tail/fallback) to a channel or a single block,
   drawing from a pool with a selection strategy (sequential/random/weighted).
   A pool's `filler_pool_item` rows are either curated by hand (the default,
-  via `POST`/`DELETE /filler-pools/{id}/items`) or, when `filler_pool.criteria`
+  via `POST`/`PUT`/`DELETE /filler-pools/{id}/items`) or, when `filler_pool.criteria`
   is set (a JSON `{kind, genres, year_from, year_to}` blob), owned entirely by
   `catalogsync.ResolveDynamicPools`: it recomputes that pool's membership
   against the current `catalog_item` table every time the catalog changes
@@ -280,6 +280,33 @@ resets that channel (REST and MCP alike). The reset runs synchronously inside
 the request, like the endpoint above, and waits at most for a materializer run
 already in progress (they share one mutex). Catalog-only changes (sync,
 catalog edits) never reset; they keep the freeze margin.
+
+### Authoring endpoints (item editing, previews)
+
+- `PUT /blocks/{id}/items/{item_id}` with `{position?, trim_duration_ms?}`
+  (at least one): `position` is the 0-based target index, the block's
+  positions are rewritten contiguous (0..N-1), `trim_duration_ms` must be
+  positive; an absent/null field is left unchanged. 400 on a bad value,
+  404 on unknown block/item, 409 on a dynamic block. Triggers a (debounced)
+  regeneration like the other item writes.
+- `PUT /filler-pools/{id}/items/{item_id}` with `{weight}` (positive
+  integer): manual pools only, 409 on a dynamic pool.
+- `POST /catalog-items/preview-criteria` with the block/pool criteria object
+  (same validation as `blocks.criteria`/`filler_pool.criteria`): returns
+  `{match_count, total_duration_ms, sample}` where `sample` is up to 20
+  matching catalog items ordered by title. It uses the same matching clause
+  (`catalogsync.criteriaWhere`) as dynamic block/pool resolution and persists
+  nothing.
+- `GET /channels/{id}/epg-preview?start&end` (epoch millis, both optional,
+  same overlap filter as `GET /epg`): a dry-run of `reset-epg`. It runs the
+  materializer's own loader and expansion (`Materializer.PreviewReset`) from
+  the stored configuration as if the grid were reset now (rotations from the
+  start, no freeze margin) and returns the entries in the same JSON shape as
+  `GET /epg`. Nothing is written: `epg_entry` and `epg_revision` are
+  untouched. Entry ids are throwaway, and random/weighted filler picks may
+  differ from a later real reset.
+- MCP equivalents: `update_block_item`, `update_filler_pool_item`,
+  `preview_criteria`, `preview_channel_grid_reset`.
 
 ### API
 

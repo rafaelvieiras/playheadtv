@@ -25,6 +25,7 @@ func registerFiller(mux *http.ServeMux, db storage.DB, mat *materializer.Materia
 
 	mux.HandleFunc("POST /filler-pools/{id}/items", addFillerPoolItem(db, mat))
 	mux.HandleFunc("GET /filler-pools/{id}/items", listFillerPoolItems(db))
+	mux.HandleFunc("PUT /filler-pools/{id}/items/{item_id}", updateFillerPoolItem(db, mat))
 	mux.HandleFunc("DELETE /filler-pools/{id}/items/{item_id}", deleteFillerPoolItem(db, mat))
 
 	mux.HandleFunc("POST /filler-rules", createFillerRule(db, mat))
@@ -296,6 +297,52 @@ func listFillerPoolItems(db storage.DB) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, items)
+	}
+}
+
+type fillerPoolItemUpdateRequest struct {
+	Weight *int `json:"weight"`
+}
+
+// updateFillerPoolItem changes one item's selection weight in a manual pool.
+func updateFillerPoolItem(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		poolID := r.PathValue("id")
+		itemID := r.PathValue("item_id")
+		p, err := fetchFillerPool(db, r, poolID)
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		if p.Criteria != nil {
+			writeError(w, http.StatusConflict, "this pool is dynamic; items are managed automatically from its criteria")
+			return
+		}
+		var req fillerPoolItemUpdateRequest
+		if err := decodeJSON(r, &req); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid request body")
+			return
+		}
+		if req.Weight == nil || *req.Weight <= 0 {
+			writeError(w, http.StatusBadRequest, "weight must be a positive integer")
+			return
+		}
+		var item domain.FillerPoolItem
+		if err := db.Query(r.Context(), &item,
+			"SELECT "+fillerPoolItemColumns+" FROM filler_pool_item WHERE filler_pool_id = ? AND id = ?", poolID, itemID,
+		); err != nil {
+			handleDBError(w, err)
+			return
+		}
+		if err := db.Exec(r.Context(),
+			"UPDATE filler_pool_item SET weight = ? WHERE filler_pool_id = ? AND id = ?", *req.Weight, poolID, itemID,
+		); err != nil {
+			handleDBError(w, err)
+			return
+		}
+		item.Weight = *req.Weight
+		mat.Trigger()
+		writeJSON(w, http.StatusOK, item)
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 func registerEPG(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer) {
 	mux.HandleFunc("GET /epg", getEPG(db))
 	mux.HandleFunc("GET /epg/meta", getEPGMeta(db, mat))
+	mux.HandleFunc("GET /channels/{id}/epg-preview", previewChannelGridReset(db, mat))
 }
 
 const epgEntryColumns = "id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at"
@@ -89,5 +90,43 @@ func getEPGMeta(db storage.DB, mat *materializer.Materializer) http.HandlerFunc 
 			return
 		}
 		writeJSON(w, http.StatusOK, epgMetaResponse{Revision: rev.Revision, ValidUntil: rev.ValidUntil, FreezeMarginMs: freezeMs})
+	}
+}
+
+// previewChannelGridReset is a dry-run of POST /channels/{id}/reset-epg: it
+// returns the entries (same JSON shape as GET /epg) the channel would have if
+// its grid were reset now, from the stored configuration with no freeze
+// margin. It writes nothing: epg_entry and epg_revision stay untouched.
+// start/end (epoch millis) filter by overlap exactly like GET /epg; both are
+// optional.
+func previewChannelGridReset(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ch, err := fetchChannel(db, r, r.PathValue("id"))
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		q := r.URL.Query()
+		var start, end int64
+		if v := q.Get("start"); v != "" {
+			start, err = strconv.ParseInt(v, 10, 64)
+			if err != nil || start <= 0 {
+				writeError(w, http.StatusBadRequest, "start must be a positive epoch millis integer")
+				return
+			}
+		}
+		if v := q.Get("end"); v != "" {
+			end, err = strconv.ParseInt(v, 10, 64)
+			if err != nil || end <= 0 {
+				writeError(w, http.StatusBadRequest, "end must be a positive epoch millis integer")
+				return
+			}
+		}
+		entries, err := mat.PreviewReset(r.Context(), DefaultTenantID, ch, start, end)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not preview the channel grid")
+			return
+		}
+		writeJSON(w, http.StatusOK, entries)
 	}
 }

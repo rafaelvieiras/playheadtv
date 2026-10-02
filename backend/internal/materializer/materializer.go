@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -274,7 +275,13 @@ func (m *Materializer) resetChannels(ctx context.Context, tenantID string, chann
 	return m.bumpRevision(ctx, tenantID, now, windowEnd)
 }
 
-func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel, tenantID string, now, scanFrom, windowEnd time.Time, cache *catalogDurationCache, state *selectionState) error {
+// loadChannelInput reads everything expandChannel needs for one channel from
+// the stored configuration (schedule items, blocks, filler rules/pools,
+// catalog durations). It is the single loader shared by the real
+// materialization (materializeChannel) and the read-only dry-run
+// (PreviewReset); the grid-stability fields (ContinuousStart, KeptUntil) are
+// left zero for the caller to fill in.
+func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, tenantID string, cache *catalogDurationCache) (channelInput, error) {
 	// A channel with no Schedule assigned (ch.ScheduleID == nil) has no
 	// schedule_item rows at all — it relies solely on its channel-scoped
 	// fallback filler rule, exactly like today's "24/7 genre loop with no
@@ -285,7 +292,7 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 			"SELECT "+scheduleItemColumns+" FROM schedule_item WHERE tenant_id = ? AND schedule_id = ? AND active = 1",
 			tenantID, *ch.ScheduleID,
 		); err != nil {
-			return fmt.Errorf("list schedule items: %w", err)
+			return channelInput{}, fmt.Errorf("list schedule items: %w", err)
 		}
 	}
 
@@ -301,7 +308,7 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 			"SELECT "+blockItemColumns+" FROM block_item WHERE block_id = ? ORDER BY position",
 			blockID,
 		); err != nil {
-			return fmt.Errorf("list block_item for block %s: %w", blockID, err)
+			return channelInput{}, fmt.Errorf("list block_item for block %s: %w", blockID, err)
 		}
 		blockItems[blockID] = items
 	}
@@ -322,7 +329,7 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 		var dynIDs []string
 		query := fmt.Sprintf("SELECT id FROM block WHERE tenant_id = ? AND criteria IS NOT NULL AND id IN (%s)", placeholders)
 		if err := m.db.Query(ctx, &dynIDs, query, args...); err != nil {
-			return fmt.Errorf("list dynamic block ids: %w", err)
+			return channelInput{}, fmt.Errorf("list dynamic block ids: %w", err)
 		}
 		for _, id := range dynIDs {
 			dynamicBlockIDs[id] = true
@@ -340,7 +347,7 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 	query += ")"
 	var fillerRules []domain.FillerRule
 	if err := m.db.Query(ctx, &fillerRules, query, args...); err != nil {
-		return fmt.Errorf("list filler_rule: %w", err)
+		return channelInput{}, fmt.Errorf("list filler_rule: %w", err)
 	}
 
 	poolIDs := make(map[string]struct{}, len(fillerRules))
@@ -357,7 +364,7 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 			"SELECT "+fillerPoolItemColumns+" FROM filler_pool_item WHERE filler_pool_id = ? ORDER BY rowid",
 			poolID,
 		); err != nil {
-			return fmt.Errorf("list filler_pool_item for pool %s: %w", poolID, err)
+			return channelInput{}, fmt.Errorf("list filler_pool_item for pool %s: %w", poolID, err)
 		}
 		poolItems[poolID] = items
 	}
@@ -377,17 +384,37 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 	for _, items := range blockItems {
 		for _, it := range items {
 			if err := collect(it.CatalogItemID); err != nil {
-				return fmt.Errorf("catalog_item %s: %w", it.CatalogItemID, err)
+				return channelInput{}, fmt.Errorf("catalog_item %s: %w", it.CatalogItemID, err)
 			}
 		}
 	}
 	for _, items := range poolItems {
 		for _, it := range items {
 			if err := collect(it.CatalogItemID); err != nil {
-				return fmt.Errorf("catalog_item %s: %w", it.CatalogItemID, err)
+				return channelInput{}, fmt.Errorf("catalog_item %s: %w", it.CatalogItemID, err)
 			}
 		}
 	}
+
+	return channelInput{
+		ChannelID:       ch.ID,
+		TenantID:        tenantID,
+		Timezone:        ch.Timezone,
+		ScheduleItems:   scheduleItems,
+		BlockItems:      blockItems,
+		FillerRules:     fillerRules,
+		PoolItems:       poolItems,
+		CatalogDuration: catalogDuration,
+		DynamicBlockIDs: dynamicBlockIDs,
+	}, nil
+}
+
+func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel, tenantID string, now, scanFrom, windowEnd time.Time, cache *catalogDurationCache, state *selectionState) error {
+	in, err := m.loadChannelInput(ctx, ch, tenantID, cache)
+	if err != nil {
+		return err
+	}
+	scheduleItems := in.ScheduleItems
 
 	// Grid stability, continuous channels only: keep the already-materialized
 	// head (everything starting before now + freeze margin) and resume the
@@ -455,19 +482,8 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 		}
 	}
 
-	in := channelInput{
-		ChannelID:       ch.ID,
-		TenantID:        tenantID,
-		Timezone:        ch.Timezone,
-		ScheduleItems:   scheduleItems,
-		BlockItems:      blockItems,
-		FillerRules:     fillerRules,
-		PoolItems:       poolItems,
-		CatalogDuration: catalogDuration,
-		DynamicBlockIDs: dynamicBlockIDs,
-		ContinuousStart: continuousStart,
-		KeptUntil:       keptUntil,
-	}
+	in.ContinuousStart = continuousStart
+	in.KeptUntil = keptUntil
 	generated := expandChannel(in, now, scanFrom, windowEnd, state)
 
 	toInsert := make([]domain.EpgEntry, 0, len(generated))
@@ -501,6 +517,38 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 		}
 	}
 	return nil
+}
+
+// PreviewReset returns the entries a ResetChannel call made right now would
+// leave on the air, in [startMs, endMs] (same overlap rule as GET /epg; a
+// non-positive bound is open), without touching epg_entry or epg_revision.
+// It runs the exact same loader and expansion as the real reset: stored
+// configuration, rotations from the beginning, no freeze margin. Entry ids
+// are fresh and not persisted; random/weighted filler selection may differ
+// from what an actual reset later picks.
+func (m *Materializer) PreviewReset(ctx context.Context, tenantID string, ch domain.Channel, startMs, endMs int64) ([]domain.EpgEntry, error) {
+	now := time.Now().UTC()
+	nowMs := now.UnixMilli()
+	in, err := m.loadChannelInput(ctx, ch, tenantID, newCatalogDurationCache(m.db))
+	if err != nil {
+		return nil, err
+	}
+	generated := expandChannel(in, now, now.Add(-scanLookback), now.Add(m.window), newSelectionState())
+	out := make([]domain.EpgEntry, 0, len(generated))
+	for _, e := range generated {
+		if e.EndAt <= nowMs {
+			continue
+		}
+		if startMs > 0 && e.EndAt < startMs {
+			continue
+		}
+		if endMs > 0 && e.StartAt > endMs {
+			continue
+		}
+		out = append(out, e)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].StartAt < out[j].StartAt })
+	return out, nil
 }
 
 // bumpRevision upserts the tenant's epg_revision row, same ON CONFLICT

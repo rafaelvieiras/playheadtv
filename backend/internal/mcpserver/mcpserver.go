@@ -74,6 +74,7 @@ func Register(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer,
 	registerFillerTools(server, db, mat)
 	registerScheduleTools(server, db, mat)
 	registerEPGTools(server, db)
+	registerAuthoringTools(server, db, mat)
 
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return server
