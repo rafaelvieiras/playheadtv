@@ -299,3 +299,136 @@ func TestSeriesItemReflectsCatalogChanges(t *testing.T) {
 		t.Fatalf("episode count did not follow the catalog: %+v", list)
 	}
 }
+
+func TestSeriesBlockItemAmount(t *testing.T) {
+	db, mux := newTestDB(t)
+	ms := seedSeries(t, db, "a", "Show", 3)
+	movie := seedCatalogItem(t, db, "m")
+	blockID := newBlock(t, mux, `{"name":"B"}`)
+	dynamic := newBlock(t, mux, `{"name":"Dyn","criteria":{"kind":"movie","genres":["Comedy"]}}`)
+	post := func(block, amount string) *httptest.ResponseRecorder {
+		extra := ""
+		if amount != "" {
+			extra = `,"amount":` + amount
+		}
+		return doRequest(t, mux, "POST", "/blocks/"+block+"/items",
+			fmt.Sprintf(`{"series":{"media_source_id":%q,"series_title":"Show"%s}}`, ms, extra))
+	}
+	type want struct {
+		mode  string
+		count int
+	}
+	for name, c := range map[string]struct {
+		amount string
+		want   want
+	}{
+		"nothing selected defaults to one episode": {"", want{"count", 1}},
+		"empty object defaults to one":             {`{}`, want{"count", 1}},
+		"count":                                    {`{"mode":"count","count":3}`, want{"count", 3}},
+		"count without mode":                       {`{"count":2}`, want{"count", 2}},
+		"count mode without count is one":          {`{"mode":"count"}`, want{"count", 1}},
+		"slot end":                                 {`{"mode":"slot_end"}`, want{"slot_end", 0}},
+		"series end":                               {`{"mode":"series_end"}`, want{"series_end", 0}},
+	} {
+		rec := post(blockID, c.amount)
+		if rec.Code != http.StatusCreated {
+			t.Fatalf("%s: %d %s", name, rec.Code, rec.Body.String())
+		}
+		var item domain.BlockItem
+		mustDecode(t, rec.Body.Bytes(), &item)
+		if item.Series == nil || item.Series.Amount.Mode != c.want.mode || item.Series.Amount.Count != c.want.count {
+			t.Errorf("%s: amount = %+v, want %+v", name, item.Series, c.want)
+		}
+	}
+
+	for name, amount := range map[string]string{
+		"zero count":              `{"mode":"count","count":0}`,
+		"negative count":          `{"mode":"count","count":-2}`,
+		"unknown mode":            `{"mode":"forever"}`,
+		"count with slot end":     `{"mode":"slot_end","count":2}`,
+		"count with series end":   `{"mode":"series_end","count":1}`,
+		"count not an integer":    `{"mode":"count","count":1.5}`,
+		"count of the wrong type": `{"mode":"count","count":"2"}`,
+	} {
+		if rec := post(blockID, amount); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d %s, want 400", name, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := post(dynamic, `{"mode":"slot_end"}`); rec.Code != http.StatusConflict {
+		t.Errorf("dynamic block: %d, want 409", rec.Code)
+	}
+
+	// Update: change the amount, keep the cursor; reject on a catalog item and bad values.
+	rec := post(blockID, `{"mode":"count","count":2}`)
+	var item domain.BlockItem
+	mustDecode(t, rec.Body.Bytes(), &item)
+	rec = doRequest(t, mux, "POST", "/blocks/"+blockID+"/items", fmt.Sprintf(`{"catalog_item_id":%q}`, movie))
+	var movieItem domain.BlockItem
+	mustDecode(t, rec.Body.Bytes(), &movieItem)
+	ctx := context.Background()
+	if err := db.Exec(ctx, "INSERT INTO channel (id, tenant_id, number, name, timezone, created_at, updated_at) VALUES ('chan-x', ?, 1, 'c', 'UTC', 1, 1)", DefaultTenantID); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(ctx, "INSERT INTO series_cursor (tenant_id, channel_id, block_item_id, origin_ms) VALUES (?, 'chan-x', ?, 5)", DefaultTenantID, item.ID); err != nil {
+		t.Fatal(err)
+	}
+	base := "/blocks/" + blockID + "/items/"
+	rec = doRequest(t, mux, "PUT", base+item.ID, `{"amount":{"mode":"series_end"}}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update amount: %d %s", rec.Code, rec.Body.String())
+	}
+	var got domain.BlockItem
+	mustDecode(t, rec.Body.Bytes(), &got)
+	if got.Series == nil || got.Series.Amount.Mode != "series_end" || got.Series.PlaybackOrder != "original" {
+		t.Errorf("updated item = %+v", got.Series)
+	}
+	rec = doRequest(t, mux, "PUT", base+item.ID, `{"amount":{"count":4},"playback_order":"shuffle"}`)
+	mustDecode(t, rec.Body.Bytes(), &got)
+	if rec.Code != http.StatusOK || got.Series.Amount.Mode != "count" || got.Series.Amount.Count != 4 || got.Series.PlaybackOrder != "shuffle" {
+		t.Errorf("amount and order together: %d %+v", rec.Code, got.Series)
+	}
+	var origins []int64
+	db.Query(ctx, &origins, "SELECT origin_ms FROM series_cursor WHERE block_item_id = ?", item.ID)
+	if len(origins) != 1 || origins[0] < 6 {
+		t.Errorf("cursor origin = %v, want moved by the order change", origins)
+	}
+	db.Exec(ctx, "UPDATE series_cursor SET origin_ms = 7")
+	if rec = doRequest(t, mux, "PUT", base+item.ID, `{"amount":{"mode":"slot_end"}}`); rec.Code != http.StatusOK {
+		t.Fatalf("amount only: %d", rec.Code)
+	}
+	db.Query(ctx, &origins, "SELECT origin_ms FROM series_cursor WHERE block_item_id = ?", item.ID)
+	if origins[0] != 7 {
+		t.Errorf("an amount change reset the cursor: %v", origins)
+	}
+	for name, c := range map[string]struct{ id, body string }{
+		"amount on catalog": {movieItem.ID, `{"amount":{"mode":"slot_end"}}`},
+		"bad mode":          {item.ID, `{"amount":{"mode":"x"}}`},
+		"zero count":        {item.ID, `{"amount":{"mode":"count","count":0}}`},
+		"count with end":    {item.ID, `{"amount":{"mode":"series_end","count":3}}`},
+	} {
+		if rec := doRequest(t, mux, "PUT", base+c.id, c.body); rec.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d %s, want 400", name, rec.Code, rec.Body.String())
+		}
+	}
+	if rec := doRequest(t, mux, "PUT", "/blocks/"+dynamic+"/items/x", `{"amount":{"mode":"slot_end"}}`); rec.Code != http.StatusConflict {
+		t.Errorf("update on dynamic block: %d, want 409", rec.Code)
+	}
+
+	// A series item stored before amounts existed reads as slot_end.
+	legacy := fmt.Sprintf(`{"media_source_id":%q,"series_title":"Show","playback_order":"original","seed":1}`, ms)
+	if err := db.Exec(ctx, "INSERT INTO block_item (id, block_id, position, item_type, spec) VALUES ('legacy', ?, 99, 'series', ?)", blockID, legacy); err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, it := range listItems(t, mux, blockID) {
+		if it.ID == "legacy" {
+			found = true
+			if it.Series == nil || it.Series.Amount.Mode != "slot_end" {
+				t.Errorf("legacy item amount = %+v, want slot_end", it.Series)
+			}
+		}
+	}
+	if !found {
+		t.Error("legacy item not listed")
+	}
+}

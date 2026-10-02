@@ -18,7 +18,9 @@ import { Textarea } from '@/components/ui/textarea'
 import { authoringKeys, usePreviewCriteria, useUpdateBlockItem } from '@/lib/authoring'
 import { formatCatalogTitle } from '@/lib/catalog'
 import { formatDuration, parseCriteriaJson, validateCriteria } from '@/lib/criteria'
+import { airsUntilSlotEnd } from '@/lib/guide'
 import { ApiError, api } from '@/lib/http'
+import { SeriesAmountControl } from '@/components/SeriesAmountControl'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   PLAYBACK_ORDER_LABELS,
@@ -29,6 +31,7 @@ import {
   type CatalogItem,
   type DynamicCriteria,
   type PlaybackOrder,
+  type SeriesAmount,
   type SeriesSummary,
 } from '@/lib/types'
 
@@ -276,10 +279,11 @@ function BlockItemsSection({ block }: { block: Block }) {
   }
 
   // Series picker: GET /series?q=, the chosen series is added with the order
-  // selected next to it.
+  // and the amount per visit selected next to it.
   const [seriesSearch, setSeriesSearch] = useState('')
   const [debouncedSeriesSearch, setDebouncedSeriesSearch] = useState('')
   const [newSeriesOrder, setNewSeriesOrder] = useState<PlaybackOrder>('original')
+  const [newSeriesAmount, setNewSeriesAmount] = useState<SeriesAmount>({ mode: 'count', count: 1 })
   useEffect(() => {
     const handle = setTimeout(() => setDebouncedSeriesSearch(seriesSearch.trim()), 300)
     return () => clearTimeout(handle)
@@ -319,6 +323,7 @@ function BlockItemsSection({ block }: { block: Block }) {
         media_source_id: s.media_source_id,
         ...(s.series_external_id ? { series_external_id: s.series_external_id } : { series_title: s.series_title }),
         playback_order: newSeriesOrder,
+        amount: newSeriesAmount,
       },
     })
   }
@@ -352,6 +357,16 @@ function BlockItemsSection({ block }: { block: Block }) {
     )
   }
 
+  function setAmount(item: BlockItem, amount: SeriesAmount) {
+    updateMutation.mutate(
+      { itemId: item.id, amount },
+      {
+        onSuccess: () => toast.success('Amount saved.'),
+        onError: (err) => toast.error(errorMessage(err, 'Could not save the amount.')),
+      }
+    )
+  }
+
   function setTrim(item: BlockItem, ms: number) {
     updateMutation.mutate(
       { itemId: item.id, trim_duration_ms: ms },
@@ -369,10 +384,10 @@ function BlockItemsSection({ block }: { block: Block }) {
     return sum + (item.trim_duration_ms ?? full)
   }, 0)
   const allLoaded = catalogItems.every((i) => catalogById.has(i.catalog_item_id ?? ''))
-  // A series airs until the next scheduled item, so anything after it in the
-  // block never gets on the air.
-  const lastSeriesIndex = sorted.map((i) => i.item_type).lastIndexOf('series')
-  const shadowed = lastSeriesIndex >= 0 && lastSeriesIndex < sorted.length - 1
+  // A series that airs until the end of the slot never hands over to the next
+  // item, so anything after it in the block never gets on the air.
+  const lastOpenEndedIndex = sorted.map((i) => airsUntilSlotEnd(i)).lastIndexOf(true)
+  const shadowed = lastOpenEndedIndex >= 0 && lastOpenEndedIndex < sorted.length - 1
 
   return (
     <section className="flex flex-col gap-4" data-testid="block-items">
@@ -391,8 +406,9 @@ function BlockItemsSection({ block }: { block: Block }) {
 
       {shadowed && (
         <InlineWarning title="Items after a series never play">
-          A series item airs its episodes until the next scheduled item or the end of the guide, so the items below it
-          in this block are never reached. Move the series to the end.
+          A series set to "Until the end of the slot" airs episodes until the next scheduled item or the end of the
+          guide, so the items below it in this block are never reached. Move the series to the end, or change its amount
+          to a number of episodes or "Until the series ends".
         </InlineWarning>
       )}
 
@@ -403,7 +419,7 @@ function BlockItemsSection({ block }: { block: Block }) {
               <TableHead className="w-12">#</TableHead>
               <TableHead>Title</TableHead>
               <TableHead>Full length</TableHead>
-              <TableHead>Trim (seconds) / order</TableHead>
+              <TableHead>Trim (seconds) / order and amount</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -437,22 +453,31 @@ function BlockItemsSection({ block }: { block: Block }) {
                   </TableCell>
                   <TableCell>
                     {isSeries ? (
-                      <Select
-                        value={item.series?.playback_order ?? 'original'}
-                        onValueChange={(v) => setOrder(item, v as PlaybackOrder)}
-                        disabled={busy}
-                      >
-                        <SelectTrigger className="w-48" aria-label="Playback order" data-testid="series-order">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {(Object.keys(PLAYBACK_ORDER_LABELS) as PlaybackOrder[]).map((o) => (
-                            <SelectItem key={o} value={o}>
-                              {PLAYBACK_ORDER_LABELS[o]}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <div className="flex flex-col gap-2">
+                        <Select
+                          value={item.series?.playback_order ?? 'original'}
+                          onValueChange={(v) => setOrder(item, v as PlaybackOrder)}
+                          disabled={busy}
+                        >
+                          <SelectTrigger className="w-48" aria-label="Playback order" data-testid="series-order">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {(Object.keys(PLAYBACK_ORDER_LABELS) as PlaybackOrder[]).map((o) => (
+                              <SelectItem key={o} value={o}>
+                                {PLAYBACK_ORDER_LABELS[o]}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                        <SeriesAmountControl
+                          key={`${item.id}-${item.series?.amount?.mode}-${item.series?.amount?.count}`}
+                          value={item.series?.amount ?? { mode: 'slot_end' }}
+                          onChange={(a) => setAmount(item, a)}
+                          disabled={busy}
+                          testIdPrefix="series"
+                        />
+                      </div>
                     ) : (
                       <TrimInput
                         key={`${item.id}-${item.trim_duration_ms}`}
@@ -528,6 +553,7 @@ function BlockItemsSection({ block }: { block: Block }) {
               ))}
             </SelectContent>
           </Select>
+          <SeriesAmountControl value={newSeriesAmount} onChange={setNewSeriesAmount} testIdPrefix="new-series" />
           <Combobox
             id="block-add-series"
             options={seriesOptions}

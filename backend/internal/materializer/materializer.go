@@ -440,10 +440,12 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 	frozenUntilMs := now.Add(m.freeze).UnixMilli()
 	var keptUntil time.Time
 	continuousStart := 0
-	var continuousID string
+	continuousVisitDone := 0
+	var continuousID, continuousBlockID string
 	for _, si := range scheduleItems {
 		if si.Recurrence == domain.RecurrenceContinuous {
 			continuousID = si.ID
+			continuousBlockID = si.BlockID
 			break
 		}
 	}
@@ -496,9 +498,43 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 		if len(rotations) > 0 {
 			continuousStart = int(rotations[0])
 		}
+		// A kept head that ends in the middle of a "count" visit: the visit's
+		// entries are the trailing ones that are adjacent, belong to the item
+		// the rotation sits on and still carry that item's own index (the one
+		// completing a visit carries the next index). Their number is how
+		// much of the visit already aired.
+		if items := in.BlockItems[continuousBlockID]; len(items) > 0 && !keptUntil.IsZero() {
+			idx := continuousStart % len(items)
+			if run := in.Series[items[idx].ID]; items[idx].IsSeries() && run != nil && run.amount.Mode == domain.AmountCount {
+				var tail []struct {
+					StartAt           int64
+					EndAt             int64
+					SourceBlockItemID *string
+					RotationNext      *int64
+					SourceScheduleID  *string
+				}
+				if err := m.db.Query(ctx, &tail,
+					"SELECT start_at, end_at, source_block_item_id, rotation_next, source_schedule_item_id AS source_schedule_id FROM epg_entry WHERE channel_id = ? AND start_at < ? ORDER BY start_at DESC LIMIT ?",
+					ch.ID, keptCutMs, run.amount.Count,
+				); err != nil {
+					return fmt.Errorf("read series visit: %w", err)
+				}
+				expectedEnd := keptUntil.UnixMilli()
+				for _, row := range tail {
+					if row.EndAt != expectedEnd || row.SourceBlockItemID == nil || *row.SourceBlockItemID != items[idx].ID ||
+						row.SourceScheduleID == nil || *row.SourceScheduleID != continuousID ||
+						row.RotationNext == nil || int(*row.RotationNext) != idx {
+						break
+					}
+					continuousVisitDone++
+					expectedEnd = row.StartAt
+				}
+			}
+		}
 	}
 
 	in.ContinuousStart = continuousStart
+	in.ContinuousVisitDone = continuousVisitDone
 	in.KeptUntil = keptUntil
 	generated := expandChannel(in, now, scanFrom, windowEnd, state)
 

@@ -10,6 +10,7 @@ import { Button } from '@/components/ui/button'
 import { useChannelEpgPreview } from '@/lib/authoring'
 import { formatDurationMs } from '@/lib/filler'
 import {
+  airsUntilSlotEnd,
   computeSlots,
   ENTRY_KIND_CLASSES,
   ENTRY_KIND_LABELS,
@@ -146,7 +147,7 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
     const ids: string[] = []
     for (const slot of slots) {
       for (const bi of blockItems.get(slot.item.block_id) ?? []) {
-        if (bi.item_type === 'series') break
+        if (airsUntilSlotEnd(bi)) break
         if (bi.trim_duration_ms === null && bi.catalog_item_id) ids.push(bi.catalog_item_id)
       }
     }

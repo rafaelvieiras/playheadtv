@@ -128,7 +128,11 @@ actionable checklist.
       `add_block_item` (with `series`), `delete_block_item`, `search_series`,
       block editor "Add a series". Not yet: the slice spec is stored as a
       reserved empty field (see the slicing item below); series items in
-      filler pools and a per-visit episode count are not decided.
+      filler pools are not decided.
+- [x] Series item amount per visit (`amount: {mode, count}` in the item's
+      spec, REST/MCP/block editor): a number of episodes (default 1), until
+      the end of the slot, or until the series ends (rest of the cycle in
+      progress). Items stored earlier read as "until the end of the slot".
 - [x] Dynamic `filler_pool`s: an optional `filler_pool.criteria`
       (`{kind, genres, year_from, year_to}`) makes `catalogsync.ResolveDynamicPools`
       own that pool's `filler_pool_item` rows, recomputed after every catalog

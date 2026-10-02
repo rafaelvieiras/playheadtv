@@ -67,6 +67,33 @@ func ValidPlaybackOrder(o string) bool {
 	return false
 }
 
+// How much of a series one visit of the block rotation airs.
+const (
+	// AmountCount airs Count episodes, then the rotation moves on.
+	AmountCount = "count"
+	// AmountSlotEnd airs episodes until the end of the schedule slot (the next
+	// schedule occurrence or the end of the window), so items after the series
+	// never air. It is what every series item did before amounts existed.
+	AmountSlotEnd = "slot_end"
+	// AmountSeriesEnd airs the rest of the playback cycle in progress, then
+	// the rotation moves on; the next visit starts a new cycle.
+	AmountSeriesEnd = "series_end"
+)
+
+// SeriesAmount is how much a series item airs per visit. Count is only set
+// for AmountCount and is then at least 1.
+type SeriesAmount struct {
+	Mode  string `json:"mode"`
+	Count int    `json:"count,omitempty"`
+}
+
+// SeriesAmountInput is the amount as a client sends it. Count is a pointer so
+// an absent count differs from an invalid 0.
+type SeriesAmountInput struct {
+	Mode  string `json:"mode"`
+	Count *int   `json:"count"`
+}
+
 // SeriesSpec is the stored, type-specific configuration of a series block
 // item (block_item.spec). A series is identified by its media source plus
 // SeriesExternalID when set, else SeriesTitle. Seed makes the shuffle and
@@ -80,6 +107,22 @@ type SeriesSpec struct {
 	PlaybackOrder    string          `json:"playback_order"`
 	Seed             int64           `json:"seed"`
 	Slice            json.RawMessage `json:"slice,omitempty"`
+	// Amount is how much one visit airs. A spec stored before amounts existed
+	// has none and means AmountSlotEnd (see EffectiveAmount).
+	Amount *SeriesAmount `json:"amount,omitempty"`
+}
+
+// EffectiveAmount is the spec's amount, with the legacy "no amount stored"
+// mapped explicitly to AmountSlotEnd.
+func (s SeriesSpec) EffectiveAmount() SeriesAmount {
+	if s.Amount == nil || s.Amount.Mode == "" {
+		return SeriesAmount{Mode: AmountSlotEnd}
+	}
+	a := *s.Amount
+	if a.Mode == AmountCount && a.Count < 1 {
+		a.Count = 1
+	}
+	return a
 }
 
 // SeriesItemView is the client-facing shape of a series block item: the
@@ -89,6 +132,7 @@ type SeriesItemView struct {
 	SeriesExternalID string          `json:"series_external_id,omitempty"`
 	SeriesTitle      string          `json:"series_title,omitempty"`
 	PlaybackOrder    string          `json:"playback_order"`
+	Amount           SeriesAmount    `json:"amount"`
 	Slice            json.RawMessage `json:"slice"`
 	EpisodeCount     int             `json:"episode_count"`
 	TotalDurationMs  int64           `json:"total_duration_ms"`

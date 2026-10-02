@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"io/fs"
 	"path/filepath"
 	"testing"
@@ -370,3 +371,85 @@ func TestMigration0010_TypedBlockItems(t *testing.T) {
 }
 
 func int64Ptr(v int64) *int64 { return &v }
+
+// TestMigration0011_ExistingSeriesItemsKeepUntilSlotEnd proves the amount
+// migration marks series items stored before amounts existed as "slot_end"
+// (their behavior then), leaves catalog items without a spec, and does not
+// touch a spec that already carries an amount.
+func TestMigration0011_ExistingSeriesItemsKeepUntilSlotEnd(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "playheadtv.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	pre := fstest.MapFS{}
+	entries, _ := fs.ReadDir(migrations.FS, ".")
+	for _, e := range entries {
+		if e.Name() >= "0011_" {
+			continue
+		}
+		content, err := fs.ReadFile(migrations.FS, e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pre[e.Name()] = &fstest.MapFile{Data: content}
+	}
+	if err := RunMigrations(ctx, db, pre); err != nil {
+		t.Fatalf("RunMigrations (pre-0011): %v", err)
+	}
+	for _, q := range []string{
+		"INSERT INTO tenant (id, name, tier, created_at) VALUES ('t1', 'Test', 'self_hosted', 1)",
+		"INSERT INTO media_source (id, tenant_id, type, name, sync_mode, created_at, updated_at) VALUES ('ms1', 't1', 'local_folder', 'Local', 'push', 1, 1)",
+		"INSERT INTO catalog_item (id, tenant_id, media_source_id, external_id, kind, title, duration_ms, synced_at, search_text) VALUES ('ci1', 't1', 'ms1', 'ext1', 'movie', 'One', 60000, 1, 'one')",
+		"INSERT INTO block (id, tenant_id, name, created_at, updated_at) VALUES ('b1', 't1', 'Manual', 1, 1)",
+		"INSERT INTO block_item (id, block_id, position, item_type, catalog_item_id) VALUES ('bi1', 'b1', 0, 'catalog', 'ci1')",
+		`INSERT INTO block_item (id, block_id, position, item_type, spec) VALUES ('bs1', 'b1', 1, 'series', '{"media_source_id":"ms1","series_title":"Show","playback_order":"shuffle","seed":7,"slice":null}')`,
+		`INSERT INTO block_item (id, block_id, position, item_type, spec) VALUES ('bs2', 'b1', 2, 'series', '{"media_source_id":"ms1","series_title":"Show","playback_order":"original","seed":8,"amount":{"mode":"count","count":2}}')`,
+	} {
+		if err := db.Exec(ctx, q); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+	if err := RunMigrations(ctx, db, migrations.FS); err != nil {
+		t.Fatalf("RunMigrations (0011): %v", err)
+	}
+
+	var rows []struct {
+		ID   string
+		Spec *string
+	}
+	if err := db.Query(ctx, &rows, "SELECT id, spec FROM block_item ORDER BY id"); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]string{}
+	for _, r := range rows {
+		if r.Spec != nil {
+			got[r.ID] = *r.Spec
+		}
+	}
+	if _, ok := got["bi1"]; ok {
+		t.Errorf("catalog item gained a spec: %s", got["bi1"])
+	}
+	var legacy struct {
+		PlaybackOrder string `json:"playback_order"`
+		Seed          int64  `json:"seed"`
+		Amount        struct {
+			Mode  string `json:"mode"`
+			Count int    `json:"count"`
+		} `json:"amount"`
+	}
+	if err := json.Unmarshal([]byte(got["bs1"]), &legacy); err != nil {
+		t.Fatalf("legacy spec %q: %v", got["bs1"], err)
+	}
+	if legacy.Amount.Mode != "slot_end" || legacy.Amount.Count != 0 || legacy.PlaybackOrder != "shuffle" || legacy.Seed != 7 {
+		t.Errorf("legacy series spec after migration = %s, want slot_end with the rest intact", got["bs1"])
+	}
+	if err := json.Unmarshal([]byte(got["bs2"]), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	if legacy.Amount.Mode != "count" || legacy.Amount.Count != 2 {
+		t.Errorf("spec that already had an amount was rewritten: %s", got["bs2"])
+	}
+}

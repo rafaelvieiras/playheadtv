@@ -36,10 +36,41 @@ type Summary struct {
 	TotalDurationMs  int64   `json:"total_duration_ms"`
 }
 
-// NewSpec validates a series identity and order and returns the spec to
-// store, with a fresh random seed. An empty order defaults to original.
-// Slice is reserved and must be empty.
-func NewSpec(mediaSourceID, externalID, title, order string, slice json.RawMessage) (domain.SeriesSpec, error) {
+// NewAmount validates a client-supplied amount. No amount (nil) means one
+// episode per visit. An empty mode with a count means "count"; mode "count"
+// without a count means 1. A count is only valid with mode "count" and must
+// be a positive integer.
+func NewAmount(in *domain.SeriesAmountInput) (domain.SeriesAmount, error) {
+	if in == nil {
+		return domain.SeriesAmount{Mode: domain.AmountCount, Count: 1}, nil
+	}
+	mode := in.Mode
+	if mode == "" {
+		mode = domain.AmountCount
+	}
+	switch mode {
+	case domain.AmountCount:
+		n := 1
+		if in.Count != nil {
+			n = *in.Count
+		}
+		if n < 1 {
+			return domain.SeriesAmount{}, errors.New("series.amount.count must be a positive integer")
+		}
+		return domain.SeriesAmount{Mode: mode, Count: n}, nil
+	case domain.AmountSlotEnd, domain.AmountSeriesEnd:
+		if in.Count != nil {
+			return domain.SeriesAmount{}, errors.New("series.amount.count is only valid with mode count")
+		}
+		return domain.SeriesAmount{Mode: mode}, nil
+	}
+	return domain.SeriesAmount{}, errors.New("series.amount.mode must be one of count, slot_end, series_end")
+}
+
+// NewSpec validates a series identity, order and amount and returns the spec
+// to store, with a fresh random seed. An empty order defaults to original, a
+// nil amount to one episode per visit. Slice is reserved and must be empty.
+func NewSpec(mediaSourceID, externalID, title, order string, amountIn *domain.SeriesAmountInput, slice json.RawMessage) (domain.SeriesSpec, error) {
 	if mediaSourceID == "" {
 		return domain.SeriesSpec{}, errors.New("series.media_source_id is required")
 	}
@@ -55,6 +86,10 @@ func NewSpec(mediaSourceID, externalID, title, order string, slice json.RawMessa
 	if len(slice) > 0 && string(slice) != "null" {
 		return domain.SeriesSpec{}, errors.New("series.slice is not supported yet")
 	}
+	amount, err := NewAmount(amountIn)
+	if err != nil {
+		return domain.SeriesSpec{}, err
+	}
 	var b [8]byte
 	if _, err := rand.Read(b[:]); err != nil {
 		return domain.SeriesSpec{}, err
@@ -65,6 +100,7 @@ func NewSpec(mediaSourceID, externalID, title, order string, slice json.RawMessa
 		SeriesTitle:      title,
 		PlaybackOrder:    order,
 		Seed:             int64(binary.LittleEndian.Uint64(b[:]) >> 1),
+		Amount:           &amount,
 	}, nil
 }
 
@@ -157,6 +193,7 @@ func Decorate(ctx context.Context, db storage.DB, tenantID string, items []domai
 			SeriesExternalID: spec.SeriesExternalID,
 			SeriesTitle:      spec.SeriesTitle,
 			PlaybackOrder:    spec.PlaybackOrder,
+			Amount:           spec.EffectiveAmount(),
 			Slice:            spec.Slice,
 			EpisodeCount:     count,
 			TotalDurationMs:  total,

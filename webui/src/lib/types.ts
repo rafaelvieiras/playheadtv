@@ -161,6 +161,23 @@ export const PLAYBACK_ORDER_LABELS: Record<PlaybackOrder, string> = {
   release_date: 'Release date',
 }
 
+// Mirrors backend/internal/domain.SeriesAmount: how much of a series one visit
+// of the block rotation airs. `count` is only set (and at least 1) for mode
+// 'count'; 'slot_end' airs until the end of the schedule slot (items after it
+// never air); 'series_end' airs the rest of the playback cycle in progress.
+export type SeriesAmountMode = 'count' | 'slot_end' | 'series_end'
+
+export interface SeriesAmount {
+  mode: SeriesAmountMode
+  count?: number
+}
+
+export const SERIES_AMOUNT_LABELS: Record<SeriesAmountMode, string> = {
+  count: 'Number of episodes',
+  slot_end: 'Until the end of the slot',
+  series_end: 'Until the series ends',
+}
+
 // Mirrors backend/internal/domain.SeriesItemView: the identity and order of a
 // series block item plus what it currently expands to (read live from the
 // catalog). `slice` is reserved and always null for now.
@@ -169,6 +186,7 @@ export interface SeriesItemView {
   series_external_id?: string
   series_title?: string
   playback_order: PlaybackOrder
+  amount: SeriesAmount
   slice: unknown
   episode_count: number
   total_duration_ms: number
@@ -197,6 +215,8 @@ export interface BlockItemInput {
     series_external_id?: string
     series_title?: string
     playback_order: PlaybackOrder
+    // Omitted means one episode per visit.
+    amount?: SeriesAmount
   }
 }
 
@@ -450,12 +470,14 @@ export interface StreamPreferenceRuleInput {
 // least one field is required, an absent/null one is left unchanged.
 // `position` is the new 0-based index (the backend keeps positions contiguous);
 // `trim_duration_ms` must be positive (catalog items only); `playback_order`
-// is for series items only and restarts the series. Manual blocks only (409 on
-// dynamic).
+// is for series items only and restarts the series; `amount` (series items
+// only) changes how much airs per visit and keeps the series cursor. Manual
+// blocks only (409 on dynamic).
 export interface BlockItemUpdateInput {
   position?: number
   trim_duration_ms?: number
   playback_order?: PlaybackOrder
+  amount?: SeriesAmount
 }
 
 // FillerPoolItemUpdateInput is the body of

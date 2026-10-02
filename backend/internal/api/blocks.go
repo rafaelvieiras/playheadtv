@@ -225,14 +225,16 @@ type blockItemRequest struct {
 }
 
 // seriesItemRequest identifies a series (media source plus external id or
-// title) and how to walk it. playback_order defaults to original; slice is
-// reserved and rejected while non-null.
+// title) and how to walk it. playback_order defaults to original; amount is
+// how much one visit of the block rotation airs (default: one episode); slice
+// is reserved and rejected while non-null.
 type seriesItemRequest struct {
-	MediaSourceID    string          `json:"media_source_id"`
-	SeriesExternalID string          `json:"series_external_id"`
-	SeriesTitle      string          `json:"series_title"`
-	PlaybackOrder    string          `json:"playback_order"`
-	Slice            json.RawMessage `json:"slice"`
+	MediaSourceID    string                    `json:"media_source_id"`
+	SeriesExternalID string                    `json:"series_external_id"`
+	SeriesTitle      string                    `json:"series_title"`
+	PlaybackOrder    string                    `json:"playback_order"`
+	Amount           *domain.SeriesAmountInput `json:"amount"`
+	Slice            json.RawMessage           `json:"slice"`
 }
 
 // decorateItems fills the series view (episode count, total duration) of the
@@ -289,7 +291,7 @@ func addBlockItem(db storage.DB, mat *materializer.Materializer) http.HandlerFun
 				writeError(w, http.StatusBadRequest, "series is required for item_type series")
 				return
 			}
-			spec, err := series.NewSpec(req.Series.MediaSourceID, req.Series.SeriesExternalID, req.Series.SeriesTitle, req.Series.PlaybackOrder, req.Series.Slice)
+			spec, err := series.NewSpec(req.Series.MediaSourceID, req.Series.SeriesExternalID, req.Series.SeriesTitle, req.Series.PlaybackOrder, req.Series.Amount, req.Series.Slice)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
@@ -386,13 +388,16 @@ type blockItemUpdateRequest struct {
 	Position       *int    `json:"position"`
 	TrimDurationMs *int64  `json:"trim_duration_ms"`
 	PlaybackOrder  *string `json:"playback_order"`
+	// Amount sets how much a series item airs per visit (series items only).
+	Amount *domain.SeriesAmountInput `json:"amount"`
 }
 
 // updateBlockItem edits one item of a manual block: position (a reorder that
 // leaves the block's positions contiguous 0..N-1), trim_duration_ms (a
 // positive value, catalog items only) and/or playback_order (series items
-// only; it restarts the series on every channel using the block). An absent or
-// null field is left unchanged.
+// only; it restarts the series on every channel using the block) and/or amount
+// (series items only; the series cursor is kept). An absent or null field is
+// left unchanged.
 func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		blockID := r.PathValue("id")
@@ -411,9 +416,18 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		if req.Position == nil && req.TrimDurationMs == nil && req.PlaybackOrder == nil {
-			writeError(w, http.StatusBadRequest, "position, trim_duration_ms or playback_order is required")
+		if req.Position == nil && req.TrimDurationMs == nil && req.PlaybackOrder == nil && req.Amount == nil {
+			writeError(w, http.StatusBadRequest, "position, trim_duration_ms, playback_order or amount is required")
 			return
+		}
+		var newAmount *domain.SeriesAmount
+		if req.Amount != nil {
+			a, err := series.NewAmount(req.Amount)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			newAmount = &a
 		}
 		if req.PlaybackOrder != nil && !domain.ValidPlaybackOrder(*req.PlaybackOrder) {
 			writeError(w, http.StatusBadRequest, "playback_order must be one of original, random, shuffle, release_date")
@@ -454,6 +468,28 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 		if req.PlaybackOrder != nil && !target.IsSeries() {
 			writeError(w, http.StatusBadRequest, "playback_order is only valid for a series item")
 			return
+		}
+		if newAmount != nil && !target.IsSeries() {
+			writeError(w, http.StatusBadRequest, "amount is only valid for a series item")
+			return
+		}
+		if newAmount != nil {
+			spec, err := series.ParseSpec(target.Spec)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			spec.Amount = newAmount
+			encoded, err := series.Encode(spec)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			if err := db.Exec(r.Context(), "UPDATE block_item SET spec = ? WHERE block_id = ? AND id = ?", encoded, blockID, itemID); err != nil {
+				handleDBError(w, err)
+				return
+			}
+			target.Spec = &encoded
 		}
 		if req.PlaybackOrder != nil {
 			spec, err := series.ParseSpec(target.Spec)

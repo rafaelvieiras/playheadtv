@@ -107,14 +107,37 @@ export function computeSlots(items: ScheduleItem[], timeZone: string | undefined
   return slots
 }
 
+// True for a series item that airs until the end of the slot, which makes
+// every item after it in the block unreachable. A series item without an
+// amount (an older API response) counts as such, as it behaved before amounts.
+export function airsUntilSlotEnd(bi: BlockItem): boolean {
+  return bi.item_type === 'series' && (bi.series?.amount?.mode ?? 'slot_end') === 'slot_end'
+}
+
+// Estimated airtime of one visit of a series item with a bounded amount.
+function seriesVisitEstimateMs(bi: BlockItem): number {
+  const series = bi.series
+  if (!series || series.episode_count <= 0) return 0
+  if (series.amount?.mode === 'count') {
+    return Math.round(((series.amount.count ?? 1) * series.total_duration_ms) / series.episode_count)
+  }
+  return series.total_duration_ms
+}
+
 // Total airtime of a manual block, or undefined when any item's duration is
-// unknown (not loaded yet). A series item has no length of its own, it airs
-// until the next scheduled item, so counting stops there: only what comes
-// before it can overrun the slot.
+// unknown (not loaded yet). A series item that airs "until the end of the slot"
+// has no length of its own, so counting stops there: only what comes before it
+// can overrun the slot. Any other series item has a bounded length that
+// depends on which episodes come up: it counts as that many average episodes
+// (or the whole series for "until the series ends"), an estimate.
 export function blockTotalDurationMs(items: BlockItem[], catalog: Map<string, CatalogItem>): number | undefined {
   let total = 0
   for (const bi of items) {
-    if (bi.item_type === 'series') break
+    if (bi.item_type === 'series') {
+      if (airsUntilSlotEnd(bi)) break
+      total += seriesVisitEstimateMs(bi)
+      continue
+    }
     const duration = bi.trim_duration_ms ?? catalog.get(bi.catalog_item_id ?? '')?.duration_ms
     if (duration === undefined) return undefined
     total += duration

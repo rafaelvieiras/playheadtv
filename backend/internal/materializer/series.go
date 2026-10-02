@@ -31,6 +31,7 @@ type seriesRow struct {
 // instead of reshuffling.
 type seriesRun struct {
 	order    string
+	amount   domain.SeriesAmount // how much one visit airs
 	seed     uint64
 	episodes []series.Episode // canonical order (see newSeriesRun)
 	byID     map[string]int   // episode id -> index in episodes
@@ -132,6 +133,7 @@ func newSeriesRun(spec domain.SeriesSpec, channelID string, episodes []series.Ep
 	sortEpisodes(eps, spec.PlaybackOrder)
 	r := &seriesRun{
 		order:    spec.PlaybackOrder,
+		amount:   spec.EffectiveAmount(),
 		seed:     splitmix64(uint64(spec.Seed) ^ hashString(channelID)),
 		episodes: eps,
 		byID:     make(map[string]int, len(eps)),
@@ -158,6 +160,21 @@ func newSeriesRun(spec domain.SeriesSpec, channelID string, episodes []series.Ep
 	}
 	sort.Slice(r.rows, func(i, j int) bool { return r.rows[i].StartAt < r.rows[j].StartAt })
 	return r
+}
+
+// cycleDone reports whether every episode of the cycle in progress has aired,
+// i.e. the next episode would open a new cycle. Meaningless for random, which
+// has no cycles.
+func (r *seriesRun) cycleDone() bool {
+	if len(r.episodes) == 0 {
+		return false
+	}
+	for _, e := range r.episodes {
+		if !r.played[e.ID] {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *seriesRun) empty() bool { return len(r.episodes) == 0 }

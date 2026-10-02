@@ -28,9 +28,10 @@ func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Material
 		Name: "add_block_item",
 		Description: "Append an item to the end of a manual block's playlist: a catalog item (catalog_item_id, optional " +
 			"trim_duration_ms) or a whole series (series: media_source_id plus series_external_id or series_title, and " +
-			"playback_order original|random|shuffle|release_date, default original; no trim). A series item airs its " +
-			"episodes in that order until the next scheduled occurrence or the end of the window, so items after it in " +
-			"the block never get on the air. Use search_series to find a series. Reorder with update_block_item. " +
+			"playback_order original|random|shuffle|release_date, default original; amount {mode, count}: per visit of " +
+			"the block rotation air count episodes (mode count, the default, 1 episode), until the end of the " +
+			"schedule slot (slot_end; items after it never air) or the rest of the playback cycle (series_end); no trim). " +
+			"The series cursor is shared across visits. Use search_series to find a series. Reorder with update_block_item. " +
 			"Triggers EPG regeneration. Mirrors POST /blocks/{id}/items.",
 	}, addBlockItemHandler(db, mat))
 
@@ -91,10 +92,23 @@ func createBlockHandler(db storage.DB) mcp.ToolHandlerFor[createBlockInput, doma
 }
 
 type addBlockSeriesInput struct {
-	MediaSourceID    string `json:"media_source_id" jsonschema:"media source the series belongs to"`
-	SeriesExternalID string `json:"series_external_id,omitempty" jsonschema:"the series' id in its media source (preferred)"`
-	SeriesTitle      string `json:"series_title,omitempty" jsonschema:"series title, used when there is no series_external_id"`
-	PlaybackOrder    string `json:"playback_order,omitempty" jsonschema:"original (season, episode), random, shuffle (every episode once before repeats) or release_date; default original"`
+	MediaSourceID    string                  `json:"media_source_id" jsonschema:"media source the series belongs to"`
+	SeriesExternalID string                  `json:"series_external_id,omitempty" jsonschema:"the series' id in its media source (preferred)"`
+	SeriesTitle      string                  `json:"series_title,omitempty" jsonschema:"series title, used when there is no series_external_id"`
+	PlaybackOrder    string                  `json:"playback_order,omitempty" jsonschema:"original (season, episode), random, shuffle (every episode once before repeats) or release_date; default original"`
+	Amount           *blockSeriesAmountInput `json:"amount,omitempty" jsonschema:"how much to air per visit of the block rotation; default one episode"`
+}
+
+type blockSeriesAmountInput struct {
+	Mode  string `json:"mode,omitempty" jsonschema:"count (default: air count episodes), slot_end (until the end of the schedule slot; items after it never air) or series_end (the rest of the playback cycle in progress)"`
+	Count *int   `json:"count,omitempty" jsonschema:"number of episodes (positive integer); only with mode count, default 1"`
+}
+
+func (a *blockSeriesAmountInput) domain() *domain.SeriesAmountInput {
+	if a == nil {
+		return nil
+	}
+	return &domain.SeriesAmountInput{Mode: a.Mode, Count: a.Count}
 }
 
 type addBlockItemInput struct {
@@ -129,7 +143,7 @@ func addBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.Tool
 			if in.TrimDurationMs != nil {
 				return nil, domain.BlockItem{}, errors.New("trim_duration_ms is not valid for a series item; add a trimmed episode as its own item before the series")
 			}
-			spec, err := series.NewSpec(in.Series.MediaSourceID, in.Series.SeriesExternalID, in.Series.SeriesTitle, in.Series.PlaybackOrder, nil)
+			spec, err := series.NewSpec(in.Series.MediaSourceID, in.Series.SeriesExternalID, in.Series.SeriesTitle, in.Series.PlaybackOrder, in.Series.Amount.domain(), nil)
 			if err != nil {
 				return nil, domain.BlockItem{}, err
 			}

@@ -62,6 +62,41 @@ func TestMCPSeriesBlockItems(t *testing.T) {
 		t.Fatalf("add_block_item(series) = %+v / %+v", item, item.Series)
 	}
 
+	if item.Series.Amount.Mode != "count" || item.Series.Amount.Count != 1 {
+		t.Fatalf("default amount = %+v, want one episode", item.Series.Amount)
+	}
+	counted := callTool[domain.BlockItem](t, ctx, session, "add_block_item", map[string]any{
+		"block_id": block.ID,
+		"series":   map[string]any{"media_source_id": source.ID, "series_title": "Série Teste", "amount": map[string]any{"mode": "count", "count": 3}},
+	})
+	if counted.Series.Amount.Mode != "count" || counted.Series.Amount.Count != 3 {
+		t.Fatalf("add_block_item(amount count 3) = %+v", counted.Series.Amount)
+	}
+	toEnd := callTool[domain.BlockItem](t, ctx, session, "update_block_item", map[string]any{
+		"block_id": block.ID, "item_id": counted.ID, "amount": map[string]any{"mode": "series_end"},
+	})
+	if toEnd.Series.Amount.Mode != "series_end" || toEnd.Series.Amount.Count != 0 {
+		t.Fatalf("update_block_item(amount) = %+v", toEnd.Series.Amount)
+	}
+	for name, args := range map[string]map[string]any{
+		"add zero count":   {"block_id": block.ID, "series": map[string]any{"media_source_id": source.ID, "series_title": "Série Teste", "amount": map[string]any{"mode": "count", "count": 0}}},
+		"add unknown mode": {"block_id": block.ID, "series": map[string]any{"media_source_id": source.ID, "series_title": "Série Teste", "amount": map[string]any{"mode": "x"}}},
+		"add count w/ end": {"block_id": block.ID, "series": map[string]any{"media_source_id": source.ID, "series_title": "Série Teste", "amount": map[string]any{"mode": "slot_end", "count": 2}}},
+	} {
+		if msg := callToolExpectError(t, ctx, session, "add_block_item", args); msg == "" {
+			t.Errorf("%s: empty error", name)
+		}
+	}
+	callToolExpectError(t, ctx, session, "update_block_item", map[string]any{
+		"block_id": block.ID, "item_id": counted.ID, "amount": map[string]any{"mode": "slot_end", "count": 2},
+	})
+	callToolExpectError(t, ctx, session, "update_block_item", map[string]any{
+		"block_id": block.ID, "item_id": counted.ID, "amount": map[string]any{"mode": "count", "count": -1},
+	})
+	callTool[struct {
+		Deleted bool `json:"deleted"`
+	}](t, ctx, session, "delete_block_item", map[string]any{"block_id": block.ID, "item_id": counted.ID})
+
 	listed := callTool[struct {
 		Items []domain.BlockItem `json:"items"`
 	}](t, ctx, session, "list_block_items", map[string]any{"block_id": block.ID})

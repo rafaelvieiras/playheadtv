@@ -240,10 +240,27 @@ edges):
   trim: every episode plays in full. `GET /series?q=` lists the catalog's
   series with episode count and total duration; block item responses carry a
   `series` view with the live episode count and total duration.
-  A series item airs its episodes, in order, until its boundary (the next
-  schedule occurrence, reserving postroll, or the end of the window), cycle
-  after cycle, so items after it in the block never air; in a continuous
-  block the rotation stays on it. Orders: `original` is season then episode
+  A series item airs, per visit of the block rotation, the amount in its
+  spec `amount` `{mode, count?}`: `count` (N >= 1 episodes; 1 for an item
+  created without an amount), `slot_end` (until its boundary, the next
+  schedule occurrence reserving postroll or the end of the window, cycle after
+  cycle, so items after it in the block never air; in a continuous block the
+  rotation stays on it) or `series_end` (the rest of the playback cycle in
+  progress, then the rotation moves on and the next visit opens a new cycle; a
+  `random` series, which has no cycles, airs as many episodes as it holds).
+  The cursor is shared across visits, so one-episode visits walk the series
+  across rotation loops, days and regenerations. The end of the slot always
+  wins: an episode that would not end before it is not scheduled, the visit
+  ends there and the block's remaining items do not air; a visit cut that way
+  starts afresh (full amount) at the next gap. A manual block plays its list
+  once, a `count`/`series_end` visit handing over to the next item (no midroll
+  follows a series visit). In a continuous block the entry completing a visit
+  stores the unwrapped next rotation index and the others the item's own, and
+  a regeneration whose kept head ends mid-visit counts the trailing adjacent
+  entries still carrying the item's index to resume it. A spec without
+  `amount` (stored before it existed; migration `0011` writes `slot_end` into
+  them) is `slot_end`.
+  Orders: `original` is season then episode
   (specials first, missing numbers last), `release_date` is premiere date
   (missing last), `random` picks any episode each time, `shuffle` plays every
   episode once per cycle in an order that is a hash of (seed, cycle, episode
