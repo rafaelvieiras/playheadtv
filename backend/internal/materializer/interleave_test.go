@@ -65,15 +65,33 @@ func drainRows(r *seriesRun, n int) ([]string, []seriesRow) {
 
 func ilDrain(r *seriesRun, n int) []string { ids, _ := drainRows(r, n); return ids }
 
-func TestInterleave_OneEpisodePerSeriesPerRoundSeriesWithDifferentLengthsAndNoSeriesItems(t *testing.T) {
+func TestInterleave_RestartShortSeriesLoopOnTheirOwn(t *testing.T) {
 	// A has 5 episodes, B 2, C is a movie (a one-item series); series sorted by
 	// title: "Series A", "Series B", "Zeta movie".
 	eps := ilConcat(ilEps("a", 5), ilEps("b", 2), []series.Episode{ilMovie("m1", "Zeta movie")})
 	r := newSeriesRun(ilSpec(domain.Interleave{}, 1), "chan", eps, 0, nil, nil, 0)
+	got := ilDrain(r, 15)
+	// Every round visits every series: B and the movie restart by themselves
+	// whenever they run out, while A is still on its first pass.
+	want := []string{"a01", "b01", "m1", "a02", "b02", "m1", "a03", "b01", "m1", "a04", "b02", "m1", "a05", "b01", "m1"}
+	if !equalStrings(got, want) {
+		t.Fatalf("got  %v\nwant %v", got, want)
+	}
+	// A then restarts too, in the cycle it records for itself (round 5 is its
+	// second pass, and B's third: B restarts every two rounds).
+	_, rows := drainRows(newSeriesRun(ilSpec(domain.Interleave{}, 1), "chan", eps, 0, nil, nil, 0), 18)
+	if r15, r16 := rows[15], rows[16]; r15.CatalogItemID != "a01" || r15.Cycle != 1 || r15.Round != 5 || r16.CatalogItemID != "b02" || r16.Cycle != 2 || r16.Round != 5 {
+		t.Fatalf("rows 15/16 = %+v %+v", r15, r16)
+	}
+}
+
+func TestInterleave_DropSeriesLeaveForGoodAndTheCycleThenStartsOver(t *testing.T) {
+	eps := ilConcat(ilEps("a", 5), ilEps("b", 2), []series.Episode{ilMovie("m1", "Zeta movie")})
+	r := newSeriesRun(ilSpec(domain.Interleave{OnExhaustion: domain.OnExhaustionDrop}, 1), "chan", eps, 0, nil, nil, 0)
 	got := ilDrain(r, 12)
-	// Round 1: a01 b01 m1; round 2: a02 b02; then B and the movie are
-	// exhausted and wait, A plays on alone; the cycle is over after a05, so
-	// every series restarts: a01 b01.
+	// Round 1: a01 b01 m1; round 2: a02 b02; then B and the movie have left
+	// and A plays on alone; every series is done after a05, so the list ends
+	// and (the block looping) everything starts over.
 	want := []string{"a01", "b01", "m1", "a02", "b02", "a03", "a04", "a05", "a01", "b01", "m1", "a02"}
 	if !equalStrings(got, want) {
 		t.Fatalf("got  %v\nwant %v", got, want)
@@ -84,11 +102,18 @@ func TestInterleave_PerRoundAirsThatManyEpisodesPerTurn(t *testing.T) {
 	eps := ilConcat(ilEps("a", 5), ilEps("b", 3))
 	r := newSeriesRun(ilSpec(domain.Interleave{PerRound: 2}, 1), "chan", eps, 0, nil, nil, 0)
 	got := ilDrain(r, 10)
-	// Turns of two; B runs out after b03 (its second turn has one episode), A
-	// finishes alone, then the cycle restarts.
-	want := []string{"a01", "a02", "b01", "b02", "a03", "a04", "b03", "a05", "a01", "a02"}
+	// Turns of two; B runs out after b03 and restarts within its turn.
+	want := []string{"a01", "a02", "b01", "b02", "a03", "a04", "b03", "b01", "a05", "a01"}
 	if !equalStrings(got, want) {
 		t.Fatalf("got  %v\nwant %v", got, want)
+	}
+	r = newSeriesRun(ilSpec(domain.Interleave{PerRound: 2, OnExhaustion: domain.OnExhaustionDrop}, 1), "chan", eps, 0, nil, nil, 0)
+	got = ilDrain(r, 10)
+	// Drop: B leaves after b03 (its second turn has one episode), A finishes
+	// alone, then the cycle restarts.
+	want = []string{"a01", "a02", "b01", "b02", "a03", "a04", "b03", "a05", "a01", "a02"}
+	if !equalStrings(got, want) {
+		t.Fatalf("drop: got  %v\nwant %v", got, want)
 	}
 }
 
@@ -246,7 +271,7 @@ func TestInterleave_EmptyCatalogHasNothingToPlay(t *testing.T) {
 	}
 }
 
-func TestInterleave_DropCutsACountVisitAtTheEndOfTheCycleRestartRollsOver(t *testing.T) {
+func TestInterleave_DropCutsACountVisitAtTheEndOfTheListRestartNeverEnds(t *testing.T) {
 	eps := ilConcat(ilEps("a", 3), ilEps("b", 1)) // a cycle is 4 episodes
 	visit := func(on string) ([]string, bool) {
 		il := domain.Interleave{OnExhaustion: on}
@@ -256,7 +281,7 @@ func TestInterleave_DropCutsACountVisitAtTheEndOfTheCycleRestartRollsOver(t *tes
 		return seriesIDs(entries), completed
 	}
 	got, done := visit(domain.OnExhaustionRestart)
-	if want := []string{"a01", "b01", "a02", "a03", "a01", "b01"}; !equalStrings(got, want) || !done {
+	if want := []string{"a01", "b01", "a02", "b01", "a03", "b01"}; !equalStrings(got, want) || !done {
 		t.Errorf("restart: %v done=%v, want %v", got, done, want)
 	}
 	got, done = visit(domain.OnExhaustionDrop)
@@ -318,8 +343,45 @@ func prefixes(ids []string) []string {
 	return out
 }
 
-func TestInterleaveEndToEnd_ReportedCaseAlternatesSeriesAndRestartsAfterExhaustion(t *testing.T) {
-	for _, on := range []string{domain.OnExhaustionRestart, domain.OnExhaustionDrop} {
+func TestInterleaveEndToEnd_ReportedCaseRestartShortSeriesLoopWhileTheLongOneContinues(t *testing.T) {
+	f := cartoonsSetup(t, domain.OrderInterleaved, `{"per_round":1,"on_exhaustion":"restart","series_order":"title"}`)
+	ctx := context.Background()
+	mat := New(f.db, 48*time.Hour)
+	for run := 0; run < 2; run++ { // a second run must reproduce the first
+		if err := mat.Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+		entries := queryEntries(t, f)
+		ids := seriesIDs(entries)
+		assertContiguous(t, entries)
+		if len(ids) < 280 {
+			t.Fatalf("window holds only %d entries", len(ids))
+		}
+		// 10-minute episodes in a 48h window: 288 entries = 72 full rounds of
+		// the four series, none of them ever leaving the rotation.
+		for i, e := range entries {
+			round, turn := i/4, i%4
+			var want string
+			var wantCycle int
+			switch turn {
+			case 0:
+				want, wantCycle = fmt.Sprintf("Aaa%03d", round%153+1), round/153
+			case 1:
+				want, wantCycle = fmt.Sprintf("Bbb%03d", round%3+1), round/3
+			case 2:
+				want, wantCycle = fmt.Sprintf("Ccc%03d", round%5+1), round/5
+			default:
+				want, wantCycle = fmt.Sprintf("Ddd%03d", round%8+1), round/8
+			}
+			if e.CatalogItemID != want || *e.SeriesCycle != wantCycle || *e.SeriesRound != round {
+				t.Fatalf("run %d entry %d = %s cycle %d round %d, want %s cycle %d round %d", run+1, i, e.CatalogItemID, *e.SeriesCycle, *e.SeriesRound, want, wantCycle, round)
+			}
+		}
+	}
+}
+
+func TestInterleaveEndToEnd_ReportedCaseDropSeriesLeaveAndTheLongOneEndsAlone(t *testing.T) {
+	for _, on := range []string{domain.OnExhaustionDrop} {
 		t.Run(on, func(t *testing.T) {
 			f := cartoonsSetup(t, domain.OrderInterleaved, fmt.Sprintf(`{"per_round":1,"on_exhaustion":%q,"series_order":"title"}`, on))
 			ctx := context.Background()
@@ -551,7 +613,7 @@ func TestInterleaveEndToEnd_CatalogChangeMidRunKeepsTheGridAndNewSeriesJoin(t *t
 	}
 }
 
-func TestInterleaveEndToEnd_ManualBlockCriteriaItemDropEndsTheVisitRestartRollsOver(t *testing.T) {
+func TestInterleaveEndToEnd_ManualBlockCriteriaItemDropEndsTheVisitAtTheListEnd(t *testing.T) {
 	for _, on := range []string{domain.OnExhaustionRestart, domain.OnExhaustionDrop} {
 		f := newFixture(t)
 		const dur = int64(10 * 60 * 1000)
@@ -574,7 +636,9 @@ func TestInterleaveEndToEnd_ManualBlockCriteriaItemDropEndsTheVisitRestartRollsO
 				t.Fatal(err)
 			}
 			got := seriesIDs(queryEntries(t, f))
-			want := []string{"Aaa001", "Bbb001", "Aaa002", "Aaa003", "Aaa001", "Bbb001", "outro"}
+			// restart: B loops while A plays out; the visit ends (count 6)
+			// without a list end ever being reached.
+			want := []string{"Aaa001", "Bbb001", "Aaa002", "Bbb001", "Aaa003", "Bbb001", "outro"}
 			if on == domain.OnExhaustionDrop {
 				want = []string{"Aaa001", "Bbb001", "Aaa002", "Aaa003", "outro"}
 			}
@@ -614,5 +678,72 @@ func TestInterleaveEndToEnd_PreviewResetMatchesAndWritesNothing(t *testing.T) {
 	real := seriesIDs(queryEntries(t, f))
 	if got := seriesIDs(preview); !equalStrings(got[:30], real[:30]) {
 		t.Fatalf("preview and reset differ:\n%v\n%v", got[:30], real[:30])
+	}
+}
+
+// A "series end" visit of a restart walk lasts until every series has been
+// through a pass: the short ones loop meanwhile, the visit ends with the
+// longest one.
+func TestInterleave_RestartSeriesEndVisitEndsWhenEverySeriesCompletedAPass(t *testing.T) {
+	eps := ilConcat(ilEps("a", 3), ilEps("b", 1))
+	run := newSeriesRun(ilSpec(domain.Interleave{}, 1), "chan", eps, 0, nil, nil, 0)
+	run.amount = domain.SeriesAmount{Mode: domain.AmountSeriesEnd}
+	limit := time.UnixMilli(0).Add(48 * time.Hour)
+	entries, end, completed := emitSeries(run, "blk", seriesVisit{Amount: run.amount}, time.UnixMilli(0), limit, true, domain.EpgProgram, "t", "chan", 0, nil)
+	if want := []string{"a01", "b01", "a02", "b01", "a03"}; !equalStrings(seriesIDs(entries), want) || !completed {
+		t.Fatalf("first visit %v completed=%v, want %v", seriesIDs(entries), completed, want)
+	}
+	// The next visit is another pass of everything.
+	entries, _, completed = emitSeries(run, "blk", seriesVisit{Amount: run.amount}, end, limit, true, domain.EpgProgram, "t", "chan", 0, nil)
+	if want := []string{"b01", "a01", "b01", "a02", "b01", "a03"}; !equalStrings(seriesIDs(entries), want) || !completed {
+		t.Fatalf("second visit %v completed=%v, want %v", seriesIDs(entries), completed, want)
+	}
+}
+
+// The boundary a series end visit depends on is rebuilt from rows like the
+// rest of the cursor.
+func TestInterleave_RestartBoundaryRebuildsFromRows(t *testing.T) {
+	eps := ilConcat(ilEps("a", 3), ilEps("b", 2), ilEps("c", 1))
+	il := domain.Interleave{PerRound: 2}
+	_, rows := drainRows(newSeriesRun(ilSpec(il, 5), "chan", eps, 0, nil, nil, 0), 40)
+	live := newSeriesRun(ilSpec(il, 5), "chan", eps, 0, nil, nil, 0)
+	for k := 1; k <= 40; k++ {
+		ep, cycle, round, _ := live.nextRound()
+		live.applyRound(ep.ID, cycle, round)
+		rebuilt := newSeriesRun(ilSpec(il, 5), "chan", eps, 0, rows[:k], nil, 0)
+		if rebuilt.cycleDone() != live.cycleDone() {
+			t.Fatalf("after %d rows: rebuilt boundary %v, live %v", k, rebuilt.cycleDone(), live.cycleDone())
+		}
+	}
+}
+
+// Rows an older version wrote (a global cycle shared by every series, the
+// round restarting with it) keep working: each series reads its own pass off
+// them and the walk continues from the last row.
+func TestInterleave_RestartReadsRowsOfTheGlobalCycleModel(t *testing.T) {
+	eps := ilConcat(ilEps("a", 2), ilEps("b", 1))
+	old := []seriesRow{
+		{StartAt: 1, CatalogItemID: "a01", Cycle: 0, Round: 0},
+		{StartAt: 2, CatalogItemID: "b01", Cycle: 0, Round: 0},
+		{StartAt: 3, CatalogItemID: "a02", Cycle: 0, Round: 1},
+		{StartAt: 4, CatalogItemID: "a01", Cycle: 1, Round: 0},
+		{StartAt: 5, CatalogItemID: "b01", Cycle: 1, Round: 0},
+	}
+	got := ilDrain(newSeriesRun(ilSpec(domain.Interleave{}, 1), "chan", eps, 0, old, nil, 0), 4)
+	if want := []string{"a02", "b01", "a01", "b01"}; !equalStrings(got, want) {
+		t.Fatalf("got %v want %v", got, want)
+	}
+}
+
+// Switching a block from restart to drop mid-run: the per-series cycles the
+// restart rows carry read as stale or newer global cycles, so the walk stays
+// valid (it may start the rotation over once).
+func TestInterleave_DropReadsRowsWrittenUnderRestart(t *testing.T) {
+	eps := ilConcat(ilEps("a", 4), ilEps("b", 1))
+	_, rows := drainRows(newSeriesRun(ilSpec(domain.Interleave{}, 1), "chan", eps, 0, nil, nil, 0), 6)
+	drop := ilSpec(domain.Interleave{OnExhaustion: domain.OnExhaustionDrop}, 1)
+	got := ilDrain(newSeriesRun(drop, "chan", eps, 0, rows, nil, 0), 10)
+	if len(got) != 10 {
+		t.Fatalf("walk stopped: %v", got)
 	}
 }

@@ -82,6 +82,21 @@ type seriesRun struct {
 	turn      int
 	orderKey  [2]int // (cycle, round) the cached roundOrder was computed for
 	orderMemo []int
+	// Restart walks (il.OnExhaustion == restart) keep a cycle per series: the
+	// pass of that series' episodes a row belongs to. A series that runs out
+	// restarts from its first episode on its own while the others continue,
+	// and the rounds never reset. passed holds the series that completed a
+	// pass since the last boundary; boundary is true right after the apply
+	// that completed a pass of the last series still owing one, i.e. when
+	// every series has been through at least one more pass (what a "series
+	// end" visit stops at). All of it is rebuilt by replaying the rows.
+	groupCycle []int
+	passed     map[int]bool
+	boundary   bool
+	// randLast[k] is the last series of round k's random order (restart walks
+	// keep one list instead of recursing through every earlier round).
+	randLast  []int
+	randCycle int
 }
 
 // walkGroup is one series of an interleaved walk (or a lone item with none):
@@ -265,7 +280,16 @@ func (r *seriesRun) cycleDone() bool {
 	if len(r.episodes) == 0 {
 		return false
 	}
+	if r.restarts() {
+		return r.boundary
+	}
 	return r.playedIn == len(r.episodes)
+}
+
+// restarts reports whether this is an interleaved walk whose series restart
+// on their own (the default); false for drop and for every other order.
+func (r *seriesRun) restarts() bool {
+	return r.il != nil && r.il.OnExhaustion != domain.OnExhaustionDrop
 }
 
 func (r *seriesRun) empty() bool { return len(r.episodes) == 0 }
@@ -278,7 +302,20 @@ func (r *seriesRun) apply(id string, cycle int) { r.applyRound(id, cycle, 0) }
 // An episode the catalog no longer holds still counts as played but tells
 // nothing about whose turn it was, so the position in the rounds is kept.
 func (r *seriesRun) applyRound(id string, cycle, round int) {
-	if cycle != r.cycle {
+	if r.restarts() {
+		r.applyRestart(id, cycle, round)
+		return
+	}
+	if cycle < r.cycle {
+		// Stale: only possible for rows written under the restart model (a
+		// series' own, lower pass) before the block was switched to drop,
+		// or a random walk, which has no cycles. It still counts as an
+		// episode aired (the random order is keyed by how many have).
+		r.lastEp = id
+		r.ordinal++
+		return
+	}
+	if cycle > r.cycle {
 		r.cycle = cycle
 		r.played = make(map[string]bool)
 		r.playedIn, r.firstFree = 0, 0
@@ -290,6 +327,11 @@ func (r *seriesRun) applyRound(id string, cycle, round int) {
 	r.played[id] = true
 	r.lastEp = id
 	r.ordinal++
+	r.advanceTurn(id, round)
+}
+
+// advanceTurn moves the position in the rounds to the series of id's turn.
+func (r *seriesRun) advanceTurn(id string, round int) {
 	if r.il == nil {
 		return
 	}
@@ -305,6 +347,52 @@ func (r *seriesRun) applyRound(id string, cycle, round int) {
 	r.lastGroup, r.round = gi, round
 }
 
+// applyRestart is applyRound for a restart walk: the cycle belongs to the
+// episode's own series. A higher one than the series' current pass starts a
+// fresh pass of just that series; a lower one is stale (an older version
+// wrote a global cycle) and only moves the position.
+func (r *seriesRun) applyRestart(id string, cycle, round int) {
+	r.ordinal++
+	r.lastEp = id
+	gi, ok := r.groupOf[id]
+	if !ok {
+		return // an episode the catalog lost: counts for nothing
+	}
+	if r.groupCycle == nil {
+		r.groupCycle = make([]int, len(r.groups))
+		r.passed = make(map[int]bool)
+	}
+	g := r.groups[gi]
+	switch {
+	case cycle > r.groupCycle[gi]:
+		r.groupCycle[gi] = cycle
+		for _, e := range g.eps {
+			delete(r.played, e.ID)
+		}
+		r.played[id] = true
+	case cycle == r.groupCycle[gi]:
+		r.played[id] = true
+	}
+	r.boundary = false
+	if r.groupFull(g) {
+		r.passed[gi] = true
+		if len(r.passed) >= len(r.groups) {
+			r.boundary = true
+			r.passed = make(map[int]bool)
+		}
+	}
+	r.advanceTurn(id, round)
+}
+
+func (r *seriesRun) groupFull(g *walkGroup) bool {
+	for _, e := range g.eps {
+		if !r.played[e.ID] {
+			return false
+		}
+	}
+	return true
+}
+
 // roundOrder is the sequence the series take their turns in during a round of
 // a cycle: by title (or earliest premiere) the same every round, a shuffle
 // fixed within the cycle, or a fresh random sequence every round. Ties break
@@ -316,6 +404,38 @@ func (r *seriesRun) roundOrder(cycle, round int) []int {
 	if r.orderKey == [2]int{cycle, round} && r.orderMemo != nil {
 		return r.orderMemo
 	}
+	prevLast := -1
+	if r.il.SeriesOrder == domain.OrderRandom && round > 0 {
+		prevLast = r.lastOfRound(cycle, round-1)
+	}
+	order := r.buildOrder(cycle, round, prevLast)
+	r.orderKey, r.orderMemo = [2]int{cycle, round}, order
+	return order
+}
+
+// lastOfRound is the series that closes round k of a random series order,
+// memoized for every round up to k (a restart walk has no upper bound on its
+// rounds, so this must not recurse through all of them).
+func (r *seriesRun) lastOfRound(cycle, k int) int {
+	if r.randLast == nil || r.randCycle != cycle {
+		r.randLast, r.randCycle = []int{}, cycle
+	}
+	for len(r.randLast) <= k {
+		j := len(r.randLast)
+		prev := -1
+		if j > 0 {
+			prev = r.randLast[j-1]
+		}
+		o := r.buildOrder(cycle, j, prev)
+		r.randLast = append(r.randLast, o[len(o)-1])
+	}
+	return r.randLast[k]
+}
+
+// buildOrder sorts the series for one round. prevLast (random order only, -1
+// for none) is the series that closed the previous round: a fresh random
+// order must not open with it, so it is swapped with the second.
+func (r *seriesRun) buildOrder(cycle, round, prevLast int) []int {
 	order := make([]int, len(r.groups))
 	for i := range order {
 		order[i] = i
@@ -346,16 +466,9 @@ func (r *seriesRun) roundOrder(cycle, round int) []int {
 		}
 		return a.key < b.key
 	})
-	if r.il.SeriesOrder == domain.OrderRandom && round > 0 && len(order) > 1 {
-		// A fresh random order must not open with the series that closed the
-		// previous round (when it is still in the rounds, which it is unless
-		// the catalog changed): swap it with the second.
-		prev := r.roundOrder(cycle, round-1)
-		if order[0] == prev[len(prev)-1] {
-			order[0], order[1] = order[1], order[0]
-		}
+	if prevLast >= 0 && len(order) > 1 && order[0] == prevLast {
+		order[0], order[1] = order[1], order[0]
 	}
-	r.orderKey, r.orderMemo = [2]int{cycle, round}, order
 	return order
 }
 
@@ -368,14 +481,62 @@ func (r *seriesRun) firstUnplayed(g *walkGroup, played map[string]bool) (series.
 	return series.Episode{}, false
 }
 
+// nextRestart picks the next episode of a restart walk: every series is
+// endless (when it runs out it starts over from its first episode, in a cycle
+// of its own), so the turn order never changes: the same series while its turn
+// (PerRound episodes) lasts, else the next series of the round, else the first
+// of the next round. A series the catalog gained mid-run takes its turn when
+// it comes up and starts from its first episode.
+func (r *seriesRun) nextRestart() (ep series.Episode, cycle, round int, ok bool) {
+	round = r.round
+	pick := func(gi int) (series.Episode, int) {
+		if e, ok := r.firstUnplayed(r.groups[gi], r.played); ok {
+			return e, r.groupCycleOf(gi)
+		}
+		return r.groups[gi].eps[0], r.groupCycleOf(gi) + 1
+	}
+	if r.lastGroup >= 0 && r.turn < r.il.PerRound {
+		ep, cycle = pick(r.lastGroup)
+		return ep, cycle, round, true
+	}
+	order := r.roundOrder(0, round)
+	start := 0
+	if r.lastGroup >= 0 {
+		for i, gi := range order {
+			if gi == r.lastGroup {
+				start = i + 1
+				break
+			}
+		}
+	}
+	if start < len(order) {
+		ep, cycle = pick(order[start])
+		return ep, cycle, round, true
+	}
+	round++
+	ep, cycle = pick(r.roundOrder(0, round)[0])
+	return ep, cycle, round, true
+}
+
+func (r *seriesRun) groupCycleOf(gi int) int {
+	if r.groupCycle == nil {
+		return 0
+	}
+	return r.groupCycle[gi]
+}
+
 // nextInterleaved picks the episode that airs next in an interleaved walk:
 // the same series while its turn (PerRound episodes) is not over, else the
 // next series of the round that still has an unplayed episode, else the first
 // such series of the next round. When every episode of the cycle has aired a
-// new cycle opens, which is how a "restart" walk begins again (a series that
-// ran out earlier simply waited its turn out; a series the catalog gained
+// new cycle opens for all of them (the "drop" walk: a series that ran out
+// earlier left the rounds and simply waited; a series the catalog gained
 // mid-cycle is unplayed and takes its place the next time its turn comes up).
+// A "restart" walk is nextRestart instead.
 func (r *seriesRun) nextInterleaved() (ep series.Episode, cycle, round int, ok bool) {
+	if r.restarts() {
+		return r.nextRestart()
+	}
 	cycle, round = r.cycle, r.round
 	played, last, turn := r.played, r.lastGroup, r.turn
 	if r.cycleDone() {

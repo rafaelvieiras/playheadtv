@@ -169,8 +169,14 @@ export interface Interleave {
 }
 
 export const ON_EXHAUSTION_LABELS: Record<OnExhaustion, string> = {
-  restart: 'Start over when all are done',
-  drop: 'Drop finished series',
+  restart: 'Finished series start over',
+  drop: 'Finished series drop out',
+}
+
+// One-line help shown under the controls.
+export const ON_EXHAUSTION_HELP: Record<OnExhaustion, string> = {
+  restart: 'A series that runs out restarts from its first episode on its own and keeps its turn, so short series repeat while longer ones continue.',
+  drop: 'A series that runs out leaves the rotation for good; when every series is done the block loops (or the visit ends).',
 }
 
 export const SERIES_ORDER_LABELS: Record<SeriesOrder, string> = {

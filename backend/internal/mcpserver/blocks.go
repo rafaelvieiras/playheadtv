@@ -28,8 +28,9 @@ func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Material
 			"(a condition tree as in preview_criteria) the block is dynamic: its items are every current match, owned by the " +
 			"system, aired in a loop by title. Only for a dynamic block, playback_order interleaved airs the matches " +
 			"round-robin across series instead (interleave: per_round episodes per series per round, default 1; " +
-			"on_exhaustion restart (default: when every series has been fully played they all start over) or drop " +
-			"(an exhausted series leaves the rounds, the others continue; then the block loops); series_order title " +
+			"on_exhaustion restart (default: a series that runs out restarts from its first episode on its own and keeps " +
+			"taking its turn, so short series loop while longer ones continue) or drop (a series that runs out leaves the " +
+			"rounds for good; when all are done the block loops); series_order title " +
 			"(default), release_date, random or shuffle sequences the series within a round). Items without a series " +
 			"count as one-item series. Mirrors POST /blocks.",
 	}, createBlockHandler(db, mat))
@@ -86,7 +87,7 @@ func fetchBlockExists(ctx context.Context, db storage.DB, id string) error {
 
 type blockInterleaveInput struct {
 	PerRound     *int   `json:"per_round,omitempty" jsonschema:"episodes a series airs per round (positive integer), default 1"`
-	OnExhaustion string `json:"on_exhaustion,omitempty" jsonschema:"restart (default: once every series has been fully played they all start over) or drop (an exhausted series leaves the rounds; when all are done the block repeats as it normally does)"`
+	OnExhaustion string `json:"on_exhaustion,omitempty" jsonschema:"restart (default: a series that runs out restarts on its own and keeps taking its turn while longer ones continue) or drop (a series that runs out leaves the rounds for good; when all are done the block repeats as it normally does)"`
 	SeriesOrder  string `json:"series_order,omitempty" jsonschema:"how the series are sequenced within a round: title (default), release_date (earliest premiere), random (fresh every round) or shuffle (fixed within a playback cycle)"`
 }
 

@@ -95,7 +95,8 @@ func ApplyInterleave(base domain.Interleave, in *domain.InterleaveInput) (domain
 
 // InterleaveRestarts reports whether changing the interleave parameters from
 // a to b must restart the cursor: the per-round count and the series order
-// change what the stored position means, the exhaustion behavior does not.
+// change what the stored position means, the exhaustion behavior does not
+// (the rows it leaves behind are readable under both).
 func InterleaveRestarts(a, b domain.Interleave) bool {
 	return a.PerRound != b.PerRound || a.SeriesOrder != b.SeriesOrder
 }

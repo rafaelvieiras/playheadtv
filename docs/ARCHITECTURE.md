@@ -278,16 +278,38 @@ in natural order (season, episode; specials first, missing numbers last); the
 rounds repeat. `series_order` sequences the series within a round: `title`
 (default), `release_date` (earliest premiere), `shuffle` (fixed within a
 cycle) or `random` (fresh each round, never opening with the series that
-closed the previous round). `on_exhaustion` is `restart` (default) or `drop`:
-a series that has run out waits (or leaves) while the others carry on, and
-once every episode of the cycle has aired the cycle ends. `restart` then opens
-the next cycle at once, so every series starts over and the rounds begin
-again; `drop` hands over to the block's own repeat behavior: a dynamic block
-loops (the same result), while a `count` visit of a criteria item stops at the
-end of the cycle instead of rolling into the next one. The walk is the series
-cursor above with one more persisted column, `epg_entry.series_round`, so a
-catalog change mid-run behaves sensibly: a series gained joins when its turn in
-the round comes up, a removed one leaves with no hole.
+closed the previous round). `on_exhaustion` is `restart` (default) or `drop`
+and says what happens when one series runs out of episodes:
+
+- `restart`: that series restarts from its own first episode, on its own, and
+  keeps taking its turn in the following rounds while longer series continue.
+  Short series loop repeatedly and the rotation never degenerates to the
+  longest series alone; the rounds never reset. A turn of `per_round` episodes
+  that straddles the end of a series simply continues from its first episode.
+  Without an end of its own, a "series end" visit (criteria item amount `all`)
+  stops at a boundary: the moment every series has completed a pass of its
+  episodes since the previous boundary (so it lasts as long as the longest
+  series' pass, the shorter ones looping meanwhile).
+- `drop`: that series leaves the rounds for good and the others continue; once
+  every series is exhausted the block follows its usual end-of-list behavior: a
+  dynamic block loops (every series starts over, round 0), while a `count`
+  visit of a criteria item in a manual block ends there instead of rolling
+  into the next cycle.
+
+The walk is the series cursor above with one more persisted column,
+`epg_entry.series_round`; for an interleaved walk `series_cycle` is the pass
+of that episode's own series (for `drop` it is the same for every series, the
+global cycle). Per-series pass state, the boundary and the position in the
+rounds are all rebuilt by replaying the persisted rows, so regeneration is
+idempotent and no extra column or migration was needed: rows written before
+this meaning (one global cycle for every series) read correctly, each series
+taking its own pass off them. A reset moves the cursor origin so everything
+restarts, and the seed mixes the channel id so two channels differ. A catalog
+change mid-run behaves sensibly: a series gained joins when its turn in the
+round comes up (from its first episode, and it must complete a pass before the
+next boundary), a removed one leaves with no hole. Switching a block between
+`restart` and `drop` mid-run keeps the cursor; going to `drop` may start the
+rotation over once.
 
 A dynamic block's order is `block.playback_order` (`title`, the default and
 exactly the old behavior, or `interleaved`) with `interleave_spec` (JSON) and a

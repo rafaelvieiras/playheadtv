@@ -144,8 +144,9 @@ actionable checklist.
 - [x] Interleaved-by-series playback order (round-robin across series) for
       criteria items and for dynamic blocks (`block.playback_order`,
       migration `0013`; default `title` keeps the old looped-by-title
-      behavior), with `per_round`, `on_exhaustion` (`restart`/`drop`) and
-      `series_order`; REST, MCP (`create_block`/`update_block`), block editor.
+      behavior), with `per_round`, `on_exhaustion` (`restart`: each series loops on
+      its own while longer ones continue; `drop`: a finished series leaves for
+      good, then the usual end-of-list behavior) and `series_order`; REST, MCP (`create_block`/`update_block`), block editor.
       Query fields `actor` and `director` next to `person`.
 - [x] Large-tenant robustness: startup backfills (`search_text`,
       `overview_norm`, genre links) in batched transactions with their own

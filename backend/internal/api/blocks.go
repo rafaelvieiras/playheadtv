@@ -260,8 +260,8 @@ type criteriaItemRequest struct {
 	PlaybackOrder string                    `json:"playback_order"`
 	Amount        *domain.SeriesAmountInput `json:"amount"`
 	// Interleave configures the interleaved order: per_round (episodes per
-	// series per round, default 1), on_exhaustion (restart, the default, or
-	// drop) and series_order (title, release_date, random, shuffle).
+	// series per round, default 1), on_exhaustion (restart, the default: a series that runs out
+	// restarts on its own and keeps its turn; or drop: it leaves the rounds for good) and series_order (title, release_date, random, shuffle).
 	Interleave *domain.InterleaveInput `json:"interleave"`
 }
 

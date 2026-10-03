@@ -4,6 +4,7 @@ import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { parsePerRound, type InterleaveDraft } from '@/lib/interleave'
 import {
+  ON_EXHAUSTION_HELP,
   ON_EXHAUSTION_LABELS,
   SERIES_ORDER_LABELS,
   type OnExhaustion,
@@ -22,8 +23,8 @@ interface InterleaveControlsProps {
 }
 
 // The three parameters of the interleaved order: episodes per series per
-// round, how the series are sequenced within a round, and what happens once
-// every series has been fully played.
+// round, how the series are sequenced within a round, and what happens when a
+// series runs out of episodes.
 export function InterleaveControls({ value, onChange, eager, disabled, testIdPrefix }: InterleaveControlsProps) {
   const [draft, setDraft] = useState(value.per_round === null ? '' : String(value.per_round))
   const [error, setError] = useState<string | null>(null)
@@ -87,7 +88,7 @@ export function InterleaveControls({ value, onChange, eager, disabled, testIdPre
           onValueChange={(v) => onChange({ ...value, on_exhaustion: v as OnExhaustion })}
           disabled={disabled}
         >
-          <SelectTrigger className="w-56" aria-label="When every series has been played" data-testid={`${testIdPrefix}-on-exhaustion`}>
+          <SelectTrigger className="w-56" aria-label="When a series runs out of episodes" data-testid={`${testIdPrefix}-on-exhaustion`}>
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -99,6 +100,9 @@ export function InterleaveControls({ value, onChange, eager, disabled, testIdPre
           </SelectContent>
         </Select>
       </div>
+      <span className="text-xs text-muted-foreground" data-testid={`${testIdPrefix}-on-exhaustion-help`}>
+        {ON_EXHAUSTION_HELP[value.on_exhaustion]}
+      </span>
       {error && <span className="text-xs text-destructive">{error}</span>}
     </div>
   )

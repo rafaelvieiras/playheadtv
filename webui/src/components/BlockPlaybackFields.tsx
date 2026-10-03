@@ -43,8 +43,8 @@ export function BlockPlaybackFields({ value, onChange, idPrefix }: BlockPlayback
           />
           <FieldDescription>
             Each series airs its episodes in order, taking turns: the number above per series per round. Movies and other
-            items without a series count as a one-item series. When every series has been played, either all of them start
-            over, or finished series leave the rounds while the others continue.
+            items without a series count as a one-item series. A series that runs out of episodes either restarts on its own
+            and keeps its turn, or leaves the rounds for good while the others continue.
           </FieldDescription>
         </>
       ) : (

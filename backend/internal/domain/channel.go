@@ -97,14 +97,17 @@ const (
 	OrderInterleaved = "interleaved"
 )
 
-// What an interleaved walk does once every series has been fully played.
+// What an interleaved walk does when a series runs out of episodes.
 const (
-	// OnExhaustionRestart: every series restarts from its first episode and the
-	// rounds begin again (a series that ran out earlier waits until then).
+	// OnExhaustionRestart: the series restarts from its own first episode, on
+	// its own, and keeps taking its turn in the following rounds while longer
+	// series continue (short series loop repeatedly; the rotation never
+	// degenerates to the longest series alone).
 	OnExhaustionRestart = "restart"
-	// OnExhaustionDrop: an exhausted series leaves the rounds and the others
-	// continue until all are done; then the block's own repeat behavior applies
-	// (a dynamic block loops, a manual block ends the item's visit there).
+	// OnExhaustionDrop: a series that runs out leaves the rounds for good and
+	// the others continue; once every series is done the block's own end-of-list
+	// behavior applies (a dynamic block loops, starting everything over; a count
+	// visit of a criteria item in a manual block ends there).
 	OnExhaustionDrop = "drop"
 )
 
