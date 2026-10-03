@@ -180,7 +180,6 @@ func TestAddSeriesBlockItemValidation(t *testing.T) {
 		{"no media source", blockID, `{"series":{"series_title":"Show"}}`, 400},
 		{"no identity", blockID, fmt.Sprintf(`{"series":{"media_source_id":%q}}`, ms), 400},
 		{"bad order", blockID, fmt.Sprintf(`{"series":{"media_source_id":%q,"series_title":"Show","playback_order":"backwards"}}`, ms), 400},
-		{"slice not supported", blockID, fmt.Sprintf(`{"series":{"media_source_id":%q,"series_title":"Show","slice":{"first":3}}}`, ms), 400},
 		{"unknown series", blockID, fmt.Sprintf(`{"series":{"media_source_id":%q,"series_title":"Nope"}}`, ms), 400},
 		{"unknown source", blockID, `{"series":{"media_source_id":"zzz","series_title":"Show"}}`, 400},
 		{"dynamic block", dynamic, fmt.Sprintf(`{"series":{"media_source_id":%q,"series_title":"Show"}}`, ms), 409},

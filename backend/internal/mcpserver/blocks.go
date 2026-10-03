@@ -52,7 +52,8 @@ func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Material
 			"playback_order original|random|shuffle|release_date, default original; amount {mode, count}: per visit of " +
 			"the block rotation air count episodes (mode count, the default, 1 episode), until the end of the " +
 			"schedule slot (slot_end; items after it never air) or the rest of the playback cycle (series_end); no trim). " +
-			"The series cursor is shared across visits. Use search_series to find a series. Or a criteria item " +
+			"The series cursor is shared across visits. Use search_series to find a series. A series item may carry a slice " +
+			"that narrows it to part of the series (see preview_series_slice for the operators and a live episode count). Or a criteria item " +
 			"(criteria: collection_id = the collection whose query is played, see create_collection, playback_order title|release_date|random|shuffle|interleaved, " +
 			"default title (interleaved: round-robin across series, with interleave {per_round, on_exhaustion restart|drop, " +
 			"series_order}, see create_block); amount, required: {mode count, count N} to air N matches per visit or {mode all} for every " +
@@ -65,6 +66,18 @@ func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Material
 		Name:        "delete_block_item",
 		Description: "Remove one item (catalog or series) from a manual block. Positions are not renumbered. Triggers EPG regeneration. Mirrors DELETE /blocks/{id}/items/{item_id}.",
 	}, deleteBlockItemHandler(db, mat))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "preview_series_slice",
+		Description: "Count the episodes (and total duration) a series would expand to under a slice, plus the whole series count, " +
+			"without storing anything. The slice narrows a series block item to part of its episodes; operators apply in this order: " +
+			"seasons (list) and/or season_from..season_to (a union), exclude_specials (drops season 0; without it specials stay), " +
+			"episode_from..episode_to (inclusive, by real episode number; a multi-episode file is in when any of its numbers is), " +
+			"skip_first, skip_last, first or last (not both), sample (N random episodes, reproducible, kept in original order). " +
+			"Seasons and episode ranges go by number; skip/first/last/sample count files by position in the original order (season, " +
+			"episode). Episodes without a season number fall out of the season filter and without an episode number out of the episode range. " +
+			"Contradictory slices are rejected. Mirrors POST /series/slice-preview.",
+	}, previewSeriesSliceHandler(db))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "search_series",
@@ -231,6 +244,51 @@ type addBlockSeriesInput struct {
 	SeriesTitle      string                  `json:"series_title,omitempty" jsonschema:"series title, used when there is no series_external_id"`
 	PlaybackOrder    string                  `json:"playback_order,omitempty" jsonschema:"original (season, episode), random, shuffle (every episode once before repeats) or release_date; default original"`
 	Amount           *blockSeriesAmountInput `json:"amount,omitempty" jsonschema:"how much to air per visit of the block rotation; default one episode"`
+	Slice            *blockSeriesSliceInput  `json:"slice,omitempty" jsonschema:"narrow the series to part of its episodes (see preview_series_slice); omit for the whole series"`
+}
+
+type blockSeriesSliceInput struct {
+	Seasons         []int `json:"seasons,omitempty" jsonschema:"only these season numbers (0 is specials); combined with season_from/season_to as a union"`
+	SeasonFrom      *int  `json:"season_from,omitempty" jsonschema:"first season of an inclusive season range"`
+	SeasonTo        *int  `json:"season_to,omitempty" jsonschema:"last season of an inclusive season range"`
+	ExcludeSpecials bool  `json:"exclude_specials,omitempty" jsonschema:"drop season 0; without it specials stay in the series"`
+	EpisodeFrom     *int  `json:"episode_from,omitempty" jsonschema:"first episode number of an inclusive range, by real number"`
+	EpisodeTo       *int  `json:"episode_to,omitempty" jsonschema:"last episode number of an inclusive range, by real number"`
+	SkipFirst       *int  `json:"skip_first,omitempty" jsonschema:"skip the first N episodes (by position)"`
+	SkipLast        *int  `json:"skip_last,omitempty" jsonschema:"skip the last N episodes (by position)"`
+	First           *int  `json:"first,omitempty" jsonschema:"keep only the first N episodes (by position); not with last"`
+	Last            *int  `json:"last,omitempty" jsonschema:"keep only the last N episodes (by position); not with first"`
+	Sample          *int  `json:"sample,omitempty" jsonschema:"keep N randomly chosen episodes (reproducible), in original order"`
+}
+
+func (s *blockSeriesSliceInput) domain() *domain.SeriesSlice {
+	if s == nil {
+		return nil
+	}
+	return &domain.SeriesSlice{Seasons: s.Seasons, SeasonFrom: s.SeasonFrom, SeasonTo: s.SeasonTo, ExcludeSpecials: s.ExcludeSpecials,
+		EpisodeFrom: s.EpisodeFrom, EpisodeTo: s.EpisodeTo, SkipFirst: s.SkipFirst, SkipLast: s.SkipLast,
+		First: s.First, Last: s.Last, Sample: s.Sample}
+}
+
+type previewSeriesSliceInput struct {
+	MediaSourceID    string                 `json:"media_source_id" jsonschema:"media source the series belongs to"`
+	SeriesExternalID string                 `json:"series_external_id,omitempty" jsonschema:"the series' id in its media source (preferred)"`
+	SeriesTitle      string                 `json:"series_title,omitempty" jsonschema:"series title, used when there is no series_external_id"`
+	Slice            *blockSeriesSliceInput `json:"slice,omitempty" jsonschema:"the slice to try; omit for the whole series"`
+}
+
+func previewSeriesSliceHandler(db storage.DB) mcp.ToolHandlerFor[previewSeriesSliceInput, series.Preview] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in previewSeriesSliceInput) (*mcp.CallToolResult, series.Preview, error) {
+		if in.MediaSourceID == "" {
+			return nil, series.Preview{}, errors.New("media_source_id is required")
+		}
+		if in.SeriesExternalID == "" && in.SeriesTitle == "" {
+			return nil, series.Preview{}, errors.New("series_external_id or series_title is required")
+		}
+		id := domain.SeriesSpec{MediaSourceID: in.MediaSourceID, SeriesExternalID: in.SeriesExternalID, SeriesTitle: in.SeriesTitle}
+		out, err := series.PreviewSlice(ctx, db, defaultTenantID, id, in.Slice.domain())
+		return nil, out, err
+	}
 }
 
 type blockSeriesAmountInput struct {
@@ -305,16 +363,12 @@ func addBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.Tool
 			if in.TrimDurationMs != nil {
 				return nil, domain.BlockItem{}, errors.New("trim_duration_ms is not valid for a series item; add a trimmed episode as its own item before the series")
 			}
-			spec, err := series.NewSpec(in.Series.MediaSourceID, in.Series.SeriesExternalID, in.Series.SeriesTitle, in.Series.PlaybackOrder, in.Series.Amount.domain(), nil)
+			spec, err := series.NewSpec(in.Series.MediaSourceID, in.Series.SeriesExternalID, in.Series.SeriesTitle, in.Series.PlaybackOrder, in.Series.Amount.domain(), in.Series.Slice.domain())
 			if err != nil {
 				return nil, domain.BlockItem{}, err
 			}
-			found, err := series.Exists(ctx, db, defaultTenantID, spec)
-			if err != nil {
+			if err := series.CheckSpec(ctx, db, defaultTenantID, spec); err != nil {
 				return nil, domain.BlockItem{}, err
-			}
-			if !found {
-				return nil, domain.BlockItem{}, errors.New("no episodes of that series in the catalog")
 			}
 			encoded, err := series.Encode(spec)
 			if err != nil {

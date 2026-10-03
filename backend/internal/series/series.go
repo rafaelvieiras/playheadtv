@@ -24,7 +24,9 @@ type Episode struct {
 	DurationMs    int64
 	SeasonNumber  *int64
 	EpisodeNumber *int64
-	PremiereDate  *int64
+	// EpisodeNumberEnd is the last episode of a multi-episode file.
+	EpisodeNumberEnd *int64
+	PremiereDate     *int64
 	// GroupKey and GroupTitle identify the series an item belongs to for an
 	// interleaved walk (see blockitem.Episodes); empty for the episodes of a
 	// series item, which have no use for them.
@@ -74,8 +76,8 @@ func NewAmount(in *domain.SeriesAmountInput) (domain.SeriesAmount, error) {
 
 // NewSpec validates a series identity, order and amount and returns the spec
 // to store, with a fresh random seed. An empty order defaults to original, a
-// nil amount to one episode per visit. Slice is reserved and must be empty.
-func NewSpec(mediaSourceID, externalID, title, order string, amountIn *domain.SeriesAmountInput, slice json.RawMessage) (domain.SeriesSpec, error) {
+// nil amount to one episode per visit. sliceIn is optional (see NormalizeSlice).
+func NewSpec(mediaSourceID, externalID, title, order string, amountIn *domain.SeriesAmountInput, sliceIn *domain.SeriesSlice) (domain.SeriesSpec, error) {
 	if mediaSourceID == "" {
 		return domain.SeriesSpec{}, errors.New("series.media_source_id is required")
 	}
@@ -88,8 +90,13 @@ func NewSpec(mediaSourceID, externalID, title, order string, amountIn *domain.Se
 	if !domain.ValidPlaybackOrder(order) {
 		return domain.SeriesSpec{}, errors.New("series.playback_order must be one of original, random, shuffle, release_date")
 	}
-	if len(slice) > 0 && string(slice) != "null" {
-		return domain.SeriesSpec{}, errors.New("series.slice is not supported yet")
+	slice, err := NormalizeSlice(sliceIn)
+	if err != nil {
+		return domain.SeriesSpec{}, err
+	}
+	sliceSeed, err := SliceSeedFor(slice, 0)
+	if err != nil {
+		return domain.SeriesSpec{}, err
 	}
 	amount, err := NewAmount(amountIn)
 	if err != nil {
@@ -105,6 +112,8 @@ func NewSpec(mediaSourceID, externalID, title, order string, amountIn *domain.Se
 		SeriesTitle:      title,
 		PlaybackOrder:    order,
 		Seed:             int64(binary.LittleEndian.Uint64(b[:]) >> 1),
+		Slice:            slice,
+		SliceSeed:        sliceSeed,
 		Amount:           &amount,
 	}, nil
 }
@@ -135,34 +144,58 @@ func episodeWhere(s domain.SeriesSpec) (string, []any) {
 	return clause + "series_title = ?", []any{s.MediaSourceID, s.SeriesTitle}
 }
 
-// Episodes loads the episodes of the series, in no particular order. Items
-// with a non-positive duration are left out (they cannot be scheduled).
+// Episodes loads the episodes the series item expands to: the series' episodes
+// narrowed by the spec's slice, if any. Without a slice they come in no
+// particular order; with one, in the series' original order. Items with a
+// non-positive duration are left out (they cannot be scheduled).
 func Episodes(ctx context.Context, db storage.DB, tenantID string, s domain.SeriesSpec) ([]Episode, error) {
+	eps, err := AllEpisodes(ctx, db, tenantID, s)
+	if err != nil {
+		return nil, err
+	}
+	return ApplySlice(eps, s.Slice, s.SliceSeed), nil
+}
+
+// AllEpisodes loads every schedulable episode of the series, slice ignored.
+func AllEpisodes(ctx context.Context, db storage.DB, tenantID string, s domain.SeriesSpec) ([]Episode, error) {
 	where, args := episodeWhere(s)
 	type row struct {
-		ID            string
-		Title         string
-		DurationMs    int64
-		SeasonNumber  *int64
-		EpisodeNumber *int64
-		PremiereDate  *int64
+		ID               string
+		Title            string
+		DurationMs       int64
+		SeasonNumber     *int64
+		EpisodeNumber    *int64
+		EpisodeNumberEnd *int64
+		PremiereDate     *int64
 	}
 	var rows []row
 	err := db.Query(ctx, &rows,
-		"SELECT id, title, duration_ms, season_number, episode_number, premiere_date FROM catalog_item WHERE tenant_id = ? AND "+where+" ORDER BY id",
+		"SELECT id, title, duration_ms, season_number, episode_number, episode_number_end, premiere_date FROM catalog_item WHERE tenant_id = ? AND "+where+" ORDER BY id",
 		append([]any{tenantID}, args...)...)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]Episode, len(rows))
 	for i, r := range rows {
-		out[i] = Episode{ID: r.ID, Title: r.Title, DurationMs: r.DurationMs, SeasonNumber: r.SeasonNumber, EpisodeNumber: r.EpisodeNumber, PremiereDate: r.PremiereDate}
+		out[i] = Episode{ID: r.ID, Title: r.Title, DurationMs: r.DurationMs, SeasonNumber: r.SeasonNumber, EpisodeNumber: r.EpisodeNumber, EpisodeNumberEnd: r.EpisodeNumberEnd, PremiereDate: r.PremiereDate}
 	}
 	return out, nil
 }
 
-// Stats counts the schedulable episodes of the series and their total duration.
+// Stats counts the schedulable episodes the series item expands to (after its
+// slice) and their total duration.
 func Stats(ctx context.Context, db storage.DB, tenantID string, s domain.SeriesSpec) (int, int64, error) {
+	if s.Slice != nil {
+		eps, err := Episodes(ctx, db, tenantID, s)
+		if err != nil {
+			return 0, 0, err
+		}
+		var total int64
+		for _, e := range eps {
+			total += e.DurationMs
+		}
+		return len(eps), total, nil
+	}
 	where, args := episodeWhere(s)
 	var rows []struct {
 		EpisodeCount    int

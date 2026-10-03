@@ -295,14 +295,14 @@ type criteriaItemRequest struct {
 // seriesItemRequest identifies a series (media source plus external id or
 // title) and how to walk it. playback_order defaults to original; amount is
 // how much one visit of the block rotation airs (default: one episode); slice
-// is reserved and rejected while non-null.
+// optionally narrows the series to part of its episodes (see domain.SeriesSlice).
 type seriesItemRequest struct {
 	MediaSourceID    string                    `json:"media_source_id"`
 	SeriesExternalID string                    `json:"series_external_id"`
 	SeriesTitle      string                    `json:"series_title"`
 	PlaybackOrder    string                    `json:"playback_order"`
 	Amount           *domain.SeriesAmountInput `json:"amount"`
-	Slice            json.RawMessage           `json:"slice"`
+	Slice            *domain.SeriesSlice       `json:"slice"`
 }
 
 // decorateItems fills the series view (episode count, total duration) of the
@@ -375,13 +375,12 @@ func addBlockItem(db storage.DB, mat *materializer.Materializer) http.HandlerFun
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
-			found, err := series.Exists(r.Context(), db, DefaultTenantID, spec)
-			if err != nil {
-				handleDBError(w, err)
-				return
-			}
-			if !found {
-				writeError(w, http.StatusBadRequest, "no episodes of that series in the catalog")
+			if err := series.CheckSpec(r.Context(), db, DefaultTenantID, spec); err != nil {
+				if !series.IsInvalid(err) {
+					handleDBError(w, err)
+					return
+				}
+				writeError(w, http.StatusBadRequest, err.Error())
 				return
 			}
 			encoded, err := series.Encode(spec)
@@ -509,6 +508,9 @@ type blockItemUpdateRequest struct {
 	// Interleave overlays the interleave parameters of a criteria item (criteria
 	// items with the interleaved order only).
 	Interleave *domain.InterleaveInput `json:"interleave"`
+	// Slice replaces the slice of a series item (series items only); an empty
+	// object clears it. A changed slice restarts the item's cursor.
+	Slice *domain.SeriesSlice `json:"slice"`
 }
 
 // updateBlockItem edits one item of a manual block: position (a reorder that
@@ -541,8 +543,8 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 			return
 		}
 		hasCollection := req.CollectionID != nil
-		if req.Position == nil && req.TrimDurationMs == nil && req.PlaybackOrder == nil && req.Amount == nil && !hasCollection && req.Interleave == nil {
-			writeError(w, http.StatusBadRequest, "position, trim_duration_ms, playback_order, amount, collection_id or interleave is required")
+		if req.Position == nil && req.TrimDurationMs == nil && req.PlaybackOrder == nil && req.Amount == nil && !hasCollection && req.Interleave == nil && req.Slice == nil {
+			writeError(w, http.StatusBadRequest, "position, trim_duration_ms, playback_order, amount, collection_id, interleave or slice is required")
 			return
 		}
 		if req.PlaybackOrder != nil && !domain.ValidPlaybackOrder(*req.PlaybackOrder) && !domain.ValidCriteriaOrder(*req.PlaybackOrder) {
@@ -596,6 +598,42 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 		if hasCollection && !target.IsCriteria() {
 			writeError(w, http.StatusBadRequest, "collection_id is only valid for a criteria item")
 			return
+		}
+		if req.Slice != nil && !target.IsSeries() {
+			writeError(w, http.StatusBadRequest, "slice is only valid for a series item")
+			return
+		}
+		if req.Slice != nil {
+			spec, err := series.ParseSpec(target.Spec)
+			if err != nil {
+				writeError(w, http.StatusInternalServerError, "internal error")
+				return
+			}
+			updated, changed, err := series.UpdateSlice(r.Context(), db, DefaultTenantID, spec, req.Slice)
+			if err != nil {
+				if !series.IsInvalid(err) {
+					handleDBError(w, err)
+					return
+				}
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			if changed {
+				encoded, err := series.Encode(updated)
+				if err != nil {
+					writeError(w, http.StatusInternalServerError, "internal error")
+					return
+				}
+				if err := db.Exec(r.Context(), "UPDATE block_item SET spec = ? WHERE block_id = ? AND id = ?", encoded, blockID, itemID); err != nil {
+					handleDBError(w, err)
+					return
+				}
+				target.Spec = &encoded
+				if err := restartItemCursor(r.Context(), db, itemID); err != nil {
+					handleDBError(w, err)
+					return
+				}
+			}
 		}
 		if target.IsCriteria() {
 			if req.PlaybackOrder != nil && !domain.ValidCriteriaOrder(*req.PlaybackOrder) {

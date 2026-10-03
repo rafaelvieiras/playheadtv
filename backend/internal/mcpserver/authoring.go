@@ -71,6 +71,7 @@ type updateBlockItemInput struct {
 	Amount         *blockSeriesAmountInput `json:"amount,omitempty" jsonschema:"series items: how much to air per visit; mode count (with count, default 1), slot_end or series_end; criteria items: mode count (with count) or all"`
 	CollectionID   *string                 `json:"collection_id,omitempty" jsonschema:"criteria items only: point the item at another collection (see create_collection)"`
 	Interleave     *blockInterleaveInput   `json:"interleave,omitempty" jsonschema:"criteria items with the interleaved order only: parameters to change (omitted ones are kept)"`
+	Slice          *blockSeriesSliceInput  `json:"slice,omitempty" jsonschema:"series items only: replace the item's slice (an empty object clears it); a changed slice restarts the item's cursor"`
 }
 
 func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[updateBlockItemInput, domain.BlockItem] {
@@ -78,8 +79,8 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 		if in.BlockID == "" || in.ItemID == "" {
 			return nil, domain.BlockItem{}, errors.New("block_id and item_id are required")
 		}
-		if in.Position == nil && in.TrimDurationMs == nil && in.PlaybackOrder == nil && in.Amount == nil && in.CollectionID == nil && in.Interleave == nil {
-			return nil, domain.BlockItem{}, errors.New("position, trim_duration_ms, playback_order, amount, collection_id or interleave is required")
+		if in.Position == nil && in.TrimDurationMs == nil && in.PlaybackOrder == nil && in.Amount == nil && in.CollectionID == nil && in.Interleave == nil && in.Slice == nil {
+			return nil, domain.BlockItem{}, errors.New("position, trim_duration_ms, playback_order, amount, collection_id, interleave or slice is required")
 		}
 		if in.PlaybackOrder != nil && !domain.ValidPlaybackOrder(*in.PlaybackOrder) && !domain.ValidCriteriaOrder(*in.PlaybackOrder) {
 			return nil, domain.BlockItem{}, errors.New("playback_order must be one of original, random, shuffle, release_date (series) or title, release_date, random, shuffle, interleaved (criteria)")
@@ -127,6 +128,36 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 		}
 		if in.CollectionID != nil && !target.IsCriteria() {
 			return nil, domain.BlockItem{}, errors.New("collection_id is only valid for a criteria item")
+		}
+		if in.Slice != nil && !target.IsSeries() {
+			return nil, domain.BlockItem{}, errors.New("slice is only valid for a series item")
+		}
+		if in.Slice != nil {
+			spec, err := series.ParseSpec(target.Spec)
+			if err != nil {
+				return nil, domain.BlockItem{}, err
+			}
+			updated, changed, err := series.UpdateSlice(ctx, db, defaultTenantID, spec, in.Slice.domain())
+			if err != nil {
+				return nil, domain.BlockItem{}, err
+			}
+			if changed {
+				encoded, err := series.Encode(updated)
+				if err != nil {
+					return nil, domain.BlockItem{}, err
+				}
+				nowMs := nowMillis()
+				if err := db.Exec(ctx, "UPDATE block_item SET spec = ? WHERE block_id = ? AND id = ?", encoded, in.BlockID, in.ItemID); err != nil {
+					return nil, domain.BlockItem{}, err
+				}
+				target.Spec = &encoded
+				if err := db.Exec(ctx, "UPDATE series_cursor SET origin_ms = ? WHERE tenant_id = ? AND block_item_id = ?", nowMs, defaultTenantID, in.ItemID); err != nil {
+					return nil, domain.BlockItem{}, err
+				}
+				if err := db.Exec(ctx, "DELETE FROM epg_entry WHERE tenant_id = ? AND source_block_item_id = ? AND end_at > ?", defaultTenantID, in.ItemID, nowMs); err != nil {
+					return nil, domain.BlockItem{}, err
+				}
+			}
 		}
 		if target.IsCriteria() {
 			spec, err := blockitem.ParseCriteriaSpec(target.Spec)

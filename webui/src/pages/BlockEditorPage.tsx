@@ -35,6 +35,8 @@ import { summarizeQuery, validateQuery, type Query } from '@/lib/query'
 import { airsUntilSlotEnd } from '@/lib/guide'
 import { ApiError, api } from '@/lib/http'
 import { SeriesAmountControl } from '@/components/SeriesAmountControl'
+import { SeriesSliceControl } from '@/components/SeriesSliceControl'
+import { sliceKey, sliceSummary } from '@/lib/seriesSlice'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
   PLAYBACK_ORDER_LABELS,
@@ -48,6 +50,7 @@ import {
   type Interleave,
   type PlaybackOrder,
   type SeriesAmount,
+  type SeriesSlice,
   type SeriesSummary,
 } from '@/lib/types'
 
@@ -498,6 +501,17 @@ function BlockItemsSection({ block }: { block: Block }) {
     )
   }
 
+  const [sliceOpenId, setSliceOpenId] = useState<string | null>(null)
+  function setSlice(item: BlockItem, slice: SeriesSlice) {
+    updateMutation.mutate(
+      { itemId: item.id, slice },
+      {
+        onSuccess: () => toast.success(Object.keys(slice).length ? 'Slice saved, the series restarts.' : 'Slice cleared, the series restarts.'),
+        onError: (err) => toast.error(errorMessage(err, 'Could not save the slice.')),
+      }
+    )
+  }
+
   function setTrim(item: BlockItem, ms: number) {
     updateMutation.mutate(
       { itemId: item.id, trim_duration_ms: ms },
@@ -645,6 +659,30 @@ function BlockItemsSection({ block }: { block: Block }) {
                           disabled={busy}
                           testIdPrefix="series"
                         />
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            data-testid="series-slice-toggle"
+                            aria-expanded={sliceOpenId === item.id}
+                            onClick={() => setSliceOpenId(sliceOpenId === item.id ? null : item.id)}
+                          >
+                            {item.series?.slice ? 'Edit slice' : 'Slice…'}
+                          </Button>
+                          {item.series?.slice && (
+                            <span className="text-xs text-muted-foreground" data-testid="series-slice-summary">
+                              {sliceSummary(item.series.slice)}
+                            </span>
+                          )}
+                        </div>
+                        {item.series && sliceOpenId === item.id && (
+                          <SeriesSliceControl
+                            key={`${item.id}-${sliceKey(item.series.slice)}`}
+                            series={item.series}
+                            disabled={busy}
+                            onSave={(slice) => setSlice(item, slice)}
+                          />
+                        )}
                       </div>
                     ) : (
                       <TrimInput

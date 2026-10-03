@@ -126,8 +126,7 @@ actionable checklist.
       `release_date`); see `docs/ARCHITECTURE.md` "Series block items".
       `POST/PUT/DELETE /blocks/{id}/items`, `GET /series`, MCP
       `add_block_item` (with `series`), `delete_block_item`, `search_series`,
-      block editor "Add a series". Not yet: the slice spec is stored as a
-      reserved empty field (see the slicing item below); series items in
+      block editor "Add a series". Not yet: series items in
       filler pools are not decided.
 - [x] Composable catalog queries, stage 1: `block.criteria` and
       `filler_pool.criteria` hold a versioned JSON condition tree
@@ -138,8 +137,7 @@ actionable checklist.
       migration converts old criteria and holds back any whose matched set
       would change (`GET /criteria-migration-review`), web UI query builder,
       MCP `preview_criteria`/`add_block_item`/`update_block_item`. See
-      `docs/ARCHITECTURE.md` "Catalog queries". Not yet: a text syntax, series slicing (a query on
-      `season_number`/`episode_number` covers part of it).
+      `docs/ARCHITECTURE.md` "Catalog queries". Not yet: a text syntax.
 - [x] Composable catalog queries, stage 2: the `collection` entity
       (migration `0014`). A collection holds only a name, a description and the
       query; dynamic blocks, dynamic filler pools and criteria items reference
@@ -304,12 +302,16 @@ actionable checklist.
       generic pool; no design for that yet — folded into issue #4 (Deco) as
       a "base programming" requirement (see below), distinct from the "first
       N episodes of a series" curation gap this also surfaced.
-- [ ] Curated `block`/`filler_pool` items currently have no way to express
-      "the first N episodes of a series" (or any other ordinal slice) —
-      only "every episode matching criteria" (dynamic) or "this exact,
-      hand-picked list of catalog_item ids" (manual, one
-      `POST .../items` call per item). A themed block built from a
-      long-running series' original run needs this. See issue #13.
+- [x] Series slicing: a series block item takes an optional `slice` (first or
+      last N, episode-number range, season list and/or range, exclude
+      specials, skip first/last N, random sample N), resolved by the
+      materializer on every run so it tracks the library; dynamic blocks and
+      criteria items get no slice (they query `season_number`/
+      `episode_number`). `POST /series/slice-preview` and MCP
+      `preview_series_slice` give a live episode count; block editor "Slice"
+      panel on a series item. See `docs/ARCHITECTURE.md` "Series block
+      items". Not yet: choosing a slice while adding a series (it is set on
+      the item after adding), a manual "re-roll" of a random sample.
 - [ ] Issue #4 (Deco) expanded, not implemented yet: dead-air fallback needs
       to support real programming (a low-priority "base" schedule, with its
       own filler chain) resuming in the gaps a channel's pinned schedule

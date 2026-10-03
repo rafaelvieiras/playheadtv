@@ -269,16 +269,42 @@ export const SERIES_AMOUNT_LABELS: Record<SeriesAmountMode, string> = {
   series_end: 'Until the series ends',
 }
 
+// Mirrors backend/internal/domain.SeriesSlice: the part of a series a series
+// block item airs. Every field is optional; operators apply in the order
+// seasons / season range (a union), exclude specials, episode range, skip,
+// first or last, sample. Ranges are inclusive and by real number; skip,
+// first, last and sample count files by position in the original order.
+export interface SeriesSlice {
+  seasons?: number[]
+  season_from?: number
+  season_to?: number
+  exclude_specials?: boolean
+  episode_from?: number
+  episode_to?: number
+  skip_first?: number
+  skip_last?: number
+  first?: number
+  last?: number
+  sample?: number
+}
+
+// Response of POST /series/slice-preview.
+export interface SeriesSlicePreview {
+  episode_count: number
+  total_duration_ms: number
+  series_episode_count: number
+}
+
 // Mirrors backend/internal/domain.SeriesItemView: the identity and order of a
 // series block item plus what it currently expands to (read live from the
-// catalog). `slice` is reserved and always null for now.
+// catalog; the count and duration are those of the sliced episodes).
 export interface SeriesItemView {
   media_source_id: string
   series_external_id?: string
   series_title?: string
   playback_order: PlaybackOrder
   amount: SeriesAmount
-  slice: unknown
+  slice: SeriesSlice | null
   episode_count: number
   total_duration_ms: number
 }
@@ -353,6 +379,7 @@ export interface BlockItemInput {
     playback_order: PlaybackOrder
     // Omitted means one episode per visit.
     amount?: SeriesAmount
+    slice?: SeriesSlice
   }
 }
 
@@ -619,6 +646,9 @@ export interface BlockItemUpdateInput {
   // Criteria items with the interleaved order only: parameters to change.
   // per_round or series_order restart the item; on_exhaustion keeps the cursor.
   interleave?: Partial<Interleave>
+  // Series items only: replaces the slice (an empty object clears it); a
+  // changed slice restarts the series.
+  slice?: SeriesSlice
 }
 
 // FillerPoolItemUpdateInput is the body of

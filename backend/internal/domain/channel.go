@@ -215,16 +215,17 @@ type SeriesAmountInput struct {
 // SeriesSpec is the stored, type-specific configuration of a series block
 // item (block_item.spec). A series is identified by its media source plus
 // SeriesExternalID when set, else SeriesTitle. Seed makes the shuffle and
-// random orders reproducible; it is never shown to clients. Slice is
-// reserved for slicing a series (first N, a season range, ...) and must stay
-// empty until that exists.
+// random orders reproducible; it is never shown to clients. Slice optionally
+// narrows the series to a part of its episodes (see SeriesSlice); SliceSeed
+// makes the slice's random sample reproducible and is never shown either.
 type SeriesSpec struct {
-	MediaSourceID    string          `json:"media_source_id"`
-	SeriesExternalID string          `json:"series_external_id,omitempty"`
-	SeriesTitle      string          `json:"series_title,omitempty"`
-	PlaybackOrder    string          `json:"playback_order"`
-	Seed             int64           `json:"seed"`
-	Slice            json.RawMessage `json:"slice,omitempty"`
+	MediaSourceID    string       `json:"media_source_id"`
+	SeriesExternalID string       `json:"series_external_id,omitempty"`
+	SeriesTitle      string       `json:"series_title,omitempty"`
+	PlaybackOrder    string       `json:"playback_order"`
+	Seed             int64        `json:"seed"`
+	Slice            *SeriesSlice `json:"slice,omitempty"`
+	SliceSeed        int64        `json:"slice_seed,omitempty"`
 	// Amount is how much one visit airs. A spec stored before amounts existed
 	// has none and means AmountSlotEnd (see EffectiveAmount).
 	Amount *SeriesAmount `json:"amount,omitempty"`
@@ -246,17 +247,45 @@ func (s SeriesSpec) EffectiveAmount() SeriesAmount {
 	return a
 }
 
+// SeriesSlice narrows a series item to a part of the series' episodes. Every
+// field is optional; a slice with none set is no slice. They apply in this
+// order, each to what the previous ones left: the season filter (Seasons
+// and/or SeasonFrom..SeasonTo, a union), ExcludeSpecials, the episode number
+// range (EpisodeFrom..EpisodeTo), SkipFirst/SkipLast, First or Last, Sample.
+// Season and episode ranges are inclusive and refer to real numbers (gaps in
+// the library's numbering simply do not appear); an episode file covering
+// several episodes (episode_number_end) is in the episode range when any of
+// its numbers is. Skip, First, Last and Sample count files by position in the
+// series' original order (season, episode), so a multi-episode file counts
+// once. Episodes without a season number are left out of the season filter,
+// and those without an episode number out of the episode range.
+type SeriesSlice struct {
+	Seasons    []int `json:"seasons,omitempty"`
+	SeasonFrom *int  `json:"season_from,omitempty"`
+	SeasonTo   *int  `json:"season_to,omitempty"`
+	// ExcludeSpecials drops season 0. Without it specials stay in the series.
+	ExcludeSpecials bool `json:"exclude_specials,omitempty"`
+	EpisodeFrom     *int `json:"episode_from,omitempty"`
+	EpisodeTo       *int `json:"episode_to,omitempty"`
+	SkipFirst       *int `json:"skip_first,omitempty"`
+	SkipLast        *int `json:"skip_last,omitempty"`
+	First           *int `json:"first,omitempty"`
+	Last            *int `json:"last,omitempty"`
+	// Sample keeps that many randomly chosen episodes, in original order.
+	Sample *int `json:"sample,omitempty"`
+}
+
 // SeriesItemView is the client-facing shape of a series block item: the
 // identity and order, plus what the series currently expands to.
 type SeriesItemView struct {
-	MediaSourceID    string          `json:"media_source_id"`
-	SeriesExternalID string          `json:"series_external_id,omitempty"`
-	SeriesTitle      string          `json:"series_title,omitempty"`
-	PlaybackOrder    string          `json:"playback_order"`
-	Amount           SeriesAmount    `json:"amount"`
-	Slice            json.RawMessage `json:"slice"`
-	EpisodeCount     int             `json:"episode_count"`
-	TotalDurationMs  int64           `json:"total_duration_ms"`
+	MediaSourceID    string       `json:"media_source_id"`
+	SeriesExternalID string       `json:"series_external_id,omitempty"`
+	SeriesTitle      string       `json:"series_title,omitempty"`
+	PlaybackOrder    string       `json:"playback_order"`
+	Amount           SeriesAmount `json:"amount"`
+	Slice            *SeriesSlice `json:"slice"`
+	EpisodeCount     int          `json:"episode_count"`
+	TotalDurationMs  int64        `json:"total_duration_ms"`
 }
 
 // Amounts of a criteria item per visit.

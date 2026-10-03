@@ -356,13 +356,46 @@ edges):
   `series`. Type-specific data lives in the JSON `spec` column, so further
   kinds add a type value and a spec shape. A series spec is
   `{media_source_id, series_external_id?, series_title?, playback_order, seed,
-  slice}`: the series is its media source plus external id (else title), `seed`
-  makes shuffle/random reproducible and is never served, `slice` is reserved
-  for slicing (empty; the API rejects a non-null value). Series items live in
+  slice, slice_seed}`: the series is its media source plus external id (else
+  title), `seed` makes shuffle/random reproducible and is never served, `slice`
+  optionally narrows the series (below) and `slice_seed` makes its random
+  sample reproducible (never served either). Series items live in
   manual blocks only (filler pools keep single items or criteria) and take no
   trim: every episode plays in full. `GET /series?q=` lists the catalog's
   series with episode count and total duration; block item responses carry a
   `series` view with the live episode count and total duration.
+  **Slice.** `slice` defines the series' episode universe for the item: the
+  materializer re-resolves it on every run, so it tracks the library, and the
+  cursor, `amount`, `playback_order`, midroll and the rest all work on the
+  sliced set exactly as on a whole series. An item without a slice airs the
+  whole series, as before. Operators (all optional; none set means no slice):
+  `seasons` (list) and/or `season_from`..`season_to` (a union), `exclude_specials`
+  (drops season 0; specials stay included unless this is set), `episode_from`..
+  `episode_to`, `skip_first`, `skip_last`, `first` or `last` (never both),
+  `sample`. They apply in that order, each to what the previous left: season
+  filter, specials, episode range, skip, first/last, sample. Season and episode
+  ranges are inclusive and go by real number, so gaps in the library's numbering
+  are simply absent; a multi-episode file (`episode_number_end`) is in an episode
+  range when any of its numbers is. `skip_*`, `first`, `last` and `sample` count
+  files by position in the series' original order (season, episode), so a
+  multi-episode file counts once. Episodes without a season number fall out of
+  any season filter, and those without an episode number out of an episode
+  range; they only take part in position-based operators. `sample` keeps N
+  episodes chosen by a hash of (`slice_seed`, episode id), kept in original
+  order: stable for a seed and barely moved by library changes; the seed is
+  created with the slice and kept while the slice keeps sampling. Dynamic blocks
+  and criteria items have no slice (they query `season_number`/`episode_number`).
+  Validation (400): negative numbers, a non-positive count, a reversed range,
+  `first` with `last`, `exclude_specials` with season 0 listed (or a range
+  ending at 0 alone), and a slice that currently matches no episode. An empty
+  slice object is no slice. `PUT /blocks/{id}/items/{item_id}` with `slice`
+  replaces it (`{}` clears it); a changed slice restarts the item's cursor like
+  a playback order change. `POST /series/slice-preview` (and MCP
+  `preview_series_slice`) counts what a slice would leave
+  (`episode_count`, `total_duration_ms`, `series_episode_count`) without storing
+  anything; block item views carry the sliced count and duration. If a library
+  change leaves the slice with no episode, the item is skipped like an empty
+  series.
   A series item airs, per visit of the block rotation, the amount in its
   spec `amount` `{mode, count?}`: `count` (N >= 1 episodes; 1 for an item
   created without an amount), `slot_end` (until its boundary, the next
