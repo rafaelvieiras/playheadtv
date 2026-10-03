@@ -349,8 +349,8 @@ edges):
   block's `preroll` filler rule still applies once, at the top of the
   occurrence; `postroll`/`tail` don't apply to it, since an endless loop has
   no single "end" to hang them off, and `midroll` only breaks between series
-  episodes (see "Series block items"). A manual block is
-  unaffected: it still airs its list once and stops, exactly as before.
+  episodes (see "Series block items"). A manual block plays its list per its
+  own `list_mode` (see "Manual block list mode").
 - **Series block items** (migration `0010`): `block_item.item_type` is
   `catalog` (one catalog item, as before, optional `trim_duration_ms`) or
   `series`. Type-specific data lives in the JSON `spec` column, so further
@@ -408,8 +408,9 @@ edges):
   across rotation loops, days and regenerations. The end of the slot always
   wins: an episode that would not end before it is not scheduled, the visit
   ends there and the block's remaining items do not air; a visit cut that way
-  starts afresh (full amount) at the next gap. A manual block plays its list
-  once, a `count`/`series_end` visit handing over to the next item. Midroll
+  starts afresh (full amount) at the next gap. In a manual block a
+  `count`/`series_end` visit hands over to the next item, and when the list
+  ends it plays once or starts again per the block's `list_mode`. Midroll
   applies to episodes exactly as to catalog items (series items, criteria
   items and interleaved dynamic blocks alike, through the same
   `pickFiller`): one break between two consecutive episodes of a visit and
@@ -532,6 +533,59 @@ in a window plays out in full exactly as before (the next `Run()` picks up
 the continuation). A dynamic (looping) block never had this problem to begin
 with — `fillLoopingBlock` already stops exactly at the boundary by
 construction.
+
+### Manual block list mode (migration `0015`)
+
+`block.list_mode` says what a manual block does when its item list ends:
+`repeat` (the default for a new block) starts again from the first item,
+`once` airs the list a single time. It describes the content, so it applies the
+same whether the block is scheduled with a time or as a continuous item. A
+dynamic block has no mode (it always loops its matches by its own rules);
+the API serves `list_mode` on manual blocks only and rejects it on a dynamic
+one with a 400, as it does any value other than `repeat`/`once`. On
+`PUT /blocks/{id}` an omitted `list_mode` keeps the stored one (the rest of the
+PUT stays a full replace); the web UI and MCP `create_block`/`update_block`
+expose it the same way.
+
+- **Timed item** (weekly or once): with `repeat`, every lap of the list starts
+  from the first item and the block keeps airing until the next occurrence (the
+  window's end when there is none). The overrun policy is unchanged: an item
+  that would not end before the next occurrence (minus a reserved postroll) is
+  not scheduled, which ends the block, and the `tail` filler takes what is left.
+  Midroll goes between consecutive items, including from the last item of a lap
+  to the first of the next. A `repeat` block that runs up to the window's end
+  has no postroll yet (it has not ended). Each occurrence restarts the list at
+  its first item, so a regenerated occurrence is identical and no rotation
+  position is stored for it; series items keep their own persisted cursors
+  across laps, occurrences and runs. `once` is the behavior from before the
+  setting: one pass, then tail/fallback.
+- **Continuous item**: the rotation already wrapped indefinitely, which is now
+  `repeat`. With `once` it airs the list a single time and then the channel's
+  fallback filler takes over; the rotation position persisted in
+  `epg_entry.rotation_next` is the unwrapped index, so `len(items)` means "the
+  list has been played" and survives runs and restarts (`reset-epg` plays it
+  again).
+- **Series items** inside a repeating list behave as in a looping block: a
+  `count`/`series_end` visit airs its amount and the walk moves on to the next
+  item, a `slot_end` visit stays on the item until the boundary (items after it
+  never air), and the cursor carries across laps. `maxSeriesEntries` still
+  bounds what one item emits.
+- **Guards.** A lap that airs nothing (an empty block, only empty series, items
+  without a positive duration) ends the block instead of looping, items with a
+  non-positive duration are skipped in a repeating list, and one occurrence
+  emits at most `maxRepeatEntries` (20000) entries. A scheduled `repeat` block
+  none of whose items can air raises the `repeat-empty` epg warning
+  (`GET /channels/{id}/epg-warnings`).
+- **Migration.** Every existing block becomes `repeat`. The migration also
+  fills `block_list_mode_review` with the manual blocks that have items and are
+  referenced by a weekly or once schedule item (their grid may now differ: a
+  list shorter than its slot used to end and now starts over). They are logged
+  at startup and served by the read-only `GET /blocks/list-mode-review`
+  (`[{block_id, block_name, schedules: [{schedule_id, schedule_name}]}]`, only
+  blocks still `repeat` and still timed). Writing `list_mode` on the block (or
+  deleting it, or making it dynamic) settles its review; the web UI shows a
+  notice on the blocks list and on the block editor with "Play once" / "Keep
+  repeating" buttons. A rename does not settle it.
 
 ### Continuous schedule items and grid stability
 

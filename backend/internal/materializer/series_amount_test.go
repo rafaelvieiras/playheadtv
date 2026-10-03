@@ -61,7 +61,8 @@ func TestAmount_ContinuousSingleSeriesUntilSlotEndIsAnEndlessSeriesChannel(t *te
 	run := seriesWalk("a", 3, ep22, amtSlotEnd)
 	in := channelInput{
 		ChannelID: "chan1", TenantID: "t", Timezone: "UTC",
-		ScheduleItems: []domain.ScheduleItem{{ID: "cont", BlockID: "blk", Recurrence: domain.RecurrenceContinuous, Active: true}},
+		ScheduleItems:  []domain.ScheduleItem{{ID: "cont", BlockID: "blk", Recurrence: domain.RecurrenceContinuous, Active: true}},
+		RepeatBlockIDs: map[string]bool{"blk": true}, // a continuous item over a manual block wraps only when it repeats
 		BlockItems: map[string][]domain.BlockItem{"blk": {
 			seriesBI("sa", "blk"),
 			{ID: "m", BlockID: "blk", CatalogItemID: "movie"}, // never reached
@@ -266,6 +267,7 @@ func continuousInput(items []domain.BlockItem, runs map[string]*seriesRun) chann
 	return channelInput{
 		ChannelID: "chan1", TenantID: "t", Timezone: "UTC",
 		ScheduleItems:   []domain.ScheduleItem{{ID: "cont", BlockID: "blk", Recurrence: domain.RecurrenceContinuous, Active: true}},
+		RepeatBlockIDs:  map[string]bool{"blk": true},
 		BlockItems:      map[string][]domain.BlockItem{"blk": items},
 		CatalogDuration: map[string]int64{"movie": ep22},
 		Series:          runs,

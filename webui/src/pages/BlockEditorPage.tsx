@@ -7,6 +7,8 @@ import { toast } from 'sonner'
 import { CriteriaAmountControl, CriteriaOrderSelect } from '@/components/CriteriaItemControls'
 import { CriteriaReviewNotice } from '@/components/CriteriaReviewNotice'
 import { type BlockPlaybackDraft } from '@/components/BlockPlaybackFields'
+import { BlockListModeField } from '@/components/BlockListModeField'
+import { ListModeReviewNotice } from '@/components/ListModeReviewNotice'
 import { CollectionPicker } from '@/components/CollectionPicker'
 import { DynamicCollectionFields, validateCollectionChoice, type CollectionChoice } from '@/components/DynamicCollectionFields'
 import { InterleaveControls } from '@/components/InterleaveControls'
@@ -48,6 +50,7 @@ import {
   type CriteriaAmount,
   type CriteriaOrder,
   type Interleave,
+  type ListMode,
   type PlaybackOrder,
   type SeriesAmount,
   type SeriesSlice,
@@ -120,6 +123,8 @@ function BlockDetailsForm({ block }: { block: Block }) {
   )
   const [draft, setDraft] = useState(initial)
   const [playback, setPlayback] = useState(initialPlayback)
+  const initialListMode: ListMode = block.list_mode ?? 'repeat'
+  const [listMode, setListMode] = useState<ListMode>(initialListMode)
   const [error, setError] = useState<string | null>(null)
   const isDynamic = block.dynamic
   const unreviewed = draft.keepLegacy && draft.collection === null
@@ -129,7 +134,8 @@ function BlockDetailsForm({ block }: { block: Block }) {
     draft.description !== initial.description ||
     draft.collection !== initial.collection ||
     draft.keepLegacy !== initial.keepLegacy ||
-    (isDynamic && JSON.stringify(playback) !== JSON.stringify(initialPlayback))
+    (isDynamic && JSON.stringify(playback) !== JSON.stringify(initialPlayback)) ||
+    (!isDynamic && listMode !== initialListMode)
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -138,6 +144,9 @@ function BlockDetailsForm({ block }: { block: Block }) {
         description: draft.description,
         collection_id: draft.collection,
         ...(draft.collection ? blockPlaybackPayload(playback.order, playback.interleave) : {}),
+        // Only a changed mode is sent: writing it settles the migration review
+        // of a block, which a mere rename must not do.
+        ...(!isDynamic && listMode !== initialListMode ? { list_mode: listMode } : {}),
       } satisfies BlockInput),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['blocks'] })
@@ -169,6 +178,7 @@ function BlockDetailsForm({ block }: { block: Block }) {
   function discard() {
     setDraft(initial)
     setPlayback(initialPlayback)
+    setListMode(initialListMode)
     setError(null)
   }
 
@@ -191,6 +201,7 @@ function BlockDetailsForm({ block }: { block: Block }) {
             onChange={(e) => setDraft((d) => ({ ...d, description: e.target.value || null }))}
           />
         </Field>
+        {!isDynamic && <BlockListModeField value={listMode} onChange={setListMode} idPrefix="block-editor" />}
         {isDynamic && !unreviewed && (
           <DynamicCollectionFields
             value={draft.collection}
@@ -201,6 +212,8 @@ function BlockDetailsForm({ block }: { block: Block }) {
           />
         )}
       </FieldGroup>
+
+      {!isDynamic && <ListModeReviewNotice block={block} />}
 
       {isDynamic && unreviewed && (
         <CriteriaReviewNotice

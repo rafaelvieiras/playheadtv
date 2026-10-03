@@ -34,6 +34,10 @@ type channelInput struct {
 	PoolItems       map[string][]domain.FillerPoolItem // filler_pool_id -> ordered by rowid (insertion order)
 	CatalogDuration map[string]int64                   // catalog_item_id -> duration_ms
 	DynamicBlockIDs map[string]bool                    // blockID -> true iff block.criteria is non-NULL
+	// RepeatBlockIDs holds the manual blocks whose list repeats (list_mode
+	// "repeat"). A manual block missing from it plays its list once; a dynamic
+	// block always loops and is never consulted.
+	RepeatBlockIDs map[string]bool
 	// Series holds the walk of every series block item the channel's blocks
 	// contain, keyed by block_item.id. Expansion mutates the runs.
 	Series map[string]*seriesRun
@@ -502,6 +506,11 @@ func emitSeries(
 	return entries, cursor, completed
 }
 
+// maxRepeatEntries bounds the entries one repeating block occurrence emits, as
+// maxSeriesEntries does for a series item: a list of near-zero-length items
+// would otherwise fill a whole window with millions of rows.
+const maxRepeatEntries = maxSeriesEntries
+
 // fillLoopingBlock inserts, starting at cursor, entries drawn from a
 // continuous, wrapping walk over items (a dynamic block's block_item list)
 // until target — same "whole items only, never cut short" contract as
@@ -518,6 +527,13 @@ func emitSeries(
 // to more than one channel, and each channel's loop position must be
 // independent — two channels airing the same dynamic block must not silently
 // share (and race on) one rotation cursor within a single Run().
+//
+// With once (a continuous item over a manual block set to play once) the
+// rotation does not wrap: the position is the unwrapped index into items, the
+// walk stops when it reaches len(items), and that value is what the entries
+// persist, so a later run still knows the list has been played. A walk that
+// goes around the list without airing anything (empty list, empty series)
+// stops instead of spinning.
 func fillLoopingBlock(
 	items []domain.BlockItem,
 	runs map[string]*seriesRun,
@@ -531,6 +547,7 @@ func fillLoopingBlock(
 	resumeDone int,
 	mid *midrollSource,
 	prevEpisode bool,
+	once bool,
 	state *selectionState,
 ) ([]domain.EpgEntry, time.Time) {
 	if len(items) == 0 {
@@ -538,9 +555,30 @@ func fillLoopingBlock(
 	}
 	var entries []domain.EpgEntry
 	emptySeries := 0
+	// idle counts consecutive iterations that aired nothing and did not move
+	// the cursor; a whole lap of them is a zero-progress cycle.
+	idle := 0
+	lastLen, lastCursor := 0, cursor
 	for {
-		idx := state.seqCursor[cursorKey] % len(items)
-		next := (idx + 1) % len(items)
+		if len(entries) == lastLen && cursor.Equal(lastCursor) {
+			idle++
+			if idle > 2*len(items) {
+				break
+			}
+		} else {
+			idle = 0
+		}
+		lastLen, lastCursor = len(entries), cursor
+		idx := state.seqCursor[cursorKey]
+		next := idx + 1
+		if once {
+			if idx >= len(items) {
+				break
+			}
+		} else {
+			idx %= len(items)
+			next = (idx + 1) % len(items)
+		}
 		bi := items[idx]
 		if bi.IsWalked() {
 			// A "slot_end" series stays on the air until target: the rotation
@@ -649,6 +687,12 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 	var entries []domain.EpgEntry
 	cursor := scanFrom
 
+	// playOnce reports a manual block that airs its list once (list_mode
+	// "once"); dynamic blocks and repeating manual blocks loop.
+	playOnce := func(blockID string) bool {
+		return !in.DynamicBlockIDs[blockID] && !in.RepeatBlockIDs[blockID]
+	}
+
 	fillFallbackOnly := func(from, to time.Time) {
 		rule := resolveFillerRule(in.FillerRules, domain.FillerFallback, "", in.ChannelID)
 		gapEntries, _ := fillGap(rule, in.PoolItems, in.CatalogDuration, from, to, domain.EpgFallback, in.TenantID, in.ChannelID, generatedAt, nil, state)
@@ -678,7 +722,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			resume = in.ContinuousVisitDone
 		}
 		mid := &midrollSource{rule: resolveFillerRule(in.FillerRules, domain.FillerMidRoll, continuous.BlockID, in.ChannelID), pools: in.PoolItems, durations: in.CatalogDuration, state: state}
-		loopEntries, end := fillLoopingBlock(in.BlockItems[continuous.BlockID], in.Series, in.CatalogDuration, start, to, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, continuousKey, resume, mid, in.ContinuousPrevEpisode && start.Equal(in.KeptUntil), state)
+		loopEntries, end := fillLoopingBlock(in.BlockItems[continuous.BlockID], in.Series, in.CatalogDuration, start, to, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, continuousKey, resume, mid, in.ContinuousPrevEpisode && start.Equal(in.KeptUntil), playOnce(continuous.BlockID), state)
 		entries = append(entries, loopEntries...)
 		if end.Before(to) {
 			fillFallbackOnly(end, to)
@@ -762,7 +806,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			// so two channels sharing this dynamic block via the same Schedule
 			// don't share loop position.
 			cursorKey := in.ChannelID + "|" + occ.BlockID
-			loopEntries, newCursor := fillLoopingBlock(items, in.Series, in.CatalogDuration, cursor, nominalNextStart, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, cursorKey, 0, &midrollSource{rule: midroll, pools: in.PoolItems, durations: in.CatalogDuration, state: state}, false, state)
+			loopEntries, newCursor := fillLoopingBlock(items, in.Series, in.CatalogDuration, cursor, nominalNextStart, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, cursorKey, 0, &midrollSource{rule: midroll, pools: in.PoolItems, durations: in.CatalogDuration, state: state}, false, false, state)
 			entries = append(entries, loopEntries...)
 			cursor = newCursor
 			continue
@@ -796,6 +840,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 				itemsCutoff = nominalNextStart.Add(-time.Duration(postrollDur) * time.Millisecond)
 			}
 		}
+		repeat := !playOnce(occ.BlockID)
 		fits := func(dur int64) bool {
 			if !hasNextOccurrence {
 				return true
@@ -808,8 +853,15 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		// block: the same step for a catalog item and for a series visit's
 		// last episode. It reports false when the block must stop (the
 		// break does not fit before the boundary).
+		//
+		// In a repeating block the list wraps, so the last item is also
+		// followed by a break (before the first item of the next lap) as
+		// long as the boundary is not reached yet.
 		midBreak := func(idx int) bool {
-			if idx == len(items)-1 {
+			if repeat && !cursor.Before(itemsCutoff) {
+				return false
+			}
+			if idx == len(items)-1 && !repeat {
 				return true
 			}
 			midItem, midDur, ok := midSrc.pick()
@@ -823,49 +875,75 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			return true
 		}
 
-		for idx, bi := range items {
-			if bi.IsWalked() {
-				// A series item airs its amount per visit. "slot_end" airs
-				// until the boundary (the next occurrence, reserving
-				// postroll, or the window's end), so nothing after it in the
-				// block gets on the air; "count" and "series_end" visits end
-				// by themselves and the block moves on to its next item. A
-				// visit cut by the boundary ends the block's airing. Midroll
-				// breaks go between the visit's episodes (emitSeries) and
-				// between the visit and the next item (midBreak), as they do
-				// between catalog items.
-				run := in.Series[bi.ID]
-				if run == nil || run.empty() {
+		// A manual block set to repeat starts its list over whenever it ends,
+		// until the boundary (itemsCutoff: the next occurrence, reserving
+		// postroll, or the window's end). Every lap starts from the first
+		// item, so a regenerated occurrence is deterministic and needs no
+		// persisted position (series cursors persist on their own). A lap
+		// that airs nothing (empty list, empty series, no positive duration)
+		// ends the block instead of spinning, and maxRepeatEntries bounds a
+		// list of very short items. A block that plays once makes one lap.
+		listStart := len(entries)
+	listLoop:
+		for {
+			lapStart := cursor
+			for idx, bi := range items {
+				if repeat && (!cursor.Before(itemsCutoff) || len(entries)-listStart >= maxRepeatEntries) {
+					break listLoop
+				}
+				if bi.IsWalked() {
+					// A series item airs its amount per visit. "slot_end" airs
+					// until the boundary (the next occurrence, reserving
+					// postroll, or the window's end), so nothing after it in the
+					// block gets on the air; "count" and "series_end" visits end
+					// by themselves and the block moves on to its next item. A
+					// visit cut by the boundary ends the block's airing. Midroll
+					// breaks go between the visit's episodes (emitSeries) and
+					// between the visit and the next item (midBreak), as they do
+					// between catalog items.
+					run := in.Series[bi.ID]
+					if run == nil || run.empty() {
+						continue
+					}
+					seriesEntries, end, completed := emitSeries(run, bi.ID, seriesVisit{Amount: run.amount, Mid: midSrc}, cursor, itemsCutoff, hasNextOccurrence, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID)
+					entries = append(entries, seriesEntries...)
+					cursor = end
+					if !completed {
+						break listLoop
+					}
+					if len(seriesEntries) > 0 && !midBreak(idx) {
+						break listLoop
+					}
 					continue
 				}
-				seriesEntries, end, completed := emitSeries(run, bi.ID, seriesVisit{Amount: run.amount, Mid: midSrc}, cursor, itemsCutoff, hasNextOccurrence, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID)
-				entries = append(entries, seriesEntries...)
-				cursor = end
-				if !completed {
-					break
+				dur := effectiveDuration(bi, in.CatalogDuration)
+				if repeat && dur <= 0 {
+					continue
 				}
-				if len(seriesEntries) > 0 && !midBreak(idx) {
-					break
+				if !fits(dur) {
+					break listLoop
 				}
-				continue
+				emit(bi.CatalogItemID, dur, domain.EpgProgram)
+				if !midBreak(idx) {
+					break listLoop
+				}
 			}
-			dur := effectiveDuration(bi, in.CatalogDuration)
-			if !fits(dur) {
+			if !repeat || !cursor.After(lapStart) {
 				break
 			}
-			emit(bi.CatalogItemID, dur, domain.EpgProgram)
-			if !midBreak(idx) {
-				break
-			}
+		}
+		if repeat && len(entries)-listStart >= maxRepeatEntries {
+			log.Printf("materializer: repeat cap hit: block %s on channel %s stopped after %d entries in one occurrence (cap %d; items this short are almost certainly bad catalog data)", occ.BlockID, in.ChannelID, len(entries)-listStart, maxRepeatEntries)
 		}
 
 		if hasNextOccurrence {
 			if hasPostroll {
 				emit(postrollItem.CatalogItemID, postrollDur, domain.EpgPostRoll)
 			}
-		} else {
+		} else if !repeat || cursor.Before(windowEnd) {
 			// No cutoff was reserved for this one, so pick it fresh — same
-			// as preroll/midroll above.
+			// as preroll/midroll above. A repeating block that ran up to the
+			// window's end has not ended, so it has no sign-off yet.
 			insertFiller(postroll, domain.EpgPostRoll)
 		}
 

@@ -50,6 +50,13 @@ type Block struct {
 	// matches by title, looped) or OrderInterleaved. Meaningless for a manual
 	// block, whose items carry their own orders.
 	PlaybackOrder string `json:"playback_order"`
+	// ListMode is how a manual block plays its item list: ListModeRepeat (the
+	// default: when the list ends it starts again from the first item, until
+	// the next timed item or, for a continuous item, indefinitely) or
+	// ListModeOnce (the list airs once). Meaningless for a dynamic block,
+	// which always loops by its own rules; FillInterleave empties it there so
+	// it is not served.
+	ListMode string `json:"list_mode,omitempty"`
 	// InterleaveSpec is the stored JSON of Interleave, set iff PlaybackOrder is
 	// OrderInterleaved; PlaybackSeed makes its shuffle/random series order
 	// reproducible. Both internal: clients read Interleave.
@@ -62,9 +69,21 @@ type Block struct {
 	UpdatedAt  int64       `json:"updated_at"`
 }
 
+// Playback modes of a manual block's item list (Block.ListMode).
+const (
+	ListModeRepeat = "repeat"
+	ListModeOnce   = "once"
+)
+
 // FillInterleave decodes InterleaveSpec into Interleave and normalizes an
 // empty PlaybackOrder to OrderTitle (a row stored before the setting existed).
+// It also drops ListMode from a dynamic block, where it has no meaning.
 func (b *Block) FillInterleave() {
+	if b.Dynamic {
+		b.ListMode = ""
+	} else if b.ListMode == "" {
+		b.ListMode = ListModeRepeat
+	}
 	if b.PlaybackOrder == "" {
 		b.PlaybackOrder = OrderTitle
 	}

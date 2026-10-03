@@ -77,6 +77,44 @@ func NewBlockPlayback(dynamic bool, order string, in *domain.InterleaveInput, pr
 	return bp, restart, nil
 }
 
+// NewListMode validates the list_mode of a block write: how a manual block
+// plays its item list, repeat (the default for a new block) or once. It is only
+// valid for a manual block (dynamic: the block always loops by its own rules),
+// so a non-empty mode on a dynamic block is an error. An empty mode keeps the
+// stored one on an update (prev, even though the PUT is otherwise a full
+// replace: a client that never heard of the setting must not flip a block it
+// did not mean to touch) and is repeat on a create. explicit reports that the
+// request carried a mode, which is what settles a pending migration review.
+func NewListMode(dynamic bool, mode string, prev *domain.Block) (resolved string, explicit bool, err error) {
+	if mode != "" && mode != domain.ListModeRepeat && mode != domain.ListModeOnce {
+		return "", false, errors.New("list_mode must be repeat or once")
+	}
+	if dynamic {
+		if mode != "" {
+			return "", false, errors.New("list_mode is only valid for a manual block (a dynamic block always loops its matches)")
+		}
+		// The stored value is irrelevant for a dynamic block; keep it so a
+		// block turned manual again resumes its previous mode.
+		if prev != nil && prev.ListMode != "" {
+			return prev.ListMode, false, nil
+		}
+		return domain.ListModeRepeat, false, nil
+	}
+	if mode != "" {
+		return mode, true, nil
+	}
+	if prev != nil && prev.ListMode != "" {
+		return prev.ListMode, false, nil
+	}
+	return domain.ListModeRepeat, false, nil
+}
+
+// ClearListModeReview removes a block from the migration review list (its mode
+// was decided, or it is no longer a manual block).
+func ClearListModeReview(ctx context.Context, db storage.DB, tenantID, blockID string) error {
+	return db.Exec(ctx, "DELETE FROM block_list_mode_review WHERE tenant_id = ? AND block_id = ?", tenantID, blockID)
+}
+
 // RestartBlockCursor restarts an interleaved dynamic block on every channel:
 // the cursor's origin moves to now and what is still to air from it is dropped
 // (the regeneration that follows rebuilds it).

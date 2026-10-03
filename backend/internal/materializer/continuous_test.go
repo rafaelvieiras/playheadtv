@@ -10,6 +10,8 @@ import (
 
 func (f *testFixture) createContinuousScheduleItem(t *testing.T, id, scheduleID, blockID string) {
 	t.Helper()
+	// Most continuous tests were written for a list that rotates forever.
+	f.setListMode(t, blockID, domain.ListModeRepeat)
 	now := time.Now().UnixMilli()
 	if err := f.db.Exec(context.Background(),
 		`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, recurrence_type, active, created_at, updated_at)

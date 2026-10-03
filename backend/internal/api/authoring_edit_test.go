@@ -323,7 +323,8 @@ func TestChannelEPGWarningsReportsAnUnevaluableCriteriaItem(t *testing.T) {
 	rec := doRequest(t, mux, "POST", "/channels", `{"number":1,"name":"C1","schedule_id":"`+scheduleID+`"}`)
 	var ch domain.Channel
 	mustDecode(t, rec.Body.Bytes(), &ch)
-	rec = doRequest(t, mux, "POST", "/blocks", `{"name":"B"}`)
+	// Play once: an empty list that repeats would add its own warning.
+	rec = doRequest(t, mux, "POST", "/blocks", `{"name":"B","list_mode":"once"}`)
 	var block domain.Block
 	mustDecode(t, rec.Body.Bytes(), &block)
 	now := time.Now().UnixMilli()

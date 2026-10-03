@@ -18,7 +18,8 @@ import { DynamicCollectionFields, validateCollectionChoice } from '@/components/
 import type { BlockPlaybackDraft } from '@/components/BlockPlaybackFields'
 import { blockPlaybackPayload, DEFAULT_INTERLEAVE, validateInterleave } from '@/lib/interleave'
 import { api } from '@/lib/http'
-import type { Block, BlockInput } from '@/lib/types'
+import { BlockListModeField } from '@/components/BlockListModeField'
+import type { Block, BlockInput, ListMode } from '@/lib/types'
 
 interface BlockDialogProps {
   open: boolean
@@ -40,10 +41,12 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
   const navigate = useNavigate()
   const [form, setForm] = useState<BlockInput>(emptyForm)
   const [playback, setPlayback] = useState<BlockPlaybackDraft>(emptyPlayback)
+  const [listMode, setListMode] = useState<ListMode>('repeat')
   const [error, setError] = useState<string | undefined>(undefined)
 
   useEffect(() => {
     if (open) {
+      setListMode('repeat')
       setForm(emptyForm)
       setPlayback(emptyPlayback)
       setError(undefined)
@@ -53,7 +56,7 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
   const mutation = useMutation({
     mutationFn: () => api.post<Block>('/blocks', {
         ...form,
-        ...(form.collection_id ? blockPlaybackPayload(playback.order, playback.interleave) : {}),
+        ...(form.collection_id ? blockPlaybackPayload(playback.order, playback.interleave) : { list_mode: listMode }),
       }),
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['blocks'] })
@@ -113,6 +116,8 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
               idPrefix="block-collection"
               playback={{ value: playback, onChange: setPlayback }}
             />
+
+            {!form.collection_id && <BlockListModeField value={listMode} onChange={setListMode} idPrefix="block" />}
 
             {error && <p className="text-sm text-destructive">{error}</p>}
           </FieldGroup>

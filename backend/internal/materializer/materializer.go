@@ -343,6 +343,8 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 	// the walk is keyed by the block (block_cursor), not by a block_item, since
 	// a dynamic block's items are recreated on every catalog change.
 	dynamicWalks := make(map[string]dynamicWalk)
+	// repeatBlockIDs holds the manual blocks set to repeat their list.
+	repeatBlockIDs := make(map[string]bool, len(blockIDs))
 	if len(blockIDs) > 0 {
 		ids := make([]string, 0, len(blockIDs))
 		for id := range blockIDs {
@@ -369,6 +371,14 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 			"WHERE b.tenant_id = ? AND (b.collection_id IS NOT NULL OR b.criteria IS NOT NULL) AND b.id IN (%s)", placeholders)
 		if err := m.db.Query(ctx, &dyn, query, args...); err != nil {
 			return channelInput{}, fmt.Errorf("list dynamic block ids: %w", err)
+		}
+		var repeating []string
+		repeatQuery := fmt.Sprintf("SELECT id FROM block WHERE tenant_id = ? AND collection_id IS NULL AND criteria IS NULL AND list_mode = 'repeat' AND id IN (%s)", placeholders)
+		if err := m.db.Query(ctx, &repeating, repeatQuery, args...); err != nil {
+			return channelInput{}, fmt.Errorf("list repeating block ids: %w", err)
+		}
+		for _, id := range repeating {
+			repeatBlockIDs[id] = true
 		}
 		for _, d := range dyn {
 			dynamicBlockIDs[d.ID] = true
@@ -464,7 +474,10 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		return channelInput{}, err
 	}
 
+	warnings = append(warnings, repeatWarnings(scheduleItems, blockItems, repeatBlockIDs, catalogDuration, runs, warnings)...)
+
 	return channelInput{
+		RepeatBlockIDs:  repeatBlockIDs,
 		Series:          runs,
 		ChannelID:       ch.ID,
 		TenantID:        tenantID,
@@ -752,6 +765,10 @@ const (
 	WarningCriteriaError = "criteria-error"
 	// WarningSeriesError: a series item whose stored spec cannot be read.
 	WarningSeriesError = "series-error"
+	// WarningRepeatEmpty: a block set to repeat whose list airs nothing (no
+	// item, only empty series or items without a positive duration), so the
+	// repetition has nothing to loop and the block's time stays empty.
+	WarningRepeatEmpty = "repeat-empty"
 )
 
 // Warning is a problem found in a channel's stored configuration that makes
@@ -762,6 +779,43 @@ type Warning struct {
 	BlockID     string `json:"block_id"`
 	BlockItemID string `json:"block_item_id,omitempty"`
 	Message     string `json:"message"`
+}
+
+// repeatWarnings reports the scheduled manual blocks set to repeat whose list
+// cannot air anything. Expansion guards against such a list (a lap that airs
+// nothing ends the block), this makes the empty time visible. A block that
+// already carries a warning (an item that failed to load) is not reported
+// again: that warning is the cause.
+func repeatWarnings(items []domain.ScheduleItem, blockItems map[string][]domain.BlockItem, repeat map[string]bool, durations map[string]int64, runs map[string]*seriesRun, existing []Warning) []Warning {
+	var out []Warning
+	seen := make(map[string]bool)
+	for _, w := range existing {
+		seen[w.BlockID] = true
+	}
+	for _, si := range items {
+		if !repeat[si.BlockID] || seen[si.BlockID] {
+			continue
+		}
+		seen[si.BlockID] = true
+		airs := false
+		for _, bi := range blockItems[si.BlockID] {
+			if bi.IsWalked() {
+				if run := runs[bi.ID]; run != nil && !run.empty() {
+					airs = true
+				}
+			} else if effectiveDuration(bi, durations) > 0 {
+				airs = true
+			}
+		}
+		if !airs {
+			log.Printf("materializer: WARNING block %s is set to repeat but none of its items can air (empty list, empty series or no positive duration)", si.BlockID)
+			out = append(out, Warning{
+				Kind: WarningRepeatEmpty, BlockID: si.BlockID,
+				Message: "the block repeats its list, but none of its items can air (empty list, empty series or no positive duration). Its time stays empty until it has content.",
+			})
+		}
+	}
+	return out
 }
 
 // Warnings evaluates the channel's stored configuration read-only and returns

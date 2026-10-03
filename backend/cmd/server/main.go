@@ -93,6 +93,12 @@ func run() error {
 		return err
 	}
 
+	// Blocks the list_mode migration switched to repeat while scheduled at
+	// fixed times: logged for review (also served by GET /blocks/list-mode-review).
+	if err := api.LogListModeReview(upgradeCtx, db); err != nil {
+		return err
+	}
+
 	// The short deadline covers only the remaining, non-upgrade startup work.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()

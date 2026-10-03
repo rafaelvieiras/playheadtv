@@ -3,7 +3,9 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -22,6 +24,7 @@ func registerBlocks(mux *http.ServeMux, db storage.DB, mat *materializer.Materia
 	// plain name-only block still doesn't need it.
 	mux.HandleFunc("POST /blocks", createBlock(db, mat))
 	mux.HandleFunc("GET /blocks", listBlocks(db))
+	mux.HandleFunc("GET /blocks/list-mode-review", listListModeReview(db))
 	mux.HandleFunc("GET /blocks/{id}", getBlock(db))
 	mux.HandleFunc("PUT /blocks/{id}", updateBlock(db, mat))
 	mux.HandleFunc("DELETE /blocks/{id}", deleteBlock(db))
@@ -42,7 +45,7 @@ func registerBlocks(mux *http.ServeMux, db storage.DB, mat *materializer.Materia
 const blockColumns = "id, tenant_id, name, description, collection_id, " +
 	"(SELECT c.name FROM collection c WHERE c.tenant_id = block.tenant_id AND c.id = block.collection_id) AS collection_name, " +
 	"(collection_id IS NOT NULL OR criteria IS NOT NULL) AS dynamic, " +
-	"playback_order, interleave_spec, playback_seed, created_at, updated_at"
+	"playback_order, list_mode, interleave_spec, playback_seed, created_at, updated_at"
 
 // blockItemColumns reads the typed block_item: a series item has a NULL
 // catalog_item_id, read back as the empty string.
@@ -64,6 +67,10 @@ type blockRequest struct {
 	// Interleave). Like the rest of the PUT it is a full replace.
 	PlaybackOrder string                  `json:"playback_order"`
 	Interleave    *domain.InterleaveInput `json:"interleave"`
+	// ListMode (manual blocks only) is repeat (the default: the list starts
+	// over when it ends, until the next timed item or, for a continuous item,
+	// indefinitely) or once. On a PUT, omitting it keeps the stored mode.
+	ListMode string `json:"list_mode"`
 }
 
 func fetchBlock(db storage.DB, r *http.Request, id string) (domain.Block, error) {
@@ -101,6 +108,11 @@ func createBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		listMode, _, err := blockitem.NewListMode(collection != nil, req.ListMode, nil)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		now := time.Now().UnixMilli()
 		b := domain.Block{
 			ID:             uuid.NewString(),
@@ -112,13 +124,14 @@ func createBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 			PlaybackOrder:  playback.Order,
 			InterleaveSpec: playback.InterleaveSpec,
 			PlaybackSeed:   playback.Seed,
+			ListMode:       listMode,
 			CreatedAt:      now,
 			UpdatedAt:      now,
 		}
 		b.FillInterleave()
 		err = db.Exec(r.Context(),
-			"INSERT INTO block (id, tenant_id, name, description, collection_id, playback_order, interleave_spec, playback_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			b.ID, b.TenantID, b.Name, b.Description, b.CollectionID, b.PlaybackOrder, b.InterleaveSpec, b.PlaybackSeed, b.CreatedAt, b.UpdatedAt,
+			"INSERT INTO block (id, tenant_id, name, description, collection_id, playback_order, list_mode, interleave_spec, playback_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			b.ID, b.TenantID, b.Name, b.Description, b.CollectionID, b.PlaybackOrder, listMode, b.InterleaveSpec, b.PlaybackSeed, b.CreatedAt, b.UpdatedAt,
 		)
 		if err != nil {
 			handleDBError(w, err)
@@ -204,16 +217,32 @@ func updateBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		listMode, explicitMode, err := blockitem.NewListMode(collection != nil, req.ListMode, &prev)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		err = db.Exec(r.Context(),
 			// The deprecated criteria snapshot is kept while the block references a
 			// collection (the way back from the migration) and cleared when the
 			// block reverts to manual, so it cannot read as a legacy dynamic row.
-			"UPDATE block SET name = ?, description = ?, collection_id = ?, criteria = CASE WHEN ? IS NULL THEN NULL ELSE criteria END, playback_order = ?, interleave_spec = ?, playback_seed = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
-			req.Name, req.Description, collection, collection, playback.Order, playback.InterleaveSpec, playback.Seed, time.Now().UnixMilli(), DefaultTenantID, id,
+			"UPDATE block SET name = ?, description = ?, collection_id = ?, criteria = CASE WHEN ? IS NULL THEN NULL ELSE criteria END, playback_order = ?, list_mode = ?, interleave_spec = ?, playback_seed = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+			req.Name, req.Description, collection, collection, playback.Order, listMode, playback.InterleaveSpec, playback.Seed, time.Now().UnixMilli(), DefaultTenantID, id,
 		)
 		if err != nil {
 			handleDBError(w, err)
 			return
+		}
+		// Deciding the mode (or making the block dynamic) settles the
+		// migration review of a block that was switched to repeat.
+		if explicitMode || collection != nil {
+			if err := blockitem.ClearListModeReview(r.Context(), db, DefaultTenantID, id); err != nil {
+				handleDBError(w, err)
+				return
+			}
+		}
+		if listMode != prev.ListMode && collection == nil {
+			mat.Trigger()
 		}
 		if restart {
 			if err := blockitem.RestartBlockCursor(r.Context(), db, DefaultTenantID, id); err != nil {
@@ -819,4 +848,83 @@ func deleteBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 		mat.Trigger()
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+// listModeReviewEntry is a block the list_mode migration switched to repeat
+// while it is scheduled at fixed times (weekly or once items): its grid may now
+// differ, so the operator is asked to check whether it should play once.
+type listModeReviewEntry struct {
+	BlockID   string                `json:"block_id"`
+	BlockName string                `json:"block_name"`
+	Schedules []listModeReviewSched `json:"schedules"`
+}
+
+type listModeReviewSched struct {
+	ScheduleID   string `json:"schedule_id"`
+	ScheduleName string `json:"schedule_name"`
+}
+
+// loadListModeReview returns the blocks still awaiting review: those the
+// migration listed that are still manual, still repeat and still have a timed
+// schedule item. Writing a mode on the block (or deleting it) removes it from
+// the list for good.
+func loadListModeReview(ctx context.Context, db storage.DB) ([]listModeReviewEntry, error) {
+	var rows []struct {
+		BlockID      string
+		BlockName    string
+		ScheduleID   string
+		ScheduleName string
+	}
+	err := db.Query(ctx, &rows,
+		"SELECT DISTINCT b.id AS block_id, b.name AS block_name, s.id AS schedule_id, s.name AS schedule_name "+
+			"FROM block_list_mode_review r "+
+			"JOIN block b ON b.tenant_id = r.tenant_id AND b.id = r.block_id "+
+			"JOIN schedule_item si ON si.block_id = b.id AND si.recurrence_type IN ('weekly', 'once') "+
+			"JOIN schedule s ON s.id = si.schedule_id "+
+			"WHERE r.tenant_id = ? AND b.list_mode = 'repeat' AND b.collection_id IS NULL AND b.criteria IS NULL "+
+			"ORDER BY b.name, b.id, s.name, s.id",
+		DefaultTenantID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	out := []listModeReviewEntry{}
+	for _, row := range rows {
+		if n := len(out); n == 0 || out[n-1].BlockID != row.BlockID {
+			out = append(out, listModeReviewEntry{BlockID: row.BlockID, BlockName: row.BlockName, Schedules: []listModeReviewSched{}})
+		}
+		last := &out[len(out)-1]
+		last.Schedules = append(last.Schedules, listModeReviewSched{ScheduleID: row.ScheduleID, ScheduleName: row.ScheduleName})
+	}
+	return out, nil
+}
+
+// listListModeReview serves GET /blocks/list-mode-review (read-only).
+func listListModeReview(db storage.DB) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		out, err := loadListModeReview(r.Context(), db)
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
+	}
+}
+
+// LogListModeReview logs, at startup, the blocks awaiting the list_mode review
+// (see loadListModeReview) so the operator sees them without opening the UI.
+func LogListModeReview(ctx context.Context, db storage.DB) error {
+	entries, err := loadListModeReview(ctx, db)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		names := make([]string, 0, len(e.Schedules))
+		for _, s := range e.Schedules {
+			names = append(names, s.ScheduleName)
+		}
+		log.Printf("blocks: review needed: block %q (%s) now repeats its list and is scheduled at fixed times in %s; set its list mode to play once if it should not repeat",
+			e.BlockName, e.BlockID, strings.Join(names, ", "))
+	}
+	return nil
 }

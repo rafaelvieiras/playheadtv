@@ -107,14 +107,25 @@ func (f *testFixture) assignChannelSchedule(t *testing.T, channelID, scheduleID 
 	}
 }
 
+// createBlock seeds a manual block that plays its list once (list_mode
+// "once"), the behavior most tests were written against; a test of repetition
+// switches it with setListMode (createContinuousScheduleItem does it, since a
+// continuous item rotates through its list).
 func (f *testFixture) createBlock(t *testing.T, id string) {
 	t.Helper()
 	now := time.Now().UnixMilli()
 	if err := f.db.Exec(context.Background(),
-		"INSERT INTO block (id, tenant_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+		"INSERT INTO block (id, tenant_id, name, list_mode, created_at, updated_at) VALUES (?, ?, ?, 'once', ?, ?)",
 		id, f.tenantID, "Block "+id, now, now,
 	); err != nil {
 		t.Fatalf("seed block %s: %v", id, err)
+	}
+}
+
+func (f *testFixture) setListMode(t *testing.T, blockID, mode string) {
+	t.Helper()
+	if err := f.db.Exec(context.Background(), "UPDATE block SET list_mode = ? WHERE id = ?", mode, blockID); err != nil {
+		t.Fatalf("set list_mode of block %s: %v", blockID, err)
 	}
 }
 

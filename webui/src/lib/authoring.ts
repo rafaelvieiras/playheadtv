@@ -13,6 +13,7 @@ import type {
   EpgItem,
   FillerPoolItem,
   FillerPoolItemUpdateInput,
+  ListModeReviewEntry,
 } from '@/lib/types'
 
 export const authoringKeys = {
@@ -99,6 +100,15 @@ export function useChannelEpgWarnings(channelId: string | undefined, enabled = t
     queryFn: () => api.get<EpgWarning[]>(`/channels/${channelId}/epg-warnings`),
     enabled: enabled && !!channelId,
     staleTime: 0,
+  })
+}
+
+// GET /blocks/list-mode-review — manual blocks switched to repeat by the
+// migration that are scheduled at fixed times, waiting for a decision.
+export function useListModeReview() {
+  return useQuery({
+    queryKey: ['blocks', 'list-mode-review'],
+    queryFn: () => api.get<ListModeReviewEntry[]>('/blocks/list-mode-review'),
   })
 }
 

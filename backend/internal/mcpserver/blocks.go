@@ -20,7 +20,7 @@ import (
 const blockColumns = "id, tenant_id, name, description, collection_id, " +
 	"(SELECT c.name FROM collection c WHERE c.tenant_id = block.tenant_id AND c.id = block.collection_id) AS collection_name, " +
 	"(collection_id IS NOT NULL OR criteria IS NOT NULL) AS dynamic, " +
-	"playback_order, interleave_spec, playback_seed, created_at, updated_at"
+	"playback_order, list_mode, interleave_spec, playback_seed, created_at, updated_at"
 const blockItemColumns = "id, block_id, position, item_type, COALESCE(catalog_item_id, '') AS catalog_item_id, trim_duration_ms, spec"
 
 func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Materializer) {
@@ -34,13 +34,15 @@ func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Material
 			"taking its turn, so short series loop while longer ones continue) or drop (a series that runs out leaves the " +
 			"rounds for good; when all are done the block loops); series_order title " +
 			"(default), release_date, random or shuffle sequences the series within a round). Items without a series " +
-			"count as one-item series. Mirrors POST /blocks.",
+			"count as one-item series. A manual block's list_mode is repeat (the default: when the list ends it starts again from the " +
+			"first item, until the next timed item or, for a continuous item, indefinitely) or once (the list airs once); " +
+			"not valid for a dynamic block. Mirrors POST /blocks.",
 	}, createBlockHandler(db, mat))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "update_block",
 		Description: "Replace a block's name, description, collection and playback settings (a full replace like PUT: omitting " +
-			"collection_id makes the block manual, omitting playback_order means title). See create_block for the fields. " +
+			"collection_id makes the block manual, omitting playback_order means title; omitting list_mode keeps the stored one). See create_block for the fields. " +
 			"Changing the interleaved order or its per_round or series_order restarts the block's cursor. " +
 			"Mirrors PUT /blocks/{id}.",
 	}, updateBlockHandler(db, mat))
@@ -119,6 +121,7 @@ type createBlockInput struct {
 	CollectionID  string                `json:"collection_id,omitempty" jsonschema:"makes the block dynamic: the id of a collection (see create_collection); omit for a manual block"`
 	PlaybackOrder string                `json:"playback_order,omitempty" jsonschema:"dynamic blocks only: title (default, every match by title, looped) or interleaved (round-robin across series)"`
 	Interleave    *blockInterleaveInput `json:"interleave,omitempty" jsonschema:"parameters of the interleaved order; only with playback_order interleaved"`
+	ListMode      string                `json:"list_mode,omitempty" jsonschema:"manual blocks only: repeat (default; the list starts over when it ends, until the next timed item or indefinitely for a continuous item) or once; on update, omitting it keeps the stored mode"`
 }
 
 // blockCollection validates the optional collection_id of a block write (nil:
@@ -149,6 +152,10 @@ func createBlockHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolH
 		if err != nil {
 			return nil, domain.Block{}, err
 		}
+		listMode, _, err := blockitem.NewListMode(collection != nil, in.ListMode, nil)
+		if err != nil {
+			return nil, domain.Block{}, err
+		}
 		now := nowMillis()
 		b := domain.Block{
 			ID:             uuid.NewString(),
@@ -165,8 +172,8 @@ func createBlockHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolH
 		}
 		b.FillInterleave()
 		err = db.Exec(ctx,
-			"INSERT INTO block (id, tenant_id, name, description, collection_id, playback_order, interleave_spec, playback_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			b.ID, b.TenantID, b.Name, b.Description, b.CollectionID, b.PlaybackOrder, b.InterleaveSpec, b.PlaybackSeed, b.CreatedAt, b.UpdatedAt,
+			"INSERT INTO block (id, tenant_id, name, description, collection_id, playback_order, list_mode, interleave_spec, playback_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			b.ID, b.TenantID, b.Name, b.Description, b.CollectionID, b.PlaybackOrder, listMode, b.InterleaveSpec, b.PlaybackSeed, b.CreatedAt, b.UpdatedAt,
 		)
 		if err != nil {
 			return nil, domain.Block{}, err
@@ -209,11 +216,20 @@ func updateBlockHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolH
 		if err != nil {
 			return nil, domain.Block{}, err
 		}
+		listMode, explicitMode, err := blockitem.NewListMode(collection != nil, in.ListMode, &prev)
+		if err != nil {
+			return nil, domain.Block{}, err
+		}
 		if err := db.Exec(ctx,
-			"UPDATE block SET name = ?, description = ?, collection_id = ?, criteria = CASE WHEN ? IS NULL THEN NULL ELSE criteria END, playback_order = ?, interleave_spec = ?, playback_seed = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
-			in.Name, in.Description, collection, collection, playback.Order, playback.InterleaveSpec, playback.Seed, nowMillis(), defaultTenantID, in.BlockID,
+			"UPDATE block SET name = ?, description = ?, collection_id = ?, criteria = CASE WHEN ? IS NULL THEN NULL ELSE criteria END, playback_order = ?, list_mode = ?, interleave_spec = ?, playback_seed = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+			in.Name, in.Description, collection, collection, playback.Order, listMode, playback.InterleaveSpec, playback.Seed, nowMillis(), defaultTenantID, in.BlockID,
 		); err != nil {
 			return nil, domain.Block{}, err
+		}
+		if explicitMode || collection != nil {
+			if err := blockitem.ClearListModeReview(ctx, db, defaultTenantID, in.BlockID); err != nil {
+				return nil, domain.Block{}, err
+			}
 		}
 		if err := catalogsync.ClearCriteriaReview(ctx, db, defaultTenantID, catalogsync.OwnerBlock, in.BlockID); err != nil {
 			return nil, domain.Block{}, err

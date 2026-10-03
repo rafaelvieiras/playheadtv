@@ -189,6 +189,9 @@ export interface Block {
   // looped, the default; 'interleaved': round-robin across series).
   playback_order: BlockPlaybackOrder
   interleave: Interleave | null // set iff playback_order is 'interleaved'
+  // Manual blocks only (absent on a dynamic block): what happens when the item
+  // list ends, 'repeat' (the default) or 'once'.
+  list_mode?: ListMode
   created_at: number
   updated_at: number
 }
@@ -202,6 +205,24 @@ export interface BlockInput {
   // PUT is a full replace: omitted means 'title'. Dynamic blocks only.
   playback_order?: BlockPlaybackOrder
   interleave?: Interleave
+  // Manual blocks only. Omitted on a PUT keeps the stored mode.
+  list_mode?: ListMode
+}
+
+// Mirrors backend/internal/domain.Block.ListMode.
+export type ListMode = 'repeat' | 'once'
+
+export const LIST_MODE_LABELS: Record<ListMode, string> = {
+  repeat: 'Repeat the list',
+  once: 'Play once',
+}
+
+// GET /blocks/list-mode-review: manual blocks that the repeat migration made
+// repeat while they are scheduled at fixed times, so their grid may have changed.
+export interface ListModeReviewEntry {
+  block_id: string
+  block_name: string
+  schedules: { schedule_id: string; schedule_name: string }[]
 }
 
 // Mirrors backend/internal/domain.Block.PlaybackOrder.

@@ -377,6 +377,13 @@ actionable checklist.
       carries a 3h fallback constant (`epgFreezeMarginFallback`), it does not
       act on the margin.
 
+- [x] Manual blocks: `block.list_mode` `repeat` (default) or `once` (migration
+      `0015`), for timed and continuous items alike; rotation of a `once`
+      continuous item persisted in `rotation_next`; zero-progress guard and
+      `repeat-empty` epg warning; existing blocks migrated to `repeat` with a
+      review list (`GET /blocks/list-mode-review`, startup log, web UI notice)
+      for the ones scheduled at fixed times; API, MCP and web UI expose the mode.
+
 ## Phase 2 — MCP surface
 
 - [x] MCP server (`github.com/modelcontextprotocol/go-sdk` v1.8.0) in the same

@@ -17,7 +17,9 @@ import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { BlockDialog } from '@/components/BlockDialog'
 import { api } from '@/lib/http'
-import type { Block } from '@/lib/types'
+import { useListModeReview } from '@/lib/authoring'
+import { InlineWarning } from '@/components/InlineWarning'
+import { LIST_MODE_LABELS, type Block } from '@/lib/types'
 
 function DynamicBadge({ dynamic }: { dynamic: boolean }) {
   if (dynamic) {
@@ -41,6 +43,7 @@ export function BlocksPage() {
     queryFn: () => api.get<Block[]>('/blocks'),
   })
 
+  const { data: review } = useListModeReview()
   const [dialogOpen, setDialogOpen] = useState(false)
   const [deletingBlock, setDeletingBlock] = useState<Block | undefined>(undefined)
 
@@ -67,6 +70,24 @@ export function BlocksPage() {
         <Button onClick={openCreateDialog}>New block</Button>
       </div>
 
+      {review && review.length > 0 && (
+        <InlineWarning title="Some scheduled blocks now repeat their list">
+          <span data-testid="list-mode-review-banner">
+            Manual blocks used to play their list once and now repeat it until the next timed item. These are scheduled
+            at fixed times, so their grid may have changed. Open each one and choose "Play once" if it should not repeat:{' '}
+            {review.map((r, i) => (
+              <span key={r.block_id}>
+                {i > 0 && ', '}
+                <Link to={`/blocks/${r.block_id}`} className="underline" data-testid={`list-mode-review-link-${r.block_id}`}>
+                  {r.block_name}
+                </Link>
+              </span>
+            ))}
+            .
+          </span>
+        </InlineWarning>
+      )}
+
       {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
       {isError && <p className="text-sm text-destructive">Could not load blocks.</p>}
 
@@ -76,6 +97,7 @@ export function BlocksPage() {
             <TableRow>
               <TableHead>Name</TableHead>
               <TableHead>Type</TableHead>
+              <TableHead>List</TableHead>
               <TableHead>Description</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
@@ -83,7 +105,7 @@ export function BlocksPage() {
           <TableBody>
             {blocks.length === 0 && (
               <TableRow>
-                <TableCell colSpan={4} className="text-center text-muted-foreground">
+                <TableCell colSpan={5} className="text-center text-muted-foreground">
                   No blocks yet.
                 </TableCell>
               </TableRow>
@@ -97,6 +119,9 @@ export function BlocksPage() {
                 </TableCell>
                 <TableCell>
                   <DynamicBadge dynamic={block.dynamic} />
+                </TableCell>
+                <TableCell className="text-muted-foreground" data-testid={`block-list-mode-${block.id}`}>
+                  {block.list_mode ? LIST_MODE_LABELS[block.list_mode] : '—'}
                 </TableCell>
                 <TableCell className="max-w-96 truncate text-muted-foreground">
                   {block.description ?? '—'}
