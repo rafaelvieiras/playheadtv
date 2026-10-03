@@ -6,6 +6,8 @@ import { BlockEditorPage } from '@/pages/BlockEditorPage'
 import { BlocksPage } from '@/pages/BlocksPage'
 import { ChannelPage } from '@/pages/ChannelPage'
 import { ChannelsPage } from '@/pages/ChannelsPage'
+import { CollectionEditorPage } from '@/pages/CollectionEditorPage'
+import { CollectionsPage } from '@/pages/CollectionsPage'
 import { DevicesPage } from '@/pages/DevicesPage'
 import { EpgPage } from '@/pages/EpgPage'
 import { FillerPoolEditorPage } from '@/pages/FillerPoolEditorPage'
@@ -35,6 +37,8 @@ export default function App() {
           path="/blocks/:id"
           element={<BlockEditorPage />}
         />
+        <Route path="/collections" element={<CollectionsPage />} />
+        <Route path="/collections/:id" element={<CollectionEditorPage />} />
         <Route path="/filler-pools" element={<FillerPoolsPage />} />
         <Route path="/filler-pools/:id" element={<FillerPoolEditorPage />} />
         <Route path="/filler-rules" element={<FillerRulesPage />} />

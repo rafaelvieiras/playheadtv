@@ -2,7 +2,6 @@ package mcpserver
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
 	"github.com/google/uuid"
@@ -18,15 +17,18 @@ import (
 // blockColumns/blockItemColumns mirror internal/api/blocks.go's constants of
 // the same name — duplicated rather than imported, see mcpserver.go's
 // package comment.
-const blockColumns = "id, tenant_id, name, description, criteria, playback_order, interleave_spec, playback_seed, created_at, updated_at"
+const blockColumns = "id, tenant_id, name, description, collection_id, " +
+	"(SELECT c.name FROM collection c WHERE c.tenant_id = block.tenant_id AND c.id = block.collection_id) AS collection_name, " +
+	"(collection_id IS NOT NULL OR criteria IS NOT NULL) AS dynamic, " +
+	"playback_order, interleave_spec, playback_seed, created_at, updated_at"
 const blockItemColumns = "id, block_id, position, item_type, COALESCE(catalog_item_id, '') AS catalog_item_id, trim_duration_ms, spec"
 
 func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Materializer) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "create_block",
-		Description: "Create a new content block — a named, ordered playlist of catalog items (initially empty). With criteria " +
-			"(a condition tree as in preview_criteria) the block is dynamic: its items are every current match, owned by the " +
-			"system, aired in a loop by title. Only for a dynamic block, playback_order interleaved airs the matches " +
+		Description: "Create a new content block — a named, ordered playlist of catalog items (initially empty). With collection_id " +
+			"(a collection, see create_collection) the block is dynamic: its items are every current match of the collection's " +
+			"query, owned by the system, aired in a loop by title. Only for a dynamic block, playback_order interleaved airs the matches " +
 			"round-robin across series instead (interleave: per_round episodes per series per round, default 1; " +
 			"on_exhaustion restart (default: a series that runs out restarts from its first episode on its own and keeps " +
 			"taking its turn, so short series loop while longer ones continue) or drop (a series that runs out leaves the " +
@@ -37,8 +39,8 @@ func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Material
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "update_block",
-		Description: "Replace a block's name, description, criteria and playback settings (a full replace like PUT: omitting " +
-			"criteria makes the block manual, omitting playback_order means title). See create_block for the fields. " +
+		Description: "Replace a block's name, description, collection and playback settings (a full replace like PUT: omitting " +
+			"collection_id makes the block manual, omitting playback_order means title). See create_block for the fields. " +
 			"Changing the interleaved order or its per_round or series_order restarts the block's cursor. " +
 			"Mirrors PUT /blocks/{id}.",
 	}, updateBlockHandler(db, mat))
@@ -51,10 +53,10 @@ func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Material
 			"the block rotation air count episodes (mode count, the default, 1 episode), until the end of the " +
 			"schedule slot (slot_end; items after it never air) or the rest of the playback cycle (series_end); no trim). " +
 			"The series cursor is shared across visits. Use search_series to find a series. Or a criteria item " +
-			"(criteria: query = a condition tree as in preview_criteria, playback_order title|release_date|random|shuffle|interleaved, " +
+			"(criteria: collection_id = the collection whose query is played, see create_collection, playback_order title|release_date|random|shuffle|interleaved, " +
 			"default title (interleaved: round-robin across series, with interleave {per_round, on_exhaustion restart|drop, " +
 			"series_order}, see create_block); amount, required: {mode count, count N} to air N matches per visit or {mode all} for every " +
-			"match once; no trim): the block plays that many matches of the live query, then moves on. " +
+			"match once; no trim): the block plays that many matches of the collection's live query, then moves on. " +
 			"Reorder with update_block_item. " +
 			"Triggers EPG regeneration. Mirrors POST /blocks/{id}/items.",
 	}, addBlockItemHandler(db, mat))
@@ -101,27 +103,24 @@ func (i *blockInterleaveInput) domain() *domain.InterleaveInput {
 type createBlockInput struct {
 	Name          string                `json:"name" jsonschema:"block display name"`
 	Description   *string               `json:"description,omitempty" jsonschema:"optional free-text description"`
-	Criteria      map[string]any        `json:"criteria,omitempty" jsonschema:"makes the block dynamic: a condition tree, see preview_criteria"`
+	CollectionID  string                `json:"collection_id,omitempty" jsonschema:"makes the block dynamic: the id of a collection (see create_collection); omit for a manual block"`
 	PlaybackOrder string                `json:"playback_order,omitempty" jsonschema:"dynamic blocks only: title (default, every match by title, looped) or interleaved (round-robin across series)"`
 	Interleave    *blockInterleaveInput `json:"interleave,omitempty" jsonschema:"parameters of the interleaved order; only with playback_order interleaved"`
 }
 
-// parseBlockCriteria validates the optional criteria of a block write and
-// returns the canonical condition tree JSON to store (nil: manual block).
-func parseBlockCriteria(c map[string]any) (*string, error) {
-	if c == nil {
+// blockCollection validates the optional collection_id of a block write (nil:
+// manual block). An unknown id, or one of another tenant, is an error.
+func blockCollection(ctx context.Context, db storage.DB, id string) (*string, error) {
+	if id == "" {
 		return nil, nil
 	}
-	raw, err := json.Marshal(c)
-	if err != nil {
-		return nil, errors.New("criteria must be a JSON object")
+	if _, err := catalogsync.LoadCollectionQuery(ctx, db, defaultTenantID, id); err != nil {
+		if errors.Is(err, catalogsync.ErrCollectionNotFound) {
+			return nil, errors.New("collection_id does not match a collection")
+		}
+		return nil, err
 	}
-	q, err := catalogsync.ParseQuery(raw)
-	if err != nil {
-		return nil, errors.New("criteria: " + err.Error())
-	}
-	s := q.JSON()
-	return &s, nil
+	return &id, nil
 }
 
 func createBlockHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[createBlockInput, domain.Block] {
@@ -129,11 +128,11 @@ func createBlockHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolH
 		if in.Name == "" {
 			return nil, domain.Block{}, errors.New("name is required")
 		}
-		criteria, err := parseBlockCriteria(in.Criteria)
+		collection, err := blockCollection(ctx, db, in.CollectionID)
 		if err != nil {
 			return nil, domain.Block{}, err
 		}
-		playback, _, err := blockitem.NewBlockPlayback(criteria != nil, in.PlaybackOrder, in.Interleave.domain(), nil)
+		playback, _, err := blockitem.NewBlockPlayback(collection != nil, in.PlaybackOrder, in.Interleave.domain(), nil)
 		if err != nil {
 			return nil, domain.Block{}, err
 		}
@@ -143,7 +142,8 @@ func createBlockHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolH
 			TenantID:       defaultTenantID,
 			Name:           in.Name,
 			Description:    in.Description,
-			Criteria:       criteria,
+			CollectionID:   collection,
+			Dynamic:        collection != nil,
 			PlaybackOrder:  playback.Order,
 			InterleaveSpec: playback.InterleaveSpec,
 			PlaybackSeed:   playback.Seed,
@@ -152,19 +152,24 @@ func createBlockHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolH
 		}
 		b.FillInterleave()
 		err = db.Exec(ctx,
-			"INSERT INTO block (id, tenant_id, name, description, criteria, playback_order, interleave_spec, playback_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			b.ID, b.TenantID, b.Name, b.Description, b.Criteria, b.PlaybackOrder, b.InterleaveSpec, b.PlaybackSeed, b.CreatedAt, b.UpdatedAt,
+			"INSERT INTO block (id, tenant_id, name, description, collection_id, playback_order, interleave_spec, playback_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			b.ID, b.TenantID, b.Name, b.Description, b.CollectionID, b.PlaybackOrder, b.InterleaveSpec, b.PlaybackSeed, b.CreatedAt, b.UpdatedAt,
 		)
 		if err != nil {
 			return nil, domain.Block{}, err
 		}
-		if b.Criteria != nil {
+		if b.CollectionID != nil {
 			if err := catalogsync.ResolveDynamicBlocks(ctx, db, defaultTenantID); err != nil {
 				return nil, domain.Block{}, err
 			}
 			mat.Trigger()
 		}
-		return nil, b, nil
+		var created domain.Block
+		if err := db.Query(ctx, &created, "SELECT "+blockColumns+" FROM block WHERE tenant_id = ? AND id = ?", defaultTenantID, b.ID); err != nil {
+			return nil, domain.Block{}, err
+		}
+		created.FillInterleave()
+		return nil, created, nil
 	}
 }
 
@@ -183,17 +188,17 @@ func updateBlockHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolH
 			return nil, domain.Block{}, err
 		}
 		prev.FillInterleave()
-		criteria, err := parseBlockCriteria(in.Criteria)
+		collection, err := blockCollection(ctx, db, in.CollectionID)
 		if err != nil {
 			return nil, domain.Block{}, err
 		}
-		playback, restart, err := blockitem.NewBlockPlayback(criteria != nil, in.PlaybackOrder, in.Interleave.domain(), &prev)
+		playback, restart, err := blockitem.NewBlockPlayback(collection != nil, in.PlaybackOrder, in.Interleave.domain(), &prev)
 		if err != nil {
 			return nil, domain.Block{}, err
 		}
 		if err := db.Exec(ctx,
-			"UPDATE block SET name = ?, description = ?, criteria = ?, playback_order = ?, interleave_spec = ?, playback_seed = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
-			in.Name, in.Description, criteria, playback.Order, playback.InterleaveSpec, playback.Seed, nowMillis(), defaultTenantID, in.BlockID,
+			"UPDATE block SET name = ?, description = ?, collection_id = ?, criteria = CASE WHEN ? IS NULL THEN NULL ELSE criteria END, playback_order = ?, interleave_spec = ?, playback_seed = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+			in.Name, in.Description, collection, collection, playback.Order, playback.InterleaveSpec, playback.Seed, nowMillis(), defaultTenantID, in.BlockID,
 		); err != nil {
 			return nil, domain.Block{}, err
 		}
@@ -205,7 +210,7 @@ func updateBlockHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolH
 				return nil, domain.Block{}, err
 			}
 		}
-		if criteria != nil {
+		if collection != nil {
 			if err := catalogsync.ResolveDynamicBlocks(ctx, db, defaultTenantID); err != nil {
 				return nil, domain.Block{}, err
 			}
@@ -249,7 +254,7 @@ type addBlockItemInput struct {
 }
 
 type addBlockCriteriaInput struct {
-	Query         map[string]any          `json:"query" jsonschema:"the condition tree, see preview_criteria"`
+	CollectionID  string                  `json:"collection_id" jsonschema:"the collection whose query the item plays (see create_collection)"`
 	PlaybackOrder string                  `json:"playback_order,omitempty" jsonschema:"title (default), release_date, random, shuffle (every match once before repeats) or interleaved (round-robin across series)"`
 	Amount        *blockSeriesAmountInput `json:"amount" jsonschema:"required: mode count with count N, or mode all (every match once)"`
 	Interleave    *blockInterleaveInput   `json:"interleave,omitempty" jsonschema:"parameters of the interleaved order; only with playback_order interleaved"`
@@ -266,8 +271,8 @@ func addBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.Tool
 		); err != nil {
 			return nil, domain.BlockItem{}, err
 		}
-		if block.Criteria != nil {
-			return nil, domain.BlockItem{}, errors.New("this block is dynamic; items are managed automatically from its criteria")
+		if block.Dynamic {
+			return nil, domain.BlockItem{}, errors.New("this block is dynamic; items are managed automatically from its collection")
 		}
 
 		itemType := domain.BlockItemCatalog
@@ -283,11 +288,7 @@ func addBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.Tool
 			if in.TrimDurationMs != nil {
 				return nil, domain.BlockItem{}, errors.New("trim_duration_ms is not valid for a criteria item; add a trimmed item as its own item before it")
 			}
-			rawQuery, err := json.Marshal(in.Criteria.Query)
-			if err != nil {
-				return nil, domain.BlockItem{}, errors.New("criteria.query must be a JSON object")
-			}
-			spec, err := blockitem.NewCriteriaSpec(rawQuery, in.Criteria.PlaybackOrder, in.Criteria.Amount.domain(), in.Criteria.Interleave.domain())
+			spec, err := blockitem.NewCriteriaSpec(ctx, db, defaultTenantID, in.Criteria.CollectionID, in.Criteria.PlaybackOrder, in.Criteria.Amount.domain(), in.Criteria.Interleave.domain())
 			if err != nil {
 				return nil, domain.BlockItem{}, err
 			}
@@ -384,8 +385,8 @@ func deleteBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 		); err != nil {
 			return nil, deleteBlockItemOutput{}, err
 		}
-		if block.Criteria != nil {
-			return nil, deleteBlockItemOutput{}, errors.New("this block is dynamic; items are managed automatically from its criteria")
+		if block.Dynamic {
+			return nil, deleteBlockItemOutput{}, errors.New("this block is dynamic; items are managed automatically from its collection")
 		}
 		var item domain.BlockItem
 		if err := db.Query(ctx, &item,

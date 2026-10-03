@@ -130,7 +130,13 @@ export interface Block {
   tenant_id: string
   name: string
   description: string | null
-  criteria: string | null // raw JSON string (a condition tree, see lib/query.ts) or null
+  // Dynamic blocks play a collection (see lib/collections.ts). collection_id is
+  // null for a manual block and also for a legacy block still held for review
+  // (dynamic: true, see CriteriaReviewNotice), which keeps its old query until
+  // the proposal is applied or a collection is chosen.
+  collection_id: string | null
+  collection_name: string | null
+  dynamic: boolean
   // Dynamic blocks only: how the matches are walked ('title': all by title,
   // looped, the default; 'interleaved': round-robin across series).
   playback_order: BlockPlaybackOrder
@@ -143,7 +149,8 @@ export interface Block {
 export interface BlockInput {
   name: string
   description: string | null
-  criteria: Query | null
+  // null makes the block manual (PUT is a full replace).
+  collection_id: string | null
   // PUT is a full replace: omitted means 'title'. Dynamic blocks only.
   playback_order?: BlockPlaybackOrder
   interleave?: Interleave
@@ -267,6 +274,10 @@ export interface CriteriaAmount {
 // criteria block item plus what the query currently matches (items with a
 // positive duration).
 export interface CriteriaItemView {
+  // The collection the item plays (null only for an item held for review that
+  // still uses its old embedded query); query is the collection's tree.
+  collection_id: string | null
+  collection_name: string | null
   query: Query
   playback_order: CriteriaOrder
   amount: CriteriaAmount
@@ -282,7 +293,7 @@ export interface BlockItemInput {
   trim_duration_ms?: number | null
   // A criteria item: a query expanded into some of its matches. The amount is required.
   criteria?: {
-    query: Query
+    collection_id: string
     playback_order?: CriteriaOrder
     amount: CriteriaAmount
     interleave?: Interleave
@@ -436,23 +447,23 @@ export interface CreateDeviceResponse {
   token: string
 }
 
-// Mirrors backend/internal/domain.FillerPool. criteria is the raw JSON string
-// stored in the DB (null for a manually managed pool) — JSON.parse it to get
-// a Query when editing.
+// Mirrors backend/internal/domain.FillerPool. A dynamic pool plays a
+// collection (collection_id null: manual, or a legacy pool held for review).
 export interface FillerPool {
   id: string
   tenant_id: string
   name: string
-  criteria: string | null
+  collection_id: string | null
+  collection_name: string | null
+  dynamic: boolean
   created_at: number
 }
 
 // FillerPoolInput is the body shape for POST /filler-pools and
-// PUT /filler-pools/{id}. criteria here is the parsed OBJECT (or null),
-// unlike FillerPool.criteria above which is the raw string GET returns.
+// PUT /filler-pools/{id}.
 export interface FillerPoolInput {
   name: string
-  criteria: Query | null
+  collection_id: string | null
 }
 
 // Mirrors backend/internal/domain.FillerPoolItem.
@@ -555,8 +566,8 @@ export interface BlockItemUpdateInput {
   trim_duration_ms?: number
   playback_order?: PlaybackOrder | CriteriaOrder
   amount?: SeriesAmount | CriteriaAmount
-  // Criteria items only: replaces the condition tree (the cursor is kept).
-  query?: Query
+  // Criteria items only: points the item at another collection (the cursor is kept).
+  collection_id?: string
   // Criteria items with the interleaved order only: parameters to change.
   // per_round or series_order restart the item; on_exhaustion keeps the cursor.
   interleave?: Partial<Interleave>
@@ -578,9 +589,11 @@ export interface CriteriaPreview {
 }
 
 // One entry of GET /criteria-migration-review (backend catalogsync.ReviewItem):
-// a dynamic block or filler pool whose old-format criteria could not be
-// converted to a condition tree without changing what it matches. The old
-// criteria keeps working until the block or pool is saved with a query.
+// a dynamic block, filler pool or criteria item held for review: its old-format
+// criteria could not be converted to a condition tree, or its query could not
+// be moved into a collection, without changing what it matches. The stored
+// query keeps working until the proposal is applied (which creates or reuses a
+// collection) or a collection is chosen.
 export interface CriteriaReviewRef {
   id: string
   title: string
@@ -588,9 +601,10 @@ export interface CriteriaReviewRef {
 }
 
 export interface CriteriaReviewItem {
-  owner_type: 'block' | 'filler_pool'
+  owner_type: 'block' | 'filler_pool' | 'block_item'
   owner_id: string
   owner_name: string
+  block_id: string | null // the block of a block or block_item entry
   legacy_criteria: unknown
   proposed_query: Query | null
   problem: string | null
@@ -598,4 +612,41 @@ export interface CriteriaReviewItem {
   after_count: number
   only_before: CriteriaReviewRef[]
   only_after: CriteriaReviewRef[]
+}
+
+// Mirrors backend/internal/domain.Collection: a named, reusable catalog query.
+// Blocks, filler pools and criteria items reference it by id; how its matches
+// are played stays on the user.
+export interface Collection {
+  id: string
+  tenant_id: string
+  name: string
+  description: string | null
+  query: Query
+  usage_count: number
+  created_at: number
+  updated_at: number
+}
+
+// CollectionInput is the body of POST /collections and PUT /collections/{id}
+// (a full replace).
+export interface CollectionInput {
+  name: string
+  description: string | null
+  query: Query
+}
+
+// Mirrors backend/internal/domain.CollectionUsage (GET /collections/{id}/usage,
+// also the body of the 409 when deleting a collection in use).
+export interface CollectionUsage {
+  blocks: { id: string; name: string }[]
+  filler_pools: { id: string; name: string }[]
+  block_items: { id: string; block_id: string; block_name: string; position: number }[]
+}
+
+// Response of POST /criteria-migration-review/apply.
+export interface ApplyReviewResponse {
+  collection_id: string
+  created: boolean
+  collection: Collection
 }

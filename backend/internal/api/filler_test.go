@@ -187,14 +187,14 @@ func TestFillerPoolWithCriteriaPopulatesItems(t *testing.T) {
 	seedGenreCatalogItem(t, db, "2", "Action") // shouldn't match
 
 	rec := doRequest(t, mux, "POST", "/filler-pools",
-		`{"name":"Comedy Block","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
+		`{"name":"Comedy Block","collection_id":"`+newCollection(t, mux, `{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}`)+`"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	var pool domain.FillerPool
 	json.Unmarshal(rec.Body.Bytes(), &pool)
-	if pool.Criteria == nil {
-		t.Fatal("pool.Criteria = nil, want set")
+	if pool.CollectionID == nil || !pool.Dynamic {
+		t.Fatal("pool.CollectionID = nil, want set")
 	}
 
 	rec = doRequest(t, mux, "GET", "/filler-pools/"+pool.ID+"/items", "")
@@ -210,7 +210,7 @@ func TestFillerPoolWithCriteriaRejectsManualItemWrites(t *testing.T) {
 	item := seedGenreCatalogItem(t, db, "1", "Comedy")
 
 	rec := doRequest(t, mux, "POST", "/filler-pools",
-		`{"name":"Comedy Block","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
+		`{"name":"Comedy Block","collection_id":"`+newCollection(t, mux, `{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}`)+`"}`)
 	var pool domain.FillerPool
 	json.Unmarshal(rec.Body.Bytes(), &pool)
 
@@ -231,7 +231,7 @@ func TestFillerPoolWithCriteriaRejectsManualItemWrites(t *testing.T) {
 	}
 }
 
-func TestFillerPoolCriteriaValidation(t *testing.T) {
+func TestFillerPoolInlineCriteriaAndUnknownCollectionAreRejected(t *testing.T) {
 	db, mux := newTestDB(t)
 
 	for name, criteria := range invalidCriteria {
@@ -239,6 +239,10 @@ func TestFillerPoolCriteriaValidation(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status = %d, want 400, body = %s", name, rec.Code, rec.Body.String())
 		}
+	}
+	rec := doRequest(t, mux, "POST", "/filler-pools", `{"name":"Bad","collection_id":"nope"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("unknown collection: %d %s", rec.Code, rec.Body.String())
 	}
 	var n []int
 	if err := db.Query(context.Background(), &n, "SELECT COUNT(*) FROM filler_pool"); err != nil || n[0] != 0 {

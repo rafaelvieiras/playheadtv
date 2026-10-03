@@ -14,10 +14,9 @@ import {
 } from '@/components/ui/dialog'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
+import { DynamicCollectionFields, validateCollectionChoice } from '@/components/DynamicCollectionFields'
 import type { BlockPlaybackDraft } from '@/components/BlockPlaybackFields'
 import { blockPlaybackPayload, DEFAULT_INTERLEAVE, validateInterleave } from '@/lib/interleave'
-import { validateQuery } from '@/lib/query'
 import { api } from '@/lib/http'
 import type { Block, BlockInput } from '@/lib/types'
 
@@ -29,7 +28,7 @@ interface BlockDialogProps {
 const emptyForm: BlockInput = {
   name: '',
   description: null,
-  criteria: null,
+  collection_id: null,
 }
 
 const emptyPlayback: BlockPlaybackDraft = { order: 'title', interleave: DEFAULT_INTERLEAVE }
@@ -54,7 +53,7 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
   const mutation = useMutation({
     mutationFn: () => api.post<Block>('/blocks', {
         ...form,
-        ...(form.criteria ? blockPlaybackPayload(playback.order, playback.interleave) : {}),
+        ...(form.collection_id ? blockPlaybackPayload(playback.order, playback.interleave) : {}),
       }),
     onSuccess: (created) => {
       queryClient.invalidateQueries({ queryKey: ['blocks'] })
@@ -70,7 +69,7 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
     const validationError =
-      validateQuery(form.criteria) ?? (form.criteria && playback.order === 'interleaved' ? validateInterleave(playback.interleave) : undefined)
+      validateCollectionChoice(form.collection_id) ?? (form.collection_id && playback.order === 'interleaved' ? validateInterleave(playback.interleave) : undefined)
     if (validationError) {
       setError(validationError)
       return
@@ -86,7 +85,7 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
           <DialogHeader>
             <DialogTitle>New block</DialogTitle>
             <DialogDescription>
-              Create the block, then fill its items or refine its criteria in the editor.
+              Create the block, then fill its items in the editor. A dynamic block plays a collection.
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
@@ -108,10 +107,10 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
               />
             </Field>
 
-            <DynamicCriteriaFields
-              value={form.criteria}
-              onChange={(criteria) => setForm((f) => ({ ...f, criteria }))}
-              idPrefix="block-criteria"
+            <DynamicCollectionFields
+              value={form.collection_id}
+              onChange={(collection_id) => setForm((f) => ({ ...f, collection_id }))}
+              idPrefix="block-collection"
               playback={{ value: playback, onChange: setPlayback }}
             />
 

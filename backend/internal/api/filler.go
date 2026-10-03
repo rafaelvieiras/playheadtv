@@ -35,7 +35,10 @@ func registerFiller(mux *http.ServeMux, db storage.DB, mat *materializer.Materia
 	mux.HandleFunc("DELETE /filler-rules/{id}", deleteFillerRule(db, mat))
 }
 
-const fillerPoolColumns = "id, tenant_id, name, criteria, created_at"
+// fillerPoolColumns: see blockColumns for collection_name and dynamic.
+const fillerPoolColumns = "id, tenant_id, name, collection_id, " +
+	"(SELECT c.name FROM collection c WHERE c.tenant_id = filler_pool.tenant_id AND c.id = filler_pool.collection_id) AS collection_name, " +
+	"(collection_id IS NOT NULL OR criteria IS NOT NULL) AS dynamic, created_at"
 const fillerPoolItemColumns = "id, filler_pool_id, catalog_item_id, weight"
 
 // fillerRuleColumns aliases scope_type/selection_strategy to the struct
@@ -46,11 +49,12 @@ const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, f
 
 type fillerPoolRequest struct {
 	Name string `json:"name"`
-	// Criteria is optional. nil (the JSON field absent or explicitly null)
-	// means a manually managed pool; a non-nil value makes it dynamic —
-	// its filler_pool_item rows are then owned by
-	// catalogsync.ResolveDynamicPools, not by POST/DELETE .../items. It is a
-	// versioned condition tree (catalogsync.Query).
+	// CollectionID is optional. nil (the JSON field absent or explicitly null)
+	// means a manually managed pool; a collection id makes it dynamic — its
+	// filler_pool_item rows are then owned by catalogsync.ResolveDynamicPools,
+	// not by POST/DELETE .../items.
+	CollectionID *string `json:"collection_id"`
+	// Criteria is the removed inline query: rejected when non-null.
 	Criteria json.RawMessage `json:"criteria"`
 }
 
@@ -74,32 +78,42 @@ func createFillerPool(db storage.DB, mat *materializer.Materializer) http.Handle
 			writeError(w, http.StatusBadRequest, "name is required")
 			return
 		}
-		criteria, err := parseCriteriaField(req.Criteria)
-		if err != nil {
+		if err := rejectInlineCriteria(req.Criteria); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		collection, err := collectionRef(r.Context(), db, req.CollectionID)
+		if err != nil {
+			writeCollectionRefError(w, err)
+			return
+		}
 		p := domain.FillerPool{
-			ID:        uuid.NewString(),
-			TenantID:  DefaultTenantID,
-			Name:      req.Name,
-			Criteria:  criteria,
-			CreatedAt: time.Now().UnixMilli(),
+			ID:           uuid.NewString(),
+			TenantID:     DefaultTenantID,
+			Name:         req.Name,
+			CollectionID: collection,
+			Dynamic:      collection != nil,
+			CreatedAt:    time.Now().UnixMilli(),
 		}
 		err = db.Exec(r.Context(),
-			"INSERT INTO filler_pool (id, tenant_id, name, criteria, created_at) VALUES (?, ?, ?, ?, ?)",
-			p.ID, p.TenantID, p.Name, p.Criteria, p.CreatedAt,
+			"INSERT INTO filler_pool (id, tenant_id, name, collection_id, created_at) VALUES (?, ?, ?, ?, ?)",
+			p.ID, p.TenantID, p.Name, p.CollectionID, p.CreatedAt,
 		)
 		if err != nil {
 			handleDBError(w, err)
 			return
 		}
-		if p.Criteria != nil {
+		if p.CollectionID != nil {
 			if err := catalogsync.ResolveDynamicPools(r.Context(), db, DefaultTenantID); err != nil {
 				handleDBError(w, err)
 				return
 			}
 			mat.Trigger()
+		}
+		p, err = fetchFillerPool(db, r, p.ID)
+		if err != nil {
+			handleDBError(w, err)
+			return
 		}
 		writeJSON(w, http.StatusCreated, p)
 	}
@@ -148,16 +162,22 @@ func updateFillerPool(db storage.DB, mat *materializer.Materializer) http.Handle
 			return
 		}
 		// PUT is a full replace, same semantics name already has: omitting
-		// criteria here reverts a previously dynamic pool to manual, even if
-		// it already had one — intentional, not an accidental partial update.
-		criteria, err := parseCriteriaField(req.Criteria)
-		if err != nil {
+		// collection_id here reverts a previously dynamic pool to manual, even
+		// if it already had one — intentional, not an accidental partial update.
+		if err := rejectInlineCriteria(req.Criteria); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		collection, err := collectionRef(r.Context(), db, req.CollectionID)
+		if err != nil {
+			writeCollectionRefError(w, err)
+			return
+		}
+		// The deprecated criteria snapshot is kept while the pool references a
+		// collection and cleared when it reverts to manual.
 		if err := db.Exec(r.Context(),
-			"UPDATE filler_pool SET name = ?, criteria = ? WHERE tenant_id = ? AND id = ?",
-			req.Name, criteria, DefaultTenantID, id,
+			"UPDATE filler_pool SET name = ?, collection_id = ?, criteria = CASE WHEN ? IS NULL THEN NULL ELSE criteria END WHERE tenant_id = ? AND id = ?",
+			req.Name, collection, collection, DefaultTenantID, id,
 		); err != nil {
 			handleDBError(w, err)
 			return
@@ -168,7 +188,7 @@ func updateFillerPool(db storage.DB, mat *materializer.Materializer) http.Handle
 			handleDBError(w, err)
 			return
 		}
-		if criteria != nil {
+		if collection != nil {
 			if err := catalogsync.ResolveDynamicPools(r.Context(), db, DefaultTenantID); err != nil {
 				handleDBError(w, err)
 				return
@@ -216,8 +236,8 @@ func addFillerPoolItem(db storage.DB, mat *materializer.Materializer) http.Handl
 			handleDBError(w, err)
 			return
 		}
-		if p.Criteria != nil {
-			writeError(w, http.StatusConflict, "this pool is dynamic; items are managed automatically from its criteria")
+		if p.Dynamic {
+			writeError(w, http.StatusConflict, "this pool is dynamic; items are managed automatically from its collection")
 			return
 		}
 		var req fillerPoolItemRequest
@@ -284,8 +304,8 @@ func updateFillerPoolItem(db storage.DB, mat *materializer.Materializer) http.Ha
 			handleDBError(w, err)
 			return
 		}
-		if p.Criteria != nil {
-			writeError(w, http.StatusConflict, "this pool is dynamic; items are managed automatically from its criteria")
+		if p.Dynamic {
+			writeError(w, http.StatusConflict, "this pool is dynamic; items are managed automatically from its collection")
 			return
 		}
 		var req fillerPoolItemUpdateRequest
@@ -325,8 +345,8 @@ func deleteFillerPoolItem(db storage.DB, mat *materializer.Materializer) http.Ha
 			handleDBError(w, err)
 			return
 		}
-		if p.Criteria != nil {
-			writeError(w, http.StatusConflict, "this pool is dynamic; items are managed automatically from its criteria")
+		if p.Dynamic {
+			writeError(w, http.StatusConflict, "this pool is dynamic; items are managed automatically from its collection")
 			return
 		}
 		var item domain.FillerPoolItem

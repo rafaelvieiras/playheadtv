@@ -201,9 +201,10 @@ so staleness is visible, not hidden.
 
 ### Catalog queries (migration `0012`)
 
-A query is a versioned JSON condition tree, the one stored form of
+A query is a versioned JSON condition tree, the one stored form of a
+collection's query (see "Collections"; before migration `0014` it lived in
 `block.criteria`, `filler_pool.criteria` and the spec of a `criteria` block
-item: `{"version": 1, ...}` plus exactly one of `all: [node]`, `any: [node]`,
+item): `{"version": 1, ...}` plus exactly one of `all: [node]`, `any: [node]`,
 `not: node` or a condition `{field, op, value}` at every level. Parsing is
 strict (`catalogsync.ParseQuery`): unknown keys, fields or operators, wrong
 value shapes, empty groups and trees deeper than 6 levels or larger than 64
@@ -257,7 +258,7 @@ edited) query, which clears the row. A held value is re-evaluated at every
 startup.
 
 Criteria block items (`item_type = 'criteria'`, `block_item.spec` =
-`{query, playback_order, seed, amount}`) live in manual blocks next to catalog
+`{collection_id, playback_order, seed, amount}`; see "Collections") live in manual blocks next to catalog
 and series items. A visit airs `amount` matches (`{mode: count, count: N}`,
 required, or `{mode: all}`, which must be chosen explicitly: every match once),
 then the rotation moves on. Orders: `title` (the default), `release_date`,
@@ -265,8 +266,8 @@ then the rotation moves on. Orders: `title` (the default), `release_date`,
 series (`seriesRun`: `series_cursor`, `epg_entry.source_block_item_id` and
 `series_cycle`, seed mixed with the channel id), the matches playing the part
 of episodes (items with a non-positive duration are left out), so `all` is "the
-rest of the playback cycle". The query is re-evaluated on every materializer
-run. Changing the order restarts the item; changing the query or amount keeps
+rest of the playback cycle". The collection's query is re-evaluated on every materializer
+run. Changing the order restarts the item; changing the collection or amount keeps
 the cursor. A random item can differ between a dry-run and a later reset.
 
 **Interleaved by series** is a fifth order (`interleaved`) for criteria items
@@ -330,12 +331,12 @@ edges):
 - **`block`**: a reusable programming template — an ordered list of
   `catalog_item`s (`block_item`). A block's `block_item` rows are either
   curated by hand (the default, via `POST`/`PUT`/`DELETE /blocks/{id}/items`) or,
-  when `block.criteria` is set (a condition tree, see "Catalog queries", the
-  same as `filler_pool.criteria`), owned entirely by
+  when `block.collection_id` is set (a collection, see "Collections"), owned
+  entirely by
   `catalogsync.ResolveDynamicBlocks`: it recomputes that block's membership
   against the current `catalog_item` table every time the catalog changes,
-  sharing the matching query with `ResolveDynamicPools` (both call the same
-  `matchCriteria` helper). This is how a real 24/7 genre channel (e.g.
+  sharing the matching query with `ResolveDynamicPools` (one evaluation per
+  distinct collection). This is how a real 24/7 genre channel (e.g.
   "Comedy Movies") gets built: a dynamic `block` scheduled via one
   `schedule_item`, not a `filler_pool`/`filler_rule` misuse — `filler_pool`
   stays reserved for commercials/bumpers/station IDs (see below). The
@@ -418,8 +419,8 @@ edges):
   (preroll/midroll/postroll/tail/fallback) to a channel or a single block,
   drawing from a pool with a selection strategy (sequential/random/weighted).
   A pool's `filler_pool_item` rows are either curated by hand (the default,
-  via `POST`/`PUT`/`DELETE /filler-pools/{id}/items`) or, when `filler_pool.criteria`
-  is set (a condition tree, see "Catalog queries"), owned entirely by
+  via `POST`/`PUT`/`DELETE /filler-pools/{id}/items`) or, when `filler_pool.collection_id`
+  is set (a collection, see "Collections"), owned entirely by
   `catalogsync.ResolveDynamicPools`: it recomputes that pool's membership
   against the current `catalog_item` table every time the catalog changes
   (both push's `catalog-sync` handler and pull's `SyncOne` call it right after
@@ -548,7 +549,7 @@ catalog edits) never reset; they keep the freeze margin.
 - `PUT /filler-pools/{id}/items/{item_id}` with `{weight}` (positive
   integer): manual pools only, 409 on a dynamic pool.
 - `POST /catalog-items/preview-criteria` with a condition tree as the body
-  (same validation as `blocks.criteria`/`filler_pool.criteria`): returns
+  (or `{"collection_id": "..."}`; same validation as a collection's query): returns
   `{match_count, total_duration_ms, sample}` where `sample` is up to 20
   matching catalog items ordered by title. It uses the same matching clause
   (`catalogsync.Query.Where`) as dynamic block/pool resolution and persists
@@ -572,6 +573,97 @@ catalog edits) never reset; they keep the freeze margin.
   list as `warnings`.
 - MCP equivalents: `update_block_item`, `update_filler_pool_item`,
   `preview_criteria`, `preview_channel_grid_reset`.
+
+### Collections (migration `0014`)
+
+A `collection` is a tenant-scoped, named, reusable catalog query: `id`,
+`name`, `description`, the condition tree (`query`) and timestamps, and
+nothing else. Dynamic blocks (`block.collection_id`), dynamic filler pools
+(`filler_pool.collection_id`) and criteria block items (`collection_id` inside
+`block_item.spec`) reference one by id; there are no inline queries any more.
+Playback order, amount, interleave settings and seeds stay on the block or
+item, so one collection can be played in different orders by different users.
+Names are labels, not unique (the migration names a collection after its
+first owner, and a block and a pool may share a name); `tenant_id` leads
+`idx_collection_tenant_name`, `idx_block_collection` and
+`idx_filler_pool_collection`. `block_item` has no `tenant_id`, so the
+expression index `idx_block_item_collection` (on
+`json_extract(spec, '$.collection_id')`, partial to criteria items) leads with
+the collection id; the usage query joins `block` to filter by tenant. The
+foreign keys are `NO ACTION`, the safety net behind the API's 409; the API
+also checks that a referenced collection belongs to the tenant (a collection
+of another tenant is indistinguishable from a missing one: 404/400).
+
+Source of truth: once an owner has a collection, the collection is the only
+query it evaluates. The old `criteria` columns (`block`, `filler_pool`) and
+the embedded `query` of a criteria item's spec are **deprecated**, kept and
+never dropped in this version: they are the pre-migration snapshot, the way
+back from a failed migration, and are no longer updated (editing a collection
+does not touch them). They are read only while `collection_id` is NULL, i.e.
+for a row still held for review. A block or pool counts as dynamic when
+`collection_id IS NOT NULL OR criteria IS NOT NULL` (the API exposes
+`dynamic`, `collection_id` and `collection_name` and never `criteria`);
+reverting one to manual through the API clears both. They go in a later
+version.
+
+Migration (`catalogsync.MigrateToCollections`, at startup after
+`MigrateLegacyCriteria`, inside the 30-minute upgrade budget): every dynamic
+block, filler pool and criteria item without a collection gets one. Owners are
+taken in a stable order (tenant, name, id; blocks, then pools, then criteria
+items named "<block> - item N") and owners whose canonical trees (`Query.JSON()`
+equality, so child order matters) are identical within a tenant share ONE
+collection, named after the first. For every owner the matched set of its
+stored query ("before") is compared with the collection's ("after", signatures
+of the ordered ids, evaluated once per distinct query) and the stored collection
+text is read back and checked against the compared tree; any mismatch, or a
+stored query that does not parse, applies nothing, keeps the owner on its stored
+query and records a `criteria_migration_review` row (counts, differing items;
+`owner_type` is now `block`, `filler_pool` or `block_item`), exactly like the
+legacy review. Writes go in transactions of 200 owners; it is idempotent and
+re-runnable (only owners without a collection are looked at, an existing
+collection with the identical tree is reused) and logs progress. Legacy-format
+rows (the pre-tree shape) are skipped: they stay held until their proposal is
+applied. `POST /criteria-migration-review/apply` (`{owner_type, owner_id,
+query?}`, MCP `apply_criteria_review_proposal`) creates or reuses a
+collection from the proposal (or the query sent, required when a legacy value
+has no translation) and points the owner at it; the legacy snapshot stays.
+
+`ResolveDynamic` groups the dynamic pools and blocks by collection and
+evaluates each distinct collection once per pass, however many blocks and pools
+use it (`ResolveCollection` does the same for one edited collection). The
+materializer reads a dynamic block's query with a join on the collection
+(`COALESCE(collection.query, block.criteria)`), and a criteria item resolves its
+collection with one primary-key read per item per run; neither adds per-row
+cost to query evaluation.
+
+REST: `POST/GET /collections`, `GET/PUT/DELETE /collections/{id}`,
+`GET /collections/{id}/usage` (blocks, filler pools and criteria items that
+use it), `GET /collections/{id}/preview`. `PUT` replaces name, description and
+query; a changed query re-resolves the dynamic blocks and pools that use it and
+triggers the materializer, and criteria items follow it live. `DELETE` of a
+collection in use is 409 with the usage listed in `{error, usage}`. Breaking
+change to the request shapes (the web UI and MCP are the only clients):
+`POST/PUT /blocks` and `/filler-pools` take `collection_id` instead of
+`criteria` (a non-null `criteria` is a 400 pointing here), criteria block items
+take `criteria.collection_id` instead of `criteria.query`, and
+`PUT /blocks/{id}/items/{item_id}` takes `collection_id` instead of `query`;
+responses carry `collection_id`, `collection_name` and `dynamic` instead of
+`criteria`. `POST /catalog-items/preview-criteria` still takes a bare tree (the
+collection editor's live preview) and also `{"collection_id": "..."}`. MCP:
+`create_collection`, `update_collection`, `delete_collection`,
+`list_collections`, `get_collection`, `get_collection_usage`,
+`apply_criteria_review_proposal`; `create_block`/`update_block`,
+`create_filler_pool`, `add_block_item` and `update_block_item` take
+`collection_id`; `preview_criteria` takes a tree or a collection id.
+
+Web UI: a Collections page (list with usage counts, create, delete showing the
+409 and the users) and a collection editor (query builder with live preview, the
+usage panel, and a confirmation listing the users before a changed query of a
+shared collection is saved). The dynamic block editor, the new-block dialogs,
+the schedule item's create-block panel, the filler pool editor and the criteria
+item add/change panels pick a collection (with "New collection" inline); the
+query builder lives only in the collection editor. The review banner's "apply
+the proposal" produces a collection.
 
 ### API
 

@@ -138,9 +138,19 @@ actionable checklist.
       migration converts old criteria and holds back any whose matched set
       would change (`GET /criteria-migration-review`), web UI query builder,
       MCP `preview_criteria`/`add_block_item`/`update_block_item`. See
-      `docs/ARCHITECTURE.md` "Catalog queries". Not yet: the `collection`
-      entity (stage 2), a text syntax, series slicing (a query on
+      `docs/ARCHITECTURE.md` "Catalog queries". Not yet: a text syntax, series slicing (a query on
       `season_number`/`episode_number` covers part of it).
+- [x] Composable catalog queries, stage 2: the `collection` entity
+      (migration `0014`). A collection holds only a name, a description and the
+      query; dynamic blocks, dynamic filler pools and criteria items reference
+      it by id, playback settings stay on them. Startup migration
+      (`MigrateToCollections`) moves every owner into a collection (identical
+      trees share one, before/after matched sets compared, mismatches held in
+      the review list); the old `criteria` columns are deprecated and kept. REST
+      (`/collections`, usage, delete 409), MCP, a Collections page and pickers
+      in the editors; "apply proposal" creates a collection. See
+      `docs/ARCHITECTURE.md` "Collections". Not yet: dropping the deprecated
+      `criteria` columns (a later version).
 - [x] Interleaved-by-series playback order (round-robin across series) for
       criteria items and for dynamic blocks (`block.playback_order`,
       migration `0013`; default `title` keeps the old looped-by-title

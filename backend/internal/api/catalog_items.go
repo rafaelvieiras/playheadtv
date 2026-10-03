@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -86,8 +87,11 @@ func listCatalogItems(db storage.DB) http.HandlerFunc {
 const criteriaPreviewSampleSize = 20
 
 // previewCriteria takes a condition tree (the body is the query itself, same
-// validation as block/pool criteria) and reports what it matches right now,
-// persisting nothing.
+// shape stored in a collection) and reports what it would currently match:
+// match_count, total_duration_ms and a sample of the first items by title,
+// persisting nothing. It is what the collection editor's live preview calls.
+// The body may instead be {"collection_id": "..."} to preview a stored
+// collection (same as GET /collections/{id}/preview).
 func previewCriteria(db storage.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(io.LimitReader(r.Body, maxQueryBodyBytes))
@@ -95,12 +99,25 @@ func previewCriteria(db storage.DB) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		q, err := catalogsync.ParseQuery(body)
-		if err != nil {
+		var q *catalogsync.Query
+		var probe struct {
+			CollectionID *string `json:"collection_id"`
+			Version      *int    `json:"version"`
+		}
+		if json.Unmarshal(body, &probe) == nil && probe.CollectionID != nil && probe.Version == nil {
+			if q, err = catalogsync.LoadCollectionQuery(r.Context(), db, DefaultTenantID, *probe.CollectionID); err != nil {
+				if errors.Is(err, catalogsync.ErrCollectionNotFound) {
+					writeError(w, http.StatusNotFound, "not found")
+				} else {
+					handleDBError(w, err)
+				}
+				return
+			}
+		} else if q, err = catalogsync.ParseQuery(body); err != nil {
 			if errors.Is(err, catalogsync.ErrLegacyCriteria) {
 				writeError(w, http.StatusBadRequest, err.Error())
 			} else {
-				writeError(w, http.StatusBadRequest, "criteria: "+err.Error())
+				writeError(w, http.StatusBadRequest, "query: "+err.Error())
 			}
 			return
 		}

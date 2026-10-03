@@ -115,7 +115,7 @@ func TestUpdateBlockItemErrors(t *testing.T) {
 	}
 
 	seedGenreBlockCatalogItem(t, db, "d1", "Comedy")
-	rec := doRequest(t, mux, "POST", "/blocks", `{"name":"Dyn","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
+	rec := doRequest(t, mux, "POST", "/blocks", `{"name":"Dyn","collection_id":"`+newCollection(t, mux, `{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}`)+`"}`)
 	var dyn domain.Block
 	mustDecode(t, rec.Body.Bytes(), &dyn)
 	dynItems := listItems(t, mux, dyn.ID)
@@ -169,7 +169,7 @@ func TestUpdateFillerPoolItem(t *testing.T) {
 	}
 
 	seedGenreBlockCatalogItem(t, db, "g1", "Comedy")
-	rec = doRequest(t, mux, "POST", "/filler-pools", `{"name":"Dyn","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
+	rec = doRequest(t, mux, "POST", "/filler-pools", `{"name":"Dyn","collection_id":"`+newCollection(t, mux, `{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}`)+`"}`)
 	var dyn domain.FillerPool
 	mustDecode(t, rec.Body.Bytes(), &dyn)
 	rec = doRequest(t, mux, "GET", "/filler-pools/"+dyn.ID+"/items", "")

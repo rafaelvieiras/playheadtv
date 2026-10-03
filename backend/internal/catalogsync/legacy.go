@@ -106,15 +106,18 @@ type ReviewItemRef struct {
 	SeriesTitle *string `json:"series_title"`
 }
 
-// ReviewItem is one dynamic block or pool whose legacy criteria could not be
-// converted without changing what it matches: the stored criteria is
-// untouched and still in use, and this row shows what the proposed condition
-// tree would change. Applying it is a normal PUT of the block/pool with the
-// proposed query (or an edited one).
+// ReviewItem is one dynamic block, pool or criteria item held for review: its
+// stored query (a legacy criteria that could not be converted without changing
+// what it matches, or a query that could not be moved into a collection
+// unchanged) is untouched and still in use, and this row shows what the
+// proposed condition tree would change. Applying it (ApplyReviewProposal, POST
+// /criteria-migration-review/apply) creates or reuses a collection with the
+// proposed (or an edited) query and points the owner at it.
 type ReviewItem struct {
 	OwnerType      string          `json:"owner_type"`
 	OwnerID        string          `json:"owner_id"`
 	OwnerName      string          `json:"owner_name"`
+	BlockID        *string         `json:"block_id"` // the block of a block or block_item row
 	LegacyCriteria any             `json:"legacy_criteria"`
 	ProposedQuery  any             `json:"proposed_query"` // null when the legacy criteria cannot be translated
 	Problem        *string         `json:"problem"`
@@ -157,7 +160,7 @@ func MigrateLegacyCriteria(ctx context.Context, db storage.DB) (MigrationReport,
 	for _, owner := range []struct{ typ, table string }{{OwnerBlock, "block"}, {OwnerFillerPool, "filler_pool"}} {
 		var rows []legacyOwner
 		if err := db.Query(ctx, &rows,
-			"SELECT id, tenant_id, name, criteria FROM "+owner.table+" WHERE criteria IS NOT NULL ORDER BY tenant_id, name, id",
+			"SELECT id, tenant_id, name, criteria FROM "+owner.table+" WHERE collection_id IS NULL AND criteria IS NOT NULL ORDER BY tenant_id, name, id",
 		); err != nil {
 			return report, fmt.Errorf("catalogsync: list %s criteria: %w", owner.table, err)
 		}
@@ -301,6 +304,7 @@ type reviewRow struct {
 	OwnerType      string
 	OwnerID        string
 	OwnerName      string
+	BlockID        *string
 	LegacyCriteria string
 	ProposedQuery  *string
 	Problem        *string
@@ -310,20 +314,27 @@ type reviewRow struct {
 	OnlyAfter      string
 }
 
-// ListCriteriaReview returns the dynamic blocks and pools still holding a
-// legacy criteria that needs review, ordered by owner type and name. A row
-// whose owner is gone or already converted is not listed.
+// ListCriteriaReview returns the dynamic blocks, filler pools and criteria
+// block items still held for review (a legacy criteria that cannot be
+// converted without changing what it matches, or a query that could not be
+// moved into a collection unchanged), ordered by owner type and name. A row
+// whose owner is gone or already uses a collection is not listed.
 func ListCriteriaReview(ctx context.Context, db storage.DB, tenantID string) ([]ReviewItem, error) {
 	var rows []reviewRow
+	const cols = "r.owner_type, r.owner_id, r.legacy_criteria, r.proposed_query, r.problem, r.before_count, r.after_count, r.only_before, r.only_after"
 	if err := db.Query(ctx, &rows,
-		`SELECT r.owner_type, r.owner_id, b.name AS owner_name, r.legacy_criteria, r.proposed_query, r.problem, r.before_count, r.after_count, r.only_before, r.only_after
+		`SELECT `+cols+`, b.name AS owner_name, b.id AS block_id
 		   FROM criteria_migration_review r JOIN block b ON b.tenant_id = r.tenant_id AND b.id = r.owner_id
-		  WHERE r.tenant_id = ? AND r.owner_type = 'block' AND b.criteria = r.legacy_criteria
+		  WHERE r.tenant_id = ? AND r.owner_type = 'block' AND b.collection_id IS NULL AND b.criteria = r.legacy_criteria
 		 UNION ALL
-		 SELECT r.owner_type, r.owner_id, p.name AS owner_name, r.legacy_criteria, r.proposed_query, r.problem, r.before_count, r.after_count, r.only_before, r.only_after
+		 SELECT `+cols+`, p.name AS owner_name, NULL AS block_id
 		   FROM criteria_migration_review r JOIN filler_pool p ON p.tenant_id = r.tenant_id AND p.id = r.owner_id
-		  WHERE r.tenant_id = ? AND r.owner_type = 'filler_pool' AND p.criteria = r.legacy_criteria`,
-		tenantID, tenantID,
+		  WHERE r.tenant_id = ? AND r.owner_type = 'filler_pool' AND p.collection_id IS NULL AND p.criteria = r.legacy_criteria
+		 UNION ALL
+		 SELECT `+cols+`, b.name || ' - item ' || (bi.position + 1) AS owner_name, b.id AS block_id
+		   FROM criteria_migration_review r JOIN block_item bi ON bi.id = r.owner_id JOIN block b ON b.id = bi.block_id AND b.tenant_id = r.tenant_id
+		  WHERE r.tenant_id = ? AND r.owner_type = 'block_item' AND json_extract(bi.spec, '$.collection_id') IS NULL`,
+		tenantID, tenantID, tenantID,
 	); err != nil {
 		return nil, fmt.Errorf("catalogsync: list criteria review: %w", err)
 	}
@@ -339,7 +350,7 @@ func ListCriteriaReview(ctx context.Context, db storage.DB, tenantID string) ([]
 	out := make([]ReviewItem, 0, len(rows))
 	for _, r := range rows {
 		item := ReviewItem{
-			OwnerType: r.OwnerType, OwnerID: r.OwnerID, OwnerName: r.OwnerName,
+			OwnerType: r.OwnerType, OwnerID: r.OwnerID, OwnerName: r.OwnerName, BlockID: r.BlockID,
 			Problem: r.Problem, BeforeCount: r.BeforeCount, AfterCount: r.AfterCount,
 			OnlyBefore: []ReviewItemRef{}, OnlyAfter: []ReviewItemRef{},
 		}

@@ -17,7 +17,6 @@ import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { FillerPoolDialog } from '@/components/FillerPoolDialog'
 import { api } from '@/lib/http'
-import { summarizeStoredCriteria } from '@/lib/query'
 import type { FillerPool } from '@/lib/types'
 
 function DynamicBadge({ dynamic }: { dynamic: boolean }) {
@@ -74,7 +73,7 @@ export function FillerPoolsPage() {
             <TableRow>
               <TableHead>Name</TableHead>
               <TableHead>Type</TableHead>
-              <TableHead>Criteria</TableHead>
+              <TableHead>Collection</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
           </TableHeader>
@@ -94,10 +93,10 @@ export function FillerPoolsPage() {
                   </Link>
                 </TableCell>
                 <TableCell>
-                  <DynamicBadge dynamic={pool.criteria != null} />
+                  <DynamicBadge dynamic={pool.dynamic} />
                 </TableCell>
                 <TableCell className="max-w-96 truncate text-muted-foreground">
-                  {pool.criteria ? summarizeStoredCriteria(pool.criteria) : '—'}
+                  {pool.dynamic ? pool.collection_name ?? 'Held for review (old query)' : '—'}
                 </TableCell>
                 <TableCell className="flex justify-end gap-2 text-right">
                   <Button asChild variant="outline" size="sm">

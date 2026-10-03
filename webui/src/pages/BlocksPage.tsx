@@ -96,7 +96,7 @@ export function BlocksPage() {
                   </Link>
                 </TableCell>
                 <TableCell>
-                  <DynamicBadge dynamic={block.criteria != null} />
+                  <DynamicBadge dynamic={block.dynamic} />
                 </TableCell>
                 <TableCell className="max-w-96 truncate text-muted-foreground">
                   {block.description ?? '—'}

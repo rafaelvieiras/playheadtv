@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -134,5 +135,32 @@ func doRequest(t *testing.T, mux *http.ServeMux, method, path, body string) *htt
 	req.Header.Set("Authorization", "Bearer "+testSessionToken)
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+// newCollection creates a collection through the API and returns its id; the
+// query is a condition tree JSON.
+func newCollection(t *testing.T, mux *http.ServeMux, query string) string {
+	t.Helper()
+	rec := doRequest(t, mux, "POST", "/collections", `{"name":"Collection `+strings.ReplaceAll(t.Name(), `"`, "")+`","query":`+query+`}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create collection: %d %s", rec.Code, rec.Body.String())
+	}
+	var c struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &c); err != nil {
+		t.Fatal(err)
+	}
+	return c.ID
+}
+
+// doRequestAny is doRequest for any http.Handler.
+func doRequestAny(t *testing.T, h http.Handler, method, path, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	req.Header.Set("Authorization", "Bearer "+testSessionToken)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
 	return rec
 }

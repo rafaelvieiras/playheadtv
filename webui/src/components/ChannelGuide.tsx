@@ -19,7 +19,6 @@ import {
   type BlockWarning,
 } from '@/lib/guide'
 import { api } from '@/lib/http'
-import { storedQuery, validateQuery } from '@/lib/query'
 import type {
   Block,
   BlockItem,
@@ -110,10 +109,10 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
     }
     return [...seen.values()]
   }, [active, blocksById])
-  const manual = useMemo(() => usedBlocks.filter((b) => !b.criteria), [usedBlocks])
+  const manual = useMemo(() => usedBlocks.filter((b) => !b.dynamic), [usedBlocks])
   const dynamic = useMemo(
-    // Old-format criteria (not yet migrated) cannot be previewed; they are skipped.
-    () => usedBlocks.filter((b) => b.criteria && storedQuery(b.criteria) && !validateQuery(storedQuery(b.criteria))),
+    // A block held for review (no collection yet) cannot be previewed; it is skipped.
+    () => usedBlocks.filter((b) => b.collection_id),
     [usedBlocks],
   )
 
@@ -135,8 +134,8 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
 
   const criteriaQueries = useQueries({
     queries: dynamic.map((b) => ({
-      queryKey: ['criteria-preview', b.criteria],
-      queryFn: () => api.post<CriteriaPreview>('/catalog-items/preview-criteria', storedQuery(b.criteria)),
+      queryKey: ['criteria-preview', b.collection_id],
+      queryFn: () => api.post<CriteriaPreview>('/catalog-items/preview-criteria', { collection_id: b.collection_id }),
       staleTime: 0,
     })),
   })
@@ -181,7 +180,7 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
           key: `no-match-${b.id}`,
           blockId: b.id,
           blockName: b.name,
-          message: `The criteria of block "${b.name}" match no catalog items right now.`,
+          message: `The collection of block "${b.name}" match no catalog items right now.`,
         })
       }
     })

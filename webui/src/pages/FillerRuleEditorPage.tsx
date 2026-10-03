@@ -14,7 +14,6 @@ import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { KIND_LABELS, SCOPE_LABELS, STRATEGY_LABELS } from '@/lib/filler'
-import { summarizeStoredCriteria } from '@/lib/query'
 import { api, ApiError } from '@/lib/http'
 import type {
   Block,
@@ -271,13 +270,13 @@ export function FillerRuleEditorPage() {
         <section className="flex flex-col gap-3" data-testid="rule-pool-panel">
           <div className="flex items-center gap-2">
             <h2 className="text-base font-medium">Pool: {pool.name}</h2>
-            <Badge variant={pool.criteria ? 'default' : 'secondary'}>{pool.criteria ? 'Dynamic' : 'Manual'}</Badge>
+            <Badge variant={pool.dynamic ? 'default' : 'secondary'}>{pool.dynamic ? 'Dynamic' : 'Manual'}</Badge>
             <Link to={`/filler-pools/${pool.id}`} target="_blank" className="text-sm underline">
               Edit pool
             </Link>
           </div>
-          {pool.criteria && (
-            <p className="text-sm text-muted-foreground">Criteria: {summarizeStoredCriteria(pool.criteria)}</p>
+          {pool.dynamic && (
+            <p className="text-sm text-muted-foreground">Collection: {pool.collection_name ?? 'held for review (old query)'}</p>
           )}
           <FillerPoolItems poolId={pool.id} editable={false} />
         </section>

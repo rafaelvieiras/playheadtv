@@ -362,7 +362,11 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 			InterleaveSpec *string
 			PlaybackSeed   int64
 		}
-		query := fmt.Sprintf("SELECT id, criteria, playback_order, interleave_spec, playback_seed FROM block WHERE tenant_id = ? AND criteria IS NOT NULL AND id IN (%s)", placeholders)
+		// The effective query is the collection's; the deprecated criteria
+		// column is only read for a legacy row still held for review.
+		query := fmt.Sprintf("SELECT b.id AS id, COALESCE(c.query, b.criteria) AS criteria, b.playback_order AS playback_order, b.interleave_spec AS interleave_spec, b.playback_seed AS playback_seed "+
+			"FROM block b LEFT JOIN collection c ON c.tenant_id = b.tenant_id AND c.id = b.collection_id "+
+			"WHERE b.tenant_id = ? AND (b.collection_id IS NOT NULL OR b.criteria IS NOT NULL) AND b.id IN (%s)", placeholders)
 		if err := m.db.Query(ctx, &dyn, query, args...); err != nil {
 			return channelInput{}, fmt.Errorf("list dynamic block ids: %w", err)
 		}

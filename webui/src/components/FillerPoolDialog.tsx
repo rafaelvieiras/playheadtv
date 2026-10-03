@@ -13,31 +13,30 @@ import {
 } from '@/components/ui/dialog'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
+import { DynamicCollectionFields, validateCollectionChoice, type CollectionChoice } from '@/components/DynamicCollectionFields'
 import { api } from '@/lib/http'
-import { validateQuery, type Query } from '@/lib/query'
 import type { FillerPool, FillerPoolInput } from '@/lib/types'
 
 interface FillerPoolDialogProps {
   open: boolean
   onOpenChange: (open: boolean) => void
   // Called with the created pool; the pool editor page is where its items
-  // (or the criteria preview) are worked on afterwards.
+  // (or its collection) are worked on afterwards.
   onCreated: (pool: FillerPool) => void
 }
 
-// Quick create: a name and, optionally, dynamic criteria. Create only —
+// Quick create: a name and, optionally, a collection to play. Create only —
 // editing a pool happens on its own page (/filler-pools/:id).
 export function FillerPoolDialog({ open, onOpenChange, onCreated }: FillerPoolDialogProps) {
   const queryClient = useQueryClient()
   const [name, setName] = useState('')
-  const [criteria, setCriteria] = useState<Query | null>(null)
+  const [collection, setCollection] = useState<CollectionChoice>(null)
   const [error, setError] = useState<string | undefined>(undefined)
 
   useEffect(() => {
     if (open) {
       setName('')
-      setCriteria(null)
+      setCollection(null)
       setError(undefined)
     }
   }, [open])
@@ -57,13 +56,13 @@ export function FillerPoolDialog({ open, onOpenChange, onCreated }: FillerPoolDi
     // Nested inside another page's form tree? Never submit the outer one.
     e.preventDefault()
     e.stopPropagation()
-    const validationError = validateQuery(criteria)
+    const validationError = validateCollectionChoice(collection)
     if (validationError) {
       setError(validationError)
       return
     }
     setError(undefined)
-    mutation.mutate({ name: name.trim(), criteria })
+    mutation.mutate({ name: name.trim(), collection_id: collection })
   }
 
   return (
@@ -74,7 +73,7 @@ export function FillerPoolDialog({ open, onOpenChange, onCreated }: FillerPoolDi
             <DialogTitle>New filler pool</DialogTitle>
             <DialogDescription>
               A manual pool has items added one by one on its page; a dynamic pool is filled automatically from
-              criteria.
+              a collection.
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
@@ -83,7 +82,7 @@ export function FillerPoolDialog({ open, onOpenChange, onCreated }: FillerPoolDi
               <Input id="new-pool-name" required value={name} onChange={(e) => setName(e.target.value)} />
             </Field>
 
-            <DynamicCriteriaFields value={criteria} onChange={setCriteria} idPrefix="new-pool-criteria" />
+            <DynamicCollectionFields value={collection} onChange={setCollection} idPrefix="new-pool-collection" />
 
             {error && <p className="text-sm text-destructive">{error}</p>}
           </FieldGroup>

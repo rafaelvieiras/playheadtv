@@ -85,6 +85,13 @@ func run() error {
 	if _, err := catalogsync.MigrateLegacyCriteria(upgradeCtx, db); err != nil {
 		return err
 	}
+	// Move the query of every dynamic block, filler pool and criteria item into
+	// a collection (owners with identical trees share one), holding back any
+	// whose matched set would change. Batched and idempotent like the
+	// backfills above; rows still held for review stay held.
+	if _, err := catalogsync.MigrateToCollections(upgradeCtx, db); err != nil {
+		return err
+	}
 
 	// The short deadline covers only the remaining, non-upgrade startup work.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

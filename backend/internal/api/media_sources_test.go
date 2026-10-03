@@ -391,7 +391,7 @@ func TestCatalogSyncPushResolvesDynamicPools(t *testing.T) {
 		t.Fatalf("backfill genre links: %v", err)
 	}
 
-	rec = doRequest(t, mux, "POST", "/filler-pools", `{"name":"Comedy","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
+	rec = doRequest(t, mux, "POST", "/filler-pools", `{"name":"Comedy","collection_id":"`+newCollection(t, mux, `{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}`)+`"}`)
 	var pool domain.FillerPool
 	json.Unmarshal(rec.Body.Bytes(), &pool)
 

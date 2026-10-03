@@ -37,8 +37,8 @@ export function CriteriaPreviewPanel({ criteria }: { criteria: Query | null }) {
       {preview.isPending && <p className="text-sm text-muted-foreground">Checking the catalog…</p>}
       {preview.isError && <p className="text-sm text-destructive">Could not preview the criteria.</p>}
       {data && data.match_count === 0 && (
-        <InlineWarning title="No catalog items match these criteria">
-          A dynamic pool with no matches stays empty.
+        <InlineWarning title="No catalog items match this query">
+          A dynamic block or pool with no matches stays empty.
         </InlineWarning>
       )}
       {data && data.match_count > 0 && (

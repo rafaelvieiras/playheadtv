@@ -101,25 +101,36 @@ func InterleaveRestarts(a, b domain.Interleave) bool {
 	return a.PerRound != b.PerRound || a.SeriesOrder != b.SeriesOrder
 }
 
-func parseQuery(raw json.RawMessage) (json.RawMessage, error) {
-	q, err := catalogsync.ParseQuery(raw)
-	if err != nil {
-		return nil, fmt.Errorf("criteria.query: %w", err)
+// ErrUnknownCollection is returned for a collection id that does not exist for
+// the tenant.
+var ErrUnknownCollection = errors.New("collection_id does not match a collection")
+
+// checkCollection verifies that id names a collection of tenantID. A collection
+// of another tenant is reported exactly like a missing one.
+func checkCollection(ctx context.Context, db storage.DB, tenantID, id string) error {
+	if id == "" {
+		return errors.New("collection_id is required")
 	}
-	return json.RawMessage(q.JSON()), nil
+	if _, err := catalogsync.LoadCollectionQuery(ctx, db, tenantID, id); err != nil {
+		if errors.Is(err, catalogsync.ErrCollectionNotFound) {
+			return ErrUnknownCollection
+		}
+		return err
+	}
+	return nil
 }
 
-// NewCriteriaSpec validates a criteria item's query, order and amount and
-// returns the spec to store, with a fresh random seed. An empty order
-// defaults to title; the amount is required (see NewCriteriaAmount). The
-// interleave parameters are only valid (and then default to 1 per round,
-// restart, series by title) with the interleaved order.
-func NewCriteriaSpec(query json.RawMessage, order string, amountIn *domain.SeriesAmountInput, interleaveIn *domain.InterleaveInput) (domain.CriteriaSpec, error) {
-	q, err := parseQuery(query)
-	if err != nil {
+// NewCriteriaSpec validates a criteria item's collection, order and amount and
+// returns the spec to store, with a fresh random seed. The item stores only the
+// collection id; the query lives in the collection. An empty order defaults to
+// title; the amount is required (see NewCriteriaAmount). The interleave
+// parameters are only valid (and then default to 1 per round, restart, series
+// by title) with the interleaved order.
+func NewCriteriaSpec(ctx context.Context, db storage.DB, tenantID, collectionID string, order string, amountIn *domain.SeriesAmountInput, interleaveIn *domain.InterleaveInput) (domain.CriteriaSpec, error) {
+	if err := checkCollection(ctx, db, tenantID, collectionID); err != nil {
 		return domain.CriteriaSpec{}, err
 	}
-	order, err = parseOrder(order)
+	order, err := parseOrder(order)
 	if err != nil {
 		return domain.CriteriaSpec{}, err
 	}
@@ -142,7 +153,7 @@ func NewCriteriaSpec(query json.RawMessage, order string, amountIn *domain.Serie
 		return domain.CriteriaSpec{}, err
 	}
 	return domain.CriteriaSpec{
-		Query:         q,
+		CollectionID:  collectionID,
 		PlaybackOrder: order,
 		Seed:          int64(binary.LittleEndian.Uint64(b[:]) >> 1),
 		Amount:        amount,
@@ -151,19 +162,20 @@ func NewCriteriaSpec(query json.RawMessage, order string, amountIn *domain.Serie
 }
 
 // UpdateCriteriaSpec applies the editable fields of a criteria item (nil or
-// empty means unchanged) to spec. orderChanged reports a different playback
+// empty means unchanged) to spec. Pointing the item at another collection (or
+// at one for the first time, for an item held for review) keeps the cursor like
+// the old query edit did; the deprecated embedded query is left alone. orderChanged reports a different playback
 // order or different interleave parameters (see InterleaveRestarts), which
 // restart the item's cursor; changing the query or the amount keeps it.
 // interleaveIn overlays the stored interleave parameters and is only valid when
 // the resulting order is interleaved.
-func UpdateCriteriaSpec(spec domain.CriteriaSpec, query json.RawMessage, order *string, amountIn *domain.SeriesAmountInput, interleaveIn *domain.InterleaveInput) (domain.CriteriaSpec, bool, error) {
+func UpdateCriteriaSpec(ctx context.Context, db storage.DB, tenantID string, spec domain.CriteriaSpec, collectionID *string, order *string, amountIn *domain.SeriesAmountInput, interleaveIn *domain.InterleaveInput) (domain.CriteriaSpec, bool, error) {
 	orderChanged := false
-	if len(query) > 0 && string(query) != "null" {
-		q, err := parseQuery(query)
-		if err != nil {
+	if collectionID != nil {
+		if err := checkCollection(ctx, db, tenantID, *collectionID); err != nil {
 			return spec, false, err
 		}
-		spec.Query = q
+		spec.CollectionID = *collectionID
 	}
 	if order != nil {
 		if !domain.ValidCriteriaOrder(*order) {
@@ -219,7 +231,24 @@ func EncodeCriteriaSpec(s domain.CriteriaSpec) (string, error) {
 	return string(b), err
 }
 
+// ResolveSpec returns spec with its effective query filled in: the query of
+// the collection it references (the source of truth), or, only while it has no
+// collection (an item held for review), its deprecated embedded query. The
+// result is for evaluation only, never to be stored back.
+func ResolveSpec(ctx context.Context, db storage.DB, tenantID string, spec domain.CriteriaSpec) (domain.CriteriaSpec, error) {
+	if spec.CollectionID == "" {
+		return spec, nil
+	}
+	q, err := catalogsync.LoadCollectionQuery(ctx, db, tenantID, spec.CollectionID)
+	if err != nil {
+		return spec, err
+	}
+	spec.Query = json.RawMessage(q.JSON())
+	return spec, nil
+}
+
 // schedulable restricts a query to what can be put on air: a positive duration.
+// spec carries its effective query (see ResolveSpec).
 func schedulable(spec domain.CriteriaSpec, tenantID string) (string, []any, error) {
 	q, err := catalogsync.ParseQuery(spec.Query)
 	if err != nil {
@@ -233,6 +262,10 @@ func schedulable(spec domain.CriteriaSpec, tenantID string) (string, []any, erro
 // with a non-positive duration left out), in no particular order, in the shape
 // the materializer walks series episodes in.
 func Episodes(ctx context.Context, db storage.DB, tenantID string, spec domain.CriteriaSpec) ([]series.Episode, error) {
+	spec, err := ResolveSpec(ctx, db, tenantID, spec)
+	if err != nil {
+		return nil, err
+	}
 	where, args, err := schedulable(spec, tenantID)
 	if err != nil {
 		return nil, err
@@ -281,6 +314,15 @@ func Episodes(ctx context.Context, db storage.DB, tenantID string, spec domain.C
 
 // Stats counts the schedulable items the query matches and their total duration.
 func Stats(ctx context.Context, db storage.DB, tenantID string, spec domain.CriteriaSpec) (int, int64, error) {
+	spec, err := ResolveSpec(ctx, db, tenantID, spec)
+	if err != nil {
+		return 0, 0, err
+	}
+	return statsOf(ctx, db, tenantID, spec)
+}
+
+// statsOf is Stats for a spec whose effective query is already resolved.
+func statsOf(ctx context.Context, db storage.DB, tenantID string, spec domain.CriteriaSpec) (int, int64, error) {
 	where, args, err := schedulable(spec, tenantID)
 	if err != nil {
 		return 0, 0, err
@@ -299,11 +341,12 @@ func Stats(ctx context.Context, db storage.DB, tenantID string, spec domain.Crit
 
 // Decorate fills the series and criteria views of items (counts and durations
 // are read live from the catalog). An item whose spec cannot be decoded is
-// left without a view.
+// left without a view; one whose collection is gone is shown without counts.
 func Decorate(ctx context.Context, db storage.DB, tenantID string, items []domain.BlockItem) error {
 	if err := series.Decorate(ctx, db, tenantID, items); err != nil {
 		return err
 	}
+	names := map[string]*string{}
 	for i := range items {
 		if !items[i].IsCriteria() {
 			continue
@@ -312,26 +355,46 @@ func Decorate(ctx context.Context, db storage.DB, tenantID string, items []domai
 		if err != nil {
 			continue
 		}
-		count, total := 0, int64(0)
-		// A stored query that no longer parses is shown without counts rather
-		// than failing the whole listing; a database error still fails it.
-		if _, perr := catalogsync.ParseQuery(spec.Query); perr == nil {
-			if count, total, err = Stats(ctx, db, tenantID, spec); err != nil {
-				return err
+		view := &domain.CriteriaItemView{
+			PlaybackOrder: spec.PlaybackOrder,
+			Amount:        spec.Amount,
+			Interleave:    spec.Interleave,
+		}
+		if spec.CollectionID != "" {
+			id := spec.CollectionID
+			view.CollectionID = &id
+			name, seen := names[id]
+			if !seen {
+				var n []string
+				if err := db.Query(ctx, &n, "SELECT name FROM collection WHERE tenant_id = ? AND id = ?", tenantID, id); err != nil {
+					return err
+				}
+				if len(n) > 0 {
+					name = &n[0]
+				}
+				names[id] = name
+			}
+			view.CollectionName = name
+		}
+		eff, err := ResolveSpec(ctx, db, tenantID, spec)
+		if err != nil && !errors.Is(err, catalogsync.ErrCollectionNotFound) {
+			return err
+		}
+		// A stored query that no longer parses (or a missing collection) is
+		// shown without counts rather than failing the whole listing; a
+		// database error still fails it.
+		if err == nil {
+			if _, perr := catalogsync.ParseQuery(eff.Query); perr == nil {
+				if view.MatchCount, view.TotalDurationMs, err = statsOf(ctx, db, tenantID, eff); err != nil {
+					return err
+				}
+			}
+			var query any
+			if json.Unmarshal(eff.Query, &query) == nil {
+				view.Query = query
 			}
 		}
-		var query any
-		if err := json.Unmarshal(spec.Query, &query); err != nil {
-			continue
-		}
-		items[i].Criteria = &domain.CriteriaItemView{
-			Query:           query,
-			PlaybackOrder:   spec.PlaybackOrder,
-			Amount:          spec.Amount,
-			Interleave:      spec.Interleave,
-			MatchCount:      count,
-			TotalDurationMs: total,
-		}
+		items[i].Criteria = view
 	}
 	return nil
 }

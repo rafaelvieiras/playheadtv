@@ -41,5 +41,5 @@ export function legacyDailyDynamicBlock(items: ScheduleItem[], blocksById: Map<s
   if (days.size !== 7 || ![0, 1, 2, 3, 4, 5, 6].every((d) => days.has(d))) return undefined
   const blockId = items[0].block_id
   if (!items.every((i) => i.block_id === blockId)) return undefined
-  return blocksById.get(blockId)?.criteria ? blockId : undefined
+  return blocksById.get(blockId)?.dynamic ? blockId : undefined
 }

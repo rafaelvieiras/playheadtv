@@ -24,7 +24,6 @@ import {
   legacyDailyDynamicBlock,
   summarizeRecurrence,
 } from '@/lib/schedule'
-import { summarizeStoredCriteria } from '@/lib/query'
 import type { Block, BlockItem, Channel, Schedule, ScheduleItem } from '@/lib/types'
 
 // Programming tab: the items of the channel's schedule, grouped by kind and
@@ -54,12 +53,12 @@ export function ChannelProgramming({
   const { data: blocks } = useQuery({ queryKey: ['blocks'], queryFn: () => api.get<Block[]>('/blocks') })
   const blocksById = useMemo(() => new Map((blocks ?? []).map((b) => [b.id, b])), [blocks])
 
-  // Item counts of the manual blocks in use (dynamic ones show their criteria).
+  // Item counts of the manual blocks in use (dynamic ones show their collection).
   const manualBlockIds = useMemo(() => {
     const ids = new Set<string>()
     for (const item of items ?? []) {
       const block = blocksById.get(item.block_id)
-      if (block && !block.criteria) ids.add(block.id)
+      if (block && !block.dynamic) ids.add(block.id)
     }
     return [...ids]
   }, [items, blocksById])
@@ -245,10 +244,10 @@ export function ChannelProgramming({
                         <TableCell data-testid="item-fill">
                           {!block ? (
                             '—'
-                          ) : block.criteria ? (
+                          ) : block.dynamic ? (
                             <span>
                               <Badge variant="default">Dynamic</Badge>{' '}
-                              <span className="text-muted-foreground">{summarizeStoredCriteria(block.criteria)}</span>
+                              <span className="text-muted-foreground">{block.collection_name ?? 'held for review (old query)'}</span>
                             </span>
                           ) : (
                             <span>

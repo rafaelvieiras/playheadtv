@@ -35,7 +35,14 @@ func registerBlocks(mux *http.ServeMux, db storage.DB, mat *materializer.Materia
 	mux.HandleFunc("DELETE /blocks/{id}/items/{item_id}", deleteBlockItem(db, mat))
 }
 
-const blockColumns = "id, tenant_id, name, description, criteria, playback_order, interleave_spec, playback_seed, created_at, updated_at"
+// blockColumns reads the block with its collection (and the collection's name,
+// for display) and whether it is dynamic: references a collection, or is a
+// legacy row still held for review that keeps playing its deprecated criteria
+// column. The criteria column itself is never selected for clients.
+const blockColumns = "id, tenant_id, name, description, collection_id, " +
+	"(SELECT c.name FROM collection c WHERE c.tenant_id = block.tenant_id AND c.id = block.collection_id) AS collection_name, " +
+	"(collection_id IS NOT NULL OR criteria IS NOT NULL) AS dynamic, " +
+	"playback_order, interleave_spec, playback_seed, created_at, updated_at"
 
 // blockItemColumns reads the typed block_item: a series item has a NULL
 // catalog_item_id, read back as the empty string.
@@ -44,12 +51,13 @@ const blockItemColumns = "id, block_id, position, item_type, COALESCE(catalog_it
 type blockRequest struct {
 	Name        string  `json:"name"`
 	Description *string `json:"description"`
-	// Criteria is optional. nil (the JSON field absent or explicitly null)
-	// means a manually managed block; a non-nil value makes it dynamic —
-	// its block_item rows are then owned by catalogsync.ResolveDynamicBlocks,
-	// not by POST/DELETE .../items. Reuses fillerPoolCriteriaRequest/
-	// parseCriteriaField (criteria.go): a versioned condition tree, the same
-	// one filler pools take.
+	// CollectionID is optional. nil (the JSON field absent or explicitly null)
+	// means a manually managed block; a collection id makes it dynamic — its
+	// block_item rows are then owned by catalogsync.ResolveDynamicBlocks, not
+	// by POST/DELETE .../items.
+	CollectionID *string `json:"collection_id"`
+	// Criteria is the removed inline query: rejected with a pointer to
+	// collections when non-null.
 	Criteria json.RawMessage `json:"criteria"`
 	// PlaybackOrder (dynamic blocks only) is title (default: every match by
 	// title, looped) or interleaved (round-robin across series, see
@@ -79,12 +87,16 @@ func createBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 			writeError(w, http.StatusBadRequest, "name is required")
 			return
 		}
-		criteria, err := parseCriteriaField(req.Criteria)
-		if err != nil {
+		if err := rejectInlineCriteria(req.Criteria); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		playback, _, err := blockitem.NewBlockPlayback(criteria != nil, req.PlaybackOrder, req.Interleave, nil)
+		collection, err := collectionRef(r.Context(), db, req.CollectionID)
+		if err != nil {
+			writeCollectionRefError(w, err)
+			return
+		}
+		playback, _, err := blockitem.NewBlockPlayback(collection != nil, req.PlaybackOrder, req.Interleave, nil)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -95,7 +107,8 @@ func createBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 			TenantID:       DefaultTenantID,
 			Name:           req.Name,
 			Description:    req.Description,
-			Criteria:       criteria,
+			CollectionID:   collection,
+			Dynamic:        collection != nil,
 			PlaybackOrder:  playback.Order,
 			InterleaveSpec: playback.InterleaveSpec,
 			PlaybackSeed:   playback.Seed,
@@ -104,19 +117,24 @@ func createBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 		}
 		b.FillInterleave()
 		err = db.Exec(r.Context(),
-			"INSERT INTO block (id, tenant_id, name, description, criteria, playback_order, interleave_spec, playback_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			b.ID, b.TenantID, b.Name, b.Description, b.Criteria, b.PlaybackOrder, b.InterleaveSpec, b.PlaybackSeed, b.CreatedAt, b.UpdatedAt,
+			"INSERT INTO block (id, tenant_id, name, description, collection_id, playback_order, interleave_spec, playback_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			b.ID, b.TenantID, b.Name, b.Description, b.CollectionID, b.PlaybackOrder, b.InterleaveSpec, b.PlaybackSeed, b.CreatedAt, b.UpdatedAt,
 		)
 		if err != nil {
 			handleDBError(w, err)
 			return
 		}
-		if b.Criteria != nil {
+		if b.CollectionID != nil {
 			if err := catalogsync.ResolveDynamicBlocks(r.Context(), db, DefaultTenantID); err != nil {
 				handleDBError(w, err)
 				return
 			}
 			mat.Trigger()
+		}
+		b, err = fetchBlock(db, r, b.ID)
+		if err != nil {
+			handleDBError(w, err)
+			return
 		}
 		writeJSON(w, http.StatusCreated, b)
 	}
@@ -169,22 +187,29 @@ func updateBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 			return
 		}
 		// PUT is a full replace, same semantics name/description already have:
-		// omitting criteria here reverts a previously dynamic block to
+		// omitting collection_id here reverts a previously dynamic block to
 		// manual, even if it already had one — intentional, not an
 		// accidental partial update.
-		criteria, err := parseCriteriaField(req.Criteria)
-		if err != nil {
+		if err := rejectInlineCriteria(req.Criteria); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		playback, restart, err := blockitem.NewBlockPlayback(criteria != nil, req.PlaybackOrder, req.Interleave, &prev)
+		collection, err := collectionRef(r.Context(), db, req.CollectionID)
+		if err != nil {
+			writeCollectionRefError(w, err)
+			return
+		}
+		playback, restart, err := blockitem.NewBlockPlayback(collection != nil, req.PlaybackOrder, req.Interleave, &prev)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		err = db.Exec(r.Context(),
-			"UPDATE block SET name = ?, description = ?, criteria = ?, playback_order = ?, interleave_spec = ?, playback_seed = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
-			req.Name, req.Description, criteria, playback.Order, playback.InterleaveSpec, playback.Seed, time.Now().UnixMilli(), DefaultTenantID, id,
+			// The deprecated criteria snapshot is kept while the block references a
+			// collection (the way back from the migration) and cleared when the
+			// block reverts to manual, so it cannot read as a legacy dynamic row.
+			"UPDATE block SET name = ?, description = ?, collection_id = ?, criteria = CASE WHEN ? IS NULL THEN NULL ELSE criteria END, playback_order = ?, interleave_spec = ?, playback_seed = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+			req.Name, req.Description, collection, collection, playback.Order, playback.InterleaveSpec, playback.Seed, time.Now().UnixMilli(), DefaultTenantID, id,
 		)
 		if err != nil {
 			handleDBError(w, err)
@@ -197,13 +222,13 @@ func updateBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 			}
 			mat.Trigger()
 		}
-		// The criteria was just replaced, so a pending legacy criteria review
-		// no longer applies.
+		// The query source was just replaced, so a pending criteria review no
+		// longer applies.
 		if err := clearReview(r.Context(), db, catalogsync.OwnerBlock, id); err != nil {
 			handleDBError(w, err)
 			return
 		}
-		if criteria != nil {
+		if collection != nil {
 			if err := catalogsync.ResolveDynamicBlocks(r.Context(), db, DefaultTenantID); err != nil {
 				handleDBError(w, err)
 				return
@@ -251,11 +276,13 @@ type blockItemRequest struct {
 	Criteria       *criteriaItemRequest `json:"criteria"`
 }
 
-// criteriaItemRequest is a criteria item: a condition tree (query), the order
+// criteriaItemRequest is a criteria item: a collection (collection_id), the order
 // its matches are walked in (title, release_date, random or shuffle; default
 // title) and how many of them one visit of the block rotation airs. amount is
 // required: {"mode":"count","count":N} or {"mode":"all"}.
 type criteriaItemRequest struct {
+	CollectionID string `json:"collection_id"`
+	// Query is the removed embedded query: rejected when non-null.
 	Query         json.RawMessage           `json:"query"`
 	PlaybackOrder string                    `json:"playback_order"`
 	Amount        *domain.SeriesAmountInput `json:"amount"`
@@ -292,8 +319,8 @@ func addBlockItem(db storage.DB, mat *materializer.Materializer) http.HandlerFun
 			handleDBError(w, err)
 			return
 		}
-		if b.Criteria != nil {
-			writeError(w, http.StatusConflict, "this block is dynamic; items are managed automatically from its criteria")
+		if b.Dynamic {
+			writeError(w, http.StatusConflict, "this block is dynamic; items are managed automatically from its collection")
 			return
 		}
 		var req blockItemRequest
@@ -380,7 +407,11 @@ func addBlockItem(db storage.DB, mat *materializer.Materializer) http.HandlerFun
 				writeError(w, http.StatusBadRequest, "criteria is required for item_type criteria")
 				return
 			}
-			spec, err := blockitem.NewCriteriaSpec(req.Criteria.Query, req.Criteria.PlaybackOrder, req.Criteria.Amount, req.Criteria.Interleave)
+			if err := rejectInlineCriteria(req.Criteria.Query); err != nil {
+				writeError(w, http.StatusBadRequest, "criteria.query is no longer accepted: create a collection (POST /collections) and send its id as criteria.collection_id")
+				return
+			}
+			spec, err := blockitem.NewCriteriaSpec(r.Context(), db, DefaultTenantID, req.Criteria.CollectionID, req.Criteria.PlaybackOrder, req.Criteria.Amount, req.Criteria.Interleave)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
@@ -470,7 +501,10 @@ type blockItemUpdateRequest struct {
 	PlaybackOrder  *string `json:"playback_order"`
 	// Amount sets how much a series or criteria item airs per visit.
 	Amount *domain.SeriesAmountInput `json:"amount"`
-	// Query replaces the condition tree of a criteria item (criteria items only).
+	// CollectionID points a criteria item at another collection (criteria items
+	// only); the cursor is kept.
+	CollectionID *string `json:"collection_id"`
+	// Query is the removed embedded query: rejected when non-null.
 	Query json.RawMessage `json:"query"`
 	// Interleave overlays the interleave parameters of a criteria item (criteria
 	// items with the interleaved order only).
@@ -482,7 +516,7 @@ type blockItemUpdateRequest struct {
 // positive value, catalog items only) and/or playback_order (series and
 // criteria items; it restarts the item's cursor on every channel using the
 // block) and/or amount (series and criteria items; the cursor is kept) and/or
-// query (criteria items; the cursor is kept). An absent or null field is left
+// collection_id (criteria items; the cursor is kept). An absent or null field is left
 // unchanged.
 func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -493,8 +527,8 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 			handleDBError(w, err)
 			return
 		}
-		if b.Criteria != nil {
-			writeError(w, http.StatusConflict, "this block is dynamic; items are managed automatically from its criteria")
+		if b.Dynamic {
+			writeError(w, http.StatusConflict, "this block is dynamic; items are managed automatically from its collection")
 			return
 		}
 		var req blockItemUpdateRequest
@@ -502,9 +536,13 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
 		}
-		hasQuery := len(req.Query) > 0 && string(req.Query) != "null"
-		if req.Position == nil && req.TrimDurationMs == nil && req.PlaybackOrder == nil && req.Amount == nil && !hasQuery && req.Interleave == nil {
-			writeError(w, http.StatusBadRequest, "position, trim_duration_ms, playback_order, amount, query or interleave is required")
+		if err := rejectInlineCriteria(req.Query); err != nil {
+			writeError(w, http.StatusBadRequest, "query is no longer accepted: create a collection (POST /collections) and send its id as collection_id")
+			return
+		}
+		hasCollection := req.CollectionID != nil
+		if req.Position == nil && req.TrimDurationMs == nil && req.PlaybackOrder == nil && req.Amount == nil && !hasCollection && req.Interleave == nil {
+			writeError(w, http.StatusBadRequest, "position, trim_duration_ms, playback_order, amount, collection_id or interleave is required")
 			return
 		}
 		if req.PlaybackOrder != nil && !domain.ValidPlaybackOrder(*req.PlaybackOrder) && !domain.ValidCriteriaOrder(*req.PlaybackOrder) {
@@ -555,8 +593,8 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 			writeError(w, http.StatusBadRequest, "interleave is only valid for a criteria item")
 			return
 		}
-		if hasQuery && !target.IsCriteria() {
-			writeError(w, http.StatusBadRequest, "query is only valid for a criteria item")
+		if hasCollection && !target.IsCriteria() {
+			writeError(w, http.StatusBadRequest, "collection_id is only valid for a criteria item")
 			return
 		}
 		if target.IsCriteria() {
@@ -569,7 +607,7 @@ func updateBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 				writeError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
-			updated, orderChanged, err := blockitem.UpdateCriteriaSpec(spec, req.Query, req.PlaybackOrder, req.Amount, req.Interleave)
+			updated, orderChanged, err := blockitem.UpdateCriteriaSpec(r.Context(), db, DefaultTenantID, spec, req.CollectionID, req.PlaybackOrder, req.Amount, req.Interleave)
 			if err != nil {
 				writeError(w, http.StatusBadRequest, err.Error())
 				return
@@ -724,8 +762,8 @@ func deleteBlockItem(db storage.DB, mat *materializer.Materializer) http.Handler
 			handleDBError(w, err)
 			return
 		}
-		if b.Criteria != nil {
-			writeError(w, http.StatusConflict, "this block is dynamic; items are managed automatically from its criteria")
+		if b.Dynamic {
+			writeError(w, http.StatusConflict, "this block is dynamic; items are managed automatically from its collection")
 			return
 		}
 		var item domain.BlockItem

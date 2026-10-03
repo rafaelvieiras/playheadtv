@@ -210,50 +210,6 @@ export function summarizeQuery(q: Query | QueryNode): string {
   return describeNode(q, false)
 }
 
-// What a stored criteria value is: a condition tree, or the old fixed shape
-// ({kind, genres, year_from, year_to}) that startup migration held back for
-// review (see GET /criteria-migration-review).
-export type StoredCriteria = { type: 'query'; query: Query } | { type: 'legacy'; raw: string }
-
-export function parseStoredCriteria(raw: string | null | undefined): StoredCriteria | null {
-  if (!raw) return null
-  try {
-    const value = JSON.parse(raw) as Record<string, unknown> | null
-    if (!value || typeof value !== 'object') return null
-    if ('version' in value) return { type: 'query', query: value as unknown as Query }
-    return { type: 'legacy', raw }
-  } catch {
-    return null
-  }
-}
-
-// The query of a stored criteria, or null for a manual one or one still in the
-// legacy shape.
-export function storedQuery(raw: string | null | undefined): Query | null {
-  const parsed = parseStoredCriteria(raw)
-  return parsed?.type === 'query' ? parsed.query : null
-}
-
-export function isLegacyCriteria(raw: string | null | undefined): boolean {
-  return parseStoredCriteria(raw)?.type === 'legacy'
-}
-
-// Summary of a stored criteria for list pages, tree or legacy.
-export function summarizeStoredCriteria(raw: string | null | undefined): string {
-  const parsed = parseStoredCriteria(raw)
-  if (!parsed) return '—'
-  if (parsed.type === 'query') return summarizeQuery(parsed.query)
-  try {
-    const c = JSON.parse(parsed.raw) as { kind?: string; genres?: string[] | null; year_from?: number | null; year_to?: number | null }
-    const parts: string[] = [c.kind ?? 'legacy criteria']
-    if (c.genres && c.genres.length > 0) parts.push(c.genres.join(', '))
-    if (c.year_from != null || c.year_to != null) parts.push(`${c.year_from ?? '…'}–${c.year_to ?? '…'}`)
-    return `${parts.join(' · ')} (old format)`
-  } catch {
-    return 'old format'
-  }
-}
-
 export function queryKey(q: Query | null): string {
   return q ? JSON.stringify(q) : ''
 }

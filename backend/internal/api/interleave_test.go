@@ -13,8 +13,9 @@ func TestCriteriaItemInterleavedOrder(t *testing.T) {
 	db, mux := newTestDB(t)
 	seedGenreBlockCatalogItem(t, db, "c", "Comedy")
 	blockID := newBlock(t, mux, `{"name":"B"}`)
+	col := newCollection(t, mux, comedyQuery)
 	add := func(order, interleave string) (*domain.BlockItem, int, string) {
-		body := `{"item_type":"criteria","criteria":{"query":` + comedyQuery + `,"playback_order":"` + order + `","amount":{"mode":"all"}`
+		body := `{"item_type":"criteria","criteria":{"collection_id":"` + col + `","playback_order":"` + order + `","amount":{"mode":"all"}`
 		if interleave != "" {
 			body += `,"interleave":` + interleave
 		}
@@ -71,7 +72,7 @@ func TestUpdateCriteriaItemInterleave(t *testing.T) {
 	db, mux := newTestDB(t)
 	seedGenreBlockCatalogItem(t, db, "c", "Comedy")
 	blockID := newBlock(t, mux, `{"name":"B"}`)
-	rec := doRequest(t, mux, "POST", "/blocks/"+blockID+"/items", criteriaItemBody(comedyQuery, "title", `{"mode":"all"}`))
+	rec := doRequest(t, mux, "POST", "/blocks/"+blockID+"/items", criteriaItemBody(newCollection(t, mux, comedyQuery), "title", `{"mode":"all"}`))
 	var item domain.BlockItem
 	mustDecode(t, rec.Body.Bytes(), &item)
 	path := "/blocks/" + blockID + "/items/" + item.ID
@@ -147,7 +148,7 @@ func TestUpdateCriteriaItemInterleave(t *testing.T) {
 func TestDynamicBlockPlaybackSettings(t *testing.T) {
 	db, mux := newTestDB(t)
 	seedGenreBlockCatalogItem(t, db, "1", "Comedy")
-	criteria := `{"version":1,"all":[{"field":"genre","op":"equals","value":"Comedy"}]}`
+	criteria := `"` + newCollection(t, mux, `{"version":1,"all":[{"field":"genre","op":"equals","value":"Comedy"}]}`) + `"`
 	create := func(body string) (domain.Block, int, string) {
 		rec := doRequest(t, mux, "POST", "/blocks", body)
 		var b domain.Block
@@ -158,11 +159,11 @@ func TestDynamicBlockPlaybackSettings(t *testing.T) {
 	}
 
 	// Backwards compatible: no playback settings means title, nothing else.
-	b, code, body := create(`{"name":"Plain","criteria":` + criteria + `}`)
+	b, code, body := create(`{"name":"Plain","collection_id":` + criteria + `}`)
 	if code != http.StatusCreated || b.PlaybackOrder != "title" || b.Interleave != nil || !strings.Contains(body, `"playback_order":"title"`) || !strings.Contains(body, `"interleave":null`) {
 		t.Fatalf("default: %d %s", code, body)
 	}
-	b, code, body = create(`{"name":"Inter","criteria":` + criteria + `,"playback_order":"interleaved"}`)
+	b, code, body = create(`{"name":"Inter","collection_id":` + criteria + `,"playback_order":"interleaved"}`)
 	if code != http.StatusCreated || b.PlaybackOrder != "interleaved" || b.Interleave == nil || *b.Interleave != (domain.Interleave{PerRound: 1, OnExhaustion: "restart", SeriesOrder: "title"}) {
 		t.Fatalf("interleaved defaults: %d %s", code, body)
 	}
@@ -192,11 +193,11 @@ func TestDynamicBlockPlaybackSettings(t *testing.T) {
 
 	for name, body := range map[string]string{
 		"interleaved on a manual block": `{"name":"M","playback_order":"interleaved"}`,
-		"unknown order":                 `{"name":"X","criteria":` + criteria + `,"playback_order":"shuffle"}`,
-		"interleave with title":         `{"name":"X","criteria":` + criteria + `,"interleave":{"per_round":2}}`,
-		"zero per round":                `{"name":"X","criteria":` + criteria + `,"playback_order":"interleaved","interleave":{"per_round":0}}`,
-		"bad exhaustion":                `{"name":"X","criteria":` + criteria + `,"playback_order":"interleaved","interleave":{"on_exhaustion":"x"}}`,
-		"bad series order":              `{"name":"X","criteria":` + criteria + `,"playback_order":"interleaved","interleave":{"series_order":"x"}}`,
+		"unknown order":                 `{"name":"X","collection_id":` + criteria + `,"playback_order":"shuffle"}`,
+		"interleave with title":         `{"name":"X","collection_id":` + criteria + `,"interleave":{"per_round":2}}`,
+		"zero per round":                `{"name":"X","collection_id":` + criteria + `,"playback_order":"interleaved","interleave":{"per_round":0}}`,
+		"bad exhaustion":                `{"name":"X","collection_id":` + criteria + `,"playback_order":"interleaved","interleave":{"on_exhaustion":"x"}}`,
+		"bad series order":              `{"name":"X","collection_id":` + criteria + `,"playback_order":"interleaved","interleave":{"series_order":"x"}}`,
 	} {
 		if _, code, body := create(body); code != http.StatusBadRequest {
 			t.Errorf("%s: %d %s, want 400", name, code, body)
@@ -238,21 +239,21 @@ func TestDynamicBlockPlaybackSettings(t *testing.T) {
 		}
 		return b, rec.Code, rec.Body.String()
 	}
-	b, code, body = put(`{"name":"Inter","criteria":` + criteria + `,"playback_order":"interleaved","interleave":{"per_round":1,"on_exhaustion":"drop"}}`)
+	b, code, body = put(`{"name":"Inter","collection_id":` + criteria + `,"playback_order":"interleaved","interleave":{"per_round":1,"on_exhaustion":"drop"}}`)
 	if code != 200 || b.Interleave.OnExhaustion != "drop" || origin() != 7 || seed() != firstSeed {
 		t.Fatalf("on_exhaustion: %d %s origin=%d", code, body, origin())
 	}
-	b, code, body = put(`{"name":"Inter","criteria":` + criteria + `,"playback_order":"interleaved","interleave":{"per_round":3,"on_exhaustion":"drop"}}`)
+	b, code, body = put(`{"name":"Inter","collection_id":` + criteria + `,"playback_order":"interleaved","interleave":{"per_round":3,"on_exhaustion":"drop"}}`)
 	if code != 200 || b.Interleave.PerRound != 3 || origin() == 7 || seed() != firstSeed {
 		t.Fatalf("per_round: %d %s", code, body)
 	}
 	// A full replace: omitting the settings returns to the default title order.
-	b, code, body = put(`{"name":"Inter","criteria":` + criteria + `}`)
+	b, code, body = put(`{"name":"Inter","collection_id":` + criteria + `}`)
 	if code != 200 || b.PlaybackOrder != "title" || b.Interleave != nil {
 		t.Fatalf("revert: %d %s", code, body)
 	}
 	if _, code, body = put(`{"name":"Inter","playback_order":"interleaved"}`); code != http.StatusBadRequest {
-		t.Fatalf("interleaved without criteria: %d %s", code, body)
+		t.Fatalf("interleaved without a collection: %d %s", code, body)
 	}
 }
 
@@ -263,7 +264,7 @@ func TestPreviewEpgReflectsInterleavedBlock(t *testing.T) {
 	db, mux := newTestDB(t)
 	seedSeries(t, db, "A", "Alpha", 3)
 	seedSeries(t, db, "B", "Bravo", 2)
-	rec := doRequest(t, mux, "POST", "/blocks", `{"name":"Cartoons","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"episode"}]},"playback_order":"interleaved"}`)
+	rec := doRequest(t, mux, "POST", "/blocks", `{"name":"Cartoons","collection_id":"`+newCollection(t, mux, `{"version":1,"all":[{"field":"kind","op":"equals","value":"episode"}]}`)+`","playback_order":"interleaved"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("block: %d %s", rec.Code, rec.Body.String())
 	}

@@ -1,5 +1,6 @@
 import {
   CalendarClock,
+  Library,
   Languages,
   LogOut,
   Tv,
@@ -20,6 +21,7 @@ const NAV_ITEMS = [
   { to: '/', label: 'Guide (EPG)', icon: CalendarClock, end: true },
   { to: '/channels', label: 'Channels', icon: Tv, end: false },
   { to: '/blocks', label: 'Blocks', icon: Layers, end: false },
+  { to: '/collections', label: 'Collections', icon: Library, end: false },
   { to: '/filler-pools', label: 'Filler pools', icon: Radio, end: false },
   { to: '/filler-rules', label: 'Filler rules', icon: ListOrdered, end: false },
   { to: '/stream-selector', label: 'Stream selector', icon: Languages, end: false },

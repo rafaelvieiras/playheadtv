@@ -70,6 +70,7 @@ func Register(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer,
 	registerChannelTools(server, db, mat)
 	registerMediaSourceTools(server, db, encKey)
 	registerCatalogTools(server, db)
+	registerCollectionTools(server, db, mat)
 	registerBlockTools(server, db, mat)
 	registerFillerTools(server, db, mat)
 	registerScheduleTools(server, db, mat)

@@ -1,16 +1,21 @@
 package domain
 
 // FillerPool is a named collection of filler content (commercials, bumpers,
-// station IDs) that one or more FillerRules draw from. Criteria is nil for a
-// manually managed pool (today's behavior — items added/removed one at a
-// time via POST/DELETE /filler-pools/{id}/items) or set for a dynamic pool,
-// whose filler_pool_item rows are instead fully owned by
-// catalogsync.ResolveDynamicPools and recomputed after every catalog sync.
+// station IDs) that one or more FillerRules draw from. A pool is manual
+// (items added/removed one at a time via POST/DELETE /filler-pools/{id}/items)
+// or dynamic: it references a Collection and its filler_pool_item rows are
+// fully owned by catalogsync.ResolveDynamicPools, recomputed after every
+// catalog sync.
 type FillerPool struct {
-	ID        string  `json:"id"`
-	TenantID  string  `json:"tenant_id"`
-	Name      string  `json:"name"`
-	Criteria  *string `json:"criteria"`
+	ID       string `json:"id"`
+	TenantID string `json:"tenant_id"`
+	Name     string `json:"name"`
+	// CollectionID/CollectionName/Dynamic: see Block.
+	CollectionID   *string `json:"collection_id"`
+	CollectionName *string `json:"collection_name"`
+	Dynamic        bool    `json:"dynamic"`
+	// Criteria is the DEPRECATED pre-collection query column (see Block.Criteria).
+	Criteria  *string `json:"-"`
 	CreatedAt int64   `json:"created_at"`
 }
 

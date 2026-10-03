@@ -14,8 +14,8 @@ import (
 
 const comedyQuery = `{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}`
 
-func criteriaItemBody(query, order, amount string) string {
-	body := `{"item_type":"criteria","criteria":{"query":` + query
+func criteriaItemBody(collectionID, order, amount string) string {
+	body := `{"item_type":"criteria","criteria":{"collection_id":"` + collectionID + `"`
 	if order != "" {
 		body += `,"playback_order":"` + order + `"`
 	}
@@ -32,8 +32,9 @@ func TestAddCriteriaBlockItem(t *testing.T) {
 	}
 	seedGenreBlockCatalogItem(t, db, "h", "Horror")
 	blockID := newBlock(t, mux, `{"name":"B"}`)
+	col := newCollection(t, mux, comedyQuery)
 
-	rec := doRequest(t, mux, "POST", "/blocks/"+blockID+"/items", criteriaItemBody(comedyQuery, "", `{"mode":"count","count":2}`))
+	rec := doRequest(t, mux, "POST", "/blocks/"+blockID+"/items", criteriaItemBody(col, "", `{"mode":"count","count":2}`))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("add: %d %s", rec.Code, rec.Body.String())
 	}
@@ -46,13 +47,14 @@ func TestAddCriteriaBlockItem(t *testing.T) {
 	if c.PlaybackOrder != domain.OrderTitle || c.Amount.Mode != "count" || c.Amount.Count != 2 || c.MatchCount != 3 || c.TotalDurationMs != 3000 {
 		t.Errorf("criteria view = %+v, want title order (the default), count 2 and 3 live matches", c)
 	}
-	// The stored query is the canonical tree; the seed is never served.
-	if !strings.Contains(jsonOf(c.Query), `"version":1`) || strings.Contains(rec.Body.String(), "seed") {
+	// The view names the collection and shows its canonical tree; the seed is
+	// never served and the item stores no query of its own.
+	if c.CollectionID == nil || *c.CollectionID != col || c.CollectionName == nil || !strings.Contains(jsonOf(c.Query), `"version":1`) || strings.Contains(rec.Body.String(), "seed") {
 		t.Errorf("response = %s", rec.Body.String())
 	}
 
 	// "All matches" chosen explicitly, another order, listed with the live view.
-	rec = doRequest(t, mux, "POST", "/blocks/"+blockID+"/items", criteriaItemBody(comedyQuery, "shuffle", `{"mode":"all"}`))
+	rec = doRequest(t, mux, "POST", "/blocks/"+blockID+"/items", criteriaItemBody(col, "shuffle", `{"mode":"all"}`))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("add all: %d %s", rec.Code, rec.Body.String())
 	}
@@ -88,33 +90,35 @@ func TestAddCriteriaBlockItemValidation(t *testing.T) {
 	movie := seedCatalogItem(t, db, "m")
 	ms := seedSeries(t, db, "a", "Show", 1)
 	blockID := newBlock(t, mux, `{"name":"B"}`)
-	dynamic := newBlock(t, mux, `{"name":"Dyn","criteria":`+comedyQuery+`}`)
+	col := newCollection(t, mux, comedyQuery)
+	dynamic := newBlock(t, mux, `{"name":"Dyn","collection_id":"`+col+`"}`)
 
 	count := `{"mode":"count","count":1}`
 	cases := []struct {
 		name, block, body string
 		want              int
 	}{
-		{"amount is required", blockID, criteriaItemBody(comedyQuery, "", ""), 400},
-		{"all matches must be explicit", blockID, criteriaItemBody(comedyQuery, "", `{}`), 400},
-		{"count without a number", blockID, criteriaItemBody(comedyQuery, "", `{"mode":"count"}`), 400},
-		{"zero count", blockID, criteriaItemBody(comedyQuery, "", `{"mode":"count","count":0}`), 400},
-		{"negative count", blockID, criteriaItemBody(comedyQuery, "", `{"count":-3}`), 400},
-		{"count with all", blockID, criteriaItemBody(comedyQuery, "", `{"mode":"all","count":2}`), 400},
-		{"series amount mode", blockID, criteriaItemBody(comedyQuery, "", `{"mode":"slot_end"}`), 400},
-		{"series order", blockID, criteriaItemBody(comedyQuery, "original", count), 400},
-		{"unknown order", blockID, criteriaItemBody(comedyQuery, "backwards", count), 400},
-		{"no query", blockID, `{"item_type":"criteria","criteria":{"amount":` + count + `}}`, 400},
-		{"legacy query", blockID, criteriaItemBody(`{"kind":"movie","genres":["Comedy"]}`, "", count), 400},
-		{"invalid query", blockID, criteriaItemBody(`{"version":1,"all":[{"field":"year","op":"contains","value":"x"}]}`, "", count), 400},
+		{"amount is required", blockID, criteriaItemBody(col, "", ""), 400},
+		{"all matches must be explicit", blockID, criteriaItemBody(col, "", `{}`), 400},
+		{"count without a number", blockID, criteriaItemBody(col, "", `{"mode":"count"}`), 400},
+		{"zero count", blockID, criteriaItemBody(col, "", `{"mode":"count","count":0}`), 400},
+		{"negative count", blockID, criteriaItemBody(col, "", `{"count":-3}`), 400},
+		{"count with all", blockID, criteriaItemBody(col, "", `{"mode":"all","count":2}`), 400},
+		{"series amount mode", blockID, criteriaItemBody(col, "", `{"mode":"slot_end"}`), 400},
+		{"series order", blockID, criteriaItemBody(col, "original", count), 400},
+		{"unknown order", blockID, criteriaItemBody(col, "backwards", count), 400},
+		{"no collection", blockID, `{"item_type":"criteria","criteria":{"amount":` + count + `}}`, 400},
+		{"unknown collection", blockID, criteriaItemBody("nope", "", count), 400},
+		{"inline query is rejected", blockID, `{"item_type":"criteria","criteria":{"query":` + comedyQuery + `,"amount":` + count + `}}`, 400},
+		{"inline query next to a collection", blockID, `{"item_type":"criteria","criteria":{"collection_id":"` + col + `","query":` + comedyQuery + `,"amount":` + count + `}}`, 400},
 		{"criteria missing", blockID, `{"item_type":"criteria"}`, 400},
-		{"catalog id", blockID, `{"item_type":"criteria","catalog_item_id":"` + movie + `","criteria":{"query":` + comedyQuery + `,"amount":` + count + `}}`, 400},
-		{"trim", blockID, `{"item_type":"criteria","trim_duration_ms":5,"criteria":{"query":` + comedyQuery + `,"amount":` + count + `}}`, 400},
-		{"with series", blockID, fmt.Sprintf(`{"item_type":"criteria","series":{"media_source_id":%q,"series_title":"Show"},"criteria":{"query":%s,"amount":%s}}`, ms, comedyQuery, count), 400},
-		{"criteria on a catalog item", blockID, `{"item_type":"catalog","catalog_item_id":"` + movie + `","criteria":{"query":` + comedyQuery + `,"amount":` + count + `}}`, 400},
-		{"criteria on a series item", blockID, fmt.Sprintf(`{"item_type":"series","series":{"media_source_id":%q,"series_title":"Show"},"criteria":{"query":%s,"amount":%s}}`, ms, comedyQuery, count), 400},
-		{"dynamic block", dynamic, criteriaItemBody(comedyQuery, "", count), 409},
-		{"unknown block", "nope", criteriaItemBody(comedyQuery, "", count), 404},
+		{"catalog id", blockID, `{"item_type":"criteria","catalog_item_id":"` + movie + `","criteria":{"collection_id":"` + col + `","amount":` + count + `}}`, 400},
+		{"trim", blockID, `{"item_type":"criteria","trim_duration_ms":5,"criteria":{"collection_id":"` + col + `","amount":` + count + `}}`, 400},
+		{"with series", blockID, fmt.Sprintf(`{"item_type":"criteria","series":{"media_source_id":%q,"series_title":"Show"},"criteria":{"collection_id":%q,"amount":%s}}`, ms, col, count), 400},
+		{"criteria on a catalog item", blockID, `{"item_type":"catalog","catalog_item_id":"` + movie + `","criteria":{"collection_id":"` + col + `","amount":` + count + `}}`, 400},
+		{"criteria on a series item", blockID, fmt.Sprintf(`{"item_type":"series","series":{"media_source_id":%q,"series_title":"Show"},"criteria":{"collection_id":%q,"amount":%s}}`, ms, col, count), 400},
+		{"dynamic block", dynamic, criteriaItemBody(col, "", count), 409},
+		{"unknown block", "nope", criteriaItemBody(col, "", count), 404},
 	}
 	for _, c := range cases {
 		if rec := doRequest(t, mux, "POST", "/blocks/"+c.block+"/items", c.body); rec.Code != c.want {
@@ -132,7 +136,8 @@ func TestUpdateCriteriaBlockItem(t *testing.T) {
 	seedGenreBlockCatalogItem(t, db, "h", "Horror")
 	movie := seedCatalogItem(t, db, "m")
 	blockID := newBlock(t, mux, `{"name":"B"}`)
-	rec := doRequest(t, mux, "POST", "/blocks/"+blockID+"/items", criteriaItemBody(comedyQuery, "title", `{"mode":"count","count":1}`))
+	col := newCollection(t, mux, comedyQuery)
+	rec := doRequest(t, mux, "POST", "/blocks/"+blockID+"/items", criteriaItemBody(col, "title", `{"mode":"count","count":1}`))
 	var item domain.BlockItem
 	mustDecode(t, rec.Body.Bytes(), &item)
 	rec = doRequest(t, mux, "POST", "/blocks/"+blockID+"/items", `{"catalog_item_id":"`+movie+`"}`)
@@ -158,7 +163,7 @@ func TestUpdateCriteriaBlockItem(t *testing.T) {
 		t.Fatalf("amount count: %d %s", code, body)
 	}
 	horror := `{"version":1,"all":[{"field":"genre","op":"equals","value":"Horror"}]}`
-	got, code, body = put(`{"query":` + horror + `}`)
+	got, code, body = put(`{"collection_id":"` + newCollection(t, mux, horror) + `"}`)
 	if code != 200 || got.Criteria.MatchCount != 1 || !strings.Contains(jsonOf(got.Criteria.Query), "Horror") || got.Criteria.Amount.Count != 5 {
 		t.Fatalf("query: %d %s", code, body)
 	}
@@ -182,7 +187,7 @@ func TestUpdateCriteriaBlockItem(t *testing.T) {
 		return o[0]
 	}
 	put(`{"amount":{"mode":"all"}}`)
-	put(`{"query":` + comedyQuery + `}`)
+	put(`{"collection_id":"` + col + `"}`)
 	put(`{"playback_order":"release_date"}`) // unchanged order
 	if origin() != 7 {
 		t.Errorf("cursor origin = %d after edits that keep the order, want it untouched", origin())
@@ -193,25 +198,26 @@ func TestUpdateCriteriaBlockItem(t *testing.T) {
 	}
 
 	for name, tc := range map[string]struct{ body string }{
-		"series order":  {`{"playback_order":"original"}`},
-		"unknown order": {`{"playback_order":"nope"}`},
-		"bad amount":    {`{"amount":{"mode":"count","count":0}}`},
-		"series amount": {`{"amount":{"mode":"slot_end"}}`},
-		"legacy query":  {`{"query":{"kind":"movie","genres":["x"]}}`},
-		"invalid query": {`{"query":{"version":1,"all":[]}}`},
-		"trim":          {`{"trim_duration_ms":5}`},
-		"nothing":       {`{}`},
+		"series order":       {`{"playback_order":"original"}`},
+		"unknown order":      {`{"playback_order":"nope"}`},
+		"bad amount":         {`{"amount":{"mode":"count","count":0}}`},
+		"series amount":      {`{"amount":{"mode":"slot_end"}}`},
+		"inline query":       {`{"query":` + comedyQuery + `}`},
+		"unknown collection": {`{"collection_id":"nope"}`},
+		"empty collection":   {`{"collection_id":""}`},
+		"trim":               {`{"trim_duration_ms":5}`},
+		"nothing":            {`{}`},
 	} {
 		if _, code, body := put(tc.body); code != http.StatusBadRequest {
 			t.Errorf("%s: %d %s, want 400", name, code, body)
 		}
 	}
 
-	// query is only valid on a criteria item; a catalog item takes none of the series/criteria fields.
+	// collection_id is only valid on a criteria item; a catalog item takes none of the series/criteria fields.
 	for name, body := range map[string]string{
-		"query on a catalog item":  `{"query":` + comedyQuery + `}`,
-		"amount on a catalog item": `{"amount":{"mode":"all"}}`,
-		"order on a catalog item":  `{"playback_order":"title"}`,
+		"collection on a catalog item": `{"collection_id":"` + col + `"}`,
+		"amount on a catalog item":     `{"amount":{"mode":"all"}}`,
+		"order on a catalog item":      `{"playback_order":"title"}`,
 	} {
 		if rec := doRequest(t, mux, "PUT", "/blocks/"+blockID+"/items/"+fixed.ID, body); rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: %d %s, want 400", name, rec.Code, rec.Body.String())
@@ -253,22 +259,35 @@ func TestDynamicBlockAndPoolCriteriaReviewFlow(t *testing.T) {
 		t.Errorf("proposal = %s", jsonOf(review[0].ProposedQuery))
 	}
 
-	// Both still hold the legacy value and resolve as before.
+	// Both are dynamic and still play the legacy value (no collection yet).
 	rec = doRequest(t, mux, "GET", "/blocks/lb", "")
 	var b domain.Block
 	mustDecode(t, rec.Body.Bytes(), &b)
-	if b.Criteria == nil || *b.Criteria != legacy {
-		t.Fatalf("block criteria = %v", b.Criteria)
+	if !b.Dynamic || b.CollectionID != nil || strings.Contains(rec.Body.String(), `"criteria"`) {
+		t.Fatalf("held block = %s", rec.Body.String())
+	}
+	if err := catalogsync.ResolveDynamic(ctx, db, DefaultTenantID); err != nil {
+		t.Fatal(err)
+	}
+	if items := listItems(t, mux, "lb"); len(items) != 2 {
+		t.Errorf("held block items = %d, want the substring matches (2)", len(items))
 	}
 
-	// Applying the proposal is a PUT with the tree; it clears the review entry.
-	rec = doRequest(t, mux, "PUT", "/blocks/lb", `{"name":"Legacy block","criteria":`+jsonOf(review[0].ProposedQuery)+`}`)
+	// Applying the proposal creates a collection, points the block at it and
+	// clears the review entry.
+	rec = doRequest(t, mux, "POST", "/criteria-migration-review/apply", `{"owner_type":"block","owner_id":"lb"}`)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("apply proposal: %d %s", rec.Code, rec.Body.String())
 	}
+	var applied applyReviewResponse
+	mustDecode(t, rec.Body.Bytes(), &applied)
+	if !applied.Created || applied.Collection.Name != "Legacy block" || applied.Collection.UsageCount != 1 {
+		t.Fatalf("applied = %+v", applied)
+	}
+	rec = doRequest(t, mux, "GET", "/blocks/lb", "")
 	mustDecode(t, rec.Body.Bytes(), &b)
-	if b.Criteria == nil || catalogsync.IsLegacyCriteria(*b.Criteria) {
-		t.Fatalf("block criteria after PUT = %v", b.Criteria)
+	if b.CollectionID == nil || *b.CollectionID != applied.CollectionID {
+		t.Fatalf("block after apply = %s", rec.Body.String())
 	}
 	if items := listItems(t, mux, "lb"); len(items) != 1 {
 		t.Errorf("block items after applying = %d, want the exact match only", len(items))
@@ -278,14 +297,34 @@ func TestDynamicBlockAndPoolCriteriaReviewFlow(t *testing.T) {
 	if len(review) != 1 || review[0].OwnerID != "lp" {
 		t.Errorf("review after applying one = %+v", review)
 	}
-
-	// Deleting the owner drops its entry, and an empty review is [] not null.
-	if rec := doRequest(t, mux, "DELETE", "/filler-pools/lp", ""); rec.Code != http.StatusNoContent {
-		t.Fatalf("delete pool: %d", rec.Code)
+	// Not held any more: applying again is a 404; the pool applies with an edited query
+	// and reuses the collection when the tree is identical.
+	if rec := doRequest(t, mux, "POST", "/criteria-migration-review/apply", `{"owner_type":"block","owner_id":"lb"}`); rec.Code != http.StatusNotFound {
+		t.Errorf("second apply: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = doRequest(t, mux, "POST", "/criteria-migration-review/apply", `{"owner_type":"filler_pool","owner_id":"lp"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("apply pool: %d %s", rec.Code, rec.Body.String())
+	}
+	mustDecode(t, rec.Body.Bytes(), &applied)
+	if applied.Created || applied.Collection.UsageCount != 2 {
+		t.Errorf("identical tree should reuse the collection: %+v", applied)
 	}
 	rec = doRequest(t, mux, "GET", "/criteria-migration-review", "")
 	if strings.TrimSpace(rec.Body.String()) != "[]" {
 		t.Errorf("empty review = %s, want []", rec.Body.String())
+	}
+	// A pool applied again after deleting nothing: bad requests.
+	for name, body := range map[string]string{
+		"bad owner type": `{"owner_type":"channel","owner_id":"x"}`,
+		"unknown owner":  `{"owner_type":"block","owner_id":"nope"}`,
+	} {
+		if rec := doRequest(t, mux, "POST", "/criteria-migration-review/apply", body); rec.Code < 400 {
+			t.Errorf("%s: %d", name, rec.Code)
+		}
+	}
+	if rec := doRequest(t, mux, "DELETE", "/filler-pools/lp", ""); rec.Code != http.StatusNoContent {
+		t.Fatalf("delete pool: %d", rec.Code)
 	}
 }
 

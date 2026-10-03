@@ -15,11 +15,10 @@ import {
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import type { BlockPlaybackDraft } from '@/components/BlockPlaybackFields'
-import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
+import { DynamicCollectionFields, validateCollectionChoice, type CollectionChoice } from '@/components/DynamicCollectionFields'
 import { blockPlaybackPayload, DEFAULT_INTERLEAVE, validateInterleave } from '@/lib/interleave'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { validateQuery, type Query } from '@/lib/query'
 import { DAY_LABELS } from '@/lib/schedule'
 import { api, ApiError } from '@/lib/http'
 import type { Block, RecurrenceType, ScheduleItem, ScheduleItemInput } from '@/lib/types'
@@ -137,7 +136,7 @@ export function ScheduleItemDialog({
   // Create-and-attach: a brand-new block made together with the item.
   const [newBlock, setNewBlock] = useState(false)
   const [newBlockName, setNewBlockName] = useState('')
-  const [newBlockCriteria, setNewBlockCriteria] = useState<Query | null>(null)
+  const [newBlockCollection, setNewBlockCollection] = useState<CollectionChoice>(null)
   const [newBlockPlayback, setNewBlockPlayback] = useState<BlockPlaybackDraft>({ order: 'title', interleave: DEFAULT_INTERLEAVE })
   const isEditing = item !== undefined
 
@@ -147,7 +146,7 @@ export function ScheduleItemDialog({
       setError(undefined)
       setNewBlock(false)
       setNewBlockName('')
-      setNewBlockCriteria(null)
+      setNewBlockCollection(null)
       setNewBlockPlayback({ order: 'title', interleave: DEFAULT_INTERLEAVE })
     }
   }, [open, item])
@@ -165,8 +164,8 @@ export function ScheduleItemDialog({
         createdBlock = await api.post<Block>('/blocks', {
           name: newBlockName.trim(),
           description: null,
-          criteria: newBlockCriteria,
-          ...(newBlockCriteria ? blockPlaybackPayload(newBlockPlayback.order, newBlockPlayback.interleave) : {}),
+          collection_id: newBlockCollection,
+          ...(newBlockCollection ? blockPlaybackPayload(newBlockPlayback.order, newBlockPlayback.interleave) : {}),
         })
         payload = { ...payload, block_id: createdBlock.id }
       }
@@ -206,8 +205,8 @@ export function ScheduleItemDialog({
       if (newBlockName.trim() === '') validationError = 'Enter a name for the new block.'
       else
         validationError =
-          validateQuery(newBlockCriteria) ??
-          (newBlockCriteria && newBlockPlayback.order === 'interleaved' ? validateInterleave(newBlockPlayback.interleave) : undefined)
+          validateCollectionChoice(newBlockCollection) ??
+          (newBlockCollection && newBlockPlayback.order === 'interleaved' ? validateInterleave(newBlockPlayback.interleave) : undefined)
     } else if (!form.block_id) {
       validationError = 'Select a block.'
     }
@@ -274,10 +273,10 @@ export function ScheduleItemDialog({
                     onChange={(e) => setNewBlockName(e.target.value)}
                   />
                 </Field>
-                <DynamicCriteriaFields
-                  value={newBlockCriteria}
-                  onChange={setNewBlockCriteria}
-                  idPrefix="schedule-item-new-block-criteria"
+                <DynamicCollectionFields
+                  value={newBlockCollection}
+                  onChange={setNewBlockCollection}
+                  idPrefix="schedule-item-new-block-collection"
                   playback={{ value: newBlockPlayback, onChange: setNewBlockPlayback }}
                 />
                 <Button

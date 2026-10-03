@@ -72,6 +72,10 @@ or LLM, and to every artifact in the repo:
 - No auth yet: every API handler runs under one fixed tenant
   (`api.DefaultTenantID = "default"`). Don't build real multi-tenant logic
   until the Auth roadmap item exists.
+- Catalog queries live in `collection`s: dynamic blocks, filler pools and
+  criteria items reference one by `collection_id` and never carry an inline
+  query. The old `criteria` columns are deprecated snapshots, read only for a
+  row still held for review (`docs/ARCHITECTURE.md` "Collections").
 - The EPG materializer (`internal/materializer`) expands
   `schedule_entry`/`block`/`filler_rule` into `epg_entry` rows via a
   background worker (full-window regeneration, 48h rolling window — known

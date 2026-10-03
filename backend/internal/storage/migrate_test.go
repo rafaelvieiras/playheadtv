@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io/fs"
 	"path/filepath"
+	"strings"
 	"testing"
 	"testing/fstest"
 
@@ -528,5 +529,110 @@ func TestMigration0013_ExistingBlocksKeepTheirBehavior(t *testing.T) {
 	var n []int
 	if err := db.Query(ctx, &n, "SELECT COUNT(*) FROM block_cursor"); err != nil || n[0] != 0 {
 		t.Fatalf("block_cursor after block delete = %v (%v), want 0", n, err)
+	}
+}
+
+// TestMigration0014_Collections proves the collection migration keeps what
+// exists (blocks, pools, criteria items and the review table's rows), adds the
+// nullable references, and enforces the safety nets: a collection in use
+// cannot be deleted at the database level and a review row may now name a
+// block item.
+func TestMigration0014_Collections(t *testing.T) {
+	ctx := context.Background()
+	db, err := Open(filepath.Join(t.TempDir(), "playheadtv.db"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer db.Close()
+
+	pre := fstest.MapFS{}
+	entries, _ := fs.ReadDir(migrations.FS, ".")
+	for _, e := range entries {
+		if e.Name() >= "0014_" {
+			continue
+		}
+		content, err := fs.ReadFile(migrations.FS, e.Name())
+		if err != nil {
+			t.Fatal(err)
+		}
+		pre[e.Name()] = &fstest.MapFile{Data: content}
+	}
+	if err := RunMigrations(ctx, db, pre); err != nil {
+		t.Fatalf("RunMigrations (pre-0014): %v", err)
+	}
+	for _, q := range []string{
+		"INSERT INTO tenant (id, name, tier, created_at) VALUES ('t1', 'Test', 'self_hosted', 1)",
+		`INSERT INTO block (id, tenant_id, name, criteria, created_at, updated_at) VALUES ('dyn', 't1', 'Dynamic', '{"version":1,"all":[{"field":"kind","op":"equals","value":"episode"}]}', 1, 1)`,
+		"INSERT INTO block (id, tenant_id, name, created_at, updated_at) VALUES ('man', 't1', 'Manual', 1, 1)",
+		`INSERT INTO block_item (id, block_id, position, item_type, catalog_item_id, spec) VALUES ('ci', 'man', 0, 'criteria', NULL, '{"query":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"}]},"playback_order":"title","seed":1,"amount":{"mode":"all"}}')`,
+		`INSERT INTO filler_pool (id, tenant_id, name, criteria, created_at) VALUES ('pool', 't1', 'Pool', '{"kind":"movie"}', 1)`,
+		`INSERT INTO criteria_migration_review (tenant_id, owner_type, owner_id, legacy_criteria, proposed_query, problem, before_count, after_count, only_before, only_after, created_at)
+		 VALUES ('t1', 'filler_pool', 'pool', '{"kind":"movie"}', NULL, 'x', 3, 2, '[]', '[]', 1)`,
+	} {
+		if err := db.Exec(ctx, q); err != nil {
+			t.Fatalf("seed %q: %v", q, err)
+		}
+	}
+	if err := RunMigrations(ctx, db, migrations.FS); err != nil {
+		t.Fatalf("RunMigrations (0014): %v", err)
+	}
+
+	var rows []struct {
+		ID           string
+		Criteria     *string
+		CollectionID *string
+	}
+	if err := db.Query(ctx, &rows, "SELECT id, criteria, collection_id FROM block ORDER BY id"); err != nil || len(rows) != 2 {
+		t.Fatalf("blocks = %+v %v", rows, err)
+	}
+	for _, r := range rows {
+		if r.CollectionID != nil {
+			t.Errorf("block %s has a collection right after the DDL migration: the data move is the startup step", r.ID)
+		}
+	}
+	if rows[0].ID != "dyn" || rows[0].Criteria == nil {
+		t.Errorf("the deprecated criteria column was not kept: %+v", rows[0])
+	}
+	var n []int
+	if err := db.Query(ctx, &n, "SELECT COUNT(*) FROM criteria_migration_review WHERE owner_id = 'pool' AND before_count = 3"); err != nil || n[0] != 1 {
+		t.Fatalf("review rows after the table rebuild = %v %v", n, err)
+	}
+
+	for _, q := range []string{
+		"INSERT INTO collection (id, tenant_id, name, query, created_at, updated_at) VALUES ('c1', 't1', 'Same name', '{}', 1, 1)",
+		"INSERT INTO collection (id, tenant_id, name, query, created_at, updated_at) VALUES ('c2', 't1', 'Same name', '{}', 1, 1)", // names are labels
+		"UPDATE block SET collection_id = 'c1' WHERE id = 'dyn'",
+		"UPDATE filler_pool SET collection_id = 'c1' WHERE id = 'pool'",
+		`UPDATE block_item SET spec = json_set(spec, '$.collection_id', 'c1') WHERE id = 'ci'`,
+		`INSERT INTO criteria_migration_review (tenant_id, owner_type, owner_id, legacy_criteria, proposed_query, problem, before_count, after_count, only_before, only_after, created_at)
+		 VALUES ('t1', 'block_item', 'ci', '{}', NULL, 'x', 0, 0, '[]', '[]', 1)`,
+	} {
+		if err := db.Exec(ctx, q); err != nil {
+			t.Errorf("%q: %v", q, err)
+		}
+	}
+	if err := db.Exec(ctx, "DELETE FROM collection WHERE id = 'c1'"); err == nil {
+		t.Error("a collection referenced by a block was deleted")
+	}
+	if err := db.Exec(ctx, "UPDATE block SET collection_id = 'nope' WHERE id = 'man'"); err == nil {
+		t.Error("a block accepted an unknown collection")
+	}
+	if err := db.Exec(ctx, `INSERT INTO criteria_migration_review (tenant_id, owner_type, owner_id, legacy_criteria, before_count, after_count, only_before, only_after, created_at)
+		 VALUES ('t1', 'channel', 'x', '{}', 0, 0, '[]', '[]', 1)`); err == nil {
+		t.Error("the review table accepted an unknown owner type")
+	}
+	// The expression index serves "which items use collection X".
+	var plan []struct {
+		Detail string
+	}
+	if err := db.Query(ctx, &plan, "EXPLAIN QUERY PLAN SELECT id FROM block_item WHERE item_type = 'criteria' AND json_extract(spec, '$.collection_id') = 'c1'"); err != nil {
+		t.Fatal(err)
+	}
+	if len(plan) == 0 || !strings.Contains(plan[0].Detail, "idx_block_item_collection") {
+		t.Errorf("usage lookup plan = %+v, want the expression index", plan)
+	}
+	// Deleting the tenant takes its collections with it.
+	if err := db.Exec(ctx, "DELETE FROM tenant WHERE id = 't1'"); err != nil {
+		t.Fatalf("delete tenant: %v", err)
 	}
 }

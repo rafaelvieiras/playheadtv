@@ -172,7 +172,7 @@ export function tooLongWarnings(
   for (const slot of slots) {
     const block = blocksById.get(slot.item.block_id)
     const items = blockItems.get(slot.item.block_id)
-    if (!block || block.criteria || !items || items.length === 0) continue
+    if (!block || block.dynamic || !items || items.length === 0) continue
     const total = blockTotalDurationMs(items, catalog)
     if (total === undefined || total <= slot.lengthMs) continue
     out.push({

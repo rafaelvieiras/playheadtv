@@ -194,14 +194,14 @@ func TestBlockWithCriteriaPopulatesItems(t *testing.T) {
 	seedGenreBlockCatalogItem(t, db, "2", "Action") // shouldn't match
 
 	rec := doRequest(t, mux, "POST", "/blocks",
-		`{"name":"Comedy Channel","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
+		`{"name":"Comedy Channel","collection_id":"`+newCollection(t, mux, `{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}`)+`"}`)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 	var block domain.Block
 	json.Unmarshal(rec.Body.Bytes(), &block)
-	if block.Criteria == nil {
-		t.Fatal("block.Criteria = nil, want set")
+	if block.CollectionID == nil || !block.Dynamic {
+		t.Fatal("block.CollectionID = nil, want set")
 	}
 
 	rec = doRequest(t, mux, "GET", "/blocks/"+block.ID+"/items", "")
@@ -217,7 +217,7 @@ func TestBlockWithCriteriaRejectsManualItemWrites(t *testing.T) {
 	item := seedGenreBlockCatalogItem(t, db, "1", "Comedy")
 
 	rec := doRequest(t, mux, "POST", "/blocks",
-		`{"name":"Comedy Channel","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
+		`{"name":"Comedy Channel","collection_id":"`+newCollection(t, mux, `{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}`)+`"}`)
 	var block domain.Block
 	json.Unmarshal(rec.Body.Bytes(), &block)
 
@@ -238,7 +238,9 @@ func TestBlockWithCriteriaRejectsManualItemWrites(t *testing.T) {
 	}
 }
 
-func TestBlockCriteriaValidation(t *testing.T) {
+// Inline criteria are gone: every write that still sends one is a 400 that
+// points at collections, and an unknown collection id is a 400 too.
+func TestBlockInlineCriteriaAndUnknownCollectionAreRejected(t *testing.T) {
 	db, mux := newTestDB(t)
 
 	for name, criteria := range invalidCriteria {
@@ -250,6 +252,10 @@ func TestBlockCriteriaValidation(t *testing.T) {
 		if rec.Code == http.StatusOK || rec.Code == http.StatusCreated {
 			t.Errorf("%s: PUT accepted invalid criteria", name)
 		}
+	}
+	rec := doRequest(t, mux, "POST", "/blocks", `{"name":"Bad","collection_id":"nope"}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("unknown collection: %d %s", rec.Code, rec.Body.String())
 	}
 	var n []int
 	if err := db.Query(context.Background(), &n, "SELECT COUNT(*) FROM block"); err != nil || n[0] != 0 {
@@ -272,14 +278,14 @@ var invalidCriteria = map[string]string{
 }
 
 // TestBlockUpdatePutRevertsToManual proves updateBlock's PUT-is-full-replace
-// semantics: omitting criteria on a previously dynamic block reverts it to
+// semantics: omitting collection_id on a previously dynamic block reverts it to
 // manual (block_item stays as last resolved, but new writes are now allowed).
 func TestBlockUpdatePutRevertsToManual(t *testing.T) {
 	db, mux := newTestDB(t)
 	item := seedGenreBlockCatalogItem(t, db, "1", "Comedy")
 
 	rec := doRequest(t, mux, "POST", "/blocks",
-		`{"name":"Comedy Channel","criteria":{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}}`)
+		`{"name":"Comedy Channel","collection_id":"`+newCollection(t, mux, `{"version":1,"all":[{"field":"kind","op":"equals","value":"movie"},{"field":"genre","op":"equals","value":"Comedy"}]}`)+`"}`)
 	var block domain.Block
 	json.Unmarshal(rec.Body.Bytes(), &block)
 
@@ -289,8 +295,8 @@ func TestBlockUpdatePutRevertsToManual(t *testing.T) {
 	}
 	var updated domain.Block
 	json.Unmarshal(rec.Body.Bytes(), &updated)
-	if updated.Criteria != nil {
-		t.Fatalf("updated.Criteria = %v, want nil after PUT omitted it", *updated.Criteria)
+	if updated.CollectionID != nil || updated.Dynamic {
+		t.Fatalf("updated = %+v, want manual after PUT omitted collection_id", updated)
 	}
 
 	// Now manual writes should be allowed again.

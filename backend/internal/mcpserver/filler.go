@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
@@ -16,7 +17,9 @@ import (
 // mcpserver.go's package comment. fillerRuleColumns keeps the same
 // scope_type/selection_strategy -> Scope/Selection column aliasing (see
 // AGENTS.md's scan.go gotcha).
-const fillerPoolColumns = "id, tenant_id, name, created_at"
+const fillerPoolColumns = "id, tenant_id, name, collection_id, " +
+	"(SELECT c.name FROM collection c WHERE c.tenant_id = filler_pool.tenant_id AND c.id = filler_pool.collection_id) AS collection_name, " +
+	"(collection_id IS NOT NULL OR criteria IS NOT NULL) AS dynamic, created_at"
 const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, filler_pool_id, selection_strategy AS selection, position, created_at"
 
 // manage_filler covers only the minimal useful surface for v1 — no
@@ -24,8 +27,8 @@ const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, f
 func registerFillerTools(s *mcp.Server, db storage.DB, mat *materializer.Materializer) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "create_filler_pool",
-		Description: "Create a new (initially empty) filler pool — a named group of catalog items filler rules draw from. Mirrors POST /filler-pools.",
-	}, createFillerPoolHandler(db))
+		Description: "Create a new filler pool — a named group of catalog items filler rules draw from. Manual (initially empty) by default; with collection_id (see create_collection) it is dynamic: its items are every current match of the collection, owned by the system. Mirrors POST /filler-pools.",
+	}, createFillerPoolHandler(db, mat))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "add_filler_pool_item",
@@ -47,25 +50,34 @@ func registerFillerTools(s *mcp.Server, db storage.DB, mat *materializer.Materia
 }
 
 type createFillerPoolInput struct {
-	Name string `json:"name" jsonschema:"filler pool display name"`
+	Name         string `json:"name" jsonschema:"filler pool display name"`
+	CollectionID string `json:"collection_id,omitempty" jsonschema:"makes the pool dynamic: the id of a collection (see create_collection); omit for a manual pool"`
 }
 
-func createFillerPoolHandler(db storage.DB) mcp.ToolHandlerFor[createFillerPoolInput, domain.FillerPool] {
+func createFillerPoolHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[createFillerPoolInput, domain.FillerPool] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in createFillerPoolInput) (*mcp.CallToolResult, domain.FillerPool, error) {
 		if in.Name == "" {
 			return nil, domain.FillerPool{}, errors.New("name is required")
 		}
-		p := domain.FillerPool{
-			ID:        uuid.NewString(),
-			TenantID:  defaultTenantID,
-			Name:      in.Name,
-			CreatedAt: nowMillis(),
-		}
-		err := db.Exec(ctx,
-			"INSERT INTO filler_pool (id, tenant_id, name, created_at) VALUES (?, ?, ?, ?)",
-			p.ID, p.TenantID, p.Name, p.CreatedAt,
-		)
+		collection, err := blockCollection(ctx, db, in.CollectionID)
 		if err != nil {
+			return nil, domain.FillerPool{}, err
+		}
+		id := uuid.NewString()
+		if err := db.Exec(ctx,
+			"INSERT INTO filler_pool (id, tenant_id, name, collection_id, created_at) VALUES (?, ?, ?, ?, ?)",
+			id, defaultTenantID, in.Name, collection, nowMillis(),
+		); err != nil {
+			return nil, domain.FillerPool{}, err
+		}
+		if collection != nil {
+			if err := catalogsync.ResolveDynamicPools(ctx, db, defaultTenantID); err != nil {
+				return nil, domain.FillerPool{}, err
+			}
+			mat.Trigger()
+		}
+		var p domain.FillerPool
+		if err := db.Query(ctx, &p, "SELECT "+fillerPoolColumns+" FROM filler_pool WHERE tenant_id = ? AND id = ?", defaultTenantID, id); err != nil {
 			return nil, domain.FillerPool{}, err
 		}
 		return nil, p, nil

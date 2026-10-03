@@ -24,16 +24,27 @@ type Channel struct {
 // Block is a reusable programming template (e.g. "Sitcom Night"): an ordered
 // list of catalog items, aired on one or more channels via a Schedule's
 // ScheduleItems.
-// Criteria is nil for a manually managed block (today's behavior — items
-// added/removed one at a time via POST/DELETE /blocks/{id}/items) or set for
-// a dynamic block, whose block_item rows are instead fully owned by
-// catalogsync.ResolveDynamicBlocks and recomputed after every catalog sync.
+// A block is manual (items added/removed one at a time via POST/DELETE
+// /blocks/{id}/items) or dynamic: it references a Collection, and its
+// block_item rows are then fully owned by catalogsync.ResolveDynamicBlocks and
+// recomputed after every catalog sync.
 type Block struct {
 	ID          string  `json:"id"`
 	TenantID    string  `json:"tenant_id"`
 	Name        string  `json:"name"`
 	Description *string `json:"description"`
-	Criteria    *string `json:"criteria"`
+	// CollectionID is the collection a dynamic block plays; CollectionName is
+	// read along for display.
+	CollectionID   *string `json:"collection_id"`
+	CollectionName *string `json:"collection_name"`
+	// Dynamic is true for a block that references a collection and also for a
+	// legacy row still held for review (collection_id NULL, deprecated
+	// Criteria still in use, see criteria_migration_review).
+	Dynamic bool `json:"dynamic"`
+	// Criteria is the DEPRECATED pre-collection query column: a snapshot kept
+	// as the way back from the collection migration, never sent to clients and
+	// only read while CollectionID is NULL (a legacy row held for review).
+	Criteria *string `json:"-"`
 	// PlaybackOrder is how a dynamic block walks its matches: OrderTitle (the
 	// default, and what every block did before the setting existed: all
 	// matches by title, looped) or OrderInterleaved. Meaningless for a manual
@@ -270,7 +281,13 @@ type CriteriaAmount struct {
 // its matches are ordered, and how much one visit airs. Seed makes the
 // shuffle and random orders reproducible and is never shown to clients.
 type CriteriaSpec struct {
-	Query         json.RawMessage `json:"query"`
+	// CollectionID is the collection whose query the item plays: the source of
+	// truth once set. Query is the DEPRECATED embedded tree of the first
+	// release of criteria items: a snapshot kept as the way back from the
+	// collection migration, read only while CollectionID is empty (an item held
+	// for review). New items never store it.
+	CollectionID  string          `json:"collection_id,omitempty"`
+	Query         json.RawMessage `json:"query,omitempty"`
 	PlaybackOrder string          `json:"playback_order"`
 	Seed          int64           `json:"seed"`
 	Amount        CriteriaAmount  `json:"amount"`
@@ -282,8 +299,12 @@ type CriteriaSpec struct {
 // query and order, plus what the query currently matches (items with a
 // positive duration, the ones that can be scheduled).
 type CriteriaItemView struct {
-	// Query is the condition tree as a decoded JSON value (not a RawMessage,
-	// so the MCP output schema accepts it).
+	// CollectionID/CollectionName identify the collection the item plays (nil
+	// only for an item held for review that still uses its embedded query).
+	CollectionID   *string `json:"collection_id"`
+	CollectionName *string `json:"collection_name"`
+	// Query is the effective condition tree as a decoded JSON value (not a
+	// RawMessage, so the MCP output schema accepts it): the collection's.
 	Query           any            `json:"query"`
 	PlaybackOrder   string         `json:"playback_order"`
 	Amount          CriteriaAmount `json:"amount"`

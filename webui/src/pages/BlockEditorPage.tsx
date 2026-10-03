@@ -7,9 +7,9 @@ import { toast } from 'sonner'
 import { CriteriaAmountControl, CriteriaOrderSelect } from '@/components/CriteriaItemControls'
 import { CriteriaReviewNotice } from '@/components/CriteriaReviewNotice'
 import { type BlockPlaybackDraft } from '@/components/BlockPlaybackFields'
-import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
+import { CollectionPicker } from '@/components/CollectionPicker'
+import { DynamicCollectionFields, validateCollectionChoice, type CollectionChoice } from '@/components/DynamicCollectionFields'
 import { InterleaveControls } from '@/components/InterleaveControls'
-import { QueryBuilder } from '@/components/QueryBuilder'
 import { InlineWarning } from '@/components/InlineWarning'
 import { PageHeader } from '@/components/PageHeader'
 import { SaveBar } from '@/components/SaveBar'
@@ -30,7 +30,8 @@ import {
   validateInterleave,
   type InterleaveDraft,
 } from '@/lib/interleave'
-import { emptyQuery, parseStoredCriteria, queryKey, summarizeQuery, validateQuery, type Query } from '@/lib/query'
+import { useCollections } from '@/lib/collections'
+import { summarizeQuery, validateQuery, type Query } from '@/lib/query'
 import { airsUntilSlotEnd } from '@/lib/guide'
 import { ApiError, api } from '@/lib/http'
 import { SeriesAmountControl } from '@/components/SeriesAmountControl'
@@ -59,7 +60,7 @@ function errorMessage(err: unknown, fallback: string): string {
   return err instanceof ApiError ? `${fallback} (${err.message})` : fallback
 }
 
-// Full-page editor for one block: details (name/description, and the criteria
+// Full-page editor for one block: details (name/description, and the collection
 // for a dynamic block) are saved through the SaveBar; the item list of a
 // manual block is edited live, each action being its own request.
 export function BlockEditorPage() {
@@ -77,8 +78,8 @@ export function BlockEditorPage() {
         breadcrumb={[{ label: 'Blocks', to: '/blocks' }, { label: block?.name ?? 'Block' }]}
         actions={
           block && (
-            <Badge variant={block.criteria ? 'default' : 'secondary'} data-testid="block-kind">
-              {block.criteria ? 'Dynamic' : 'Manual'}
+            <Badge variant={block.dynamic ? 'default' : 'secondary'} data-testid="block-kind">
+              {block.dynamic ? 'Dynamic' : 'Manual'}
             </Badge>
           )
         }
@@ -88,8 +89,8 @@ export function BlockEditorPage() {
       {block && (
         <>
           {/* Remounted after a save (updated_at changes) so the draft resets. */}
-          <BlockDetailsForm key={`${block.id}-${block.updated_at}`} block={block} />
-          {block.criteria === null && <BlockItemsSection block={block} />}
+          <BlockDetailsForm key={`${block.id}-${block.updated_at}-${block.collection_id}`} block={block} />
+          {!block.dynamic && <BlockItemsSection block={block} />}
         </>
       )}
     </div>
@@ -98,17 +99,17 @@ export function BlockEditorPage() {
 
 function BlockDetailsForm({ block }: { block: Block }) {
   const queryClient = useQueryClient()
-  const stored = useMemo(() => parseStoredCriteria(block.criteria), [block.criteria])
-  // A block still holding old-format criteria is dynamic but has no query to
-  // edit until someone reviews the proposed one (see CriteriaReviewNotice).
-  const initial = useMemo<BlockInput & { keepLegacy: boolean }>(
+  // A block held for review (a legacy row with no collection yet) is dynamic
+  // but has no collection to edit until someone applies the proposal or picks
+  // one (see CriteriaReviewNotice).
+  const initial = useMemo<{ name: string; description: string | null; collection: CollectionChoice; keepLegacy: boolean }>(
     () => ({
       name: block.name,
       description: block.description,
-      criteria: stored?.type === 'query' ? stored.query : null,
-      keepLegacy: stored?.type === 'legacy',
+      collection: block.collection_id,
+      keepLegacy: block.dynamic && block.collection_id === null,
     }),
-    [block, stored]
+    [block]
   )
   const initialPlayback = useMemo<BlockPlaybackDraft>(
     () => ({ order: block.playback_order ?? 'title', interleave: toDraft(block.interleave) }),
@@ -117,13 +118,13 @@ function BlockDetailsForm({ block }: { block: Block }) {
   const [draft, setDraft] = useState(initial)
   const [playback, setPlayback] = useState(initialPlayback)
   const [error, setError] = useState<string | null>(null)
-  const isDynamic = block.criteria !== null
-  const unreviewed = draft.keepLegacy && draft.criteria === null
+  const isDynamic = block.dynamic
+  const unreviewed = draft.keepLegacy && draft.collection === null
 
   const dirty =
     draft.name !== initial.name ||
     draft.description !== initial.description ||
-    queryKey(draft.criteria) !== queryKey(initial.criteria) ||
+    draft.collection !== initial.collection ||
     draft.keepLegacy !== initial.keepLegacy ||
     (isDynamic && JSON.stringify(playback) !== JSON.stringify(initialPlayback))
 
@@ -132,8 +133,8 @@ function BlockDetailsForm({ block }: { block: Block }) {
       api.put<Block>(`/blocks/${block.id}`, {
         name: draft.name,
         description: draft.description,
-        criteria: draft.criteria,
-        ...(draft.criteria ? blockPlaybackPayload(playback.order, playback.interleave) : {}),
+        collection_id: draft.collection,
+        ...(draft.collection ? blockPlaybackPayload(playback.order, playback.interleave) : {}),
       } satisfies BlockInput),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['blocks'] })
@@ -148,12 +149,12 @@ function BlockDetailsForm({ block }: { block: Block }) {
       return
     }
     if (unreviewed) {
-      setError('Review the old criteria first: use the proposed query or write a new one.')
+      setError('Review the old query first: apply the proposal or choose a collection.')
       return
     }
     const criteriaError =
-      validateQuery(draft.criteria) ??
-      (draft.criteria && playback.order === 'interleaved' ? validateInterleave(playback.interleave) : undefined)
+      validateCollectionChoice(draft.collection) ??
+      (draft.collection && playback.order === 'interleaved' ? validateInterleave(playback.interleave) : undefined)
     if (criteriaError) {
       setError(criteriaError)
       return
@@ -188,11 +189,12 @@ function BlockDetailsForm({ block }: { block: Block }) {
           />
         </Field>
         {isDynamic && !unreviewed && (
-          <DynamicCriteriaFields
-            value={draft.criteria}
-            onChange={(criteria) => setDraft((d) => ({ ...d, criteria }))}
-            idPrefix="block-editor-criteria"
+          <DynamicCollectionFields
+            value={draft.collection}
+            onChange={(collection) => setDraft((d) => ({ ...d, collection }))}
+            idPrefix="block-editor-collection"
             playback={{ value: playback, onChange: setPlayback }}
+            preview
           />
         )}
       </FieldGroup>
@@ -201,12 +203,9 @@ function BlockDetailsForm({ block }: { block: Block }) {
         <CriteriaReviewNotice
           ownerType="block"
           ownerId={block.id}
-          onUseProposed={(criteria) => setDraft((d) => ({ ...d, criteria, keepLegacy: false }))}
-          onWriteNew={() => setDraft((d) => ({ ...d, criteria: emptyQuery(), keepLegacy: false }))}
+          onChooseCollection={() => setDraft((d) => ({ ...d, collection: '', keepLegacy: false }))}
         />
       )}
-
-      {isDynamic && draft.criteria && <CriteriaPreviewPanel criteria={draft.criteria} />}
 
       <SaveBar dirty={dirty} saving={saveMutation.isPending} onSave={save} onDiscard={discard} error={error} />
     </section>
@@ -428,47 +427,48 @@ function BlockItemsSection({ block }: { block: Block }) {
     )
   }
 
-  // The criteria item whose query is being edited, and the draft of it.
+  const { data: collections } = useCollections()
+  // The criteria item whose collection is being changed, and the draft of it.
   const [editingId, setEditingId] = useState<string | null>(null)
-  const [editQuery, setEditQuery] = useState<Query | null>(null)
+  const [editCollection, setEditCollection] = useState('')
+  const editQuery = collections?.find((c) => c.id === editCollection)?.query ?? null
 
-  function saveQuery(item: BlockItem) {
-    if (!editQuery) return
-    const invalid = validateQuery(editQuery)
-    if (invalid) {
-      toast.error(invalid)
+  function saveCollection(item: BlockItem) {
+    if (!editCollection) {
+      toast.error('Choose a collection.')
       return
     }
     updateMutation.mutate(
-      { itemId: item.id, query: editQuery },
+      { itemId: item.id, collection_id: editCollection },
       {
         onSuccess: () => {
-          toast.success('Query saved.')
+          toast.success('Collection saved.')
           setEditingId(null)
-          setEditQuery(null)
+          setEditCollection('')
         },
-        onError: (err) => toast.error(errorMessage(err, 'Could not save the query.')),
+        onError: (err) => toast.error(errorMessage(err, 'Could not save the collection.')),
       }
     )
   }
 
-  // New criteria item: a query, an order and an amount, all chosen before it is added.
-  const [newQuery, setNewQuery] = useState<Query>(emptyQuery)
+  // New criteria item: a collection, an order and an amount, all chosen before it is added.
+  const [newCollection, setNewCollection] = useState('')
   const [newCriteriaOrder, setNewCriteriaOrder] = useState<CriteriaOrder>('title')
   const [newCriteriaAmount, setNewCriteriaAmount] = useState<CriteriaAmount | null>(null)
   const [newInterleave, setNewInterleave] = useState<InterleaveDraft>(DEFAULT_INTERLEAVE)
   const [newCriteriaKey, setNewCriteriaKey] = useState(0)
-  const newQueryError = validateQuery(newQuery)
+  const newQuery = collections?.find((c) => c.id === newCollection)?.query ?? null
+  const newQueryError = newCollection ? undefined : 'Choose a collection.'
   const newInterleaveError = newCriteriaOrder === 'interleaved' ? validateInterleave(newInterleave) : undefined
 
   function addCriteria() {
     if (newQueryError || newInterleaveError || !newCriteriaAmount) return
     const interleave = blockPlaybackPayload(newCriteriaOrder === 'interleaved' ? 'interleaved' : 'title', newInterleave).interleave
     addMutation.mutate(
-      { criteria: { query: newQuery, playback_order: newCriteriaOrder, amount: newCriteriaAmount, ...(interleave ? { interleave } : {}) } },
+      { criteria: { collection_id: newCollection, playback_order: newCriteriaOrder, amount: newCriteriaAmount, ...(interleave ? { interleave } : {}) } },
       {
         onSuccess: () => {
-          setNewQuery(emptyQuery())
+          setNewCollection('')
           setNewCriteriaOrder('title')
           setNewInterleave(DEFAULT_INTERLEAVE)
           setNewCriteriaAmount(null)
@@ -569,10 +569,10 @@ function BlockItemsSection({ block }: { block: Block }) {
                         <span className="truncate">{item.series?.series_title || 'Series'}</span>
                       </span>
                     ) : isCriteria ? (
-                      <span className="flex items-center gap-2" title={item.criteria ? summarizeQuery(item.criteria.query) : undefined}>
-                        <Badge variant="secondary">Criteria</Badge>
+                      <span className="flex items-center gap-2" title={item.criteria?.query ? summarizeQuery(item.criteria.query) : undefined}>
+                        <Badge variant="secondary">Collection</Badge>
                         <span className="truncate" data-testid="criteria-item-summary">
-                          {item.criteria ? summarizeQuery(item.criteria.query) : 'Criteria'}
+                          {item.criteria?.collection_name ?? (item.criteria?.query ? summarizeQuery(item.criteria.query) : 'Collection')}
                         </span>
                       </span>
                     ) : catalog ? (
@@ -665,10 +665,10 @@ function BlockItemsSection({ block }: { block: Block }) {
                         disabled={busy}
                         onClick={() => {
                           setEditingId(item.id)
-                          setEditQuery(item.criteria?.query ?? null)
+                          setEditCollection(item.criteria?.collection_id ?? '')
                         }}
                       >
-                        Edit query
+                        Change collection
                       </Button>
                     )}
                     <Button
@@ -705,29 +705,29 @@ function BlockItemsSection({ block }: { block: Block }) {
         </Table>
       )}
 
-      {editingId && editQuery && (
+      {editingId && (
         <div className="flex flex-col gap-3 rounded-lg border border-border p-4" data-testid="criteria-edit-panel">
-          <h3 className="text-sm font-medium">Edit the query of item {sorted.findIndex((i) => i.id === editingId) + 1}</h3>
-          <QueryBuilder value={editQuery} onChange={setEditQuery} idPrefix="edit-criteria" />
-          <CriteriaPreviewPanel criteria={editQuery} empty="This query matches nothing right now, so the item would be skipped." />
+          <h3 className="text-sm font-medium">Change the collection of item {sorted.findIndex((i) => i.id === editingId) + 1}</h3>
+          <CollectionPicker value={editCollection} onChange={setEditCollection} idPrefix="edit-criteria" />
+          {editQuery && <CriteriaPreviewPanel criteria={editQuery} empty="This query matches nothing right now, so the item would be skipped." />}
           <div className="flex gap-2">
             <Button
               size="sm"
               data-testid="criteria-edit-save"
-              disabled={busy || !!validateQuery(editQuery)}
+              disabled={busy || !editCollection}
               onClick={() => {
                 const item = sorted.find((i) => i.id === editingId)
-                if (item) saveQuery(item)
+                if (item) saveCollection(item)
               }}
             >
-              Save query
+              Save collection
             </Button>
             <Button
               size="sm"
               variant="outline"
               onClick={() => {
                 setEditingId(null)
-                setEditQuery(null)
+                setEditCollection('')
               }}
             >
               Cancel
@@ -783,13 +783,13 @@ function BlockItemsSection({ block }: { block: Block }) {
 
       <div className="flex flex-col gap-3 rounded-lg border border-border p-4" data-testid="add-criteria">
         <div>
-          <h3 className="text-sm font-medium">Add a criteria item</h3>
+          <h3 className="text-sm font-medium">Add a collection item</h3>
           <p className="text-sm text-muted-foreground">
-            Plays the number of matches you choose from a live query of the catalog, then moves on to the next item.
+            Plays the number of matches you choose from a collection (a live query of the catalog), then moves on to the next item.
           </p>
         </div>
-        <QueryBuilder value={newQuery} onChange={setNewQuery} idPrefix="new-criteria" />
-        {!newQueryError && <CriteriaPreviewPanel criteria={newQuery} empty="This query matches nothing right now, so the item would be skipped." />}
+        <CollectionPicker value={newCollection} onChange={setNewCollection} idPrefix="new-criteria" />
+        {newQuery && <CriteriaPreviewPanel criteria={newQuery} empty="This query matches nothing right now, so the item would be skipped." />}
         <div className="flex flex-col gap-2 sm:flex-row">
           <CriteriaOrderSelect value={newCriteriaOrder} onChange={setNewCriteriaOrder} testId="new-criteria-order" />
           <CriteriaAmountControl
@@ -803,8 +803,8 @@ function BlockItemsSection({ block }: { block: Block }) {
         {newCriteriaOrder === 'interleaved' && (
           <InterleaveControls value={newInterleave} onChange={setNewInterleave} eager testIdPrefix="new-criteria" />
         )}
-        {(newQueryError ?? newInterleaveError) && (
-          <p className="text-sm text-destructive" data-testid="new-criteria-error">{newQueryError ?? newInterleaveError}</p>
+        {newInterleaveError && (
+          <p className="text-sm text-destructive" data-testid="new-criteria-error">{newInterleaveError}</p>
         )}
         {!newCriteriaAmount && (
           <p className="text-xs text-muted-foreground">
@@ -818,7 +818,7 @@ function BlockItemsSection({ block }: { block: Block }) {
             disabled={addMutation.isPending || !!newQueryError || !!newInterleaveError || !newCriteriaAmount}
             onClick={addCriteria}
           >
-            Add criteria item
+            Add collection item
           </Button>
         </div>
       </div>

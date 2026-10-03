@@ -3,9 +3,8 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link, useParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
-import { CriteriaPreviewPanel } from '@/components/CriteriaPreviewPanel'
 import { CriteriaReviewNotice } from '@/components/CriteriaReviewNotice'
-import { DynamicCriteriaFields } from '@/components/DynamicCriteriaFields'
+import { DynamicCollectionFields, validateCollectionChoice, type CollectionChoice } from '@/components/DynamicCollectionFields'
 import { FillerPoolItems } from '@/components/FillerPoolItems'
 import { PageHeader } from '@/components/PageHeader'
 import { SaveBar } from '@/components/SaveBar'
@@ -14,14 +13,13 @@ import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { api, ApiError } from '@/lib/http'
-import { emptyQuery, parseStoredCriteria, queryKey, validateQuery, type Query } from '@/lib/query'
 import type { FillerPool, FillerPoolInput, FillerRule } from '@/lib/types'
 
 interface Draft {
   name: string
-  criteria: Query | null
-  // The pool still holds old-format criteria that nobody has reviewed yet:
-  // dynamic, but with no query to edit. Saving needs a query first.
+  collection: CollectionChoice
+  // The pool is held for review (a legacy row with no collection yet): dynamic,
+  // but with no collection to edit. Saving needs a collection first.
   keepLegacy: boolean
 }
 
@@ -73,27 +71,26 @@ export function FillerPoolEditorPage() {
     )
   }
 
-  const stored = parseStoredCriteria(pool.criteria)
   const loaded: Draft = {
     name: pool.name,
-    criteria: stored?.type === 'query' ? stored.query : null,
-    keepLegacy: stored?.type === 'legacy',
+    collection: pool.collection_id,
+    keepLegacy: pool.dynamic && pool.collection_id === null,
   }
   const current = draft ?? loaded
-  const dynamic = current.criteria !== null || current.keepLegacy
-  const unreviewed = current.keepLegacy && current.criteria === null
-  const criteriaError = validateQuery(current.criteria)
+  const dynamic = current.collection !== null || current.keepLegacy
+  const unreviewed = current.keepLegacy && current.collection === null
+  const collectionError = validateCollectionChoice(current.collection)
   const nameMissing = current.name.trim() === ''
   const dirty =
     current.name !== loaded.name ||
-    queryKey(current.criteria) !== queryKey(loaded.criteria) ||
+    current.collection !== loaded.collection ||
     current.keepLegacy !== loaded.keepLegacy
   const usedBy = (rules ?? []).filter((r) => r.filler_pool_id === pool.id)
 
   function selectTab(toDynamic: boolean) {
-    if (!toDynamic) patch({ criteria: null, keepLegacy: false })
-    else if (loaded.keepLegacy) patch({ criteria: null, keepLegacy: true })
-    else patch({ criteria: emptyQuery(), keepLegacy: false })
+    if (!toDynamic) patch({ collection: null, keepLegacy: false })
+    else if (loaded.keepLegacy) patch({ collection: null, keepLegacy: true })
+    else patch({ collection: '', keepLegacy: false })
   }
 
   function patch(next: Partial<Draft>) {
@@ -107,14 +104,14 @@ export function FillerPoolEditorPage() {
       return
     }
     if (unreviewed) {
-      setSaveError('Review the old criteria first: use the proposed query or write a new one.')
+      setSaveError('Review the old query first: apply the proposal or choose a collection.')
       return
     }
-    if (criteriaError) {
-      setSaveError(criteriaError)
+    if (collectionError) {
+      setSaveError(collectionError)
       return
     }
-    save.mutate({ name: current.name.trim(), criteria: current.criteria })
+    save.mutate({ name: current.name.trim(), collection_id: current.collection })
   }
 
   return (
@@ -123,7 +120,7 @@ export function FillerPoolEditorPage() {
         title={
           <span className="flex items-center gap-2">
             {pool.name}
-            <Badge variant={pool.criteria ? 'default' : 'secondary'}>{pool.criteria ? 'Dynamic' : 'Manual'}</Badge>
+            <Badge variant={pool.dynamic ? 'default' : 'secondary'}>{pool.dynamic ? 'Dynamic' : 'Manual'}</Badge>
           </span>
         }
         breadcrumb={breadcrumb}
@@ -157,10 +154,10 @@ export function FillerPoolEditorPage() {
       <Tabs value={dynamic ? 'dynamic' : 'manual'} onValueChange={(v) => selectTab(v === 'dynamic')}>
         <TabsList>
           <TabsTrigger value="manual">Manual items</TabsTrigger>
-          <TabsTrigger value="dynamic">Dynamic criteria</TabsTrigger>
+          <TabsTrigger value="dynamic">Dynamic (collection)</TabsTrigger>
         </TabsList>
         <TabsContent value="manual" className="pt-4">
-          {pool.criteria ? (
+          {pool.dynamic ? (
             <p className="text-sm text-muted-foreground" data-testid="pool-manual-pending">
               Save to turn this dynamic pool back into a manual one, then add items here.
             </p>
@@ -170,26 +167,24 @@ export function FillerPoolEditorPage() {
         </TabsContent>
         <TabsContent value="dynamic" className="flex flex-col gap-4 pt-4">
           <p className="text-sm text-muted-foreground">
-            A dynamic pool is filled automatically from the catalog; its items cannot be edited by hand.
+            A dynamic pool is filled automatically from the catalog by a collection; its items cannot be edited by hand.
           </p>
           {unreviewed ? (
             <CriteriaReviewNotice
               ownerType="filler_pool"
               ownerId={pool.id}
-              onUseProposed={(criteria) => patch({ criteria, keepLegacy: false })}
-              onWriteNew={() => patch({ criteria: emptyQuery(), keepLegacy: false })}
+              onChooseCollection={() => patch({ collection: '', keepLegacy: false })}
             />
           ) : (
             <FieldGroup>
-              <DynamicCriteriaFields value={current.criteria} onChange={(criteria) => patch({ criteria })} idPrefix="pool-criteria" />
+              <DynamicCollectionFields value={current.collection} onChange={(collection) => patch({ collection })} idPrefix="pool-collection" preview />
             </FieldGroup>
           )}
-          {criteriaError && (
+          {collectionError && current.collection !== null && (
             <p className="text-sm text-destructive" data-testid="criteria-error">
-              {criteriaError}
+              {collectionError}
             </p>
           )}
-          <CriteriaPreviewPanel criteria={criteriaError ? null : current.criteria} />
         </TabsContent>
       </Tabs>
 

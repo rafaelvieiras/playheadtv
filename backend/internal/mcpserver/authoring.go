@@ -24,7 +24,7 @@ func registerAuthoringTools(s *mcp.Server, db storage.DB, mat *materializer.Mate
 		Name: "update_block_item",
 		Description: "Reorder (position), trim (trim_duration_ms, catalog items only) and/or change the playback order " +
 			"(playback_order, series and criteria items; restarts the item) and/or the amount (amount {mode, count}, series " +
-			"and criteria items; the cursor is kept) and/or the query (criteria items; the cursor is kept) and/or the interleave " +
+			"and criteria items; the cursor is kept) and/or the collection (collection_id, criteria items; the cursor is kept) and/or the interleave " +
 			"parameters (criteria items with playback_order interleaved; per_round or series_order restart the item) of one item of a manual block; " +
 			"positions stay contiguous. Dynamic blocks are rejected. Triggers EPG regeneration. " +
 			"Mirrors PUT /blocks/{id}/items/{item_id}.",
@@ -38,17 +38,19 @@ func registerAuthoringTools(s *mcp.Server, db storage.DB, mat *materializer.Mate
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "preview_criteria",
-		Description: "Report what a condition tree (block/pool criteria, or the query of a criteria block item) would " +
-			"match right now (match count, total duration, up to 20 sample items) without persisting anything. " +
+		Description: "Report what a condition tree (the query of a collection, as typed in a collection editor) or a stored " +
+			"collection (collection_id) would match right now (match count, total duration, up to 20 sample items) without persisting anything. " +
 			"Mirrors POST /catalog-items/preview-criteria.",
 	}, previewCriteriaHandler(db))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "list_criteria_migration_review",
-		Description: "List the dynamic blocks and filler pools whose legacy criteria ({kind, genres, year_from, year_to}) " +
-			"could not be converted to a condition tree without changing what they match: each entry has the proposed " +
-			"query and the items that would be added or dropped. The legacy criteria keeps working until the block/pool " +
-			"is updated with a query. Mirrors GET /criteria-migration-review.",
+		Description: "List the dynamic blocks, filler pools and criteria block items held for review after the upgrade: " +
+			"a legacy criteria ({kind, genres, year_from, year_to}) that could not be converted to a condition tree without " +
+			"changing what it matches, or a query that could not be moved into a collection unchanged. Each entry has the " +
+			"proposed query and the items that would be added or dropped. The stored query keeps working until it is " +
+			"applied (apply_criteria_review_proposal, which creates or reuses a collection) or the owner is pointed at a " +
+			"collection. Mirrors GET /criteria-migration-review.",
 	}, listCriteriaReviewHandler(db))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -67,7 +69,7 @@ type updateBlockItemInput struct {
 	TrimDurationMs *int64                  `json:"trim_duration_ms,omitempty" jsonschema:"new trimmed duration in milliseconds (positive); catalog items only"`
 	PlaybackOrder  *string                 `json:"playback_order,omitempty" jsonschema:"series items: original, random, shuffle or release_date; criteria items: title, release_date, random, shuffle or interleaved"`
 	Amount         *blockSeriesAmountInput `json:"amount,omitempty" jsonschema:"series items: how much to air per visit; mode count (with count, default 1), slot_end or series_end; criteria items: mode count (with count) or all"`
-	Query          map[string]any          `json:"query,omitempty" jsonschema:"criteria items only: a new condition tree"`
+	CollectionID   *string                 `json:"collection_id,omitempty" jsonschema:"criteria items only: point the item at another collection (see create_collection)"`
 	Interleave     *blockInterleaveInput   `json:"interleave,omitempty" jsonschema:"criteria items with the interleaved order only: parameters to change (omitted ones are kept)"`
 }
 
@@ -76,8 +78,8 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 		if in.BlockID == "" || in.ItemID == "" {
 			return nil, domain.BlockItem{}, errors.New("block_id and item_id are required")
 		}
-		if in.Position == nil && in.TrimDurationMs == nil && in.PlaybackOrder == nil && in.Amount == nil && in.Query == nil && in.Interleave == nil {
-			return nil, domain.BlockItem{}, errors.New("position, trim_duration_ms, playback_order, amount, query or interleave is required")
+		if in.Position == nil && in.TrimDurationMs == nil && in.PlaybackOrder == nil && in.Amount == nil && in.CollectionID == nil && in.Interleave == nil {
+			return nil, domain.BlockItem{}, errors.New("position, trim_duration_ms, playback_order, amount, collection_id or interleave is required")
 		}
 		if in.PlaybackOrder != nil && !domain.ValidPlaybackOrder(*in.PlaybackOrder) && !domain.ValidCriteriaOrder(*in.PlaybackOrder) {
 			return nil, domain.BlockItem{}, errors.New("playback_order must be one of original, random, shuffle, release_date (series) or title, release_date, random, shuffle, interleaved (criteria)")
@@ -85,15 +87,15 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 		if in.TrimDurationMs != nil && *in.TrimDurationMs <= 0 {
 			return nil, domain.BlockItem{}, errors.New("trim_duration_ms must be positive")
 		}
-		var criteria []*string
-		if err := db.Query(ctx, &criteria, "SELECT criteria FROM block WHERE tenant_id = ? AND id = ?", defaultTenantID, in.BlockID); err != nil {
+		var dynamic []bool
+		if err := db.Query(ctx, &dynamic, "SELECT "+catalogsync.DynamicSQL+" FROM block WHERE tenant_id = ? AND id = ?", defaultTenantID, in.BlockID); err != nil {
 			return nil, domain.BlockItem{}, err
 		}
-		if len(criteria) == 0 {
+		if len(dynamic) == 0 {
 			return nil, domain.BlockItem{}, errors.New("block not found")
 		}
-		if criteria[0] != nil {
-			return nil, domain.BlockItem{}, errors.New("this block is dynamic; items are managed automatically from its criteria")
+		if dynamic[0] {
+			return nil, domain.BlockItem{}, errors.New("this block is dynamic; items are managed automatically from its collection")
 		}
 		var items []domain.BlockItem
 		if err := db.Query(ctx, &items, "SELECT "+blockItemColumns+" FROM block_item WHERE block_id = ? ORDER BY position", in.BlockID); err != nil {
@@ -123,21 +125,15 @@ func updateBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.T
 		if in.Interleave != nil && !target.IsCriteria() {
 			return nil, domain.BlockItem{}, errors.New("interleave is only valid for a criteria item")
 		}
-		if in.Query != nil && !target.IsCriteria() {
-			return nil, domain.BlockItem{}, errors.New("query is only valid for a criteria item")
+		if in.CollectionID != nil && !target.IsCriteria() {
+			return nil, domain.BlockItem{}, errors.New("collection_id is only valid for a criteria item")
 		}
 		if target.IsCriteria() {
 			spec, err := blockitem.ParseCriteriaSpec(target.Spec)
 			if err != nil {
 				return nil, domain.BlockItem{}, err
 			}
-			var rawQuery json.RawMessage
-			if in.Query != nil {
-				if rawQuery, err = json.Marshal(in.Query); err != nil {
-					return nil, domain.BlockItem{}, errors.New("query must be a JSON object")
-				}
-			}
-			updated, orderChanged, err := blockitem.UpdateCriteriaSpec(spec, rawQuery, in.PlaybackOrder, in.Amount.domain(), in.Interleave.domain())
+			updated, orderChanged, err := blockitem.UpdateCriteriaSpec(ctx, db, defaultTenantID, spec, in.CollectionID, in.PlaybackOrder, in.Amount.domain(), in.Interleave.domain())
 			if err != nil {
 				return nil, domain.BlockItem{}, err
 			}
@@ -265,15 +261,15 @@ func updateFillerPoolItemHandler(db storage.DB, mat *materializer.Materializer) 
 		if in.Weight <= 0 {
 			return nil, domain.FillerPoolItem{}, errors.New("weight must be a positive integer")
 		}
-		var criteria []*string
-		if err := db.Query(ctx, &criteria, "SELECT criteria FROM filler_pool WHERE tenant_id = ? AND id = ?", defaultTenantID, in.FillerPoolID); err != nil {
+		var dynamic []bool
+		if err := db.Query(ctx, &dynamic, "SELECT "+catalogsync.DynamicSQL+" FROM filler_pool WHERE tenant_id = ? AND id = ?", defaultTenantID, in.FillerPoolID); err != nil {
 			return nil, domain.FillerPoolItem{}, err
 		}
-		if len(criteria) == 0 {
+		if len(dynamic) == 0 {
 			return nil, domain.FillerPoolItem{}, errors.New("filler pool not found")
 		}
-		if criteria[0] != nil {
-			return nil, domain.FillerPoolItem{}, errors.New("this pool is dynamic; items are managed automatically from its criteria")
+		if dynamic[0] {
+			return nil, domain.FillerPoolItem{}, errors.New("this pool is dynamic; items are managed automatically from its collection")
 		}
 		var item domain.FillerPoolItem
 		if err := db.Query(ctx, &item, "SELECT id, filler_pool_id, catalog_item_id, weight FROM filler_pool_item WHERE filler_pool_id = ? AND id = ?", in.FillerPoolID, in.ItemID); err != nil {
@@ -289,18 +285,29 @@ func updateFillerPoolItemHandler(db storage.DB, mat *materializer.Materializer) 
 }
 
 type previewCriteriaInput struct {
-	Query map[string]any `json:"query" jsonschema:"a versioned condition tree: {version: 1, all|any: [node, ...] | not: node | field/op/value}; fields: genre, studio, tag, audio_language, subtitle_language (equals|in, exact normalized names), title, overview, person (contains), kind (movie|episode), content_rating (equals|in), year, duration (minutes), community_rating, critic_rating, season_number, episode_number (equals|lt|lte|gt|gte|between), premiere_date, date_added (same, YYYY-MM-DD)"`
+	Query        map[string]any `json:"query,omitempty" jsonschema:"a versioned condition tree: {version: 1, all|any: [node, ...] | not: node | field/op/value}; fields: genre, studio, tag, audio_language, subtitle_language (equals|in, exact normalized names), title, overview, person, actor, director (contains), kind (movie|episode), content_rating (equals|in), year, duration (minutes), community_rating, critic_rating, season_number, episode_number (equals|lt|lte|gt|gte|between), premiere_date, date_added (same, YYYY-MM-DD)"`
+	CollectionID string         `json:"collection_id,omitempty" jsonschema:"instead of query: preview a stored collection"`
 }
 
 func previewCriteriaHandler(db storage.DB) mcp.ToolHandlerFor[previewCriteriaInput, catalogsync.CriteriaPreview] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in previewCriteriaInput) (*mcp.CallToolResult, catalogsync.CriteriaPreview, error) {
-		raw, err := json.Marshal(in.Query)
-		if err != nil {
-			return nil, catalogsync.CriteriaPreview{}, errors.New("query must be a JSON object")
-		}
-		q, err := catalogsync.ParseQuery(raw)
-		if err != nil {
-			return nil, catalogsync.CriteriaPreview{}, fmt.Errorf("criteria: %w", err)
+		var q *catalogsync.Query
+		switch {
+		case in.CollectionID != "" && in.Query != nil:
+			return nil, catalogsync.CriteriaPreview{}, errors.New("send either query or collection_id, not both")
+		case in.CollectionID != "":
+			var err error
+			if q, err = catalogsync.LoadCollectionQuery(ctx, db, defaultTenantID, in.CollectionID); err != nil {
+				return nil, catalogsync.CriteriaPreview{}, err
+			}
+		default:
+			raw, err := json.Marshal(in.Query)
+			if err != nil {
+				return nil, catalogsync.CriteriaPreview{}, errors.New("query must be a JSON object")
+			}
+			if q, err = catalogsync.ParseQuery(raw); err != nil {
+				return nil, catalogsync.CriteriaPreview{}, fmt.Errorf("query: %w", err)
+			}
 		}
 		res, err := catalogsync.PreviewQuery(ctx, db, defaultTenantID, q, 20)
 		return nil, res, err
