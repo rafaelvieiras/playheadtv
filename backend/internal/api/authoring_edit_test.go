@@ -315,3 +315,55 @@ func TestChannelEPGPreviewIsReadOnly(t *testing.T) {
 		t.Errorf("reset differs from preview: %+v vs %+v", real, preview)
 	}
 }
+
+func TestChannelEPGWarningsReportsAnUnevaluableCriteriaItem(t *testing.T) {
+	db, mux := newTestDB(t)
+	ctx := context.Background()
+	scheduleID := setupSchedule(t, mux)
+	rec := doRequest(t, mux, "POST", "/channels", `{"number":1,"name":"C1","schedule_id":"`+scheduleID+`"}`)
+	var ch domain.Channel
+	mustDecode(t, rec.Body.Bytes(), &ch)
+	rec = doRequest(t, mux, "POST", "/blocks", `{"name":"B"}`)
+	var block domain.Block
+	mustDecode(t, rec.Body.Bytes(), &block)
+	now := time.Now().UnixMilli()
+	// Straight into the DB: the API refuses an invalid query, so this is the
+	// stored-data case (a row written by an older version, or corrupted).
+	if err := db.Exec(ctx,
+		`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, recurrence_type, active, created_at, updated_at)
+		 VALUES ('si', ?, ?, ?, 'continuous', 1, ?, ?)`, DefaultTenantID, scheduleID, block.ID, now, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec(ctx,
+		`INSERT INTO block_item (id, block_id, position, item_type, catalog_item_id, spec)
+		 VALUES ('crit', ?, 0, 'criteria', NULL, '{"query":{"version":1,"all":[{"field":"nope","op":"eq","value":1}]},"playback_order":"title","amount":{"mode":"all"}}')`,
+		block.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	rec = doRequest(t, mux, "GET", "/channels/"+ch.ID+"/epg-warnings", "")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("warnings: %d %s", rec.Code, rec.Body.String())
+	}
+	var warnings []struct {
+		Kind        string `json:"kind"`
+		BlockID     string `json:"block_id"`
+		BlockItemID string `json:"block_item_id"`
+		Message     string `json:"message"`
+	}
+	mustDecode(t, rec.Body.Bytes(), &warnings)
+	if len(warnings) != 1 || warnings[0].Kind != "criteria-error" || warnings[0].BlockID != block.ID || warnings[0].BlockItemID != "crit" || warnings[0].Message == "" {
+		t.Fatalf("warnings = %+v", warnings)
+	}
+
+	if err := db.Exec(ctx, "DELETE FROM block_item WHERE id = 'crit'"); err != nil {
+		t.Fatal(err)
+	}
+	rec = doRequest(t, mux, "GET", "/channels/"+ch.ID+"/epg-warnings", "")
+	if strings.TrimSpace(rec.Body.String()) != "[]" {
+		t.Errorf("healthy channel body = %q, want []", rec.Body.String())
+	}
+	if rec := doRequest(t, mux, "GET", "/channels/nope/epg-warnings", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("unknown channel: %d", rec.Code)
+	}
+}

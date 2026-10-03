@@ -377,24 +377,21 @@ type genreBackfillRow struct {
 // BackfillGenreLinks creates the catalog_item_genre links of items that
 // predate them (synced before migration 0009 and not synced since): the
 // genre field of a query reads those links, while only the comma-separated
-// genres column existed before. Safe on every startup; an item whose genres
-// column holds no names has no links and is looked at again, which costs one
-// cheap query.
+// genres column existed before. Safe on every startup and resumable (batched
+// transactions, see runBackfill); an item whose genres column holds no names
+// has no links and is looked at again on the next startup, which costs one
+// cheap scan.
 func BackfillGenreLinks(ctx context.Context, db storage.DB) error {
-	var rows []genreBackfillRow
-	if err := db.Query(ctx, &rows,
-		`SELECT id, tenant_id, genres FROM catalog_item
-		  WHERE COALESCE(genres, '') != ''
+	return runBackfill(ctx, db, backfill[genreBackfillRow]{
+		name: "genre links",
+		where: `COALESCE(genres, '') != ''
 		    AND NOT EXISTS (SELECT 1 FROM catalog_item_genre g WHERE g.tenant_id = catalog_item.tenant_id AND g.catalog_item_id = catalog_item.id)`,
-	); err != nil {
-		return fmt.Errorf("catalogsync: list items to backfill genre links: %w", err)
-	}
-	for _, r := range rows {
-		if err := syncOneLink(ctx, db, r.TenantID, r.ID, genreLinks, plainEntries(splitGenres(r.Genres), "")); err != nil {
-			return fmt.Errorf("catalogsync: backfill genre links for %s: %w", r.ID, err)
-		}
-	}
-	return nil
+		cols: "id, tenant_id, genres",
+		id:   func(r genreBackfillRow) string { return r.ID },
+		apply: func(ctx context.Context, tx storage.DB, r genreBackfillRow) error {
+			return syncOneLink(ctx, tx, r.TenantID, r.ID, genreLinks, plainEntries(splitGenres(r.Genres), ""))
+		},
+	})
 }
 
 type overviewBackfillRow struct {
@@ -404,15 +401,15 @@ type overviewBackfillRow struct {
 
 // BackfillOverviewNorm fills catalog_item.overview_norm (the folded overview
 // the overview field matches against) for rows that predate the column.
+// Resumable and idempotent, batched like the other backfills.
 func BackfillOverviewNorm(ctx context.Context, db storage.DB) error {
-	var rows []overviewBackfillRow
-	if err := db.Query(ctx, &rows, "SELECT id, overview FROM catalog_item WHERE overview IS NOT NULL AND overview_norm IS NULL"); err != nil {
-		return fmt.Errorf("catalogsync: list overviews to backfill: %w", err)
-	}
-	for _, r := range rows {
-		if err := db.Exec(ctx, "UPDATE catalog_item SET overview_norm = ? WHERE id = ?", FoldText(r.Overview), r.ID); err != nil {
-			return fmt.Errorf("catalogsync: backfill overview_norm for %s: %w", r.ID, err)
-		}
-	}
-	return nil
+	return runBackfill(ctx, db, backfill[overviewBackfillRow]{
+		name:  "overview_norm",
+		where: "overview IS NOT NULL AND overview_norm IS NULL",
+		cols:  "id, overview",
+		id:    func(r overviewBackfillRow) string { return r.ID },
+		apply: func(ctx context.Context, tx storage.DB, r overviewBackfillRow) error {
+			return tx.Exec(ctx, "UPDATE catalog_item SET overview_norm = ? WHERE id = ?", FoldText(r.Overview), r.ID)
+		},
+	})
 }

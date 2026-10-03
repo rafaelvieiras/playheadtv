@@ -22,6 +22,9 @@ type occurrence struct {
 // pre-fetched by the orchestrator (materializer.go) so this file stays free
 // of storage.DB and is trivial to unit test with hand-built data.
 type channelInput struct {
+	// Warnings are the configuration problems the loader met (see Warning).
+	Warnings []Warning
+
 	ChannelID       string
 	TenantID        string
 	Timezone        string // IANA name; see domain.Channel.Timezone
@@ -372,7 +375,7 @@ func emitSeries(
 	if reached() {
 		return nil, cursor, true
 	}
-	for run.emitted < maxSeriesEntries && cursor.Before(limit) {
+	for run.emitted < maxSeriesEntries && run.skipped < maxSeriesSkips && cursor.Before(limit) {
 		startMs := cursor.UnixMilli()
 		slot, ok := run.plan(startMs)
 		if !ok {
@@ -383,7 +386,7 @@ func emitSeries(
 			break
 		}
 		if slot.Skip {
-			run.emitted++
+			run.skipped++
 			cursor = epEnd
 			continue
 		}
@@ -423,6 +426,11 @@ func emitSeries(
 		if completed {
 			break
 		}
+	}
+	if !completed && cursor.Before(limit) && (run.emitted >= maxSeriesEntries || run.skipped >= maxSeriesSkips) && !run.capLogged {
+		run.capLogged = true
+		log.Printf("materializer: series cap hit: block item %s on channel %s stopped after %d entries (%d skipped slots), the rest of the window is not filled by it (cap %d entries / %d skips; items this short are almost certainly bad catalog data)",
+			blockItemID, channelID, run.emitted, run.skipped, maxSeriesEntries, maxSeriesSkips)
 	}
 	return entries, cursor, completed
 }

@@ -5,6 +5,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
@@ -30,6 +31,9 @@ type previewEPGInput struct {
 
 type previewEPGOutput struct {
 	Entries []domain.EpgEntry `json:"entries"`
+	// Warnings (preview_channel_grid_reset only) lists configuration problems
+	// that leave holes in the grid, e.g. a criteria item whose query fails.
+	Warnings []materializer.Warning `json:"warnings,omitempty"`
 }
 
 func previewEPGHandler(db storage.DB) mcp.ToolHandlerFor[previewEPGInput, previewEPGOutput] {

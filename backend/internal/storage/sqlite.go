@@ -52,6 +52,39 @@ func (s *SQLite) Query(ctx context.Context, dest any, query string, args ...any)
 	return scanRows(rows, dest)
 }
 
+// Transact implements DB.Transact with a real SQLite transaction.
+func (s *SQLite) Transact(ctx context.Context, fn func(tx DB) error) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if err := fn(sqlTx{tx}); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit()
+}
+
+// sqlTx is the DB view of an open transaction.
+type sqlTx struct{ tx *sql.Tx }
+
+func (t sqlTx) Exec(ctx context.Context, query string, args ...any) error {
+	_, err := t.tx.ExecContext(ctx, query, args...)
+	return err
+}
+
+func (t sqlTx) Query(ctx context.Context, dest any, query string, args ...any) error {
+	rows, err := t.tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	return scanRows(rows, dest)
+}
+
+// Transact on a transaction joins it (no nested transaction): fn runs in the
+// enclosing one.
+func (t sqlTx) Transact(ctx context.Context, fn func(tx DB) error) error { return fn(t) }
+
 func (s *SQLite) Close() error {
 	return s.db.Close()
 }

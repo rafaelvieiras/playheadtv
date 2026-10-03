@@ -28,4 +28,10 @@ import "context"
 type DB interface {
 	Exec(ctx context.Context, query string, args ...any) error
 	Query(ctx context.Context, dest any, query string, args ...any) error
+	// Transact runs fn inside one transaction: everything fn does through tx
+	// commits together when fn returns nil and is rolled back otherwise. Use
+	// it to batch many small writes (one commit instead of one per
+	// statement). fn must use tx, never the outer DB: the pool holds a
+	// single connection, so touching the outer DB from inside fn deadlocks.
+	Transact(ctx context.Context, fn func(tx DB) error) error
 }

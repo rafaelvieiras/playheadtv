@@ -82,6 +82,26 @@ export function useChannelEpgPreview(
   })
 }
 
+export interface EpgWarning {
+  kind: 'criteria-error' | 'series-error'
+  block_id: string
+  block_item_id?: string
+  message: string
+}
+
+// GET /channels/{id}/epg-warnings — problems in the channel's stored
+// configuration that leave parts of its grid silently empty (a criteria item
+// whose query fails to evaluate, an unreadable series spec). Evaluated by the
+// server with the materializer's own loader, so it matches what a run skips.
+export function useChannelEpgWarnings(channelId: string | undefined, enabled = true) {
+  return useQuery({
+    queryKey: ['channels', channelId, 'epg-warnings'],
+    queryFn: () => api.get<EpgWarning[]>(`/channels/${channelId}/epg-warnings`),
+    enabled: enabled && !!channelId,
+    staleTime: 0,
+  })
+}
+
 // GET /criteria-migration-review — dynamic blocks and pools whose old-format
 // criteria could not be converted without changing what they match.
 export function useCriteriaReview(enabled = true) {

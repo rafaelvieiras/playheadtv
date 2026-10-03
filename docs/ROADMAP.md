@@ -147,6 +147,16 @@ actionable checklist.
       behavior), with `per_round`, `on_exhaustion` (`restart`/`drop`) and
       `series_order`; REST, MCP (`create_block`/`update_block`), block editor.
       Query fields `actor` and `director` next to `person`.
+- [x] Large-tenant robustness: startup backfills (`search_text`,
+      `overview_norm`, genre links) in batched transactions with their own
+      budget, progress logs and resumability; series cap warning, cap no longer
+      consumed by skipped/past slots, O(1) series steps and transactional
+      per-channel writes with a per-channel budget; a criteria/series item that
+      fails to evaluate is logged as an error and reported by
+      `GET /channels/{id}/epg-warnings` (guide warning, MCP preview). Still
+      open (tracked separately): query SQL cost at 200k items, FTS5 search,
+      push-sync throughput, materializer load strategy, shuffle order being
+      O(n) per step.
 - [x] Series item amount per visit (`amount: {mode, count}` in the item's
       spec, REST/MCP/block editor): a number of episodes (default 1), until
       the end of the slot, or until the series ends (rest of the cycle in

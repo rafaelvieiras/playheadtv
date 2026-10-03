@@ -10,10 +10,18 @@ import (
 )
 
 // maxSeriesEntries is the safety cap on the entries one series item emits in
-// a single expansion (episodes skipped as "before the cursor existed" count
-// too). Episodes with a non-positive duration never reach the materializer,
-// so this only guards against a bug turning the expansion into a runaway loop.
+// a single expansion. Slots skipped as "before the cursor existed" and
+// entries that are already over (before "now") do not count: neither airs
+// anything new. They have their own bound, maxSeriesSkips.
+// Episodes with a non-positive duration never reach the materializer, so this
+// only guards against a bug (or a pathological catalog of very short items)
+// turning the expansion into a runaway loop. Hitting it is logged.
 const maxSeriesEntries = 20000
+
+// maxSeriesSkips bounds the slots one series item may skip before its cursor
+// origin, or walk through while already over, in one expansion (the lookback is a day, so even 1-second episodes
+// stay far below it).
+const maxSeriesSkips = 200000
 
 // seriesRow is an epg_entry a series item already produced: the persisted
 // source of truth for what aired, which a regeneration adopts instead of
@@ -48,11 +56,19 @@ type seriesRun struct {
 	rows     []seriesRow // adopt, sorted by start, for catchUp
 	consumed map[int64]bool
 
-	cycle   int
-	played  map[string]bool
-	lastEp  string
-	ordinal int
-	emitted int
+	cycle  int
+	played map[string]bool
+	lastEp string
+	// playedIn counts the episodes of the walk (not ones the catalog lost)
+	// in played, and firstFree is no later than the first unplayed one in
+	// canonical order: both keep a step O(1) instead of a scan of the series.
+	playedIn  int
+	firstFree int
+	ordinal   int
+	emitted   int
+	skipped   int // slots that emit nothing that will air: before the origin, or already over
+	nowMs     int64
+	capLogged bool // the cap warning is logged once per run
 
 	// Interleaved walks (il != nil, order == OrderInterleaved): the series the
 	// items group into, the group each episode belongs to, and the position in
@@ -185,6 +201,7 @@ func newSeriesRun(spec domain.SeriesSpec, channelID string, episodes []series.Ep
 		episodes:  eps,
 		byID:      make(map[string]int, len(eps)),
 		originMs:  originMs,
+		nowMs:     adoptUntilMs,
 		adopt:     make(map[int64]seriesRow),
 		consumed:  make(map[int64]bool),
 		played:    make(map[string]bool),
@@ -248,12 +265,7 @@ func (r *seriesRun) cycleDone() bool {
 	if len(r.episodes) == 0 {
 		return false
 	}
-	for _, e := range r.episodes {
-		if !r.played[e.ID] {
-			return false
-		}
-	}
-	return true
+	return r.playedIn == len(r.episodes)
 }
 
 func (r *seriesRun) empty() bool { return len(r.episodes) == 0 }
@@ -269,7 +281,11 @@ func (r *seriesRun) applyRound(id string, cycle, round int) {
 	if cycle != r.cycle {
 		r.cycle = cycle
 		r.played = make(map[string]bool)
+		r.playedIn, r.firstFree = 0, 0
 		r.round, r.lastGroup, r.turn = 0, -1, 0
+	}
+	if _, in := r.byID[id]; in && !r.played[id] {
+		r.playedIn++
 	}
 	r.played[id] = true
 	r.lastEp = id
@@ -428,12 +444,7 @@ func (r *seriesRun) nextLinear() (ep series.Episode, cycle int, ok bool) {
 	cycle = r.cycle
 	played := r.played
 	rolled := false
-	unplayed := 0
-	for _, e := range r.episodes {
-		if !played[e.ID] {
-			unplayed++
-		}
-	}
+	unplayed := n - r.playedIn
 	if unplayed == 0 {
 		// Every episode has aired: a new cycle starts. Removed episodes left
 		// the set, new ones are simply unplayed, so nothing else to settle.
@@ -467,7 +478,14 @@ func (r *seriesRun) nextLinear() (ep series.Episode, cycle int, ok bool) {
 	}
 
 	// original and release_date: the first unplayed episode in canonical order.
-	for _, e := range r.episodes {
+	start := 0
+	if !rolled {
+		for r.firstFree < n && played[r.episodes[r.firstFree].ID] {
+			r.firstFree++
+		}
+		start = r.firstFree
+	}
+	for _, e := range r.episodes[start:] {
 		if !played[e.ID] {
 			return e, cycle, true
 		}
@@ -521,6 +539,13 @@ func (r *seriesRun) commit(startMs int64, s seriesSlot) {
 		r.consumed[startMs] = true
 	}
 	r.applyRound(s.Episode.ID, s.Cycle, s.Round)
+	if startMs+s.Episode.DurationMs <= r.nowMs {
+		// Already over: the entry only exists to keep the walk's state (the
+		// writer drops it), so it must not eat the cap meant for what will
+		// actually air. It counts against the separate, larger skip bound.
+		r.skipped++
+		return
+	}
 	r.emitted++
 }
 

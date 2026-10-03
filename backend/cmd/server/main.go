@@ -58,24 +58,37 @@ func run() error {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := storage.RunMigrations(ctx, db, migrations.FS); err != nil {
+	// Migrations and the derived-data backfills run synchronously, before the
+	// server listens, with their own generous budget: they are one-time
+	// upgrade work whose duration grows with the catalog (batched, they take
+	// seconds per 50k items, but a very large tenant or a slow disk must not
+	// hit the short deadline below and crash-loop). Every step is resumable
+	// and idempotent, so even a killed upgrade continues where it stopped.
+	// Doing them before listening (rather than in the background) means no
+	// request or materializer run ever sees half-filled search_text,
+	// overview_norm or genre links.
+	upgradeCtx, upgradeCancel := context.WithTimeout(context.Background(), upgradeBudget)
+	defer upgradeCancel()
+	if err := storage.RunMigrations(upgradeCtx, db, migrations.FS); err != nil {
 		return err
 	}
 	log.Printf("storage: migrations applied (db=%s)", dbPath)
-	if err := catalogsync.BackfillSearchText(ctx, db); err != nil {
+	if err := catalogsync.BackfillSearchText(upgradeCtx, db); err != nil {
 		return err
 	}
-	if err := catalogsync.BackfillOverviewNorm(ctx, db); err != nil {
+	if err := catalogsync.BackfillOverviewNorm(upgradeCtx, db); err != nil {
 		return err
 	}
 	// Convert legacy {kind, genres, year_from, year_to} criteria of dynamic
 	// blocks and pools into condition trees, holding back (and recording for
 	// review) any whose matched set would change.
-	if _, err := catalogsync.MigrateLegacyCriteria(ctx, db); err != nil {
+	if _, err := catalogsync.MigrateLegacyCriteria(upgradeCtx, db); err != nil {
 		return err
 	}
+
+	// The short deadline covers only the remaining, non-upgrade startup work.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 
 	// TODO: multi-tenant once Auth exists. Until then every handler in
 	// internal/api operates on this one implicit tenant.
@@ -181,6 +194,10 @@ func run() error {
 		return srv.Shutdown(shutdownCtx)
 	}
 }
+
+// upgradeBudget bounds the one-time upgrade work at startup (migrations and
+// backfills), independent of the short deadline of the rest of startup.
+const upgradeBudget = 30 * time.Minute
 
 func envOrDefault(key, def string) string {
 	if v := os.Getenv(key); v != "" {

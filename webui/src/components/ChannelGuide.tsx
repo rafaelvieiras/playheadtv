@@ -7,7 +7,7 @@ import { Link } from 'react-router-dom'
 import { InlineWarning } from '@/components/InlineWarning'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { useChannelEpgPreview } from '@/lib/authoring'
+import { useChannelEpgPreview, useChannelEpgWarnings } from '@/lib/authoring'
 import { formatDurationMs } from '@/lib/filler'
 import {
   airsUntilSlotEnd,
@@ -141,6 +141,10 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
     })),
   })
 
+  // Server-evaluated: items whose query fails to evaluate (not detectable from
+  // the stored rows alone).
+  const { data: serverWarnings } = useChannelEpgWarnings(scheduleId ? channel.id : undefined)
+
   const slots = useMemo(() => computeSlots(items ?? [], timeZone), [items, timeZone])
   // Only blocks of a timed item that has a next timed item need durations.
   const durationIds = useMemo(() => {
@@ -181,11 +185,20 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
         })
       }
     })
+    ;(serverWarnings ?? []).forEach((w) => {
+      out.push({
+        kind: 'criteria-error',
+        key: `criteria-error-${w.block_id}-${w.block_item_id ?? ''}`,
+        blockId: w.block_id,
+        blockName: blocksById.get(w.block_id)?.name ?? w.block_id,
+        message: `Block "${blocksById.get(w.block_id)?.name ?? w.block_id}": ${w.message}`,
+      })
+    })
     // A block whose durations could not all be looked up is skipped, not guessed.
     if (!truncated) out.push(...tooLongWarnings(slots, blocksById, blockItems, catalog, formatDurationMs))
     return out
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [manual, dynamic, blockItems, slots, blocksById, catalog, truncated, criteriaQueries.map((q) => q.dataUpdatedAt).join(',')])
+  }, [manual, dynamic, blockItems, slots, blocksById, catalog, truncated, serverWarnings, criteriaQueries.map((q) => q.dataUpdatedAt).join(',')])
 }
 
 function GuideGrid({
@@ -343,6 +356,7 @@ export function ChannelGuide({ channel, active }: { channel: Channel; active: bo
     if (!active) return
     setNow(Date.now())
     queryClient.invalidateQueries({ queryKey: ['epg', 'channel', channel.id] })
+    queryClient.invalidateQueries({ queryKey: ['channels', channel.id, 'epg-warnings'] })
     queryClient.invalidateQueries({ queryKey: ['criteria-preview'] })
     queryClient.invalidateQueries({ queryKey: ['schedule-items', channel.schedule_id] })
     queryClient.invalidateQueries({ queryKey: ['blocks'] })
@@ -412,7 +426,15 @@ export function ChannelGuide({ channel, active }: { channel: Channel; active: bo
       {blockWarnings.map((w) => (
         <div key={w.key} data-testid={`guide-warning-${w.kind}`}>
           <InlineWarning
-            title={w.kind === 'empty' ? 'Empty block' : w.kind === 'too-long' ? 'Block longer than its slot' : 'Criteria match nothing'}
+            title={
+              w.kind === 'empty'
+                ? 'Empty block'
+                : w.kind === 'too-long'
+                  ? 'Block longer than its slot'
+                  : w.kind === 'criteria-error'
+                    ? 'Query could not be evaluated'
+                    : 'Criteria match nothing'
+            }
           >
             {w.message}{' '}
             <Link to={`/blocks/${w.blockId}`} className="underline">

@@ -232,6 +232,17 @@ A condition never matches an item that lacks the field, so `not` of a
 comparison includes such items. Dynamic blocks and pools resolve a query to
 every match ordered by title, as before.
 
+Startup backfills (`search_text`, `overview_norm`, genre links) run
+synchronously, before the server listens, in batched transactions
+(`catalogsync.BackfillBatchSize` rows per commit through `storage.DB.Transact`),
+with their own 30-minute budget independent of the short deadline of the rest
+of startup, logging progress. They are resumable and idempotent (only rows
+still missing the derived data are touched, in id order). Running them before
+listening, instead of in the background, was chosen because queries and the
+materializer would otherwise see half-filled derived data (a genre or text
+match silently missing), which is worse than a slower first boot; batching
+makes that boot take seconds per 50k items.
+
 Migration of existing criteria: SQL cannot compare matched sets, so
 `catalogsync.MigrateLegacyCriteria` runs at startup (after backfilling genre
 links and `overview_norm` for rows that predate them). For each legacy value it
@@ -364,8 +375,12 @@ edges):
   where it stopped. A slot that already started keeps the episode its row
   holds even if the catalog changed; later slots are recomputed. Slots that end
   before the origin (an occurrence under way when the item was added) are
-  skipped without using up episodes. One cap (`maxSeriesEntries`) bounds a
-  single expansion.
+  skipped without using up episodes. One cap (`maxSeriesEntries`, 20000)
+  bounds the entries a single expansion emits; slots skipped before the origin
+  and entries already over (before "now") do not count towards it (they have a
+  separate, larger bound), hitting it logs a warning with the block item and
+  channel ids. Series steps are O(1) (counters, not scans of the series), so a
+  capped expansion of 1-second episodes completes in about a second.
 - **`filler_pool`**: a named collection of filler content (commercials,
   bumpers, station IDs). **`filler_rule`** scopes a filler kind
   (preroll/midroll/postroll/tail/fallback) to a channel or a single block,
@@ -425,7 +440,10 @@ into flat `epg_entry` rows — concrete
   either way (self-hosted or cloud-sync), not a Worker.
 
 This is the one non-trivial computation in the whole backend, and it never
-runs on a request path.
+runs on a request path. A run is bounded by a generous overall timeout and each
+channel by its own 30 s budget; a channel's rows are rewritten (delete and
+inserts) in one transaction, so a timeout or failure leaves its previous
+materialization intact.
 
 ### Overrun policy (issue #10)
 
@@ -510,6 +528,15 @@ catalog edits) never reset; they keep the freeze margin.
   `GET /epg`. Nothing is written: `epg_entry` and `epg_revision` are
   untouched. Entry ids are throwaway, and random/weighted filler picks may
   differ from a later real reset.
+- `GET /channels/{id}/epg-warnings`: problems in the channel's stored
+  configuration that leave parts of its grid silently empty, as
+  `[{kind, block_id, block_item_id?, message}]` (empty list when none). Today:
+  `criteria-error` (a criteria item or dynamic block whose query fails to
+  evaluate) and `series-error` (an unreadable series spec). It runs the
+  materializer's own loader, which also logs each such item as an error with
+  its ids; the item airs nothing until fixed. The admin guide shows them next
+  to the other block warnings, and `preview_channel_grid_reset` returns the same
+  list as `warnings`.
 - MCP equivalents: `update_block_item`, `update_filler_pool_item`,
   `preview_criteria`, `preview_channel_grid_reset`.
 

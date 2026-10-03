@@ -54,7 +54,8 @@ func registerAuthoringTools(s *mcp.Server, db storage.DB, mat *materializer.Mate
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "preview_channel_grid_reset",
 		Description: "Dry-run of resetting a channel's grid: the EPG entries it would get if reset now " +
-			"(stored configuration, no freeze margin). Writes nothing and does not bump the EPG revision. " +
+			"(stored configuration, no freeze margin) plus warnings for configuration that leaves holes (for example a criteria " +
+			"item whose query fails to evaluate). Writes nothing and does not bump the EPG revision. " +
 			"Mirrors GET /channels/{id}/epg-preview.",
 	}, previewChannelGridResetHandler(db, mat))
 }
@@ -321,11 +322,11 @@ func previewChannelGridResetHandler(db storage.DB, mat *materializer.Materialize
 		if err := db.Query(ctx, &ch, "SELECT "+channelColumns+" FROM channel WHERE tenant_id = ? AND id = ?", defaultTenantID, in.ChannelID); err != nil {
 			return nil, previewEPGOutput{}, fmt.Errorf("channel: %w", err)
 		}
-		entries, err := mat.PreviewReset(ctx, defaultTenantID, ch, in.Start, in.End)
+		entries, warnings, err := mat.PreviewResetWithWarnings(ctx, defaultTenantID, ch, in.Start, in.End)
 		if err != nil {
 			return nil, previewEPGOutput{}, err
 		}
-		return nil, previewEPGOutput{Entries: entries}, nil
+		return nil, previewEPGOutput{Entries: entries, Warnings: warnings}, nil
 	}
 }
 

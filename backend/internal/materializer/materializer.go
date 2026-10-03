@@ -48,8 +48,16 @@ const triggerDebounce = 200 * time.Millisecond
 const tickInterval = 5 * time.Minute
 
 // runTimeout bounds each Run() invoked from Start's loop, so a stuck query
-// can't wedge the background worker forever.
-const runTimeout = 30 * time.Second
+// can't wedge the background worker forever. It covers every tenant and
+// channel of the run, so it is generous; channelTimeout is what bounds one
+// channel.
+const runTimeout = 5 * time.Minute
+
+// channelTimeout is the budget of one channel's regeneration (loading,
+// expansion and the transactional rewrite of its rows) inside a run, so one
+// pathological channel can neither starve the others nor wedge the worker.
+// A channel that exceeds it is logged and keeps its previous materialization.
+const channelTimeout = 30 * time.Second
 
 // scheduleItemColumns/fillerRuleColumns alias columns whose DB name doesn't
 // spell out to the domain struct's field name, same pattern (and same
@@ -200,7 +208,10 @@ func (m *Materializer) runTenant(ctx context.Context, tenantID string, now, scan
 	}
 
 	for _, ch := range channels {
-		if err := m.materializeChannel(ctx, ch, tenantID, now, scanFrom, windowEnd, cache, state); err != nil {
+		chCtx, cancel := context.WithTimeout(ctx, channelTimeout)
+		err := m.materializeChannel(chCtx, ch, tenantID, now, scanFrom, windowEnd, cache, state)
+		cancel()
+		if err != nil {
 			log.Printf("materializer: channel %s: %v", ch.ID, err)
 		}
 	}
@@ -444,7 +455,7 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		}
 	}
 
-	runs, err := m.loadSeriesRuns(ctx, ch, tenantID, blockItems, dynamicWalks, now, scanFrom, preview)
+	runs, warnings, err := m.loadSeriesRuns(ctx, ch, tenantID, blockItems, dynamicWalks, now, scanFrom, preview)
 	if err != nil {
 		return channelInput{}, err
 	}
@@ -460,6 +471,7 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		PoolItems:       poolItems,
 		CatalogDuration: catalogDuration,
 		DynamicBlockIDs: dynamicBlockIDs,
+		Warnings:        warnings,
 	}, nil
 }
 
@@ -594,17 +606,27 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 		// Keep the frozen head; only what starts at or after the margin goes.
 		deleteSQL, deleteArg = "DELETE FROM epg_entry WHERE channel_id = ? AND start_at >= ?", keptCutMs
 	}
-	if err := m.db.Exec(ctx, deleteSQL, ch.ID, deleteArg); err != nil {
-		return fmt.Errorf("delete stale epg_entry: %w", err)
-	}
-	for _, e := range toInsert {
-		if err := m.db.Exec(ctx,
-			`INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at, rotation_next, source_block_item_id, series_cycle, series_round)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			e.ID, e.TenantID, e.ChannelID, string(e.Kind), e.CatalogItemID, e.StartAt, e.EndAt, e.SourceScheduleItemID, e.GeneratedAt, e.RotationNext, e.SourceBlockItemID, e.SeriesCycle, e.SeriesRound,
-		); err != nil {
-			return fmt.Errorf("insert epg_entry: %w", err)
+	// Delete and re-insert in one transaction: one commit instead of one per
+	// row (a capped expansion writes ~20k rows), and a failure or timeout
+	// midway leaves the channel's previous materialization untouched instead
+	// of half-rewritten.
+	err = m.db.Transact(ctx, func(tx storage.DB) error {
+		if err := tx.Exec(ctx, deleteSQL, ch.ID, deleteArg); err != nil {
+			return fmt.Errorf("delete stale epg_entry: %w", err)
 		}
+		for _, e := range toInsert {
+			if err := tx.Exec(ctx,
+				`INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at, rotation_next, source_block_item_id, series_cycle, series_round)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				e.ID, e.TenantID, e.ChannelID, string(e.Kind), e.CatalogItemID, e.StartAt, e.EndAt, e.SourceScheduleItemID, e.GeneratedAt, e.RotationNext, e.SourceBlockItemID, e.SeriesCycle, e.SeriesRound,
+			); err != nil {
+				return fmt.Errorf("insert epg_entry: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return err
 	}
 	return nil
 }
@@ -617,11 +639,18 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 // are fresh and not persisted; random/weighted filler selection may differ
 // from what an actual reset later picks.
 func (m *Materializer) PreviewReset(ctx context.Context, tenantID string, ch domain.Channel, startMs, endMs int64) ([]domain.EpgEntry, error) {
+	out, _, err := m.PreviewResetWithWarnings(ctx, tenantID, ch, startMs, endMs)
+	return out, err
+}
+
+// PreviewResetWithWarnings is PreviewReset plus the configuration warnings
+// found while loading (see Warning).
+func (m *Materializer) PreviewResetWithWarnings(ctx context.Context, tenantID string, ch domain.Channel, startMs, endMs int64) ([]domain.EpgEntry, []Warning, error) {
 	now := time.Now().UTC()
 	nowMs := now.UnixMilli()
 	in, err := m.loadChannelInput(ctx, ch, tenantID, newCatalogDurationCache(m.db), now, now.Add(-scanLookback), true)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	generated := expandChannel(in, now, now.Add(-scanLookback), now.Add(m.window), newSelectionState())
 	out := make([]domain.EpgEntry, 0, len(generated))
@@ -638,7 +667,11 @@ func (m *Materializer) PreviewReset(ctx context.Context, tenantID string, ch dom
 		out = append(out, e)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartAt < out[j].StartAt })
-	return out, nil
+	warnings := in.Warnings
+	if warnings == nil {
+		warnings = []Warning{}
+	}
+	return out, warnings, nil
 }
 
 // bumpRevision upserts the tenant's epg_revision row, same ON CONFLICT
@@ -679,6 +712,40 @@ func (c *catalogDurationCache) Get(ctx context.Context, catalogItemID string) (i
 	return durations[0], nil
 }
 
+// Warning kinds a channel's configuration can raise.
+const (
+	// WarningCriteriaError: a criteria item or dynamic block whose query could
+	// not be evaluated (invalid stored query or a failing lookup).
+	WarningCriteriaError = "criteria-error"
+	// WarningSeriesError: a series item whose stored spec cannot be read.
+	WarningSeriesError = "series-error"
+)
+
+// Warning is a problem found in a channel's stored configuration that makes
+// part of its programming silently absent. BlockItemID is empty for a dynamic
+// block (the block itself is the walked item).
+type Warning struct {
+	Kind        string `json:"kind"`
+	BlockID     string `json:"block_id"`
+	BlockItemID string `json:"block_item_id,omitempty"`
+	Message     string `json:"message"`
+}
+
+// Warnings evaluates the channel's stored configuration read-only and returns
+// what would leave holes in its grid (see Warning). It runs the same loader
+// as the real materialization, so it reports exactly what a run would skip.
+func (m *Materializer) Warnings(ctx context.Context, tenantID string, ch domain.Channel) ([]Warning, error) {
+	now := time.Now().UTC()
+	in, err := m.loadChannelInput(ctx, ch, tenantID, newCatalogDurationCache(m.db), now, now.Add(-scanLookback), true)
+	if err != nil {
+		return nil, err
+	}
+	if in.Warnings == nil {
+		return []Warning{}, nil
+	}
+	return in.Warnings, nil
+}
+
 // dynamicWalk is the interleaved walk of a dynamic block: the query it
 // matches and the spec the walk is built from.
 type dynamicWalk struct {
@@ -694,9 +761,20 @@ type dynamicWalk struct {
 // the reset it simulates). dynamic holds the walked stand-in item of each
 // interleaved dynamic block (keyed by block id, which is also the id its
 // entries record), whose origin comes from block_cursor instead.
-func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, tenantID string, blockItems map[string][]domain.BlockItem, dynamic map[string]dynamicWalk, now, scanFrom time.Time, preview bool) (map[string]*seriesRun, error) {
+func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, tenantID string, blockItems map[string][]domain.BlockItem, dynamic map[string]dynamicWalk, now, scanFrom time.Time, preview bool) (map[string]*seriesRun, []Warning, error) {
 	runs := make(map[string]*seriesRun)
-	for _, items := range blockItems {
+	var warnings []Warning
+	// skip records an item that cannot be walked: it is logged as an error and
+	// reported as a warning (see Warning), and the item airs nothing, which
+	// leaves a hole the fallback filler (if any) covers.
+	skip := func(kind, blockID, itemID, what string, err error) {
+		log.Printf("materializer: ERROR channel %s: block %s item %s: %s: %v (the item is skipped, its time is left to the fallback filler or a gap)", ch.ID, blockID, itemID, what, err)
+		warnings = append(warnings, Warning{
+			Kind: kind, BlockID: blockID, BlockItemID: itemID,
+			Message: fmt.Sprintf("%s: %v. The item airs nothing until this is fixed.", what, err),
+		})
+	}
+	for blockID, items := range blockItems {
 		for _, it := range items {
 			if !it.IsWalked() {
 				continue
@@ -711,7 +789,7 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 				var err error
 				spec = dw.Spec
 				if episodes, err = blockitem.Episodes(ctx, m.db, tenantID, dw.Criteria); err != nil {
-					log.Printf("materializer: block %s: query: %v", it.ID, err)
+					skip(WarningCriteriaError, it.ID, "", "the dynamic block's query failed to evaluate", err)
 					continue
 				}
 			} else if it.IsCriteria() {
@@ -719,22 +797,22 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 				// play the part of the episodes, in the item's playback order.
 				cs, err := blockitem.ParseCriteriaSpec(it.Spec)
 				if err != nil {
-					log.Printf("materializer: block_item %s: %v", it.ID, err)
+					skip(WarningCriteriaError, blockID, it.ID, "the criteria item's spec is invalid", err)
 					continue
 				}
 				spec = criteriaWalkSpec(cs)
 				if episodes, err = blockitem.Episodes(ctx, m.db, tenantID, cs); err != nil {
-					log.Printf("materializer: block_item %s: query: %v", it.ID, err)
+					skip(WarningCriteriaError, blockID, it.ID, "the criteria item's query failed to evaluate", err)
 					continue
 				}
 			} else {
 				var err error
 				if spec, err = series.ParseSpec(it.Spec); err != nil {
-					log.Printf("materializer: block_item %s: %v", it.ID, err)
+					skip(WarningSeriesError, blockID, it.ID, "the series item's spec is invalid", err)
 					continue
 				}
 				if episodes, err = series.Episodes(ctx, m.db, tenantID, spec); err != nil {
-					return nil, fmt.Errorf("list episodes of block_item %s: %w", it.ID, err)
+					return nil, nil, fmt.Errorf("list episodes of block_item %s: %w", it.ID, err)
 				}
 			}
 
@@ -750,7 +828,7 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 					"SELECT origin_ms FROM "+cursorTable+" WHERE tenant_id = ? AND channel_id = ? AND "+cursorCol+" = ?",
 					tenantID, ch.ID, it.ID,
 				); err != nil {
-					return nil, fmt.Errorf("read series cursor: %w", err)
+					return nil, nil, fmt.Errorf("read series cursor: %w", err)
 				}
 				if len(origins) > 0 {
 					originMs = origins[0]
@@ -758,7 +836,7 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 					"INSERT OR IGNORE INTO "+cursorTable+" (tenant_id, channel_id, "+cursorCol+", origin_ms) VALUES (?, ?, ?, ?)",
 					tenantID, ch.ID, it.ID, originMs,
 				); err != nil {
-					return nil, fmt.Errorf("create series cursor: %w", err)
+					return nil, nil, fmt.Errorf("create series cursor: %w", err)
 				}
 				var rows []struct {
 					StartAt       int64
@@ -770,7 +848,7 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 					"SELECT start_at, catalog_item_id, series_cycle, series_round FROM epg_entry WHERE tenant_id = ? AND channel_id = ? AND source_block_item_id = ? AND start_at >= ? ORDER BY start_at",
 					tenantID, ch.ID, it.ID, originMs,
 				); err != nil {
-					return nil, fmt.Errorf("read series entries: %w", err)
+					return nil, nil, fmt.Errorf("read series entries: %w", err)
 				}
 				for _, r := range rows {
 					cycle, round := 0, 0
@@ -791,5 +869,5 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 			runs[it.ID] = newSeriesRun(spec, ch.ID, episodes, originMs, history, ahead, now.UnixMilli())
 		}
 	}
-	return runs, nil
+	return runs, warnings, nil
 }

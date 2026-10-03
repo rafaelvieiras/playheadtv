@@ -15,6 +15,7 @@ func registerEPG(mux *http.ServeMux, db storage.DB, mat *materializer.Materializ
 	mux.HandleFunc("GET /epg", getEPG(db))
 	mux.HandleFunc("GET /epg/meta", getEPGMeta(db, mat))
 	mux.HandleFunc("GET /channels/{id}/epg-preview", previewChannelGridReset(db, mat))
+	mux.HandleFunc("GET /channels/{id}/epg-warnings", channelEPGWarnings(db, mat))
 }
 
 const epgEntryColumns = "id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at"
@@ -128,5 +129,26 @@ func previewChannelGridReset(db storage.DB, mat *materializer.Materializer) http
 			return
 		}
 		writeJSON(w, http.StatusOK, entries)
+	}
+}
+
+// channelEPGWarnings reports the problems in a channel's stored configuration
+// that leave parts of its programming silently absent, today a criteria item
+// (or dynamic block) whose query fails to evaluate: [{kind, block_id,
+// block_item_id?, message}], empty when there is none. Read-only; it runs the
+// same loader as the materializer.
+func channelEPGWarnings(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		ch, err := fetchChannel(db, r, r.PathValue("id"))
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		warnings, err := mat.Warnings(r.Context(), DefaultTenantID, ch)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "could not evaluate the channel configuration")
+			return
+		}
+		writeJSON(w, http.StatusOK, warnings)
 	}
 }

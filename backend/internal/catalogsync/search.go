@@ -2,7 +2,6 @@ package catalogsync
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"unicode"
 
@@ -65,17 +64,17 @@ type searchBackfillRow struct {
 }
 
 // BackfillSearchText fills search_text for catalog_item rows that predate the
-// column (search_text = ”). Safe to run on every startup: SearchText never
-// returns an empty string, so a filled row is never picked up again.
+// column (search_text = ”). Safe to run on every startup and resumable: it
+// works in batched transactions (see runBackfill), SearchText never returns
+// an empty string, so a filled row is never picked up again.
 func BackfillSearchText(ctx context.Context, db storage.DB) error {
-	var rows []searchBackfillRow
-	if err := db.Query(ctx, &rows, "SELECT id, title, series_title FROM catalog_item WHERE search_text = ''"); err != nil {
-		return fmt.Errorf("catalogsync: list rows to backfill: %w", err)
-	}
-	for _, r := range rows {
-		if err := db.Exec(ctx, "UPDATE catalog_item SET search_text = ? WHERE id = ?", SearchText(r.Title, r.SeriesTitle), r.ID); err != nil {
-			return fmt.Errorf("catalogsync: backfill search_text for %s: %w", r.ID, err)
-		}
-	}
-	return nil
+	return runBackfill(ctx, db, backfill[searchBackfillRow]{
+		name:  "search_text",
+		where: "search_text = ''",
+		cols:  "id, title, series_title",
+		id:    func(r searchBackfillRow) string { return r.ID },
+		apply: func(ctx context.Context, tx storage.DB, r searchBackfillRow) error {
+			return tx.Exec(ctx, "UPDATE catalog_item SET search_text = ? WHERE id = ?", SearchText(r.Title, r.SeriesTitle), r.ID)
+		},
+	})
 }
