@@ -55,8 +55,8 @@ export function CriteriaReviewNotice({
       {entry && (
         <div className="flex flex-col gap-2 text-sm">
           <p data-testid="criteria-review-counts">
-            Matches {entry.before_count} item{entry.before_count === 1 ? '' : 's'} today. The proposed query would match{' '}
-            {entry.after_count}.
+            Matches {entry.before_count} item{entry.before_count === 1 ? '' : 's'} today.
+            {entry.proposed_query && <> The proposed query would match {entry.after_count}.</>}
           </p>
           {entry.proposed_query && (
             <p className="text-muted-foreground" data-testid="criteria-review-proposal">
@@ -64,7 +64,7 @@ export function CriteriaReviewNotice({
             </p>
           )}
           {entry.problem && <p className="text-destructive">{entry.problem}</p>}
-          {entry.only_before.length > 0 && (
+          {entry.proposed_query && entry.only_before.length > 0 && (
             <p data-testid="criteria-review-dropped">
               <span className="font-medium">Would stop matching:</span> {titles(entry.only_before)}
             </p>

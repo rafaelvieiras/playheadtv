@@ -808,7 +808,7 @@ function BlockItemsSection({ block }: { block: Block }) {
         )}
         {!newCriteriaAmount && (
           <p className="text-xs text-muted-foreground">
-            Choose how many matches to play per visit, or all of them. There is no default.
+            Enter how many matches to play per visit, or choose all of them.
           </p>
         )}
         <div>

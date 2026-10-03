@@ -22,6 +22,8 @@ export const STRATEGY_LABELS: Record<SelectionStrategy, string> = {
 }
 
 export function formatDurationMs(ms: number): string {
+  // Under a minute, minutes would round to "0min": show seconds instead.
+  if (ms < 60000) return `${Math.round(ms / 1000)}s`
   const totalMinutes = Math.round(ms / 60000)
   const hours = Math.floor(totalMinutes / 60)
   const minutes = totalMinutes % 60
