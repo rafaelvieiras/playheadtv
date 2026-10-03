@@ -106,8 +106,8 @@ func TestBlockListMode_ReviewListAndItsResolution(t *testing.T) {
 	// weekly item, one with only a continuous item (listed but no longer
 	// timed), and a stale entry for a block set to once.
 	for _, q := range []string{
-		`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, recurrence_type, day_of_week, start_time_local, active, created_at, updated_at)
-		 VALUES ('w', 'default', '` + scheduleID + `', '` + flagged.ID + `', 'weekly', 1, '17:00', 1, 1, 1)`,
+		`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, recurrence_type, days_of_week, start_time_local, active, created_at, updated_at)
+		 VALUES ('w', 'default', '` + scheduleID + `', '` + flagged.ID + `', 'weekly', '1', '17:00', 1, 1, 1)`,
 		`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, recurrence_type, active, created_at, updated_at)
 		 VALUES ('c', 'default', '` + scheduleID + `', '` + other.ID + `', 'continuous', 1, 1, 1)`,
 		`INSERT INTO block_list_mode_review (tenant_id, block_id, created_at) VALUES ('default', '` + flagged.ID + `', 1)`,
