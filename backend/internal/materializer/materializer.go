@@ -64,7 +64,7 @@ const channelTimeout = 30 * time.Second
 // underlying columns) as internal/api/schedules.go and internal/api/filler.go
 // — duplicated here (rather than imported) because this package must not
 // depend on internal/api.
-const scheduleItemColumns = "id, tenant_id, schedule_id, block_id, recurrence_type AS recurrence, day_of_week, start_time_local, start_at, active, created_at, updated_at"
+const scheduleItemColumns = "id, tenant_id, schedule_id, block_id, recurrence_type AS recurrence, days_of_week, start_time_local, start_at, active, created_at, updated_at"
 const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, filler_pool_id, selection_strategy AS selection, position, created_at"
 const blockItemColumns = "id, block_id, position, item_type, COALESCE(catalog_item_id, '') AS catalog_item_id, trim_duration_ms, spec"
 const fillerPoolItemColumns = "id, filler_pool_id, catalog_item_id, weight"

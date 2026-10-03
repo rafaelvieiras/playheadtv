@@ -22,7 +22,7 @@ func TestWeeklyOccurrenceTimes_UTC(t *testing.T) {
 	scanFrom := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
 	windowEnd := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
 
-	times, err := weeklyOccurrenceTimes(3, "20:00", time.UTC, scanFrom, windowEnd)
+	times, err := weeklyOccurrenceTimes(domain.Weekdays{3}, "20:00", time.UTC, scanFrom, windowEnd)
 	if err != nil {
 		t.Fatalf("weeklyOccurrenceTimes: %v", err)
 	}
@@ -41,7 +41,7 @@ func TestWeeklyOccurrenceTimes_NonUTCTimezone(t *testing.T) {
 	scanFrom := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
 	windowEnd := time.Date(2026, 9, 29, 0, 0, 0, 0, time.UTC)
 
-	times, err := weeklyOccurrenceTimes(1, "20:00", loc, scanFrom, windowEnd)
+	times, err := weeklyOccurrenceTimes(domain.Weekdays{1}, "20:00", loc, scanFrom, windowEnd)
 	if err != nil {
 		t.Fatalf("weeklyOccurrenceTimes: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestWeeklyOccurrenceTimes_OutsideWindowExcluded(t *testing.T) {
 	scanFrom := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
 	windowEnd := time.Date(2026, 9, 29, 0, 0, 0, 0, time.UTC)
 	// day_of_week 3 (Wednesday) falls well outside this one-day window.
-	times, err := weeklyOccurrenceTimes(3, "20:00", time.UTC, scanFrom, windowEnd)
+	times, err := weeklyOccurrenceTimes(domain.Weekdays{3}, "20:00", time.UTC, scanFrom, windowEnd)
 	if err != nil {
 		t.Fatalf("weeklyOccurrenceTimes: %v", err)
 	}
@@ -303,12 +303,12 @@ func TestExpandChannel_OverrunDropsWholeItemAndRespectsNextStart(t *testing.T) {
 		{
 			ID: "se1", ScheduleID: "sched1", BlockID: "long",
 			Recurrence: domain.RecurrenceWeekly,
-			DayOfWeek:  intPtr(3), StartTimeLocal: strPtr("20:00"), Active: true,
+			DaysOfWeek: domain.Weekdays{3}, StartTimeLocal: strPtr("20:00"), Active: true,
 		},
 		{
 			ID: "se2", ScheduleID: "sched1", BlockID: "long",
 			Recurrence: domain.RecurrenceWeekly,
-			DayOfWeek:  intPtr(3), StartTimeLocal: strPtr("20:30"), Active: true,
+			DaysOfWeek: domain.Weekdays{3}, StartTimeLocal: strPtr("20:30"), Active: true,
 		},
 	}
 
@@ -515,10 +515,10 @@ func TestExpandChannel_PrerollAppearsBeforeFirstProgram(t *testing.T) {
 	}
 
 	in := channelInput{
-		ChannelID:       channelID,
-		TenantID:        tenantID,
-		Timezone:        "UTC",
-		ScheduleItems:   scheduleItems,
+		ChannelID:     channelID,
+		TenantID:      tenantID,
+		Timezone:      "UTC",
+		ScheduleItems: scheduleItems,
 		BlockItems: map[string][]domain.BlockItem{
 			"blk1": {{ID: "bi1", BlockID: "blk1", Position: 0, CatalogItemID: "cat-show"}},
 		},
@@ -582,12 +582,12 @@ func TestExpandChannel_DynamicBlockLoopsAsProgram(t *testing.T) {
 		{
 			ID: "se1", ScheduleID: "sched1", BlockID: blockID,
 			Recurrence: domain.RecurrenceWeekly,
-			DayOfWeek:  intPtr(1), StartTimeLocal: strPtr("00:00"), Active: true,
+			DaysOfWeek: domain.Weekdays{1}, StartTimeLocal: strPtr("00:00"), Active: true,
 		},
 		{
 			ID: "se2", ScheduleID: "sched1", BlockID: blockID,
 			Recurrence: domain.RecurrenceWeekly,
-			DayOfWeek:  intPtr(2), StartTimeLocal: strPtr("00:00"), Active: true,
+			DaysOfWeek: domain.Weekdays{2}, StartTimeLocal: strPtr("00:00"), Active: true,
 		},
 	}
 

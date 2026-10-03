@@ -33,7 +33,7 @@ const scheduleColumns = "id, tenant_id, name, description, created_at, updated_a
 // scheduleItemColumns aliases recurrence_type to Recurrence, the struct field
 // name domain.ScheduleItem actually has — same pattern as fillerRuleColumns
 // in filler.go.
-const scheduleItemColumns = "id, tenant_id, schedule_id, block_id, recurrence_type AS recurrence, day_of_week, start_time_local, start_at, active, created_at, updated_at"
+const scheduleItemColumns = "id, tenant_id, schedule_id, block_id, recurrence_type AS recurrence, days_of_week, start_time_local, start_at, active, created_at, updated_at"
 
 type scheduleRequest struct {
 	Name        string  `json:"name"`
@@ -185,10 +185,20 @@ func deleteSchedule(db storage.DB, mat *materializer.Materializer) http.HandlerF
 type scheduleItemRequest struct {
 	BlockID        string  `json:"block_id"`
 	RecurrenceType string  `json:"recurrence_type"`
-	DayOfWeek      *int    `json:"day_of_week"`
+	DaysOfWeek     []int   `json:"days_of_week"`
 	StartTimeLocal *string `json:"start_time_local"`
 	StartAt        *int64  `json:"start_at"`
 	Active         *bool   `json:"active"`
+}
+
+// requestWeekdays is the item's stored weekday set: the validated, sorted
+// list for a weekly item, empty for any other recurrence.
+func requestWeekdays(req scheduleItemRequest) domain.Weekdays {
+	if req.RecurrenceType != string(domain.RecurrenceWeekly) {
+		return domain.Weekdays{}
+	}
+	days, _ := domain.NormalizeWeekdays(req.DaysOfWeek) // validated by the caller
+	return days
 }
 
 func validateScheduleItemRequest(req scheduleItemRequest) (string, bool) {
@@ -197,8 +207,8 @@ func validateScheduleItemRequest(req scheduleItemRequest) (string, bool) {
 	}
 	switch domain.RecurrenceType(req.RecurrenceType) {
 	case domain.RecurrenceWeekly:
-		if req.DayOfWeek == nil || *req.DayOfWeek < 0 || *req.DayOfWeek > 6 {
-			return "day_of_week (0-6) is required for weekly recurrence", false
+		if _, err := domain.NormalizeWeekdays(req.DaysOfWeek); err != nil {
+			return err.Error(), false
 		}
 		if req.StartTimeLocal == nil {
 			return "start_time_local is required for weekly recurrence", false
@@ -210,7 +220,13 @@ func validateScheduleItemRequest(req scheduleItemRequest) (string, bool) {
 		if req.StartAt == nil {
 			return "start_at is required for once recurrence", false
 		}
+		if len(req.DaysOfWeek) > 0 {
+			return "days_of_week is only valid for weekly recurrence", false
+		}
 	case domain.RecurrenceContinuous:
+		if len(req.DaysOfWeek) > 0 {
+			return "days_of_week is only valid for weekly recurrence", false
+		}
 		// No time fields: the item fills whatever the timed items leave.
 		// "At most one per schedule" is checked against the DB by the handlers.
 	default:
@@ -270,7 +286,7 @@ func createScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 				writeError(w, http.StatusConflict, errSecondContinuous)
 				return
 			}
-			req.DayOfWeek, req.StartTimeLocal, req.StartAt = nil, nil, nil
+			req.StartTimeLocal, req.StartAt = nil, nil
 		}
 		active := true
 		if req.Active != nil {
@@ -283,7 +299,7 @@ func createScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 			ScheduleID:     scheduleID,
 			BlockID:        req.BlockID,
 			Recurrence:     domain.RecurrenceType(req.RecurrenceType),
-			DayOfWeek:      req.DayOfWeek,
+			DaysOfWeek:     requestWeekdays(req),
 			StartTimeLocal: req.StartTimeLocal,
 			StartAt:        req.StartAt,
 			Active:         active,
@@ -291,9 +307,9 @@ func createScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 			UpdatedAt:      now,
 		}
 		err := db.Exec(r.Context(),
-			`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, recurrence_type, day_of_week, start_time_local, start_at, active, created_at, updated_at)
+			`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, recurrence_type, days_of_week, start_time_local, start_at, active, created_at, updated_at)
 			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			si.ID, si.TenantID, si.ScheduleID, si.BlockID, string(si.Recurrence), si.DayOfWeek, si.StartTimeLocal,
+			si.ID, si.TenantID, si.ScheduleID, si.BlockID, string(si.Recurrence), si.DaysOfWeek, si.StartTimeLocal,
 			si.StartAt, si.Active, si.CreatedAt, si.UpdatedAt,
 		)
 		if err != nil {
@@ -363,7 +379,7 @@ func updateScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 				writeError(w, http.StatusConflict, errSecondContinuous)
 				return
 			}
-			req.DayOfWeek, req.StartTimeLocal, req.StartAt = nil, nil, nil
+			req.StartTimeLocal, req.StartAt = nil, nil
 		}
 		active := true
 		if req.Active != nil {
@@ -371,9 +387,9 @@ func updateScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 		}
 		// scheduleID is immutable via PUT (items don't move between schedules).
 		err = db.Exec(r.Context(),
-			`UPDATE schedule_item SET block_id = ?, recurrence_type = ?, day_of_week = ?,
+			`UPDATE schedule_item SET block_id = ?, recurrence_type = ?, days_of_week = ?,
 			 start_time_local = ?, start_at = ?, active = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`,
-			req.BlockID, req.RecurrenceType, req.DayOfWeek, req.StartTimeLocal, req.StartAt,
+			req.BlockID, req.RecurrenceType, requestWeekdays(req), req.StartTimeLocal, req.StartAt,
 			active, time.Now().UnixMilli(), DefaultTenantID, id,
 		)
 		if err != nil {

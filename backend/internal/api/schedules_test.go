@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
@@ -91,7 +92,7 @@ func TestScheduleItemsCRUD(t *testing.T) {
 	_, blockID := setupChannelAndBlock(t, mux)
 	scheduleID := setupSchedule(t, mux)
 
-	body := fmt.Sprintf(`{"block_id":%q,"recurrence_type":"weekly","day_of_week":1,"start_time_local":"08:00"}`, blockID)
+	body := fmt.Sprintf(`{"block_id":%q,"recurrence_type":"weekly","days_of_week":[1],"start_time_local":"08:00"}`, blockID)
 	rec := doRequest(t, mux, "POST", "/schedules/"+scheduleID+"/items", body)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("create: status = %d, body = %s", rec.Code, rec.Body.String())
@@ -225,7 +226,7 @@ func TestScheduleItemContinuousAtMostOnePerSchedule(t *testing.T) {
 	}
 	var first domain.ScheduleItem
 	json.Unmarshal(rec.Body.Bytes(), &first)
-	if first.Recurrence != domain.RecurrenceContinuous || first.DayOfWeek != nil || first.StartAt != nil {
+	if first.Recurrence != domain.RecurrenceContinuous || len(first.DaysOfWeek) != 0 || first.StartAt != nil {
 		t.Fatalf("unexpected continuous item: %+v", first)
 	}
 
@@ -241,7 +242,7 @@ func TestScheduleItemContinuousAtMostOnePerSchedule(t *testing.T) {
 	}
 
 	// Turning a timed item into a second continuous one is rejected too...
-	weekly := fmt.Sprintf(`{"block_id":%q,"recurrence_type":"weekly","day_of_week":1,"start_time_local":"08:00"}`, blockID)
+	weekly := fmt.Sprintf(`{"block_id":%q,"recurrence_type":"weekly","days_of_week":[1],"start_time_local":"08:00"}`, blockID)
 	rec = doRequest(t, mux, "POST", "/schedules/"+scheduleID+"/items", weekly)
 	var timed domain.ScheduleItem
 	json.Unmarshal(rec.Body.Bytes(), &timed)
@@ -279,5 +280,86 @@ func TestEPGMetaExposesFreezeMargin(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &meta)
 	if meta.FreezeMarginMs != 3*60*60*1000 {
 		t.Fatalf("freeze_margin_ms = %d, want 3h in ms (body %s)", meta.FreezeMarginMs, rec.Body.String())
+	}
+}
+
+func TestScheduleItemWeeklyMultipleDays(t *testing.T) {
+	_, mux := newTestDB(t)
+	_, blockID := setupChannelAndBlock(t, mux)
+	scheduleID := setupSchedule(t, mux)
+	url := "/schedules/" + scheduleID + "/items"
+
+	// A list is stored sorted and returned as a list.
+	body := fmt.Sprintf(`{"block_id":%q,"recurrence_type":"weekly","days_of_week":[5,4],"start_time_local":"22:00"}`, blockID)
+	rec := doRequest(t, mux, "POST", url, body)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var item domain.ScheduleItem
+	json.Unmarshal(rec.Body.Bytes(), &item)
+	if len(item.DaysOfWeek) != 2 || item.DaysOfWeek[0] != 4 || item.DaysOfWeek[1] != 5 {
+		t.Fatalf("created days_of_week = %v, want [4 5]", item.DaysOfWeek)
+	}
+	if strings.Contains(rec.Body.String(), "day_of_week\"") {
+		t.Fatalf("response still carries the old single-day field: %s", rec.Body.String())
+	}
+
+	// The list round-trips through GET and PUT.
+	rec = doRequest(t, mux, "GET", "/schedule-items/"+item.ID, "")
+	var got domain.ScheduleItem
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if len(got.DaysOfWeek) != 2 {
+		t.Fatalf("get days_of_week = %v", got.DaysOfWeek)
+	}
+	put := fmt.Sprintf(`{"block_id":%q,"recurrence_type":"weekly","days_of_week":[0,1,2,3,4,5,6],"start_time_local":"18:00"}`, blockID)
+	rec = doRequest(t, mux, "PUT", "/schedule-items/"+item.ID, put)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	json.Unmarshal(rec.Body.Bytes(), &got)
+	if len(got.DaysOfWeek) != 7 {
+		t.Fatalf("updated days_of_week = %v, want all seven", got.DaysOfWeek)
+	}
+
+	// Converting to a non-weekly item empties the list (and JSON stays an array).
+	once := fmt.Sprintf(`{"block_id":%q,"recurrence_type":"once","start_at":1700000000000}`, blockID)
+	rec = doRequest(t, mux, "PUT", "/schedule-items/"+item.ID, once)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"days_of_week":[]`) {
+		t.Fatalf("convert to once: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestScheduleItemWeeklyDaysValidation(t *testing.T) {
+	_, mux := newTestDB(t)
+	_, blockID := setupChannelAndBlock(t, mux)
+	scheduleID := setupSchedule(t, mux)
+	url := "/schedules/" + scheduleID + "/items"
+
+	cases := map[string]string{
+		"missing":            `"recurrence_type":"weekly","start_time_local":"08:00"`,
+		"empty":              `"recurrence_type":"weekly","days_of_week":[],"start_time_local":"08:00"`,
+		"duplicate":          `"recurrence_type":"weekly","days_of_week":[1,1],"start_time_local":"08:00"`,
+		"negative":           `"recurrence_type":"weekly","days_of_week":[-1],"start_time_local":"08:00"`,
+		"out of range":       `"recurrence_type":"weekly","days_of_week":[2,7],"start_time_local":"08:00"`,
+		"old single-day key": `"recurrence_type":"weekly","day_of_week":1,"start_time_local":"08:00"`,
+		"once with days":     `"recurrence_type":"once","days_of_week":[1],"start_at":1`,
+		"continuous w/ days": `"recurrence_type":"continuous","days_of_week":[1]`,
+	}
+	for name, fields := range cases {
+		body := fmt.Sprintf(`{"block_id":%q,%s}`, blockID, fields)
+		for _, method := range []string{"POST", "PUT"} {
+			target := url
+			if method == "PUT" {
+				// Seed an item to update.
+				seed := fmt.Sprintf(`{"block_id":%q,"recurrence_type":"once","start_at":1}`, blockID)
+				rec := doRequest(t, mux, "POST", url, seed)
+				var it domain.ScheduleItem
+				json.Unmarshal(rec.Body.Bytes(), &it)
+				target = "/schedule-items/" + it.ID
+			}
+			if rec := doRequest(t, mux, method, target, body); rec.Code != http.StatusBadRequest {
+				t.Errorf("%s %s: status = %d, want 400, body = %s", name, method, rec.Code, rec.Body.String())
+			}
+		}
 	}
 }

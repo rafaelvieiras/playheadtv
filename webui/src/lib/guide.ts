@@ -92,6 +92,8 @@ function minutesOfDay(hhmm: string): number {
 
 export interface Slot {
   item: ScheduleItem
+  // The weekday of a weekly slot (a multi-day item has one slot per day).
+  day?: number
   label: string
   lengthMs: number
 }
@@ -102,17 +104,21 @@ export interface Slot {
 // same local date. The last timed item of a day has no slot (undefined).
 export function computeSlots(items: ScheduleItem[], timeZone: string | undefined): Slot[] {
   const slots: Slot[] = []
-  const weekly = items.filter((i) => i.active && i.recurrence_type === 'weekly' && i.day_of_week !== null && i.start_time_local)
-  for (const item of weekly) {
+  // A weekly item occupies one position per listed day.
+  const weekly = items
+    .filter((i) => i.active && i.recurrence_type === 'weekly' && i.days_of_week.length > 0 && i.start_time_local)
+    .flatMap((item) => item.days_of_week.map((day) => ({ item, day })))
+  for (const { item, day } of weekly) {
     const start = minutesOfDay(item.start_time_local as string)
     const later = weekly
-      .filter((o) => o.day_of_week === item.day_of_week && minutesOfDay(o.start_time_local as string) > start)
-      .map((o) => minutesOfDay(o.start_time_local as string))
+      .filter((o) => o.day === day && minutesOfDay(o.item.start_time_local as string) > start)
+      .map((o) => minutesOfDay(o.item.start_time_local as string))
     if (later.length === 0) continue
     const next = Math.min(...later)
     slots.push({
       item,
-      label: `${DAY_LABELS[item.day_of_week as number]} ${item.start_time_local} to ${String(Math.floor(next / 60)).padStart(2, '0')}:${String(next % 60).padStart(2, '0')}`,
+      day,
+      label: `${DAY_LABELS[day]} ${item.start_time_local} to ${String(Math.floor(next / 60)).padStart(2, '0')}:${String(next % 60).padStart(2, '0')}`,
       lengthMs: (next - start) * 60000,
     })
   }
@@ -200,7 +206,7 @@ export function tooLongWarnings(
     if (total === undefined || total <= slot.lengthMs) continue
     out.push({
       kind: 'too-long',
-      key: `too-long-${slot.item.id}`,
+      key: `too-long-${slot.item.id}${slot.day === undefined ? '' : `-${slot.day}`}`,
       blockId: block.id,
       blockName: block.name,
       message: `Block "${block.name}" runs ${formatDuration(total)} but its slot (${slot.label}) is ${formatDuration(slot.lengthMs)}.`,

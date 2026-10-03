@@ -97,14 +97,15 @@ func onceOccurrenceTime(startAtMs int64, scanFrom, windowEnd time.Time) (time.Ti
 }
 
 // weeklyOccurrenceTimes resolves every UTC instant, within [scanFrom,
-// windowEnd), at which a RecurrenceWeekly schedule_item (dayOfWeek 0=Sunday,
-// startTimeLocal "HH:MM") nominally starts, per loc (channel.timezone).
+// windowEnd), at which a RecurrenceWeekly schedule_item (daysOfWeek 0=Sunday,
+// one occurrence per listed day; startTimeLocal "HH:MM") nominally starts, per
+// loc (channel.timezone).
 //
 // It walks every calendar day (in loc) touching the window, padded by one day
 // on each side to stay correct even for large UTC offsets where a local
 // calendar day can straddle the UTC window boundary; the final UTC-window
 // check filters out anything the padding over-generates.
-func weeklyOccurrenceTimes(dayOfWeek int, startTimeLocal string, loc *time.Location, scanFrom, windowEnd time.Time) ([]time.Time, error) {
+func weeklyOccurrenceTimes(daysOfWeek domain.Weekdays, startTimeLocal string, loc *time.Location, scanFrom, windowEnd time.Time) ([]time.Time, error) {
 	hour, minute, err := parseHHMM(startTimeLocal)
 	if err != nil {
 		return nil, err
@@ -117,7 +118,7 @@ func weeklyOccurrenceTimes(dayOfWeek int, startTimeLocal string, loc *time.Locat
 
 	var out []time.Time
 	for !dayCursor.After(lastDay) {
-		if int(dayCursor.Weekday()) == dayOfWeek {
+		if daysOfWeek.Contains(int(dayCursor.Weekday())) {
 			candidate := time.Date(dayCursor.Year(), dayCursor.Month(), dayCursor.Day(), hour, minute, 0, 0, loc).UTC()
 			if !candidate.Before(scanFrom) && candidate.Before(windowEnd) {
 				out = append(out, candidate)
@@ -144,10 +145,10 @@ func buildOccurrences(items []domain.ScheduleItem, loc *time.Location, scanFrom,
 				out = append(out, occurrence{ScheduleItemID: e.ID, BlockID: e.BlockID, NominalStart: t})
 			}
 		case domain.RecurrenceWeekly:
-			if e.DayOfWeek == nil || e.StartTimeLocal == nil {
+			if len(e.DaysOfWeek) == 0 || e.StartTimeLocal == nil {
 				continue
 			}
-			times, err := weeklyOccurrenceTimes(*e.DayOfWeek, *e.StartTimeLocal, loc, scanFrom, windowEnd)
+			times, err := weeklyOccurrenceTimes(e.DaysOfWeek, *e.StartTimeLocal, loc, scanFrom, windowEnd)
 			if err != nil {
 				// The API layer already validates start_time_local as HH:MM;
 				// this only defends against bad data written some other way.

@@ -428,10 +428,30 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 	// item with start_at set must be rejected.
 	errText := callToolExpectError(t, ctx, session, "create_schedule_item", map[string]any{
 		"schedule_id": schedule.ID, "block_id": block.ID, "recurrence_type": "weekly",
-		"day_of_week": 1, "start_time_local": "08:00", "start_at": 1234,
+		"days_of_week": []int{1}, "start_time_local": "08:00", "start_at": 1234,
 	})
 	if !strings.Contains(errText, "start_at") {
 		t.Fatalf("create_schedule_item validation error = %q, want it to mention start_at", errText)
+	}
+
+	// A weekly item takes a list of weekdays: empty, duplicated, out of range
+	// and non-weekly lists are rejected; a valid list is stored sorted.
+	for name, days := range map[string][]int{"empty": {}, "duplicate": {4, 4}, "range": {7}} {
+		callToolExpectError(t, ctx, session, "create_schedule_item", map[string]any{
+			"schedule_id": schedule.ID, "block_id": block.ID, "recurrence_type": "weekly",
+			"days_of_week": days, "start_time_local": "22:00",
+		})
+		_ = name
+	}
+	callToolExpectError(t, ctx, session, "create_schedule_item", map[string]any{
+		"schedule_id": schedule.ID, "block_id": block.ID, "recurrence_type": "continuous", "days_of_week": []int{1},
+	})
+	multi := callTool[domain.ScheduleItem](t, ctx, session, "create_schedule_item", map[string]any{
+		"schedule_id": schedule.ID, "block_id": block.ID, "recurrence_type": "weekly",
+		"days_of_week": []int{5, 4}, "start_time_local": "22:00",
+	})
+	if len(multi.DaysOfWeek) != 2 || multi.DaysOfWeek[0] != 4 || multi.DaysOfWeek[1] != 5 {
+		t.Fatalf("create_schedule_item weekly: days_of_week = %v, want [4 5]", multi.DaysOfWeek)
 	}
 
 	// create_schedule_item — a real "once" occurrence a couple seconds in

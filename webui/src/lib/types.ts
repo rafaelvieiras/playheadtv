@@ -446,7 +446,8 @@ export interface ScheduleItem {
   schedule_id: string
   block_id: string
   recurrence_type: RecurrenceType
-  day_of_week: number | null
+  // Weekdays 0 (Sunday)..6; at least one for a weekly item, empty otherwise.
+  days_of_week: number[]
   start_time_local: string | null
   start_at: number | null
   active: boolean
@@ -459,7 +460,7 @@ export interface ScheduleItem {
 export interface ScheduleItemInput {
   block_id: string
   recurrence_type: RecurrenceType
-  day_of_week: number | null
+  days_of_week: number[]
   start_time_local: string | null
   start_at: number | null
   active: boolean

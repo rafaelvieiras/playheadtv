@@ -384,6 +384,18 @@ actionable checklist.
       review list (`GET /blocks/list-mode-review`, startup log, web UI notice)
       for the ones scheduled at fixed times; API, MCP and web UI expose the mode.
 
+- [x] Weekly schedule items hold a list of weekdays (`days_of_week`, migration
+      `0016`; existing items became a list of one day and the single-day column
+      was dropped, with no alias): one row, one write and one reset for
+      "Thursday and Friday at 22:00" or "every day at 18:00". REST and MCP
+      accept and return the list (at least one day, no duplicates, only for
+      weekly items); the materializer expands one occurrence per day; the web UI
+      has a weekday multi-select with every-day/weekdays/weekend shortcuts and a
+      compact label in the Programming tab, and "Convert to continuous" still
+      recognizes a 24/7 rotation made of 00:00 weekly items covering each
+      weekday once. Known tradeoff: items already created separately are not
+      merged automatically.
+
 ## Phase 2 — MCP surface
 
 - [x] MCP server (`github.com/modelcontextprotocol/go-sdk` v1.8.0) in the same

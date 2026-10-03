@@ -1,5 +1,102 @@
 package domain
 
+import (
+	"database/sql/driver"
+	"errors"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// Weekdays is the set of weekdays (0 = Sunday .. 6 = Saturday) a weekly
+// schedule item airs on. It is stored as one comma-separated TEXT column
+// ("4,5") and always serialized as a JSON array, never null.
+type Weekdays []int
+
+// NormalizeWeekdays validates a list of weekdays from a request (at least one,
+// each 0-6, no duplicates) and returns it sorted ascending.
+func NormalizeWeekdays(days []int) (Weekdays, error) {
+	if len(days) == 0 {
+		return nil, errors.New("days_of_week (a list of 0-6) is required for weekly recurrence")
+	}
+	seen := make(map[int]bool, len(days))
+	out := make(Weekdays, 0, len(days))
+	for _, d := range days {
+		if d < 0 || d > 6 {
+			return nil, errors.New("days_of_week values must be between 0 (Sunday) and 6 (Saturday)")
+		}
+		if seen[d] {
+			return nil, errors.New("days_of_week must not contain duplicates")
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	sort.Ints(out)
+	return out, nil
+}
+
+// Contains reports whether d is one of the weekdays.
+func (w Weekdays) Contains(d int) bool {
+	for _, x := range w {
+		if x == d {
+			return true
+		}
+	}
+	return false
+}
+
+// Value implements driver.Valuer: "" for no days, otherwise "4,5".
+func (w Weekdays) Value() (driver.Value, error) {
+	parts := make([]string, len(w))
+	for i, d := range w {
+		parts[i] = strconv.Itoa(d)
+	}
+	return strings.Join(parts, ","), nil
+}
+
+// Scan implements sql.Scanner for the comma-separated column.
+func (w *Weekdays) Scan(src any) error {
+	var s string
+	switch v := src.(type) {
+	case nil:
+		*w = nil
+		return nil
+	case string:
+		s = v
+	case []byte:
+		s = string(v)
+	default:
+		return fmt.Errorf("domain: cannot scan %T into Weekdays", src)
+	}
+	out := Weekdays{}
+	for _, part := range strings.Split(s, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		d, err := strconv.Atoi(part)
+		if err != nil {
+			return fmt.Errorf("domain: bad weekday %q: %w", part, err)
+		}
+		out = append(out, d)
+	}
+	*w = out
+	return nil
+}
+
+// MarshalJSON always emits an array ([] for a non-weekly item).
+func (w Weekdays) MarshalJSON() ([]byte, error) {
+	if len(w) == 0 {
+		return []byte("[]"), nil
+	}
+	parts := make([]string, len(w))
+	for i, d := range w {
+		parts[i] = strconv.Itoa(d)
+	}
+	return []byte("[" + strings.Join(parts, ",") + "]"), nil
+}
+
 type RecurrenceType string
 
 const (
@@ -38,7 +135,7 @@ type ScheduleItem struct {
 	ScheduleID     string         `json:"schedule_id"`
 	BlockID        string         `json:"block_id"`
 	Recurrence     RecurrenceType `json:"recurrence_type"`
-	DayOfWeek      *int           `json:"day_of_week"`      // 0 (Sunday)..6, set iff Recurrence == RecurrenceWeekly
+	DaysOfWeek     Weekdays       `json:"days_of_week"`     // 0 (Sunday)..6, at least one iff Recurrence == RecurrenceWeekly, empty otherwise
 	StartTimeLocal *string        `json:"start_time_local"` // "HH:MM", set iff Recurrence == RecurrenceWeekly
 	StartAt        *int64         `json:"start_at"`         // epoch millis, set iff Recurrence == RecurrenceOnce
 	Active         bool           `json:"active"`

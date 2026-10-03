@@ -19,7 +19,7 @@ import { DynamicCollectionFields, validateCollectionChoice, type CollectionChoic
 import { blockPlaybackPayload, DEFAULT_INTERLEAVE, validateInterleave } from '@/lib/interleave'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { DAY_LABELS } from '@/lib/schedule'
+import { DAY_LABELS, DAY_SHORT_LABELS, WEEK_ORDER, WEEKDAY_SHORTCUTS } from '@/lib/schedule'
 import { api, ApiError } from '@/lib/http'
 import type { Block, RecurrenceType, ScheduleItem, ScheduleItemInput } from '@/lib/types'
 
@@ -41,7 +41,7 @@ interface ScheduleItemDialogProps {
 interface FormState {
   block_id: string
   recurrence_type: RecurrenceType
-  day_of_week: number
+  days_of_week: number[]
   start_time_local: string
   // datetime-local input value, e.g. "2026-09-26T14:00".
   start_at_local: string
@@ -51,7 +51,7 @@ interface FormState {
 const emptyForm: FormState = {
   block_id: '',
   recurrence_type: 'weekly',
-  day_of_week: 0,
+  days_of_week: [],
   start_time_local: '',
   start_at_local: '',
   active: true,
@@ -67,7 +67,7 @@ function itemToForm(item: ScheduleItem): FormState {
   return {
     block_id: item.block_id,
     recurrence_type: item.recurrence_type,
-    day_of_week: item.day_of_week ?? 0,
+    days_of_week: item.days_of_week,
     start_time_local: item.start_time_local ?? '',
     start_at_local: item.start_at !== null ? epochToDatetimeLocalInput(item.start_at) : '',
     active: item.active,
@@ -83,7 +83,7 @@ function validate(form: FormState, hasOtherContinuous: boolean): string | undefi
   }
   if (form.recurrence_type === 'continuous') return undefined
   if (form.recurrence_type === 'weekly') {
-    if (form.day_of_week < 0 || form.day_of_week > 6) return 'Invalid day of the week.'
+    if (form.days_of_week.length === 0) return 'Select at least one day of the week.'
     if (!/^\d{2}:\d{2}$/.test(form.start_time_local)) return 'Enter a time in HH:MM format.'
   } else {
     if (!form.start_at_local) return 'Enter a date and time.'
@@ -96,7 +96,7 @@ function buildPayload(form: FormState): ScheduleItemInput {
     return {
       block_id: form.block_id,
       recurrence_type: 'continuous',
-      day_of_week: null,
+      days_of_week: [],
       start_time_local: null,
       start_at: null,
       active: form.active,
@@ -106,7 +106,7 @@ function buildPayload(form: FormState): ScheduleItemInput {
     return {
       block_id: form.block_id,
       recurrence_type: 'weekly',
-      day_of_week: form.day_of_week,
+      days_of_week: [...form.days_of_week].sort((a, b) => a - b),
       start_time_local: form.start_time_local,
       start_at: null,
       active: form.active,
@@ -115,7 +115,7 @@ function buildPayload(form: FormState): ScheduleItemInput {
   return {
     block_id: form.block_id,
     recurrence_type: 'once',
-    day_of_week: null,
+    days_of_week: [],
     start_time_local: null,
     start_at: new Date(form.start_at_local).getTime(),
     active: form.active,
@@ -333,22 +333,53 @@ export function ScheduleItemDialog({
             {form.recurrence_type === 'continuous' ? null : form.recurrence_type === 'weekly' ? (
               <>
                 <Field>
-                  <FieldLabel htmlFor="schedule-item-day">Day of the week</FieldLabel>
-                  <Select
-                    value={String(form.day_of_week)}
-                    onValueChange={(v) => setForm((f) => ({ ...f, day_of_week: Number(v) }))}
-                  >
-                    <SelectTrigger id="schedule-item-day" className="w-full">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {DAY_LABELS.map((label, i) => (
-                        <SelectItem key={i} value={String(i)}>
-                          {label}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <FieldLabel>Days of the week</FieldLabel>
+                  <div className="flex gap-1" role="group" aria-label="Days of the week" data-testid="weekday-picker">
+                    {WEEK_ORDER.map((day) => {
+                      const selected = form.days_of_week.includes(day)
+                      return (
+                        <Button
+                          key={day}
+                          type="button"
+                          size="sm"
+                          variant={selected ? 'default' : 'outline'}
+                          className="flex-1 px-0"
+                          aria-pressed={selected}
+                          aria-label={DAY_LABELS[day]}
+                          title={DAY_LABELS[day]}
+                          data-testid={`weekday-${day}`}
+                          onClick={() =>
+                            setForm((f) => ({
+                              ...f,
+                              days_of_week: selected ? f.days_of_week.filter((d) => d !== day) : [...f.days_of_week, day],
+                            }))
+                          }
+                        >
+                          {DAY_SHORT_LABELS[day]}
+                        </Button>
+                      )
+                    })}
+                  </div>
+                  <div className="flex gap-2">
+                    {(
+                      [
+                        ['every-day', 'Every day', WEEKDAY_SHORTCUTS.everyDay],
+                        ['weekdays', 'Weekdays', WEEKDAY_SHORTCUTS.weekdays],
+                        ['weekend', 'Weekend', WEEKDAY_SHORTCUTS.weekend],
+                      ] as const
+                    ).map(([key, label, days]) => (
+                      <Button
+                        key={key}
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        data-testid={`weekday-shortcut-${key}`}
+                        onClick={() => setForm((f) => ({ ...f, days_of_week: [...days] }))}
+                      >
+                        {label}
+                      </Button>
+                    ))}
+                  </div>
                 </Field>
                 <Field>
                   <FieldLabel htmlFor="schedule-item-time">Time (HH:MM)</FieldLabel>

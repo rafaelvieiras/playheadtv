@@ -108,7 +108,7 @@ export function ChannelProgramming({
       await api.post(`/schedules/${scheduleId}/items`, {
         block_id: legacyBlockId,
         recurrence_type: 'continuous',
-        day_of_week: null,
+        days_of_week: [],
         start_time_local: null,
         start_at: null,
         active: true,

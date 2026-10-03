@@ -470,9 +470,17 @@ edges):
   `docs/competitive-analysis/ersatztv.md` section 4): `schedule` is a
   reusable, named group of rules, not tied to any channel. `schedule_item` is
   one rule inside it — when a block airs, either weekly recurring
-  (`day_of_week` + `start_time_local`, resolved against `channel.timezone`)
+  (`days_of_week` + `start_time_local`, resolved against `channel.timezone`)
   or a one-off absolute `start_at` (this is `schedule_entry`'s old shape,
   before this split, minus the `channel_id` it used to carry directly).
+  A weekly item holds a *list* of weekdays (0 = Sunday .. 6, at least one, no
+  duplicates, stored sorted as one comma-separated column and served as a JSON
+  array) and one start time: "Thursday and Friday at 22:00" or "every day at
+  18:00" is one row, one write and one grid reset. The materializer expands it
+  into one occurrence per listed day, each following the usual overrun and
+  boundary rules; a once or continuous item has an empty list. Items that
+  already exist separately for the same block and time are not merged
+  automatically.
   `channel.schedule_id` is which `schedule` (if any) drives a channel; the
   same `schedule` can be assigned to more than one channel — each one still
   materializes (and tracks) its own `epg_entry` rows independently, playing

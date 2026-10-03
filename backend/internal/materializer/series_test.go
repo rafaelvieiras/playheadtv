@@ -281,8 +281,8 @@ func TestExpandChannel_SeriesAirsUntilNextOccurrenceAndDropsWhatDoesNotFit(t *te
 	// block: the series fills 21:00-22:15 with two whole 30m episodes and the
 	// third (22:00-22:30) does not fit and is dropped.
 	sched := []domain.ScheduleItem{
-		{ID: "se1", BlockID: "blk", Recurrence: domain.RecurrenceWeekly, DayOfWeek: intPtr(3), StartTimeLocal: strPtr("20:00"), Active: true},
-		{ID: "se2", BlockID: "movie", Recurrence: domain.RecurrenceWeekly, DayOfWeek: intPtr(3), StartTimeLocal: strPtr("22:15"), Active: true},
+		{ID: "se1", BlockID: "blk", Recurrence: domain.RecurrenceWeekly, DaysOfWeek: domain.Weekdays{3}, StartTimeLocal: strPtr("20:00"), Active: true},
+		{ID: "se2", BlockID: "movie", Recurrence: domain.RecurrenceWeekly, DaysOfWeek: domain.Weekdays{3}, StartTimeLocal: strPtr("22:15"), Active: true},
 	}
 	in, _ := seriesBlockInput(domain.OrderOriginal, 1, 10,
 		[]domain.BlockItem{
@@ -317,7 +317,7 @@ func TestExpandChannel_SeriesAirsUntilNextOccurrenceAndDropsWhatDoesNotFit(t *te
 
 func TestExpandChannel_SeriesLastOccurrenceFillsTheWindowAndStopsThere(t *testing.T) {
 	sched := []domain.ScheduleItem{
-		{ID: "se1", BlockID: "blk", Recurrence: domain.RecurrenceWeekly, DayOfWeek: intPtr(3), StartTimeLocal: strPtr("20:00"), Active: true},
+		{ID: "se1", BlockID: "blk", Recurrence: domain.RecurrenceWeekly, DaysOfWeek: domain.Weekdays{3}, StartTimeLocal: strPtr("20:00"), Active: true},
 	}
 	in, run := seriesBlockInput(domain.OrderOriginal, 1, 3, []domain.BlockItem{seriesItem()}, sched, nil)
 	scanFrom := time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC)
@@ -341,10 +341,10 @@ func TestExpandChannel_SeriesLastOccurrenceFillsTheWindowAndStopsThere(t *testin
 
 func TestExpandChannel_SeriesSecondOccurrenceContinuesTheCursor(t *testing.T) {
 	sched := []domain.ScheduleItem{
-		{ID: "se1", BlockID: "blk", Recurrence: domain.RecurrenceWeekly, DayOfWeek: intPtr(3), StartTimeLocal: strPtr("20:00"), Active: true},
-		{ID: "se2", BlockID: "blk", Recurrence: domain.RecurrenceWeekly, DayOfWeek: intPtr(4), StartTimeLocal: strPtr("20:00"), Active: true},
-		{ID: "se3", BlockID: "stop", Recurrence: domain.RecurrenceWeekly, DayOfWeek: intPtr(3), StartTimeLocal: strPtr("21:00"), Active: true},
-		{ID: "se4", BlockID: "stop", Recurrence: domain.RecurrenceWeekly, DayOfWeek: intPtr(4), StartTimeLocal: strPtr("21:00"), Active: true},
+		{ID: "se1", BlockID: "blk", Recurrence: domain.RecurrenceWeekly, DaysOfWeek: domain.Weekdays{3}, StartTimeLocal: strPtr("20:00"), Active: true},
+		{ID: "se2", BlockID: "blk", Recurrence: domain.RecurrenceWeekly, DaysOfWeek: domain.Weekdays{4}, StartTimeLocal: strPtr("20:00"), Active: true},
+		{ID: "se3", BlockID: "stop", Recurrence: domain.RecurrenceWeekly, DaysOfWeek: domain.Weekdays{3}, StartTimeLocal: strPtr("21:00"), Active: true},
+		{ID: "se4", BlockID: "stop", Recurrence: domain.RecurrenceWeekly, DaysOfWeek: domain.Weekdays{4}, StartTimeLocal: strPtr("21:00"), Active: true},
 	}
 	in, _ := seriesBlockInput(domain.OrderOriginal, 1, 10, []domain.BlockItem{seriesItem()}, sched, map[string]int64{"x": epMs})
 	in.BlockItems["stop"] = []domain.BlockItem{{ID: "bx", BlockID: "stop", CatalogItemID: "x"}}
@@ -365,7 +365,7 @@ func TestExpandChannel_SeriesSecondOccurrenceContinuesTheCursor(t *testing.T) {
 
 func TestExpandChannel_SeriesWithoutEpisodesIsSkippedAndNextItemAirs(t *testing.T) {
 	sched := []domain.ScheduleItem{
-		{ID: "se1", BlockID: "blk", Recurrence: domain.RecurrenceWeekly, DayOfWeek: intPtr(3), StartTimeLocal: strPtr("20:00"), Active: true},
+		{ID: "se1", BlockID: "blk", Recurrence: domain.RecurrenceWeekly, DaysOfWeek: domain.Weekdays{3}, StartTimeLocal: strPtr("20:00"), Active: true},
 	}
 	in, _ := seriesBlockInput(domain.OrderOriginal, 1, 0,
 		[]domain.BlockItem{seriesItem(), {ID: "bi2", BlockID: "blk", CatalogItemID: "m1"}}, sched, map[string]int64{"m1": epMs})
@@ -381,7 +381,7 @@ func TestExpandChannel_SeriesSkipsSlotsBeforeTheCursorOrigin(t *testing.T) {
 	// slots ending at or before it (20:00-20:30, 20:30-21:00 and 21:00-21:30
 	// does not: it ends after) are skipped without consuming episodes.
 	sched := []domain.ScheduleItem{
-		{ID: "se1", BlockID: "blk", Recurrence: domain.RecurrenceWeekly, DayOfWeek: intPtr(3), StartTimeLocal: strPtr("20:00"), Active: true},
+		{ID: "se1", BlockID: "blk", Recurrence: domain.RecurrenceWeekly, DaysOfWeek: domain.Weekdays{3}, StartTimeLocal: strPtr("20:00"), Active: true},
 	}
 	in, run := seriesBlockInput(domain.OrderOriginal, 1, 10, []domain.BlockItem{seriesItem()}, sched, nil)
 	run.originMs = time.Date(2026, 9, 30, 21, 10, 0, 0, time.UTC).UnixMilli()
@@ -398,7 +398,7 @@ func TestExpandChannel_SeriesSkipsSlotsBeforeTheCursorOrigin(t *testing.T) {
 
 func TestExpandChannel_SeriesCapStopsRunawayExpansion(t *testing.T) {
 	sched := []domain.ScheduleItem{
-		{ID: "se1", BlockID: "blk", Recurrence: domain.RecurrenceWeekly, DayOfWeek: intPtr(3), StartTimeLocal: strPtr("00:00"), Active: true},
+		{ID: "se1", BlockID: "blk", Recurrence: domain.RecurrenceWeekly, DaysOfWeek: domain.Weekdays{3}, StartTimeLocal: strPtr("00:00"), Active: true},
 	}
 	in, run := seriesBlockInput(domain.OrderOriginal, 1, 1, []domain.BlockItem{seriesItem()}, sched, nil)
 	run.episodes[0].DurationMs = 1 // one millisecond: the window holds far more than the cap

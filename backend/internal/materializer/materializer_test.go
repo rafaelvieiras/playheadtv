@@ -161,11 +161,18 @@ func (f *testFixture) addBlockItem(t *testing.T, id, blockID string, position in
 // air it first.
 func (f *testFixture) createWeeklyScheduleItem(t *testing.T, id, scheduleID, blockID string, dayOfWeek int, startTimeLocal string) {
 	t.Helper()
+	f.createMultiDayScheduleItem(t, id, scheduleID, blockID, domain.Weekdays{dayOfWeek}, startTimeLocal)
+}
+
+// createMultiDayScheduleItem seeds a weekly schedule_item airing on every
+// listed weekday.
+func (f *testFixture) createMultiDayScheduleItem(t *testing.T, id, scheduleID, blockID string, days domain.Weekdays, startTimeLocal string) {
+	t.Helper()
 	now := time.Now().UnixMilli()
 	if err := f.db.Exec(context.Background(),
-		`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, recurrence_type, day_of_week, start_time_local, active, created_at, updated_at)
+		`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, recurrence_type, days_of_week, start_time_local, active, created_at, updated_at)
 		 VALUES (?, ?, ?, ?, 'weekly', ?, ?, 1, ?, ?)`,
-		id, f.tenantID, scheduleID, blockID, dayOfWeek, startTimeLocal, now, now,
+		id, f.tenantID, scheduleID, blockID, days, startTimeLocal, now, now,
 	); err != nil {
 		t.Fatalf("seed schedule_item %s: %v", id, err)
 	}
