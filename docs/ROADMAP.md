@@ -735,6 +735,14 @@ actionable checklist.
       gap rather than worked around (e.g. no direct SQLite write against a
       running instance). Redo the live pass end to end with fresh EPG data
       before trusting this beyond the code review above.
+- [x] Guide hides filler: the full-screen EPG, the web UI EPG page and the
+      channel Guide tab show only `program` and `fallback` entries; the time
+      of hidden preroll/midroll/postroll/tail entries is attributed to a
+      neighbouring program so the grid has no false holes (rules in
+      `docs/ARCHITECTURE.md`, "Guide display"). The OSD "Up next" line skips
+      filler. The web UI has a local "Show filler" toggle for debugging.
+      Always on: a per-channel or per-block setting belongs to the Deco
+      discussion.
 - [x] Rolling EPG window: `client/lib/main.dart` now keeps pulling ahead of
       "now" instead of fetching one fixed window and stopping. A new cursor
       field (`_epgLoadedUntil`, the `endAt` of the last `EpgEntry` folded

@@ -32,6 +32,7 @@ import 'services/stream_selection_resolver.dart';
 import 'input/input_action.dart';
 import 'pages/mosaic_page.dart';
 import 'util/gl_serial.dart';
+import 'epg_guide.dart' show isHiddenGuideKind;
 import 'widgets/epg_overlay.dart';
 import 'widgets/osd_overlay.dart';
 import 'widgets/debug_overlay.dart';
@@ -1271,12 +1272,18 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     }
   }
 
-  // Label of the program after the one on air (skips the remaining clips of a
-  // tail), null when it hasn't entered the working set yet.
+  // Label of the next real program after the one on air: skips the remaining
+  // clips of a tail and every filler (preroll, midroll, postroll, tail), the
+  // same ones the guide hides. Display only — playback still plays them all.
+  // Null when none has entered the working set yet.
   String? _nextProgramLabel() {
     final ordinal = channel[_currentIndex].programOrdinal;
     for (var i = _currentIndex + 1; i < channel.length; i++) {
-      if (channel[i].programOrdinal != ordinal) return channel[i].programLabel;
+      final unit = channel[i];
+      if (unit.programOrdinal == ordinal) continue;
+      final kind = unit.program?.kind;
+      if (kind != null && isHiddenGuideKind(kind)) continue;
+      return unit.programLabel;
     }
     return null;
   }

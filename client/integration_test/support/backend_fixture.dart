@@ -234,8 +234,18 @@ class BackendFixture {
   /// A channel-scoped TAIL filler rule drawing sequentially from a new pool
   /// of [catalogItemIds]: after a program, the gap up to the next scheduled
   /// occurrence is padded with these clips, one `tail` epg_entry each.
-  Future<void> createTailRule({required String channelId, required List<String> catalogItemIds}) async {
-    final pool = await _postJson('/filler-pools', {'name': 'Tail pool ${DateTime.now().microsecondsSinceEpoch}'});
+  Future<void> createTailRule({required String channelId, required List<String> catalogItemIds}) =>
+      createFillerRule(channelId: channelId, kind: 'tail', catalogItemIds: catalogItemIds);
+
+  /// A channel-scoped filler rule of [kind] (`preroll`, `midroll`, `postroll`,
+  /// `tail` or `fallback`) drawing sequentially from a new pool of
+  /// [catalogItemIds].
+  Future<void> createFillerRule({
+    required String channelId,
+    required String kind,
+    required List<String> catalogItemIds,
+  }) async {
+    final pool = await _postJson('/filler-pools', {'name': '$kind pool ${DateTime.now().microsecondsSinceEpoch}'});
     final poolId = pool['id'] as String;
     for (final id in catalogItemIds) {
       await _postJson('/filler-pools/$poolId/items', {'catalog_item_id': id, 'weight': 1});
@@ -243,7 +253,7 @@ class BackendFixture {
     await _postJson('/filler-rules', {
       'scope_type': 'channel',
       'scope_id': channelId,
-      'kind': 'tail',
+      'kind': kind,
       'filler_pool_id': poolId,
       'selection_strategy': 'sequential',
       'position': 0,

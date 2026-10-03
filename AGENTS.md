@@ -200,6 +200,14 @@ or LLM, and to every artifact in the repo:
   new row; moving right past the loaded window lazily fetches more of
   `GET /epg` (up to the backend's 48h materialized horizon). All of this state
   lives in `EpgOverlayState`, never in `_ChannelPlayerPageState`.
+  The grid draws `GuideCell`s (`lib/epg_guide.dart`, mirrored by
+  `webui/src/lib/guideDisplay.ts`), not raw entries: only `program` and
+  `fallback` entries get a cell, and the time of hidden preroll/midroll/
+  postroll/tail entries is attributed to a neighbouring program (see
+  `docs/ARCHITECTURE.md`). Navigation, focus, "live" and the details panel
+  all work on the cells, so focus never lands on a hidden entry; the OSD
+  "Up next" line skips the same kinds. Keep the two implementations and
+  their unit tests in sync.
 
 ## Operational practices
 

@@ -4,7 +4,7 @@
 //
 //  - a channel with hundreds of entries (a long tail of short clips) loads
 //    with a handful of requests, titles and art references come with the
-//    entries, and the guide shows the tail as ONE cell;
+//    entries, and the guide hides the tail (it only shows programs);
 //  - the working set is the program on air plus the next N programs and
 //    keeps rolling while the channel plays;
 //  - against a backend without the new fields (the proxy's legacy mode) the
@@ -131,7 +131,7 @@ void main() {
 
     String describe(RequestProxy p) => p.requests.map((r) => r.toString()).join('\n  ');
 
-    testWidgets('hundreds of entries load with a handful of requests; titles and art need no lookups; the tail is one cell', (tester) async {
+    testWidgets('hundreds of entries load with a handful of requests; titles and art need no lookups; the guide hides the tail', (tester) async {
       final channelId = await backend.createChannel(number: 31, name: 'Window big');
       final ms = await backend.createLocalFolderMediaSource(name: 'Window big source');
       final ids = await backend.syncCatalogItems(ms, [
@@ -188,13 +188,13 @@ void main() {
       expect(tail.displayTitle, 'Tail');
       expect(channel[1].programLabel, 'Tail');
 
-      // The guide shows the tail as one cell, still without lookups.
+      // The guide hides the tail (no cell, no title) and still needs no lookups.
       await openEpg(tester);
       expect(p.to('/epg'), hasLength(2));
       expect(p.to('/catalog-items'), isEmpty, reason: describe(p));
       final cells = cellsOf(channelId);
-      expect(cells.length, lessThanOrEqualTo(4), reason: 'A, one tail cell, B (never one cell per clip)');
-      expect(find.text('Tail'), findsWidgets);
+      expect(cells.length, lessThanOrEqualTo(2), reason: 'A and B only: the tail has no cell, let alone one per clip');
+      expect(find.descendant(of: find.byKey(const Key('epg-overlay')), matching: find.text('Tail')), findsNothing);
 
       // Art: long-press Select on the focused (live) program expands the
       // details; the poster URL is built from the media server address and
@@ -325,7 +325,7 @@ void main() {
       final all = p.to('/catalog-items/').map((r) => r.path).toList();
       expect(all.toSet().length, all.length, reason: 'cached per id across the player and the guide:\n  ${describe(p)}');
       expect(all.length, lessThan(40), reason: 'one per distinct item, far below the hundreds of rows');
-      expect(find.text('LEGACY CLIP 0'), findsWidgets);
+      expect(find.text('LEGACY A'), findsWidgets);
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pump();
     });

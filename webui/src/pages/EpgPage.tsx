@@ -6,6 +6,7 @@ import { RefreshCw } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/http'
 import { epgItemClipCount, epgItemTitle } from '@/lib/guide'
+import { allEntriesAsCells, buildGuideCells, type GuideCell } from '@/lib/guideDisplay'
 import { isTailGroup } from '@/lib/types'
 import type { CatalogItem, Channel, EpgEntry, EpgItem } from '@/lib/types'
 
@@ -32,6 +33,9 @@ export function EpgPage() {
   const queryClient = useQueryClient()
   const [now, setNow] = useState(() => Date.now())
   const scrollRef = useRef<HTMLDivElement>(null)
+  // Debugging aid, UI state only: draw every entry (fillers included) at its
+  // real span instead of the programs-only guide.
+  const [showFiller, setShowFiller] = useState(false)
 
   const { data: channels, isLoading: channelsLoading, isError: channelsError } = useQuery({
     queryKey: ['channels'],
@@ -68,17 +72,30 @@ export function EpgPage() {
     return map
   }, [entries])
 
+  // What each channel's row draws: programs and fallbacks, with the time of
+  // hidden fillers attributed to a neighbouring program (see guideDisplay.ts),
+  // or every entry as is when "Show filler" is on.
+  const cellsByChannel = useMemo(() => {
+    const map = new Map<string, GuideCell<EpgItem>[]>()
+    for (const [channelId, list] of entriesByChannel) {
+      map.set(channelId, showFiller ? allEntriesAsCells(list) : buildGuideCells(list))
+    }
+    return map
+  }, [entriesByChannel, showFiller])
+
   // GET /epg carries the titles; only an entry without one (an older
   // backend) is looked up. Tail groups never are.
   const catalogItemIds = useMemo(
     () => [
       ...new Set(
-        (entries ?? [])
+        [...cellsByChannel.values()]
+          .flat()
+          .map((c) => c.entry)
           .filter((e): e is EpgEntry => !isTailGroup(e) && epgItemTitle(e) === undefined)
           .map((e) => e.catalog_item_id),
       ),
     ],
-    [entries],
+    [cellsByChannel],
   )
 
   const catalogItemQueries = useQueries({
@@ -144,10 +161,21 @@ export function EpgPage() {
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold">Programming guide</h1>
-        <Button variant="outline" size="sm" onClick={refresh}>
-          <RefreshCw className="size-4" />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant={showFiller ? 'default' : 'outline'}
+            size="sm"
+            data-testid="epg-show-filler"
+            aria-pressed={showFiller}
+            onClick={() => setShowFiller((v) => !v)}
+          >
+            Show filler
+          </Button>
+          <Button variant="outline" size="sm" onClick={refresh}>
+            <RefreshCw className="size-4" />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {channels && channels.length === 0 && (
@@ -190,7 +218,7 @@ export function EpgPage() {
               {/* Channel rows */}
               <div className="relative">
                 {sortedChannels.map((channel) => {
-                  const channelEntries = entriesByChannel.get(channel.id) ?? []
+                  const channelCells = cellsByChannel.get(channel.id) ?? []
                   return (
                     <div key={channel.id} className="flex border-b border-border last:border-b-0">
                       <div
@@ -204,7 +232,7 @@ export function EpgPage() {
                         className="relative shrink-0"
                         style={{ width: trackWidth, height: ROW_HEIGHT }}
                       >
-                        {channelEntries.length === 0 && (
+                        {channelCells.length === 0 && (
                           <div
                             className="sticky inline-flex h-full items-center"
                             style={{ left: CHANNEL_COLUMN_WIDTH + 8 }}
@@ -214,14 +242,15 @@ export function EpgPage() {
                             </span>
                           </div>
                         )}
-                        {channelEntries.map((entry) => {
-                          const isLive = entry.start_at <= now && now < entry.end_at
+                        {channelCells.map((cell) => {
+                          const entry = cell.entry
+                          const isLive = cell.displayStart <= now && now < cell.displayEnd
                           const clips = epgItemClipCount(entry)
                           const item = isTailGroup(entry) ? undefined : catalogItemsById.get(entry.catalog_item_id)
                           const title = epgItemTitle(entry) ?? (item ? formatCatalogTitle(item) : '…')
-                          const startOffset = Math.max(0, (entry.start_at - windowStart) / 60000)
-                          const clampedStart = Math.max(entry.start_at, windowStart)
-                          const clampedEnd = Math.min(entry.end_at, windowEnd)
+                          const startOffset = Math.max(0, (cell.displayStart - windowStart) / 60000)
+                          const clampedStart = Math.max(cell.displayStart, windowStart)
+                          const clampedEnd = Math.min(cell.displayEnd, windowEnd)
                           const widthMinutes = Math.max(0, (clampedEnd - clampedStart) / 60000)
 
                           return (
@@ -229,7 +258,7 @@ export function EpgPage() {
                               key={entry.id}
                               data-testid="epg-entry"
                               data-kind={entry.kind}
-                              title={`${title} (${formatTime(entry.start_at)} – ${formatTime(entry.end_at)})`}
+                              title={`${title} (${formatTime(cell.displayStart)} – ${formatTime(cell.displayEnd)})`}
                               className={`absolute top-1 flex h-[calc(100%-0.5rem)] flex-col justify-center overflow-hidden rounded-md border px-2 ${
                                 isLive
                                   ? 'border-primary bg-primary/10'
@@ -242,7 +271,7 @@ export function EpgPage() {
                             >
                               <span className="truncate text-sm">{title}</span>
                               <span className="truncate text-xs tabular-nums text-muted-foreground">
-                                {formatTime(entry.start_at)} – {formatTime(entry.end_at)}
+                                {formatTime(cell.displayStart)} – {formatTime(cell.displayEnd)}
                                 {clips > 0 && ` · ${clips} ${clips === 1 ? 'clip' : 'clips'}`}
                               </span>
                             </div>

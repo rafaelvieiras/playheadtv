@@ -745,6 +745,26 @@ the proposal" produces a collection.
     `Accept-Encoding: gzip` (the representation then has a `-gzip` ETag
     suffix); a tail run of hours of 10-second clips is mostly repetition and
     compresses roughly 6-7x.
+- Guide display (client and web UI, not the API): `GET /epg` keeps returning
+  every kind, since playback needs them, but the viewers only draw `program`
+  and `fallback` entries (a fallback is the channel's own "nothing scheduled"
+  filler and stays a cell of its own). A hidden entry's time is attributed to
+  a neighbouring program, whose cell is drawn over the widened span:
+  a `preroll` extends the next program backwards; a `postroll`, `midroll`
+  or `tail` (a grouped run counts as one) extends the previous program
+  forwards. With no program on that side the other neighbour takes it; with
+  none there either, or when it does not touch the neighbour (a real gap
+  sits between them), the entry is left out and its time shows as a gap. A
+  fallback never absorbs anything. The displayed span is separate from the
+  real one: a cell keeps its entry's own `start_at`/`end_at`, and "on air
+  now" (live highlight, progress, select-to-tune) is decided on the displayed
+  span, so a live filler counts as the program it was attributed to. The cell
+  and the client's details panel show the displayed span; the OSD keeps
+  describing what is actually playing, except its "Up next" line, which skips
+  filler. The web UI's "Show filler" toggle (UI state only) draws every entry
+  at its real span instead. The rules are one pure function per platform
+  (`client/lib/epg_guide.dart`, `webui/src/lib/guideDisplay.ts`) with the
+  same unit tests. There is no per-channel or per-block setting.
 - `GET /epg/meta`: `{revision, valid_until, freeze_margin_ms}` only — cheap enough to poll
   often. Clients cache the full `/epg` response locally and only refetch it
   when `revision` changes or `valid_until` is close.

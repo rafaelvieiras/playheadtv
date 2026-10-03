@@ -20,6 +20,13 @@
 // now marker; the vertical list follows the focused row. Moving right past the
 // loaded window lazily fetches the next slice of `GET /epg`.
 //
+// What a row shows (`buildGuideCells`, lib/epg_guide.dart): only programs and
+// fallbacks. Preroll, midroll, postroll and tail entries have no cell; the
+// time they occupy is attributed to a neighbouring program, whose cell is
+// drawn (and focused, and highlighted as live, and described in the details
+// panel) over that widened span. Navigation only ever sees the cells, so focus
+// never lands on a hidden entry and no cell is skipped.
+//
 // Navigation: row = channel (`moveRow`, called by the parent on RAW
 // arrowUp/arrowDown — Up = previous row — bypassing KeyBindingsService),
 // column = program within the row (`moveColumn`, called by the parent on RAW
@@ -35,6 +42,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../epg_guide.dart';
 import '../main.dart' show jellyfinImageUrl;
 import '../playhead_api.dart';
 import 'app_icons.dart';
@@ -85,9 +93,12 @@ class EpgOverlayState extends State<EpgOverlay> {
   bool _loading = true;
   String? _error;
 
-  // One list of EpgEntry per channel, in the SAME ORDER as widget.channels —
-  // each row index of the grid is the same index into _entriesByChannel.
-  List<List<EpgEntry>> _entriesByChannel = [];
+  // Every entry fetched so far per channel (fillers included), in the SAME
+  // ORDER as widget.channels, and the guide cells built from them — each row
+  // index of the grid is the same index into both. Only the cells are drawn
+  // and navigated.
+  List<List<EpgEntry>> _rawByChannel = [];
+  List<List<GuideCell>> _entriesByChannel = [];
   late DateTime _windowStart;
   late DateTime _windowEnd;
   late DateTime _maxWindowEnd;
@@ -144,7 +155,11 @@ class EpgOverlayState extends State<EpgOverlay> {
 
   double get _windowMinutes => _minutesFrom(_windowEnd);
 
-  bool _isLive(EpgEntry e, DateTime now) => !now.isBefore(e.startAt) && now.isBefore(e.endAt);
+  bool _isLive(GuideCell c, DateTime now) => c.isLiveAt(now);
+
+  void _rebuildCells() {
+    _entriesByChannel = [for (final raw in _rawByChannel) buildGuideCells(raw)];
+  }
 
   // One request per channel; the entries arrive enriched (titles, art
   // references) and consecutive tail clips arrive grouped into one entry, so
@@ -171,13 +186,15 @@ class EpgOverlayState extends State<EpgOverlay> {
       final channelIndex = widget.channels.indexWhere((c) => c.id == widget.currentChannelId);
       final initialRow = channelIndex >= 0 ? channelIndex : 0;
       var initialCol = 0;
-      if (initialRow < results.length) {
-        final liveIdx = results[initialRow].indexWhere((e) => _isLive(e, now));
+      final initialCells = [for (final raw in results) buildGuideCells(raw)];
+      if (initialRow < initialCells.length) {
+        final liveIdx = initialCells[initialRow].indexWhere((c) => _isLive(c, now));
         if (liveIdx >= 0) initialCol = liveIdx;
       }
 
       setState(() {
-        _entriesByChannel = results;
+        _rawByChannel = results;
+        _rebuildCells();
         _focusedRow = initialRow;
         _focusedCol = initialCol;
         _anchor = now;
@@ -209,10 +226,13 @@ class EpgOverlayState extends State<EpgOverlay> {
       final results = await Future.wait(widget.channels.map((c) => _fetchEpg(c, oldEnd, newEnd)));
       if (!mounted) return false;
       setState(() {
-        for (var i = 0; i < _entriesByChannel.length && i < results.length; i++) {
-          final known = _entriesByChannel[i].map((e) => e.id).toSet();
-          _entriesByChannel[i].addAll(results[i].where((e) => !known.contains(e.id)));
+        for (var i = 0; i < _rawByChannel.length && i < results.length; i++) {
+          final known = _rawByChannel[i].map((e) => e.id).toSet();
+          _rawByChannel[i].addAll(results[i].where((e) => !known.contains(e.id)));
         }
+        // Rebuilt from everything fetched: a slice can add the filler that
+        // belongs to a program from the previous one.
+        _rebuildCells();
         _windowEnd = newEnd;
       });
       return true;
@@ -229,7 +249,7 @@ class EpgOverlayState extends State<EpgOverlay> {
     if (_windowEnd.difference(visibleRight) < _extendMargin) unawaited(_extendWindow());
   }
 
-  EpgEntry? get _focusedEntry {
+  GuideCell? get _focusedEntry {
     if (_entriesByChannel.isEmpty) return null;
     final rowEntries = _entriesByChannel[_focusedRow];
     if (_focusedCol < 0 || _focusedCol >= rowEntries.length) return null;
@@ -242,8 +262,8 @@ class EpgOverlayState extends State<EpgOverlay> {
     final entry = _focusedEntry;
     if (entry == null) return;
     final span = _visibleSpan.inMinutes.toDouble();
-    final startMin = _minutesFrom(entry.startAt).clamp(0.0, double.infinity);
-    final endMin = _minutesFrom(entry.endAt);
+    final startMin = _minutesFrom(entry.displayStart).clamp(0.0, double.infinity);
+    final endMin = _minutesFrom(entry.displayEnd);
     var h = _hOffsetMinutes;
     if (startMin < h) {
       h = startMin;
@@ -253,7 +273,7 @@ class EpgOverlayState extends State<EpgOverlay> {
     final maxOffset = (_windowMinutes - span).clamp(0.0, double.infinity);
     _hOffsetMinutes = h.clamp(0.0, maxOffset);
     final visibleLeft = _windowStart.add(Duration(milliseconds: (_hOffsetMinutes * 60000).round()));
-    _anchor = entry.startAt.isAfter(visibleLeft) ? entry.startAt : visibleLeft;
+    _anchor = entry.displayStart.isAfter(visibleLeft) ? entry.displayStart : visibleLeft;
   }
 
   void _ensureRowVisible({bool animate = true}) {
@@ -278,13 +298,13 @@ class EpgOverlayState extends State<EpgOverlay> {
 
   // Index of the entry in `entries` covering `t`, else the next one starting
   // after it, else the last one.
-  int _indexForTime(List<EpgEntry> entries, DateTime t) {
+  int _indexForTime(List<GuideCell> entries, DateTime t) {
     if (entries.isEmpty) return 0;
     for (var i = 0; i < entries.length; i++) {
-      if (!t.isBefore(entries[i].startAt) && t.isBefore(entries[i].endAt)) return i;
+      if (entries[i].isLiveAt(t)) return i;
     }
     for (var i = 0; i < entries.length; i++) {
-      if (!entries[i].startAt.isBefore(t)) return i;
+      if (!entries[i].displayStart.isBefore(t)) return i;
     }
     return entries.length - 1;
   }
@@ -377,17 +397,18 @@ class EpgOverlayState extends State<EpgOverlay> {
         child: child,
       );
 
-  Widget _buildCell(int rowIndex, int col, EpgEntry entry, double hMin, double ppm) {
+  Widget _buildCell(int rowIndex, int col, GuideCell cell, double hMin, double ppm) {
+    final entry = cell.entry;
     final channelObj = widget.channels[rowIndex];
-    final startMin = _minutesFrom(entry.startAt).clamp(0.0, double.infinity);
-    final endMin = _minutesFrom(entry.endAt);
+    final startMin = _minutesFrom(cell.displayStart).clamp(0.0, double.infinity);
+    final endMin = _minutesFrom(cell.displayEnd);
     final left = (startMin - hMin) * ppm + _cellMarginH;
     final width = ((endMin - startMin) * ppm - 2 * _cellMarginH).clamp(4.0, double.infinity);
     final focused = rowIndex == _focusedRow && col == _focusedCol;
     final title = entry.displayTitle;
     final nowUtc = _now.toUtc();
-    final live = _isLive(entry, nowUtc);
-    final progress = live ? nowUtc.difference(entry.startAt).inMilliseconds / entry.endAt.difference(entry.startAt).inMilliseconds : 0.0;
+    final live = _isLive(cell, nowUtc);
+    final progress = live ? nowUtc.difference(cell.displayStart).inMilliseconds / cell.displayEnd.difference(cell.displayStart).inMilliseconds : 0.0;
 
     return Positioned(
       left: left,
@@ -440,7 +461,7 @@ class EpgOverlayState extends State<EpgOverlay> {
     final cells = <Widget>[];
     for (var col = 0; col < entries.length; col++) {
       final e = entries[col];
-      if (!e.endAt.isAfter(_windowStart)) continue;
+      if (!e.displayEnd.isAfter(_windowStart)) continue;
       cells.add(_buildCell(rowIndex, col, e, hMin, ppm));
     }
     return Container(
@@ -541,24 +562,27 @@ class EpgOverlayState extends State<EpgOverlay> {
   String _minutesLabel(Duration d) => '${(d.inSeconds / 60).ceil()} min';
 
   Widget _buildDetailsPanel() {
-    final entry = _focusedEntry;
-    if (entry == null) return const SizedBox.shrink();
+    final cell = _focusedEntry;
+    if (cell == null) return const SizedBox.shrink();
+    final entry = cell.entry;
     final title = entry.displayTitle;
     final channelName = widget.channels[_focusedRow].name;
-    final timeRange = '${_fmtHHmm(entry.startAt)}–${_fmtHHmm(entry.endAt)}';
+    // The cell's displayed span (the program plus the filler attributed to
+    // it), the same one the grid draws.
+    final timeRange = '${_fmtHHmm(cell.displayStart)}–${_fmtHHmm(cell.displayEnd)}';
     final nowUtc = _now.toUtc();
-    final total = entry.endAt.difference(entry.startAt);
-    final live = _isLive(entry, nowUtc);
-    final ended = !nowUtc.isBefore(entry.endAt);
+    final total = cell.displayEnd.difference(cell.displayStart);
+    final live = _isLive(cell, nowUtc);
+    final ended = !nowUtc.isBefore(cell.displayEnd);
     final String durationText;
     if (live) {
-      durationText = '${_minutesLabel(entry.endAt.difference(nowUtc))} left of ${_minutesLabel(total)}';
+      durationText = '${_minutesLabel(cell.displayEnd.difference(nowUtc))} left of ${_minutesLabel(total)}';
     } else if (ended) {
       durationText = 'Ended · ${_minutesLabel(total)}';
     } else {
       durationText = _minutesLabel(total);
     }
-    final progress = live ? nowUtc.difference(entry.startAt).inMilliseconds / total.inMilliseconds : 0.0;
+    final progress = live ? nowUtc.difference(cell.displayStart).inMilliseconds / total.inMilliseconds : 0.0;
 
     final expanded = _detailsExpanded;
     final art = entry.primaryArt;

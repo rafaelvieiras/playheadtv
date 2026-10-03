@@ -20,6 +20,7 @@ import {
   tooLongWarnings,
   type BlockWarning,
 } from '@/lib/guide'
+import { allEntriesAsCells, buildGuideCells, type GuideCell } from '@/lib/guideDisplay'
 import { api } from '@/lib/http'
 import { isTailGroup } from '@/lib/types'
 import type {
@@ -206,6 +207,7 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
 
 function GuideGrid({
   entries,
+  cells,
   windowStart,
   windowEnd,
   now,
@@ -214,6 +216,7 @@ function GuideGrid({
   mode,
 }: {
   entries: EpgItem[]
+  cells: GuideCell<EpgItem>[]
   windowStart: number
   windowEnd: number
   now: number
@@ -225,7 +228,6 @@ function GuideGrid({
   const fmtTime = (ms: number) => new Date(ms).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone })
   const fmtDay = (ms: number) => new Date(ms).toLocaleDateString('en-US', { weekday: 'short', timeZone })
 
-  const sorted = useMemo(() => [...entries].sort((a, b) => a.start_at - b.start_at), [entries])
   const gaps = useMemo(() => findGaps(entries), [entries])
   const trackWidth = px((windowEnd - windowStart) / 60000)
   const marks = useMemo(() => {
@@ -281,8 +283,9 @@ function GuideGrid({
                 <span className="truncate">Gap · {formatDurationMs(gap.end - gap.start)}</span>
               </div>
             ))}
-            {sorted.map((entry) => {
-              const live = entry.start_at <= now && now < entry.end_at
+            {cells.map((cell) => {
+              const entry = cell.entry
+              const live = cell.displayStart <= now && now < cell.displayEnd
               const clips = epgItemClipCount(entry)
               const known = epgItemTitle(entry)
               const item = isTailGroup(entry) ? undefined : titles.get(entry.catalog_item_id)
@@ -293,16 +296,17 @@ function GuideGrid({
                   data-testid="guide-entry"
                   data-kind={entry.kind}
                   data-clips={clips || undefined}
-                  title={`${ENTRY_KIND_LABELS[entry.kind]}: ${title} (${fmtTime(entry.start_at)} – ${fmtTime(entry.end_at)})`}
+                  data-absorbed={cell.absorbed.length || undefined}
+                  title={`${ENTRY_KIND_LABELS[entry.kind]}: ${title} (${fmtTime(cell.displayStart)} – ${fmtTime(cell.displayEnd)})`}
                   className={`absolute top-1 flex h-[calc(100%-0.5rem)] flex-col justify-center overflow-hidden rounded-md border px-2 ${ENTRY_KIND_CLASSES[entry.kind]} ${live ? 'ring-2 ring-primary' : ''}`}
-                  style={place(entry.start_at, entry.end_at)}
+                  style={place(cell.displayStart, cell.displayEnd)}
                 >
                   {entry.kind !== 'program' && (
                     <span className="truncate text-[10px] font-semibold uppercase tracking-wide">{ENTRY_KIND_LABELS[entry.kind]}</span>
                   )}
                   <span className="truncate text-sm">{title}</span>
                   <span className="truncate text-xs tabular-nums text-muted-foreground">
-                    {fmtTime(entry.start_at)} – {fmtTime(entry.end_at)}
+                    {fmtTime(cell.displayStart)} – {fmtTime(cell.displayEnd)}
                     {clips > 0 && ` · ${clips} ${clips === 1 ? 'clip' : 'clips'}`}
                   </span>
                 </div>
@@ -327,6 +331,9 @@ export function ChannelGuide({ channel, active }: { channel: Channel; active: bo
   const queryClient = useQueryClient()
   const [mode, setMode] = useState<'stored' | 'preview'>('stored')
   const [now, setNow] = useState(() => Date.now())
+  // Debugging aid, UI state only: draw every entry (fillers included) at its
+  // real span instead of the programs-only guide.
+  const [showFiller, setShowFiller] = useState(false)
   const timeZone = validTimeZone(channel.timezone)
 
   const windowStart = useMemo(() => {
@@ -355,7 +362,12 @@ export function ChannelGuide({ channel, active }: { channel: Channel; active: bo
     [entries],
   )
   const titles = useCatalogItems(titleIds)
+  // Gap warnings are about the real schedule, so they look at every entry.
   const gaps = useMemo(() => findGaps(entries), [entries])
+  // What the grid draws: programs and fallbacks with the time of hidden
+  // fillers attributed to a neighbouring program, or everything as is.
+  const cells = useMemo(() => (showFiller ? allEntriesAsCells(entries) : buildGuideCells(entries)), [entries, showFiller])
+  const hiddenCount = entries.length - cells.length
   const blockWarnings = useBlockWarnings(channel, timeZone)
 
   // Re-read whenever the tab is shown again: the schedule, blocks or grid may
@@ -389,7 +401,7 @@ export function ChannelGuide({ channel, active }: { channel: Channel; active: bo
     return `${day(start)} ${time(start)} – ${time(end)} (${formatDurationMs(end - start)})`
   }
 
-  const kindsPresent = new Set<EpgEntryKind>(entries.map((e) => e.kind))
+  const kindsPresent = new Set<EpgEntryKind>(cells.map((c) => c.entry.kind))
 
   return (
     <div className="flex flex-col gap-4" data-testid="guide">
@@ -414,10 +426,21 @@ export function ChannelGuide({ channel, active }: { channel: Channel; active: bo
             Preview after reset
           </Button>
         </div>
-        <Button variant="outline" size="sm" onClick={refresh} data-testid="guide-refresh">
-          <RefreshCw className="size-4" />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant={showFiller ? 'default' : 'outline'}
+            size="sm"
+            data-testid="guide-show-filler"
+            aria-pressed={showFiller}
+            onClick={() => setShowFiller((v) => !v)}
+          >
+            Show filler
+          </Button>
+          <Button variant="outline" size="sm" onClick={refresh} data-testid="guide-refresh">
+            <RefreshCw className="size-4" />
+            Refresh
+          </Button>
+        </div>
       </div>
 
       {mode === 'preview' && (
@@ -486,6 +509,7 @@ export function ChannelGuide({ channel, active }: { channel: Channel; active: bo
         <>
           <GuideGrid
             entries={entries}
+            cells={cells}
             windowStart={windowStart}
             windowEnd={windowEnd}
             now={now}
@@ -503,6 +527,11 @@ export function ChannelGuide({ channel, active }: { channel: Channel; active: bo
                   {ENTRY_KIND_LABELS[k]}
                 </span>
               ))}
+            {!showFiller && hiddenCount > 0 && (
+              <span data-testid="guide-hidden-count">
+                {hiddenCount} filler {hiddenCount === 1 ? 'entry' : 'entries'} hidden (their time belongs to the neighbouring program).
+              </span>
+            )}
             {titles.truncated && <span>Titles are looked up for the first {MAX_LOOKUPS} distinct items only.</span>}
           </div>
         </>
