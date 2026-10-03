@@ -174,10 +174,8 @@ actionable checklist.
       and interleaved dynamic blocks get the same midroll breaks as catalog
       items of a manual block (same rule resolution and pool pick), between
       episodes and between a visit and the next item; also in continuous
-      channels, where breaks sit only between series episodes. Not yet:
-      breaks inside a single long episode (midroll has no such mode for
-      catalog items either), and midroll between plain catalog items of a
-      looping block.
+      channels. Not yet: breaks inside a single long episode (midroll has no
+      such mode for catalog items either).
 - [x] Dynamic `filler_pool`s: an optional `filler_pool.criteria`
       (`{kind, genres, year_from, year_to}`) makes `catalogsync.ResolveDynamicPools`
       own that pool's `filler_pool_item` rows, recomputed after every catalog
@@ -210,10 +208,9 @@ actionable checklist.
       (`channelInput.DynamicBlockIDs`), `expandChannel` loops that block's
       item list continuously to fill the whole window up to the next
       `schedule_entry` occurrence (or the materialization window's end for
-      the last one), tagging every entry `kind=program`. A dynamic block's
-      preroll still fires once at the top of the occurrence; midroll/
-      postroll/tail don't apply (no single "end" to hang them off an endless
-      loop). `catalogsync.Delete` also removes any orphaned `block_item`
+      the last one), tagging every entry `kind=program` (the filler rules
+      now apply per program, see the item on endless blocks below).
+      `catalogsync.Delete` also removes any orphaned `block_item`
       before deleting a `catalog_item`, for the same FK reason as
       `filler_pool_item`.
 - [x] Issue #7 — Schedule/Playout split (`schedule_entry` decoupled into a
@@ -395,6 +392,16 @@ actionable checklist.
       recognizes a 24/7 rotation made of 00:00 weekly items covering each
       weekday once. Known tradeoff: items already created separately are not
       merged automatically.
+
+- [x] Continuous schedule items and dynamic blocks under a timed item apply the
+      preroll, midroll, postroll and tail rules per program (a program is aired
+      as a whole preroll+program+postroll unit; tail covers the leftover before
+      the next timed item; a kept head resumes mid-unit exactly), with a
+      `filler-ratio` epg warning when fillers between two programs can exceed 50%
+      of the shortest program and a hard cap on entries per fill. A dynamic block
+      under a timed item changes shape (preroll once at the top is gone), so
+      its already-materialized grid is rebuilt on the next regeneration; no data
+      migration.
 
 ## Phase 2 — MCP surface
 

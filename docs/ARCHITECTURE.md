@@ -345,12 +345,12 @@ edges):
   that list continuously (`internal/materializer/expand.go`'s
   `fillLoopingBlock`) to fill the entire window up to the next occurrence
   (or the materialized window's end for the last one), and every entry it
-  emits is tagged `kind=program` — real programming, not filler. A dynamic
-  block's `preroll` filler rule still applies once, at the top of the
-  occurrence; `postroll`/`tail` don't apply to it, since an endless loop has
-  no single "end" to hang them off, and `midroll` only breaks between series
-  episodes (see "Series block items"). A manual block plays its list per its
-  own `list_mode` (see "Manual block list mode").
+  emits is tagged `kind=program` — real programming, not filler. The block
+  and channel filler rules apply per program, exactly as for a continuous
+  item (see "Continuous schedule items and grid stability"): preroll before
+  each program, postroll after it, midroll between two consecutive programs,
+  tail for what is left before the next occurrence. A manual block plays its
+  list per its own `list_mode` (see "Manual block list mode").
 - **Series block items** (migration `0010`): `block_item.item_type` is
   `catalog` (one catalog item, as before, optional `trim_duration_ms`) or
   `series`. Type-specific data lives in the JSON `spec` column, so further
@@ -418,9 +418,9 @@ edges):
   last item), subject to the same fit rule (a break that fits is aired even if
   the next episode then does not, and the slot end always wins). Breaks carry
   no `source_block_item_id`, so the cursor rebuild never counts them as
-  episodes. In a looping block (continuous item, interleaved dynamic block) a
-  break goes between consecutive episodes, including across two visits, but
-  plain catalog items there still get none. In a continuous block the entry completing a visit
+  episodes. In a looping block (continuous item, dynamic block) a
+  break goes between any two consecutive programs, episodes and plain catalog
+  items alike, including across two visits. In a continuous block the entry completing a visit
   stores the unwrapped next rotation index and the others the item's own, and
   a regeneration whose kept head ends mid-visit counts the trailing adjacent
   entries still carrying the item's index to resume it. A spec without
@@ -540,7 +540,7 @@ compute ahead to, not a commitment the schedule made, so the last occurrence
 in a window plays out in full exactly as before (the next `Run()` picks up
 the continuation). A dynamic (looping) block never had this problem to begin
 with — `fillLoopingBlock` already stops exactly at the boundary by
-construction.
+construction (a program unit that does not fit whole before it is not aired).
 
 ### Manual block list mode (migration `0015`)
 
@@ -603,8 +603,45 @@ rotating through its block, whole programs only, with a residual too short for
 the next program handed to the channel's fallback rule). At most one per
 schedule, enforced by the API (`409` otherwise). A timed item still starts at
 its nominal time; the continuous item resumes right after it where its
-rotation left off. A continuous item has no preroll/postroll/tail, and midroll only between
-series episodes.
+rotation left off.
+
+The channel and block filler rules apply to a continuous item (and, the same
+way, to a dynamic block scheduled with a timed item) around each *program*, a
+catalog item or an episode of a series/criteria item:
+
+    [preroll] program [postroll] [midroll] [preroll] program [postroll] ...
+
+- **preroll** before each program, **postroll** after it, **midroll** between
+  two consecutive programs (after the postroll, before the next preroll), none
+  before the first program of a span or after the last one.
+- A program is aired as a *unit* with its preroll and postroll (and the
+  midroll owed before it) only if the whole unit ends before the span does, so
+  no filler is left orphaned at a boundary.
+- **tail** only covers what is left of the span when whole units no longer fit
+  (before the next timed item or the window's end); the channel's fallback rule
+  then fills whatever the tail leaves. A manual block under a timed item is
+  unchanged.
+- Fillers are whole pool items chosen by the existing rule resolution (block
+  scope over channel scope) and selection strategies. There is no limit on how
+  much filler may sit between two programs beyond what the rules impose;
+  `GET /channels/{id}/epg-warnings` reports `filler-ratio` when the longest
+  items of the preroll, midroll and postroll pools add up to more than 50% of the
+  shortest program of the block.
+- Guards: a program or filler with a non-positive duration airs nothing, and
+  one fill emits at most `maxLoopEntries` (50000) entries, so near-zero lengths
+  cannot spin; `maxSeriesEntries` still bounds series and the channel/run
+  timeouts still apply.
+
+Changed behavior: a dynamic block under a timed item used to air the preroll
+once at the top of the occurrence, no postroll/tail, and a midroll only between
+series episodes. Already-materialized grids keep that shape until the
+materializer next regenerates the channel (the normal run, or any schedule/
+filler edit); there is no data migration.
+
+The persisted position after a program or filler is on the entries
+(`rotation_next`), and a kept head that ends in the middle of a unit is resumed
+exactly: the last kept entry's kind (preroll, program, postroll, midroll) says
+which part of the unit is still owed.
 
 A channel whose schedule has a continuous item is not fully regenerated on
 every run. The materializer keeps the rows already materialized that start
@@ -663,7 +700,9 @@ catalog edits) never reset; they keep the freeze margin.
   configuration that leave parts of its grid silently empty, as
   `[{kind, block_id, block_item_id?, message}]` (empty list when none). Today:
   `criteria-error` (a criteria item or dynamic block whose query fails to
-  evaluate) and `series-error` (an unreadable series spec). It runs the
+  evaluate), `series-error` (an unreadable series spec) and `filler-ratio` (the
+  fillers configured between two programs of a continuous item or dynamic block
+  can exceed half of its shortest program; informational). It runs the
   materializer's own loader, which also logs each such item as an error with
   its ids; the item airs nothing until fixed. The admin guide shows them next
   to the other block warnings, and `preview_channel_grid_reset` returns the same

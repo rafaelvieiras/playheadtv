@@ -71,7 +71,7 @@ export const ENTRY_KIND_CLASSES: Record<EpgEntryKind, string> = {
   fallback: 'border-rose-500/60 bg-rose-500/15',
 }
 
-export type BlockWarningKind = 'empty' | 'too-long' | 'no-match' | 'criteria-error'
+export type BlockWarningKind = 'empty' | 'too-long' | 'no-match' | 'criteria-error' | 'filler-ratio'
 
 export interface BlockWarning {
   kind: BlockWarningKind

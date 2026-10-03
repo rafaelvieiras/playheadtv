@@ -476,7 +476,7 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 
 	warnings = append(warnings, repeatWarnings(scheduleItems, blockItems, repeatBlockIDs, catalogDuration, runs, warnings)...)
 
-	return channelInput{
+	in := channelInput{
 		RepeatBlockIDs:  repeatBlockIDs,
 		Series:          runs,
 		ChannelID:       ch.ID,
@@ -489,7 +489,9 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		CatalogDuration: catalogDuration,
 		DynamicBlockIDs: dynamicBlockIDs,
 		Warnings:        warnings,
-	}, nil
+	}
+	in.Warnings = append(in.Warnings, in.fillerRatioWarnings()...)
+	return in, nil
 }
 
 func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel, tenantID string, now, scanFrom, windowEnd time.Time, cache *catalogDurationCache, state *selectionState) error {
@@ -508,7 +510,7 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 	var keptUntil time.Time
 	continuousStart := 0
 	continuousVisitDone := 0
-	continuousPrevEpisode := false
+	continuousStage := stageFresh
 	var continuousID, continuousBlockID string
 	for _, si := range scheduleItems {
 		if si.Recurrence == domain.RecurrenceContinuous {
@@ -584,7 +586,7 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 				}
 				if err := m.db.Query(ctx, &tail,
 					"SELECT kind, start_at, end_at, source_block_item_id, rotation_next, source_schedule_item_id AS source_schedule_id FROM epg_entry WHERE channel_id = ? AND start_at < ? ORDER BY start_at DESC LIMIT ?",
-					ch.ID, keptCutMs, 2*run.amount.Count+1,
+					ch.ID, keptCutMs, 4*run.amount.Count+4,
 				); err != nil {
 					return fmt.Errorf("read series visit: %w", err)
 				}
@@ -615,22 +617,24 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 	}
 
 	if continuousID != "" && !keptUntil.IsZero() {
-		// Whether the kept head ends on an episode of the continuous item (as
-		// opposed to a midroll break, a program or another item's entry): the
-		// generation resuming there then owes a break before its first episode.
-		var ends []int
-		if err := m.db.Query(ctx, &ends,
-			"SELECT 1 FROM epg_entry WHERE channel_id = ? AND end_at = ? AND start_at < ? AND source_schedule_item_id = ? AND source_block_item_id IS NOT NULL LIMIT 1",
+		// How far the program unit the kept head ends in had got (see
+		// breakStage): the kind of the continuous item's entry that ends
+		// exactly where the head does.
+		var kinds []string
+		if err := m.db.Query(ctx, &kinds,
+			"SELECT kind FROM epg_entry WHERE channel_id = ? AND end_at = ? AND start_at < ? AND source_schedule_item_id = ? LIMIT 1",
 			ch.ID, keptUntil.UnixMilli(), keptCutMs, continuousID,
 		); err != nil {
 			return fmt.Errorf("read kept head end: %w", err)
 		}
-		continuousPrevEpisode = len(ends) > 0
+		if len(kinds) > 0 {
+			continuousStage = stageForKind(domain.EpgEntryKind(kinds[0]))
+		}
 	}
 
 	in.ContinuousStart = continuousStart
 	in.ContinuousVisitDone = continuousVisitDone
-	in.ContinuousPrevEpisode = continuousPrevEpisode
+	in.ContinuousStage = continuousStage
 	in.KeptUntil = keptUntil
 	generated := expandChannel(in, now, scanFrom, windowEnd, state)
 
@@ -769,6 +773,10 @@ const (
 	// item, only empty series or items without a positive duration), so the
 	// repetition has nothing to loop and the block's time stays empty.
 	WarningRepeatEmpty = "repeat-empty"
+	// WarningFillerRatio: the fillers configured between two programs of an
+	// endless block (continuous item, dynamic block) can exceed half of its
+	// shortest program. Informational; nothing is limited.
+	WarningFillerRatio = "filler-ratio"
 )
 
 // Warning is a problem found in a channel's stored configuration that makes

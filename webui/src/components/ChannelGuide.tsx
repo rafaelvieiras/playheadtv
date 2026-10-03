@@ -191,8 +191,8 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
     })
     ;(serverWarnings ?? []).forEach((w) => {
       out.push({
-        kind: 'criteria-error',
-        key: `criteria-error-${w.block_id}-${w.block_item_id ?? ''}`,
+        kind: w.kind === 'filler-ratio' ? 'filler-ratio' : 'criteria-error',
+        key: `${w.kind}-${w.block_id}-${w.block_item_id ?? ''}`,
         blockId: w.block_id,
         blockName: blocksById.get(w.block_id)?.name ?? w.block_id,
         message: `Block "${blocksById.get(w.block_id)?.name ?? w.block_id}": ${w.message}`,
@@ -469,7 +469,9 @@ export function ChannelGuide({ channel, active }: { channel: Channel; active: bo
                   ? 'Block longer than its slot'
                   : w.kind === 'criteria-error'
                     ? 'Query could not be evaluated'
-                    : 'Criteria match nothing'
+                    : w.kind === 'filler-ratio'
+                      ? 'Long fillers between programs'
+                      : 'Criteria match nothing'
             }
           >
             {w.message}{' '}

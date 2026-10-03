@@ -50,11 +50,10 @@ type channelInput struct {
 	// the kept head already aired, when the head ends in the middle of a
 	// "count" visit (see materializeChannel). Zero otherwise.
 	ContinuousVisitDone int
-	// ContinuousPrevEpisode is true when the kept head's last entry is an
-	// episode of a series walk, so the generation resuming right after it
-	// owes a midroll break before its first episode (a head that ends on the
-	// break itself already paid it).
-	ContinuousPrevEpisode bool
+	// ContinuousStage is how far the program unit (preroll, program,
+	// postroll, then the midroll before the next one) the kept head ends in
+	// had got, so the generation resuming right after it owes only the rest.
+	ContinuousStage breakStage
 	// KeptUntil is non-zero when the channel's already-materialized head is
 	// being kept (grid stability): it is the end of the last kept entry.
 	// Nothing is generated for the continuous item before it, and any
@@ -295,7 +294,7 @@ func fillGap(
 	}
 
 	var entries []domain.EpgEntry
-	for {
+	for len(entries) < maxLoopEntries {
 		item, ok := selectFillerItem(*rule, pool, state)
 		if !ok {
 			break
@@ -344,6 +343,11 @@ type seriesVisit struct {
 	// before the visit's first episode.
 	Mid         *midrollSource
 	PrevEpisode bool
+	// Unit, when set, replaces Mid/PrevEpisode: every episode is a unit with
+	// its own preroll and postroll and the midroll between episodes (see
+	// breakLoop). Used by the endless sequences (continuous items, dynamic
+	// blocks), where a unit must fit whole before the limit.
+	Unit *breakLoop
 }
 
 // midrollSource is what a midroll break needs: the resolved midroll rule and
@@ -416,6 +420,66 @@ func emitSeries(
 		slot, ok := run.plan(startMs)
 		if !ok {
 			break
+		}
+		if visit.Unit != nil {
+			if slot.Skip {
+				run.skipped++
+				cursor = cursor.Add(time.Duration(slot.Episode.DurationMs) * time.Millisecond)
+				continue
+			}
+			rotBefore := 0
+			if visit.RotIdx != nil {
+				rotBefore = *visit.RotIdx
+			}
+			var planned seriesSlot
+			var plannedStartMs int64
+			unitEntries, unitEnd, progIdx, unitOK := visit.Unit.unit(cursor, limit, rotBefore, func(start time.Time) (domain.EpgEntry, bool) {
+				sl, planOK := run.plan(start.UnixMilli())
+				if !planOK || sl.Skip {
+					return domain.EpgEntry{}, false
+				}
+				planned, plannedStartMs = sl, start.UnixMilli()
+				cycle := sl.Cycle
+				var round *int
+				if run.il != nil {
+					rd := sl.Round
+					round = &rd
+				}
+				itemID := blockItemID
+				return domain.EpgEntry{
+					ID:                   uuid.NewString(),
+					TenantID:             tenantID,
+					ChannelID:            channelID,
+					Kind:                 kind,
+					CatalogItemID:        sl.Episode.ID,
+					StartAt:              plannedStartMs,
+					EndAt:                plannedStartMs + sl.Episode.DurationMs,
+					SourceScheduleItemID: sourceScheduleItemID,
+					GeneratedAt:          generatedAt,
+					SourceBlockItemID:    &itemID,
+					SeriesCycle:          &cycle,
+					SeriesRound:          round,
+				}, true
+			})
+			if !unitOK {
+				break
+			}
+			run.commit(plannedStartMs, planned)
+			aired++
+			completed = reached()
+			if visit.RotIdx != nil {
+				r := *visit.RotIdx
+				if completed && visit.RotNext != nil {
+					r = *visit.RotNext
+				}
+				setRotation(unitEntries, progIdx, r)
+			}
+			entries = append(entries, unitEntries...)
+			cursor = unitEnd
+			if completed {
+				break
+			}
+			continue
 		}
 		// A midroll break between two episodes, exactly like the one a manual
 		// block puts between two catalog items: it must fit before limit when
@@ -513,15 +577,21 @@ func emitSeries(
 const maxRepeatEntries = maxSeriesEntries
 
 // fillLoopingBlock inserts, starting at cursor, entries drawn from a
-// continuous, wrapping walk over items (a dynamic block's block_item list)
-// until target — same "whole items only, never cut short" contract as
-// fillGap, but keyed by cursorKey in state instead of a filler_rule's ID, and
-// always sequential: a dynamic block has no selection_strategy of its own, it
-// just rotates through everything currently matching its criteria, in order,
-// forever. This is what makes a "genre channel" real programming
-// (kind=program) instead of filler: a dynamic block occurrence never really
-// "ends" until the next schedule_item occurrence (or the end of the
+// continuous, wrapping walk over items (a block's block_item list) until
+// target — same "whole items only, never cut short" contract as fillGap, but
+// keyed by cursorKey in state instead of a filler_rule's ID, and always
+// sequential: an endless block has no selection_strategy of its own, it just
+// rotates through everything it holds, in order, forever. This is what makes a
+// "genre channel" real programming (kind=program) instead of filler: it never
+// really "ends" until the next schedule_item occurrence (or the end of the
 // materialized window).
+//
+// Every program (a catalog item, or an episode of a series/criteria item) is a
+// unit with the filler rules' preroll before and postroll after it, and the
+// midroll goes between two consecutive programs (see breakLoop); a unit is aired
+// only whole. What is left when the next unit no longer fits is for the caller's
+// tail and fallback rules. br carries the rules and, for a span resuming after
+// a kept head, the stage the previous unit stopped at.
 //
 // cursorKey must be scoped by channelID, not just blockID (issue #7's
 // point 2): a Schedule (and any dynamic Block it schedules) can be assigned
@@ -546,8 +616,7 @@ func fillLoopingBlock(
 	sourceScheduleItemID *string,
 	cursorKey string,
 	resumeDone int,
-	mid *midrollSource,
-	prevEpisode bool,
+	br *breakLoop,
 	once bool,
 	state *selectionState,
 ) ([]domain.EpgEntry, time.Time) {
@@ -555,12 +624,19 @@ func fillLoopingBlock(
 		return nil, cursor
 	}
 	var entries []domain.EpgEntry
+	// A kept head can end between a program and its postroll.
+	if post, end, ok := br.flushPost(cursor, target, state.seqCursor[cursorKey]); !ok {
+		return nil, cursor
+	} else {
+		entries = append(entries, post...)
+		cursor = end
+	}
 	emptySeries := 0
 	// idle counts consecutive iterations that aired nothing and did not move
 	// the cursor; a whole lap of them is a zero-progress cycle.
 	idle := 0
 	lastLen, lastCursor := 0, cursor
-	for {
+	for len(entries) < maxLoopEntries {
 		if len(entries) == lastLen && cursor.Equal(lastCursor) {
 			idle++
 			if idle > 2*len(items) {
@@ -602,13 +678,10 @@ func fillLoopingBlock(
 			emptySeries = 0
 			run.catchUp(cursor.UnixMilli())
 			rot, nxt := idx, idx+1
-			visit := seriesVisit{Amount: run.amount, Done: resumeDone, RotIdx: &rot, RotNext: &nxt, Mid: mid, PrevEpisode: prevEpisode}
+			visit := seriesVisit{Amount: run.amount, Done: resumeDone, RotIdx: &rot, RotNext: &nxt, Unit: br}
 			resumeDone = 0
 			seriesEntries, end, completed := emitSeries(run, bi.ID, visit, cursor, target, true, kind, tenantID, channelID, generatedAt, sourceScheduleItemID)
 			entries = append(entries, seriesEntries...)
-			if n := len(seriesEntries); n > 0 {
-				prevEpisode = seriesEntries[n-1].Kind != domain.EpgMidRoll
-			}
 			cursor = end
 			if !completed {
 				break
@@ -617,29 +690,33 @@ func fillLoopingBlock(
 			continue
 		}
 		emptySeries = 0
-		prevEpisode = false
 		durMs := effectiveDuration(bi, catalogDuration)
 		if durMs <= 0 {
 			break
 		}
-		end := cursor.Add(time.Duration(durMs) * time.Millisecond)
-		if end.After(target) {
+		unitEntries, end, progIdx, ok := br.unit(cursor, target, idx, func(start time.Time) (domain.EpgEntry, bool) {
+			return domain.EpgEntry{
+				ID:                   uuid.NewString(),
+				TenantID:             tenantID,
+				ChannelID:            channelID,
+				Kind:                 kind,
+				CatalogItemID:        bi.CatalogItemID,
+				StartAt:              start.UnixMilli(),
+				EndAt:                start.Add(time.Duration(durMs) * time.Millisecond).UnixMilli(),
+				SourceScheduleItemID: sourceScheduleItemID,
+				GeneratedAt:          generatedAt,
+			}, true
+		})
+		if !ok {
 			break
 		}
-		entries = append(entries, domain.EpgEntry{
-			ID:                   uuid.NewString(),
-			TenantID:             tenantID,
-			ChannelID:            channelID,
-			Kind:                 kind,
-			CatalogItemID:        bi.CatalogItemID,
-			StartAt:              cursor.UnixMilli(),
-			EndAt:                end.UnixMilli(),
-			SourceScheduleItemID: sourceScheduleItemID,
-			GeneratedAt:          generatedAt,
-			RotationNext:         &next,
-		})
+		setRotation(unitEntries, progIdx, next)
+		entries = append(entries, unitEntries...)
 		cursor = end
 		state.seqCursor[cursorKey] = idx + 1
+	}
+	if len(entries) >= maxLoopEntries {
+		warnLoopCap(channelID, sourceScheduleItemID)
 	}
 	return entries, cursor
 }
@@ -722,9 +799,22 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		if !in.KeptUntil.IsZero() && start.Equal(in.KeptUntil) {
 			resume = in.ContinuousVisitDone
 		}
-		mid := &midrollSource{rule: resolveFillerRule(in.FillerRules, domain.FillerMidRoll, continuous.BlockID, in.ChannelID), pools: in.PoolItems, durations: in.CatalogDuration, state: state}
-		loopEntries, end := fillLoopingBlock(in.BlockItems[continuous.BlockID], in.Series, in.CatalogDuration, start, to, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, continuousKey, resume, mid, in.ContinuousPrevEpisode && start.Equal(in.KeptUntil), playOnce(continuous.BlockID), state)
+		stage := stageFresh
+		if start.Equal(in.KeptUntil) {
+			stage = in.ContinuousStage
+		}
+		pre, mid, post := in.breakSources(continuous.BlockID, state)
+		br := newBreakLoop(pre, mid, post, stage, in.TenantID, in.ChannelID, generatedAt, &continuous.ID)
+		loopEntries, end := fillLoopingBlock(in.BlockItems[continuous.BlockID], in.Series, in.CatalogDuration, start, to, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, continuousKey, resume, br, playOnce(continuous.BlockID), state)
 		entries = append(entries, loopEntries...)
+		// Whole programs no longer fit: the tail covers the leftover
+		// before the fallback does.
+		if end.Before(to) {
+			tailRule := resolveFillerRule(in.FillerRules, domain.FillerTail, continuous.BlockID, in.ChannelID)
+			tailEntries, tailEnd := fillGap(tailRule, in.PoolItems, in.CatalogDuration, end, to, domain.EpgTail, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, state)
+			entries = append(entries, tailEntries...)
+			end = tailEnd
+		}
 		if end.Before(to) {
 			fillFallbackOnly(end, to)
 		}
@@ -792,26 +882,33 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			emit(item.CatalogItemID, dur, kind)
 		}
 
-		insertFiller(preroll, domain.EpgPreRoll)
-
 		if in.DynamicBlockIDs[occ.BlockID] {
 			// A dynamic block has no fixed end — it loops its (dynamically
-			// resolved) item list to fill every instant up to
-			// nominalNextStart, tagged as real programming. It already never
-			// crosses that boundary by construction, so it needs no overrun
-			// handling of its own. midroll/postroll/tail don't apply to an
-			// endless loop (there's no single "end" to hang them off); only
-			// preroll (already inserted above) still fires once, at the top
-			// of this occurrence.
+			// resolved) item list to fill every instant up to nominalNextStart,
+			// tagged as real programming. It already never crosses that
+			// boundary by construction, so it needs no overrun handling of
+			// its own. Like a continuous item, every program gets the block's
+			// (or the channel's) preroll before and postroll after it, with the
+			// midroll between two programs (breakLoop); the tail covers what is
+			// left when whole programs no longer fit.
 			// cursorKey includes ChannelID (see fillLoopingBlock's doc comment)
 			// so two channels sharing this dynamic block via the same Schedule
 			// don't share loop position.
 			cursorKey := in.ChannelID + "|" + occ.BlockID
-			loopEntries, newCursor := fillLoopingBlock(items, in.Series, in.CatalogDuration, cursor, nominalNextStart, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, cursorKey, 0, &midrollSource{rule: midroll, pools: in.PoolItems, durations: in.CatalogDuration, state: state}, false, false, state)
+			pre, mid, post := in.breakSources(occ.BlockID, state)
+			br := newBreakLoop(pre, mid, post, stageFresh, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID)
+			loopEntries, newCursor := fillLoopingBlock(items, in.Series, in.CatalogDuration, cursor, nominalNextStart, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, cursorKey, 0, br, false, state)
 			entries = append(entries, loopEntries...)
 			cursor = newCursor
+			if cursor.Before(nominalNextStart) && tailRule != nil {
+				tailEntries, tailEnd := fillGap(tailRule, in.PoolItems, in.CatalogDuration, cursor, nominalNextStart, domain.EpgTail, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, state)
+				entries = append(entries, tailEntries...)
+				cursor = tailEnd
+			}
 			continue
 		}
+
+		insertFiller(preroll, domain.EpgPreRoll)
 
 		// Overrun policy (issue #10): "stop before end", but only when
 		// hasNextOccurrence — a manual block's own nominal start is never
