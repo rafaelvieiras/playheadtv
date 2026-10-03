@@ -5,7 +5,9 @@ import { RefreshCw } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/http'
-import type { CatalogItem, Channel, EpgEntry } from '@/lib/types'
+import { epgItemClipCount, epgItemTitle } from '@/lib/guide'
+import { isTailGroup } from '@/lib/types'
+import type { CatalogItem, Channel, EpgEntry, EpgItem } from '@/lib/types'
 
 // How far back/forward from "now" the grid fetches EPG entries for.
 const LOOKBACK_MS = 30 * 60 * 1000
@@ -50,11 +52,11 @@ export function EpgPage() {
     isError: entriesError,
   } = useQuery({
     queryKey: ['epg', windowStart, windowEnd],
-    queryFn: () => api.get<EpgEntry[]>(`/epg?start=${windowStart}&end=${windowEnd}`),
+    queryFn: () => api.get<EpgItem[]>(`/epg?start=${windowStart}&end=${windowEnd}&group_tail=1`),
   })
 
   const entriesByChannel = useMemo(() => {
-    const map = new Map<string, EpgEntry[]>()
+    const map = new Map<string, EpgItem[]>()
     for (const entry of entries ?? []) {
       const list = map.get(entry.channel_id)
       if (list) {
@@ -66,8 +68,16 @@ export function EpgPage() {
     return map
   }, [entries])
 
+  // GET /epg carries the titles; only an entry without one (an older
+  // backend) is looked up. Tail groups never are.
   const catalogItemIds = useMemo(
-    () => [...new Set((entries ?? []).map((e) => e.catalog_item_id))],
+    () => [
+      ...new Set(
+        (entries ?? [])
+          .filter((e): e is EpgEntry => !isTailGroup(e) && epgItemTitle(e) === undefined)
+          .map((e) => e.catalog_item_id),
+      ),
+    ],
     [entries],
   )
 
@@ -206,8 +216,9 @@ export function EpgPage() {
                         )}
                         {channelEntries.map((entry) => {
                           const isLive = entry.start_at <= now && now < entry.end_at
-                          const item = catalogItemsById.get(entry.catalog_item_id)
-                          const title = item ? formatCatalogTitle(item) : '…'
+                          const clips = epgItemClipCount(entry)
+                          const item = isTailGroup(entry) ? undefined : catalogItemsById.get(entry.catalog_item_id)
+                          const title = epgItemTitle(entry) ?? (item ? formatCatalogTitle(item) : '…')
                           const startOffset = Math.max(0, (entry.start_at - windowStart) / 60000)
                           const clampedStart = Math.max(entry.start_at, windowStart)
                           const clampedEnd = Math.min(entry.end_at, windowEnd)
@@ -216,6 +227,8 @@ export function EpgPage() {
                           return (
                             <div
                               key={entry.id}
+                              data-testid="epg-entry"
+                              data-kind={entry.kind}
                               title={`${title} (${formatTime(entry.start_at)} – ${formatTime(entry.end_at)})`}
                               className={`absolute top-1 flex h-[calc(100%-0.5rem)] flex-col justify-center overflow-hidden rounded-md border px-2 ${
                                 isLive
@@ -230,6 +243,7 @@ export function EpgPage() {
                               <span className="truncate text-sm">{title}</span>
                               <span className="truncate text-xs tabular-nums text-muted-foreground">
                                 {formatTime(entry.start_at)} – {formatTime(entry.end_at)}
+                                {clips > 0 && ` · ${clips} ${clips === 1 ? 'clip' : 'clips'}`}
                               </span>
                             </div>
                           )

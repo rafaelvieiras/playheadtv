@@ -35,6 +35,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../main.dart' show jellyfinImageUrl;
 import '../playhead_api.dart';
 import 'app_icons.dart';
 
@@ -87,7 +88,6 @@ class EpgOverlayState extends State<EpgOverlay> {
   // One list of EpgEntry per channel, in the SAME ORDER as widget.channels —
   // each row index of the grid is the same index into _entriesByChannel.
   List<List<EpgEntry>> _entriesByChannel = [];
-  Map<String, CatalogItemInfo> _catalogItemsById = {};
   late DateTime _windowStart;
   late DateTime _windowEnd;
   late DateTime _maxWindowEnd;
@@ -146,19 +146,14 @@ class EpgOverlayState extends State<EpgOverlay> {
 
   bool _isLive(EpgEntry e, DateTime now) => !now.isBefore(e.startAt) && now.isBefore(e.endAt);
 
-  Future<List<EpgEntry>> _fetchEpg(PlayheadChannel c, DateTime start, DateTime end) => widget.api.getEpg(c.id, start, end);
-
-  Future<Map<String, CatalogItemInfo>> _fetchCatalogItems(Iterable<List<EpgEntry>> rows) async {
-    // Dedupe: the same catalog_item can be in more than one channel/row, and
-    // items already known are not fetched again.
-    final ids = <String>{};
-    for (final entries in rows) {
-      for (final entry in entries) {
-        if (!_catalogItemsById.containsKey(entry.catalogItemId)) ids.add(entry.catalogItemId);
-      }
-    }
-    final fetched = await Future.wait(ids.map((id) async => MapEntry(id, await widget.api.getCatalogItem(id))));
-    return {for (final e in fetched) e.key: e.value};
+  // One request per channel; the entries arrive enriched (titles, art
+  // references) and consecutive tail clips arrive grouped into one entry, so
+  // a tail shows as one cell. Against a backend that predates that, entries
+  // missing their title are resolved with the per-item lookup (cached per
+  // id, bounded concurrency) as before.
+  Future<List<EpgEntry>> _fetchEpg(PlayheadChannel c, DateTime start, DateTime end) async {
+    final entries = await widget.api.getEpg(c.id, start, end, groupTail: true);
+    return Future.wait(entries.map(widget.api.resolveCatalog));
   }
 
   Future<void> _load() async {
@@ -172,8 +167,6 @@ class EpgOverlayState extends State<EpgOverlay> {
     try {
       final results = await Future.wait(widget.channels.map((c) => _fetchEpg(c, start, end)));
       if (!mounted) return;
-      final catalogItems = await _fetchCatalogItems(results);
-      if (!mounted) return;
 
       final channelIndex = widget.channels.indexWhere((c) => c.id == widget.currentChannelId);
       final initialRow = channelIndex >= 0 ? channelIndex : 0;
@@ -185,7 +178,6 @@ class EpgOverlayState extends State<EpgOverlay> {
 
       setState(() {
         _entriesByChannel = results;
-        _catalogItemsById = {..._catalogItemsById, ...catalogItems};
         _focusedRow = initialRow;
         _focusedCol = initialCol;
         _anchor = now;
@@ -216,14 +208,11 @@ class EpgOverlayState extends State<EpgOverlay> {
       if (newEnd.isAfter(_maxWindowEnd)) newEnd = _maxWindowEnd;
       final results = await Future.wait(widget.channels.map((c) => _fetchEpg(c, oldEnd, newEnd)));
       if (!mounted) return false;
-      final catalogItems = await _fetchCatalogItems(results);
-      if (!mounted) return false;
       setState(() {
         for (var i = 0; i < _entriesByChannel.length && i < results.length; i++) {
           final known = _entriesByChannel[i].map((e) => e.id).toSet();
           _entriesByChannel[i].addAll(results[i].where((e) => !known.contains(e.id)));
         }
-        _catalogItemsById = {..._catalogItemsById, ...catalogItems};
         _windowEnd = newEnd;
       });
       return true;
@@ -395,7 +384,7 @@ class EpgOverlayState extends State<EpgOverlay> {
     final left = (startMin - hMin) * ppm + _cellMarginH;
     final width = ((endMin - startMin) * ppm - 2 * _cellMarginH).clamp(4.0, double.infinity);
     final focused = rowIndex == _focusedRow && col == _focusedCol;
-    final title = _catalogItemsById[entry.catalogItemId]?.title ?? '';
+    final title = entry.displayTitle;
     final nowUtc = _now.toUtc();
     final live = _isLive(entry, nowUtc);
     final progress = live ? nowUtc.difference(entry.startAt).inMilliseconds / entry.endAt.difference(entry.startAt).inMilliseconds : 0.0;
@@ -554,7 +543,7 @@ class EpgOverlayState extends State<EpgOverlay> {
   Widget _buildDetailsPanel() {
     final entry = _focusedEntry;
     if (entry == null) return const SizedBox.shrink();
-    final title = _catalogItemsById[entry.catalogItemId]?.title ?? '';
+    final title = entry.displayTitle;
     final channelName = widget.channels[_focusedRow].name;
     final timeRange = '${_fmtHHmm(entry.startAt)}–${_fmtHHmm(entry.endAt)}';
     final nowUtc = _now.toUtc();
@@ -572,6 +561,25 @@ class EpgOverlayState extends State<EpgOverlay> {
     final progress = live ? nowUtc.difference(entry.startAt).inMilliseconds / total.inMilliseconds : 0.0;
 
     final expanded = _detailsExpanded;
+    final art = entry.primaryArt;
+    final details = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(title, style: TextStyle(color: Colors.white, fontSize: expanded ? 28 : 18, fontWeight: FontWeight.bold)),
+        SizedBox(height: expanded ? 10 : 4),
+        Text(
+          expanded ? channelName : '$channelName · $timeRange · $durationText',
+          style: TextStyle(color: Colors.white70, fontSize: expanded ? 20 : 14),
+        ),
+        if (expanded) ...[
+          const SizedBox(height: 6),
+          Text(timeRange, style: const TextStyle(color: Colors.white54, fontSize: 18)),
+          const SizedBox(height: 6),
+          Text(durationText, style: const TextStyle(color: Colors.white54, fontSize: 18)),
+        ],
+      ],
+    );
     return Container(
       key: Key(expanded ? 'epg-details-panel-expanded' : 'epg-details-panel'),
       width: double.infinity,
@@ -580,18 +588,31 @@ class EpgOverlayState extends State<EpgOverlay> {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(title, style: TextStyle(color: Colors.white, fontSize: expanded ? 28 : 18, fontWeight: FontWeight.bold)),
-          SizedBox(height: expanded ? 10 : 4),
-          Text(
-            expanded ? channelName : '$channelName · $timeRange · $durationText',
-            style: TextStyle(color: Colors.white70, fontSize: expanded ? 20 : 14),
-          ),
-          if (expanded) ...[
-            const SizedBox(height: 6),
-            Text(timeRange, style: const TextStyle(color: Colors.white54, fontSize: 18)),
-            const SizedBox(height: 6),
-            Text(durationText, style: const TextStyle(color: Colors.white54, fontSize: 18)),
-          ],
+          // The poster (built from the art reference the backend sent, never
+          // fetched through it) only shows in the expanded panel, so the
+          // compact one keeps its height.
+          if (expanded && art != null)
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.only(right: 20),
+                  child: SizedBox(
+                    width: 120,
+                    height: 180,
+                    child: Image.network(
+                      jellyfinImageUrl(art.itemId, art.tag),
+                      key: Key('epg-details-art-${entry.id}'),
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stack) => const ColoredBox(color: Colors.white12),
+                    ),
+                  ),
+                ),
+                Expanded(child: details),
+              ],
+            )
+          else
+            details,
           // The slot is always reserved so the panel keeps its height; only
           // the bar itself comes and goes.
           SizedBox(height: expanded ? 12 : 8),

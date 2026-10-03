@@ -55,6 +55,54 @@ export interface EpgEntry {
   end_at: number
   source_schedule_item_id: string | null
   generated_at: number
+  // Catalog metadata GET /epg adds to every entry (each one optional: absent
+  // when the item has no value or the catalog row is gone).
+  media_source_id?: string
+  external_id?: string
+  item_kind?: string
+  title?: string
+  series_title?: string
+  season_number?: number
+  episode_number?: number
+  episode_number_end?: number
+  series_external_id?: string
+  duration_ms?: number
+  image_primary_tag?: string
+  image_backdrop_tag?: string
+  image_thumb_tag?: string
+  series_image_primary_tag?: string
+}
+
+// One stored tail clip inside a grouped tail (backend/internal/api/epg_view.go).
+export interface EpgTailClip {
+  id: string
+  catalog_item_id: string
+  external_id?: string
+  title?: string
+  start_at: number
+  end_at: number
+  duration_ms?: number
+}
+
+// With `group_tail=1`, GET /epg and GET /channels/{id}/epg-preview replace each
+// run of back-to-back tail clips by one of these: a generic title, the run's
+// span and every clip it stands for.
+export interface EpgTailGroup {
+  id: string
+  tenant_id: string
+  channel_id: string
+  kind: 'tail'
+  title: string
+  start_at: number
+  end_at: number
+  clips: EpgTailClip[]
+}
+
+// What a grouped guide request returns.
+export type EpgItem = EpgEntry | EpgTailGroup
+
+export function isTailGroup(item: EpgItem): item is EpgTailGroup {
+  return 'clips' in item
 }
 
 // Subset of backend/internal/domain.CatalogItem this page reads for display.

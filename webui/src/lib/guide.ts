@@ -2,7 +2,9 @@
 // entries and the "block longer than its slot" check. Everything here works on
 // data the page already loaded; nothing calls the backend.
 import { DAY_LABELS } from '@/lib/schedule'
-import type { Block, BlockItem, CatalogItem, EpgEntry, EpgEntryKind, ScheduleItem } from '@/lib/types'
+import { formatCatalogTitle } from '@/lib/catalog'
+import { isTailGroup } from '@/lib/types'
+import type { Block, BlockItem, CatalogItem, EpgEntryKind, EpgItem, ScheduleItem } from '@/lib/types'
 
 // Silence shorter than this between two entries is a seam, not a gap: no
 // warning and no gap block.
@@ -16,7 +18,7 @@ export interface Gap {
 // Interior gaps only: silence between two displayed entries. The edges of the
 // range are not gaps (the grid is materialized on a rolling window, so the
 // range may simply start before or end after what exists).
-export function findGaps(entries: EpgEntry[]): Gap[] {
+export function findGaps(entries: Pick<EpgItem, 'start_at' | 'end_at'>[]): Gap[] {
   const sorted = [...entries].sort((a, b) => a.start_at - b.start_at)
   const gaps: Gap[] = []
   let coveredUntil: number | undefined
@@ -27,6 +29,27 @@ export function findGaps(entries: EpgEntry[]): Gap[] {
     coveredUntil = coveredUntil === undefined ? entry.end_at : Math.max(coveredUntil, entry.end_at)
   }
   return gaps
+}
+
+// The title a guide item can show with no further lookup: a tail group's
+// generic title, or the enriched title of an entry (episodes lead with their
+// series, like everywhere else). Undefined when the backend sent none, in which
+// case the caller looks the catalog item up.
+export function epgItemTitle(item: EpgItem): string | undefined {
+  if (isTailGroup(item)) return item.title
+  if (item.title === undefined) return undefined
+  return formatCatalogTitle({
+    title: item.title,
+    series_title: item.series_title ?? null,
+    season_number: item.season_number ?? null,
+    episode_number: item.episode_number ?? null,
+    episode_number_end: item.episode_number_end ?? null,
+  })
+}
+
+// How many clips a guide item stands for (0 for anything but a tail group).
+export function epgItemClipCount(item: EpgItem): number {
+  return isTailGroup(item) ? item.clips.length : 0
 }
 
 export const ENTRY_KIND_LABELS: Record<EpgEntryKind, string> = {

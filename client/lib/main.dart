@@ -7,8 +7,8 @@
 // found to stall / fall back to software rendering on Linux (upstream bug
 // media-kit/media-kit#1404).
 //
-// The item list is resolved at runtime from the Go backend (GET /channels +
-// GET /epg + GET /catalog-items/{id}), which decides what plays and when —
+// The program list is resolved at runtime from the Go backend (GET /channels +
+// the enriched GET /epg), which decides what plays and when —
 // this client only resolves and plays it (see AGENTS.md).
 //
 // Channel switching: arrow up/down calls _switchChannel, which cancels
@@ -54,6 +54,9 @@ class AppConfig {
   static String? _playheadBaseUrl;
   static String? _playheadDeviceToken;
   static String? _playheadChannelId;
+  static int? _workingSetSize;
+  static Duration? _epgFetchWindow;
+  static Duration? _epgExtendThreshold;
 
   static String get jellyfinUrl => _jellyfinUrl ?? const String.fromEnvironment('JELLYFIN_URL');
   static String get jellyfinApiKey => _jellyfinApiKey ?? const String.fromEnvironment('JELLYFIN_API_KEY');
@@ -69,6 +72,16 @@ class AppConfig {
   static String get playheadChannelIdDefine =>
       _playheadChannelId ?? const String.fromEnvironment('PLAYHEADTV_CHANNEL_ID');
 
+  // How many programs ahead of the one on air the player keeps resolved and
+  // ready (the "working set"). Short items (music videos) want a larger
+  // number than long ones, hence a setting: `--dart-define=WORKING_SET_SIZE=`.
+  static int get workingSetSize =>
+      _workingSetSize ?? const int.fromEnvironment('WORKING_SET_SIZE', defaultValue: defaultWorkingSetSize);
+  // Size of one GET /epg slice, and the known runway below which the next
+  // slice is fetched while the channel plays.
+  static Duration get epgFetchWindow => _epgFetchWindow ?? defaultEpgFetchWindow;
+  static Duration get epgExtendThreshold => _epgExtendThreshold ?? defaultEpgExtendThreshold;
+
   /// Only used by `integration_test/` — never called in the real app (`main()`
   /// doesn't call this, so production never sees anything but the
   /// --dart-define values).
@@ -78,26 +91,37 @@ class AppConfig {
     required String playheadBaseUrl,
     String playheadDeviceToken = '',
     String playheadChannelId = '',
+    int? workingSetSize,
+    Duration? epgFetchWindow,
+    Duration? epgExtendThreshold,
   }) {
     _jellyfinUrl = jellyfinUrl;
     _jellyfinApiKey = jellyfinApiKey;
     _playheadBaseUrl = playheadBaseUrl;
     _playheadDeviceToken = playheadDeviceToken;
     _playheadChannelId = playheadChannelId;
+    _workingSetSize = workingSetSize;
+    _epgFetchWindow = epgFetchWindow;
+    _epgExtendThreshold = epgExtendThreshold;
   }
 }
 
-// Schedule window fetched at a time via GET /epg. Rolling window: the client
-// doesn't stop after the first window — it keeps pulling subsequent windows
-// ahead of "now" whenever the current channel has little loaded runway left,
-// see _epgLoadedUntil/_maybeExtendGrid below.
-const epgWindow = Duration(hours: 6);
+// Programs kept resolved and ready ahead of the one on air (the working set),
+// see AppConfig.workingSetSize. A grouped tail counts as ONE program however
+// many clips it carries.
+const defaultWorkingSetSize = 5;
 
-// When the sum of clipDuration of the not-yet-played items (from the current
-// item onward) falls below this, the fetch of the next window is triggered in
-// the background. 2h of remaining runway is enough slack for a network fetch
-// to finish well before the end of the loaded schedule.
-const epgExtendThreshold = Duration(hours: 2);
+// What the client KNOWS is fetched from GET /epg in slices of this size and
+// extended while the channel plays (never hours up front). A slice that comes
+// back empty (a hole in the schedule) doubles the next request, up to
+// maxEpgFetchBackoff times, so a hole wider than one slice can still be
+// crossed.
+const defaultEpgFetchWindow = Duration(hours: 2);
+const maxEpgFetchBackoff = 4;
+
+// When the known runway (end of the last fetched program minus now) falls
+// below this, the next slice is fetched in the background.
+const defaultEpgExtendThreshold = Duration(hours: 1);
 
 // Retry interval when the materialized schedule has really run out (a real
 // gap in the schedule, not just the end of the fetched window) — repeats until
@@ -111,6 +135,10 @@ const epgGapRetryInterval = Duration(seconds: 20);
 const channelInputCommitDelay = Duration(milliseconds: 1500);
 const channelInputMaxDigits = 3;
 
+// One playable unit of a channel: a single stream the player loads. A guide
+// program is one unit, except a grouped tail, which is one program made of
+// many units (its clips). `programOrdinal` numbers the programs in the order
+// they entered the working set; units of one program share it.
 class ChannelEntry {
   final String id;
   final String label;
@@ -121,7 +149,40 @@ class ChannelEntry {
   // gap (startAt still in the future when the previous item ends) from the
   // client simply running behind (startAt already in the past).
   final DateTime startAt;
-  const ChannelEntry(this.id, this.label, this.clipDuration, this.startAt);
+  final int programOrdinal;
+  final EpgEntry? program;
+  const ChannelEntry(this.id, this.label, this.clipDuration, this.startAt, {this.programOrdinal = 0, this.program});
+
+  // What the OSD shows: the guide program this unit belongs to (a tail's
+  // generic title and whole span, not its clip's).
+  String get programLabel => program?.displayTitle ?? label;
+  DateTime get programStartAt => program?.startAt ?? startAt;
+  DateTime get programEndAt => program?.endAt ?? startAt.add(clipDuration);
+}
+
+/// The playable units of [program]. A single program is one unit; a grouped
+/// tail is one unit per clip. Units that already ended by [notBefore], and
+/// any with a non-positive duration, are dropped (see AGENTS.md on bad
+/// durations). Requires [program] to be resolved (see
+/// PlayheadApi.resolveCatalog).
+List<ChannelEntry> unitsOfProgram(EpgEntry program, int ordinal, {DateTime? notBefore}) {
+  if (!program.isTailGroup) {
+    final ext = program.externalId;
+    if (ext == null || !program.endAt.isAfter(program.startAt)) return const [];
+    if (notBefore != null && !program.endAt.isAfter(notBefore)) return const [];
+    return [
+      ChannelEntry(ext, program.displayTitle, program.endAt.difference(program.startAt), program.startAt,
+          programOrdinal: ordinal, program: program),
+    ];
+  }
+  return [
+    for (final clip in program.clips)
+      if (clip.externalId != null &&
+          clip.endAt.isAfter(clip.startAt) &&
+          (notBefore == null || clip.endAt.isAfter(notBefore)))
+        ChannelEntry(clip.externalId!, clip.title ?? program.displayTitle, clip.endAt.difference(clip.startAt), clip.startAt,
+            programOrdinal: ordinal, program: program),
+  ];
 }
 
 // Populated at runtime by _loadAndPlayChannel from the GET /epg materialized
@@ -173,6 +234,11 @@ const playbackBufferMaxMs = 30000;
 
 String streamUrl(String itemId) =>
     '${AppConfig.jellyfinUrl}/Videos/$itemId/stream?Static=true&api_key=${AppConfig.jellyfinApiKey}';
+
+// Poster URL built from the media server address and key the client already
+// holds and the image tag the backend sent (the backend never serves art).
+String jellyfinImageUrl(String itemId, String tag, {int maxWidth = 400}) =>
+    '${AppConfig.jellyfinUrl}/Items/$itemId/Images/Primary?tag=$tag&maxWidth=$maxWidth&api_key=${AppConfig.jellyfinApiKey}';
 
 void main() {
   // video.decoders: fvp's default decoder order on Linux tries VAAPI before
@@ -325,16 +391,28 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   // swallowed, not forwarded.
   bool _suppressNextEpgSelectUp = false;
 
-  // Rolling EPG window: cursor of the `endAt` of the last EpgEntry already
-  // incorporated into `channel` in this load generation — where to continue
-  // fetching the next window from. Reset on every new _loadAndPlayChannel.
+  // What the client KNOWS of this channel (programs fetched from GET /epg,
+  // already enriched: titles, source ids, art references, a tail's clips) vs
+  // what it holds ready (`channel`, the working set): `channel` only receives
+  // the programs of `_known` up to the one on air plus
+  // AppConfig.workingSetSize, as playback advances (_expandWorkingSet).
+  // Reset on every new _loadAndPlayChannel.
+  List<EpgEntry> _known = <EpgEntry>[];
+  // `_known[0.._knownExpanded)` have been turned into units of `channel`.
+  int _knownExpanded = 0;
+  // Rolling EPG window: cursor of the `endAt` of the last program fetched in
+  // this load generation — where to continue fetching the next slice from.
   DateTime? _epgLoadedUntil;
-  // Coalesces concurrent extension fetches: the proactive trigger
+  // Consecutive empty slices (a hole in the schedule), see
+  // maxEpgFetchBackoff.
+  int _emptySlices = 0;
+  // Coalesces concurrent extension work: the proactive trigger
   // (_maybeExtendGrid) and the immediate attempt/retry for the dead end in
   // _crossfadeTo can fire almost together. Without this, two simultaneous
   // fetches would read the same _epgLoadedUntil and each would append the same
-  // items to `channel` again — see _fetchNextEpgSlice.
+  // programs again — see _fetchNextEpgSlice.
   Future<bool>? _pendingExtend;
+  Future<void>? _pendingExpand;
   // Only exists while the materialized schedule has really run out (a real
   // gap, not just the end of the fetched window) — repeats the fetch until
   // something turns up in that gap and playback resumes on its own.
@@ -497,6 +575,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       _gapHoldPending = null;
     }
     _pendingExtend = null;
+    _pendingExpand = null;
     _channelInputCommitTimer?.cancel();
     _channelInputCommitTimer = null;
     // Fire-and-forget, but routed through serializeGlOp (see its doc
@@ -519,6 +598,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       _opacityB = 0;
       _currentIndex = -1;
       channel = <ChannelEntry>[];
+      _known = <EpgEntry>[];
+      _knownExpanded = 0;
+      _emptySlices = 0;
       _epgLoadedUntil = null;
       _channelInputBuffer = null;
       _status = 'switching channel…';
@@ -559,24 +641,26 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     }
   }
 
-  // Fetches the materialized schedule (GET /epg) in an epgWindow-sized window
-  // ahead of "now" for the given channel, resolves each catalog_item to its
-  // native Jellyfin ID, and only then starts playback. The client never
-  // decides WHAT plays — it only fetches what the backend already decided and
-  // resolves/plays it (see AGENTS.md). `generation` is checked before every
+  // Fetches the materialized schedule (GET /epg, one request: the entries
+  // arrive already enriched with titles, source ids, art references and a
+  // tail's clips) in an epgFetchWindow-sized slice ahead of "now" for the
+  // given channel, hands the program on air plus the next
+  // AppConfig.workingSetSize to the player and starts playback. The client
+  // never decides WHAT plays — it only fetches what the backend already
+  // decided and plays it (see AGENTS.md). `generation` is checked before every
   // `setState` that follows an `await`, so it doesn't trample a channel that
   // was switched again in the meantime.
   Future<void> _loadAndPlayChannel(PlayheadChannel target, {required int generation}) async {
     try {
       final now = DateTime.now().toUtc();
-      // Kicked off in parallel with GET /epg + GET /catalog-items/{id}
-      // below (never awaited until just before it's needed) so resolving
-      // tier 3 (channel admin) rules never adds latency to the channel-load
-      // path on top of the network calls it already has to make — it just
-      // rides alongside them. _createController itself never awaits
-      // anything for this; see _currentChannelRules' doc comment.
+      // Kicked off in parallel with GET /epg below (never awaited until just
+      // before it's needed) so resolving tier 3 (channel admin) rules never
+      // adds latency to the channel-load path on top of the network calls it
+      // already has to make — it just rides alongside them.
+      // _createController itself never awaits anything for this; see
+      // _currentChannelRules' doc comment.
       final channelRulesFuture = _streamPrefs.ensureChannelRules(target.id);
-      final entries = await _api.getEpg(target.id, now, now.add(epgWindow));
+      final entries = await _api.getEpg(target.id, now, now.add(AppConfig.epgFetchWindow), groupTail: true);
       if (generation != _loadGeneration) return;
 
       // Drops whatever already ended (can only happen because of some
@@ -591,44 +675,36 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       final upcoming = entries.where((e) => e.endAt.isAfter(now) && e.endAt.isAfter(e.startAt)).toList();
       if (upcoming.isEmpty) {
         if (!mounted) return;
-        setState(() => _status = 'ERROR: nothing scheduled in the next ${epgWindow.inHours}h for channel ${target.number}');
+        setState(() => _status = 'ERROR: nothing scheduled in the next ${AppConfig.epgFetchWindow.inHours}h for channel ${target.number}');
         return;
       }
-
-      final catalogItems = await Future.wait(upcoming.map((e) => _api.getCatalogItem(e.catalogItemId)));
-      if (generation != _loadGeneration) return;
 
       _currentChannelRules = await channelRulesFuture;
       if (generation != _loadGeneration) return;
 
-      final loaded = <ChannelEntry>[
-        for (var i = 0; i < upcoming.length; i++)
-          ChannelEntry(
-            catalogItems[i].externalId,
-            catalogItems[i].title,
-            upcoming[i].endAt.difference(upcoming[i].startAt),
-            upcoming[i].startAt,
-          ),
-      ];
+      _known = upcoming;
+      _knownExpanded = 0;
+      _emptySlices = 0;
+      _epgLoadedUntil = upcoming.map((e) => e.endAt).reduce((a, b) => a.isAfter(b) ? a : b);
+      final loaded = <ChannelEntry>[];
+      await _expandInto(loaded, generation, notBefore: now);
+      if (generation != _loadGeneration) return;
+      if (loaded.isEmpty) {
+        if (!mounted) return;
+        setState(() => _status = 'ERROR: nothing playable scheduled for channel ${target.number}');
+        return;
+      }
 
       // "TV turned on" joins the middle of the first program if it already
       // started, rather than going back to its beginning — only the first
       // item gets this seek.
-      var initialSeek = now.difference(upcoming.first.startAt);
+      var initialSeek = now.difference(loaded.first.startAt);
       if (initialSeek < Duration.zero) initialSeek = Duration.zero;
       if (initialSeek > loaded.first.clipDuration) initialSeek = loaded.first.clipDuration;
-
-      // Initial rolling-window cursor: the largest endAt among what was just
-      // loaded — the next extension fetches from there onward.
-      var loadedUntil = now;
-      for (final e in upcoming) {
-        if (e.endAt.isAfter(loadedUntil)) loadedUntil = e.endAt;
-      }
 
       if (!mounted || generation != _loadGeneration) return;
       setState(() {
         channel = loaded;
-        _epgLoadedUntil = loadedUntil;
       });
       // Separate try/catch from the backend fetch above: _startChannel opens
       // the actual video stream against Jellyfin (controller.initialize()),
@@ -781,7 +857,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   }
 
   Future<void> _preloadNext(int nextIndex, int generation) async {
-    if (generation != _loadGeneration) return;
+    if (!mounted || generation != _loadGeneration) return;
     if (nextIndex >= channel.length) return;
     final nextEntry = channel[nextIndex];
     setState(() => _status = 'preload: ${nextEntry.label}');
@@ -812,7 +888,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       // The fetched window ran out before the extension trigger
       // (_maybeExtendGrid) could finish in time — try an immediate fetch of
       // the next slice right here before giving up.
-      final extended = await _fetchNextEpgSlice(generation);
+      final extended = await _extendWindowNow(generation);
       if (generation != _loadGeneration) return;
       if (extended && nextIndex < channel.length) {
         // There's no preload ready for the newly arrived item (there wasn't
@@ -833,7 +909,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
           t.cancel();
           return;
         }
-        final ok = await _fetchNextEpgSlice(generation);
+        final ok = await _extendWindowNow(generation);
         if (generation != _loadGeneration) {
           t.cancel();
           return;
@@ -878,11 +954,14 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     await _rampCrossfade(outgoing: outgoing, incoming: incoming, generation: generation);
     if (generation != _loadGeneration) return;
     if (!mounted) return;
+    final previousOrdinal = _currentIndex >= 0 && _currentIndex < channel.length ? channel[_currentIndex].programOrdinal : -1;
     setState(() {
       _currentIndex = nextIndex;
       _status = 'playing: ${nextEntry.label}';
     });
-    _showOsd();
+    // Clips of one tail are one program: the OSD announces programs, not
+    // every 10-second clip inside a tail.
+    if (nextEntry.programOrdinal != previousOrdinal) _showOsd();
     _scheduleTransitions(nextIndex, generation: generation);
     unawaited(_maybeExtendGrid(nextIndex, generation));
   }
@@ -1014,11 +1093,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       await _rampCrossfade(outgoing: slateOutgoing, incoming: pending, generation: generation);
       if (generation != _loadGeneration) return;
       if (!mounted) return;
+      final previousOrdinal = _currentIndex >= 0 && _currentIndex < channel.length ? channel[_currentIndex].programOrdinal : -1;
       setState(() {
         _currentIndex = nextIndex;
         _status = 'playing: ${nextEntry.label}';
       });
-      _showOsd();
+      if (nextEntry.programOrdinal != previousOrdinal) _showOsd();
       _scheduleTransitions(nextIndex, generation: generation);
       unawaited(_maybeExtendGrid(nextIndex, generation));
     });
@@ -1058,28 +1138,87 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     unawaited(_maybeExtendGrid(index, generation));
   }
 
-  // Rolling-window trigger: if the loaded "runway" ahead of the current item
-  // (sum of clipDuration from `fromIndex` onward) falls below
-  // epgExtendThreshold, fetches the next window in the background and appends
-  // it to the end of `channel` — never replaces the list nor touches the
-  // indexes already in use by scheduled timers/controllers.
-  Future<void> _maybeExtendGrid(int fromIndex, int generation) async {
-    if (generation != _loadGeneration) return;
-    var remaining = Duration.zero;
-    for (var i = fromIndex; i < channel.length; i++) {
-      remaining += channel[i].clipDuration;
+  // Turns the next programs of `_known` into playable units appended to
+  // `out`, until the one on air plus AppConfig.workingSetSize are covered (a
+  // grouped tail is one program however many clips it carries). `notBefore`
+  // trims units that already ended (only the very first program at tune-in
+  // can have any). The only place that asks the backend about a catalog item,
+  // and only when an older backend did not enrich it (PlayheadApi
+  // .resolveCatalog is a no-op otherwise).
+  Future<void> _expandInto(List<ChannelEntry> out, int generation, {DateTime? notBefore, int? currentOrdinal}) async {
+    while (_knownExpanded < _known.length) {
+      final cur = currentOrdinal ?? (out.isEmpty ? null : out.first.programOrdinal);
+      if (cur != null && (_knownExpanded - 1) - cur >= AppConfig.workingSetSize) break;
+      final ordinal = _knownExpanded;
+      final resolved = await _api.resolveCatalog(_known[ordinal]);
+      if (generation != _loadGeneration) return;
+      _known[ordinal] = resolved;
+      out.addAll(unitsOfProgram(resolved, ordinal, notBefore: ordinal == 0 ? notBefore : null));
+      _knownExpanded = ordinal + 1;
     }
-    if (remaining >= epgExtendThreshold) return;
-    await _fetchNextEpgSlice(generation);
   }
 
-  // Fetches `GET /epg` from `_epgLoadedUntil` to `_epgLoadedUntil +
-  // epgWindow`, resolves the catalog items and appends them to the end of
-  // `channel`. Returns true only when new items actually entered the list. If
-  // a fetch is already in flight (triggered by the proactive trigger or by a
-  // concurrent call), returns the SAME Future instead of starting another —
-  // two simultaneous fetches would read the same cursor and each would append
-  // the same items to `channel`, duplicating content in the schedule.
+  // Keeps the working set topped up while the channel plays: appends the
+  // programs that entered the window since the last call to `channel` (never
+  // replaces the list nor touches the indexes already in use by scheduled
+  // timers/controllers). Single-flight, so concurrent triggers can't append
+  // the same program twice.
+  Future<void> _expandWorkingSet(int generation) {
+    final pending = _pendingExpand;
+    if (pending != null) return pending;
+    final future = () async {
+      try {
+        final added = <ChannelEntry>[];
+        final current = (_currentIndex >= 0 && _currentIndex < channel.length) ? channel[_currentIndex].programOrdinal : 0;
+        await _expandInto(added, generation, currentOrdinal: current);
+        if (generation != _loadGeneration || !mounted || added.isEmpty) return;
+        setState(() => channel = [...channel, ...added]);
+      } catch (_) {
+        // A failed lookup (older backend) or fetch must not bring down the
+        // playback in progress — the next call tries again.
+      }
+    }();
+    _pendingExpand = future;
+    future.whenComplete(() {
+      if (identical(_pendingExpand, future)) _pendingExpand = null;
+    });
+    return future;
+  }
+
+  // Rolling-window trigger, run after every item change: tops up the working
+  // set, and if the known runway (end of the last fetched program minus now)
+  // fell below AppConfig.epgExtendThreshold, fetches the next slice of the
+  // schedule in the background.
+  Future<void> _maybeExtendGrid(int fromIndex, int generation) async {
+    if (generation != _loadGeneration) return;
+    await _expandWorkingSet(generation);
+    if (generation != _loadGeneration) return;
+    final loadedUntil = _epgLoadedUntil;
+    if (loadedUntil == null) return;
+    if (loadedUntil.difference(DateTime.now().toUtc()) >= AppConfig.epgExtendThreshold) return;
+    if (await _fetchNextEpgSlice(generation)) await _expandWorkingSet(generation);
+  }
+
+  // For the dead end (the next unit isn't in `channel` yet): expands what is
+  // already known, else fetches the next slice and expands that. True when
+  // `channel` grew.
+  Future<bool> _extendWindowNow(int generation) async {
+    final before = channel.length;
+    await _expandWorkingSet(generation);
+    if (generation != _loadGeneration) return false;
+    if (channel.length == before && _knownExpanded >= _known.length) {
+      if (await _fetchNextEpgSlice(generation)) await _expandWorkingSet(generation);
+    }
+    return generation == _loadGeneration && channel.length > before;
+  }
+
+  // Fetches `GET /epg` from `_epgLoadedUntil` for one slice (widened after
+  // empty ones) and appends the programs to `_known`. Returns true only when
+  // new programs actually arrived. If a fetch is already in flight (triggered
+  // by the proactive trigger or by a concurrent call), returns the SAME Future
+  // instead of starting another — two simultaneous fetches would read the same
+  // cursor and each would append the same programs, duplicating content in
+  // the schedule.
   Future<bool> _fetchNextEpgSlice(int generation) {
     final pending = _pendingExtend;
     if (pending != null) return pending;
@@ -1103,36 +1242,26 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     final channelId = _channels[_channelIndex].id;
 
     try {
-      final entries = await _api.getEpg(channelId, cursor, cursor.add(epgWindow));
+      final window = AppConfig.epgFetchWindow * (1 << (_emptySlices < maxEpgFetchBackoff ? _emptySlices : maxEpgFetchBackoff));
+      final entries = await _api.getEpg(channelId, cursor, cursor.add(window), groupTail: true);
       if (generation != _loadGeneration) return false;
 
       // See the matching filter in _loadAndPlayChannel for why non-positive
       // duration entries are dropped here too.
       final fresh = entries.where((e) => !e.startAt.isBefore(cursor) && e.endAt.isAfter(e.startAt)).toList();
-      if (fresh.isEmpty) return false;
-
-      final catalogItems = await Future.wait(fresh.map((e) => _api.getCatalogItem(e.catalogItemId)));
-      if (generation != _loadGeneration) return false;
-
-      final newItems = <ChannelEntry>[
-        for (var i = 0; i < fresh.length; i++)
-          ChannelEntry(
-            catalogItems[i].externalId,
-            catalogItems[i].title,
-            fresh[i].endAt.difference(fresh[i].startAt),
-            fresh[i].startAt,
-          ),
-      ];
+      if (fresh.isEmpty) {
+        _emptySlices++;
+        return false;
+      }
+      _emptySlices = 0;
       var newLoadedUntil = cursor;
       for (final e in fresh) {
         if (e.endAt.isAfter(newLoadedUntil)) newLoadedUntil = e.endAt;
       }
 
       if (!mounted || generation != _loadGeneration) return false;
-      setState(() {
-        channel = [...channel, ...newItems];
-        _epgLoadedUntil = newLoadedUntil;
-      });
+      _known = [..._known, ...fresh];
+      _epgLoadedUntil = newLoadedUntil;
       return true;
     } catch (_) {
       // A network/parsing failure in a background extension must not bring
@@ -1140,6 +1269,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       // retry in _crossfadeTo) tries again later.
       return false;
     }
+  }
+
+  // Label of the program after the one on air (skips the remaining clips of a
+  // tail), null when it hasn't entered the working set yet.
+  String? _nextProgramLabel() {
+    final ordinal = channel[_currentIndex].programOrdinal;
+    for (var i = _currentIndex + 1; i < channel.length; i++) {
+      if (channel[i].programOrdinal != ordinal) return channel[i].programLabel;
+    }
+    return null;
   }
 
   // Shows the OSD (or restarts the countdown if it was already visible). The
@@ -1631,10 +1770,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
                     channelNumber: _channels[_channelIndex].number,
                     channelName: _channels[_channelIndex].name,
                     channelArtUrl: _channels[_channelIndex].guideArtUrl,
-                    itemLabel: channel[_currentIndex].label,
-                    nextItemLabel: _currentIndex + 1 < channel.length ? channel[_currentIndex + 1].label : null,
-                    startAt: channel[_currentIndex].startAt,
-                    endAt: channel[_currentIndex].startAt.add(channel[_currentIndex].clipDuration),
+                    itemLabel: channel[_currentIndex].programLabel,
+                    nextItemLabel: _nextProgramLabel(),
+                    startAt: channel[_currentIndex].programStartAt,
+                    endAt: channel[_currentIndex].programEndAt,
                     controller: _aIsActive ? _controllerA : _controllerB,
                     focusMode: _osdFocusNotifier,
                     onOpenSubtitles: () => _openTrackPicker(TrackSelectorPanel.subtitle, singlePanel: true),

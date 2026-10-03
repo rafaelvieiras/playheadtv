@@ -972,6 +972,31 @@ actionable checklist.
       so the channel's other fields are preserved explicitly). All 6
       `integration_test/*.dart` files and `test/playhead_api_test.dart` pass
       after both fixes.
+- [x] Enriched `GET /epg`, tail groups and a rolling working set in the client.
+      Each entry now carries the catalog metadata a client needs (title,
+      series title, season/episode numbers, source id `external_id`, the
+      item's own `duration_ms`, catalog `item_kind`, the Jellyfin image tags
+      and the series id/tag), all additive and optional; `group_tail=1` (also
+      on `epg-preview`) replaces each run of back-to-back tail entries by one
+      `tail` item carrying every clip (shape in `docs/ARCHITECTURE.md`, "API").
+      The response has an `ETag` (revision + body hash), `Cache-Control:
+      no-cache` and `X-Epg-Revision`, and answers `If-None-Match` with `304`.
+      The client reads titles, source ids and art from the entry (no per-entry
+      catalog lookups; the lookup path, bounded and cached per id, only runs
+      against a backend without the new fields), keeps the program on air plus
+      `AppConfig.workingSetSize` (default 5, `--dart-define=WORKING_SET_SIZE`)
+      programs resolved and extends them as it plays, fetching the schedule in
+      `epgFetchWindow` slices (2h) rather than hours up front, shows a tail as
+      one program in the OSD and the EPG, and builds poster URLs from the media
+      server address it already holds. Tests: `backend/internal/api/
+      epg_view_test.go`, `client/test/epg_enriched_test.dart`,
+      `client/integration_test/epg_window_test.dart` (request counting proxy in
+      `support/request_proxy.dart`, including a legacy-backend mode).
+      Not done / known: only `tail` is grouped (a long `fallback` run of short
+      clips is still one entry per clip); the client does not yet send
+      `If-None-Match` or persist the schedule (the 48h local cache is separate
+      work); only the program on air and the next one are preloaded as
+      controllers.
 
 ## Phase 6 — Platforms
 

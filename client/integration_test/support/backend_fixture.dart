@@ -231,6 +231,46 @@ class BackendFixture {
     });
   }
 
+  /// A channel-scoped TAIL filler rule drawing sequentially from a new pool
+  /// of [catalogItemIds]: after a program, the gap up to the next scheduled
+  /// occurrence is padded with these clips, one `tail` epg_entry each.
+  Future<void> createTailRule({required String channelId, required List<String> catalogItemIds}) async {
+    final pool = await _postJson('/filler-pools', {'name': 'Tail pool ${DateTime.now().microsecondsSinceEpoch}'});
+    final poolId = pool['id'] as String;
+    for (final id in catalogItemIds) {
+      await _postJson('/filler-pools/$poolId/items', {'catalog_item_id': id, 'weight': 1});
+    }
+    await _postJson('/filler-rules', {
+      'scope_type': 'channel',
+      'scope_id': channelId,
+      'kind': 'tail',
+      'filler_pool_id': poolId,
+      'selection_strategy': 'sequential',
+      'position': 0,
+    });
+  }
+
+  /// Polls GET /epg until the channel has at least [minEntries] materialized
+  /// entries (materialization is asynchronous after a write), so a test boots
+  /// the app against a settled guide.
+  Future<void> waitForEpgEntries(String channelId, int minEntries, {Duration timeout = const Duration(seconds: 60)}) async {
+    final deadline = DateTime.now().add(timeout);
+    var count = 0;
+    var stableSince = DateTime.now();
+    while (DateTime.now().isBefore(deadline)) {
+      final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+      final data = await _getJson('/epg?channel_id=$channelId&start=${now - 60000}&end=${now + 7200000}') as List;
+      if (data.length != count) {
+        count = data.length;
+        stableSince = DateTime.now();
+      }
+      // Wait for the count to stop moving, not just to cross the threshold.
+      if (count >= minEntries && DateTime.now().difference(stableSince) > const Duration(seconds: 1)) return;
+      await Future.delayed(const Duration(milliseconds: 300));
+    }
+    throw StateError('channel $channelId never reached $minEntries epg entries (last: $count)');
+  }
+
   Future<String> createDeviceToken({String name = 'E2E test client', String platform = 'linux'}) async {
     final resp = await _postJson('/devices', {'name': name, 'platform': platform});
     return resp['token'] as String;

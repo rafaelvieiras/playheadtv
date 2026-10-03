@@ -10,7 +10,7 @@ import type {
   BlockItemUpdateInput,
   CriteriaPreview,
   CriteriaReviewItem,
-  EpgEntry,
+  EpgItem,
   FillerPoolItem,
   FillerPoolItemUpdateInput,
 } from '@/lib/types'
@@ -74,7 +74,7 @@ export function useChannelEpgPreview(
       if (range.start !== undefined) params.set('start', String(range.start))
       if (range.end !== undefined) params.set('end', String(range.end))
       const qs = params.toString()
-      return api.get<EpgEntry[]>(`/channels/${channelId}/epg-preview${qs ? `?${qs}` : ''}`)
+      return api.get<EpgItem[]>(`/channels/${channelId}/epg-preview?${qs ? `${qs}&` : ''}group_tail=1`)
     },
     enabled: enabled && !!channelId,
     staleTime: 0,

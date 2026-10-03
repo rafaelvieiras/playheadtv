@@ -14,11 +14,14 @@ import {
   computeSlots,
   ENTRY_KIND_CLASSES,
   ENTRY_KIND_LABELS,
+  epgItemClipCount,
+  epgItemTitle,
   findGaps,
   tooLongWarnings,
   type BlockWarning,
 } from '@/lib/guide'
 import { api } from '@/lib/http'
+import { isTailGroup } from '@/lib/types'
 import type {
   Block,
   BlockItem,
@@ -27,6 +30,7 @@ import type {
   CriteriaPreview,
   EpgEntry,
   EpgEntryKind,
+  EpgItem,
   ScheduleItem,
 } from '@/lib/types'
 
@@ -209,7 +213,7 @@ function GuideGrid({
   titles,
   mode,
 }: {
-  entries: EpgEntry[]
+  entries: EpgItem[]
   windowStart: number
   windowEnd: number
   now: number
@@ -279,13 +283,16 @@ function GuideGrid({
             ))}
             {sorted.map((entry) => {
               const live = entry.start_at <= now && now < entry.end_at
-              const item = titles.get(entry.catalog_item_id)
-              const title = item ? formatCatalogTitle(item) : '…'
+              const clips = epgItemClipCount(entry)
+              const known = epgItemTitle(entry)
+              const item = isTailGroup(entry) ? undefined : titles.get(entry.catalog_item_id)
+              const title = known ?? (item ? formatCatalogTitle(item) : '…')
               return (
                 <div
                   key={entry.id}
                   data-testid="guide-entry"
                   data-kind={entry.kind}
+                  data-clips={clips || undefined}
                   title={`${ENTRY_KIND_LABELS[entry.kind]}: ${title} (${fmtTime(entry.start_at)} – ${fmtTime(entry.end_at)})`}
                   className={`absolute top-1 flex h-[calc(100%-0.5rem)] flex-col justify-center overflow-hidden rounded-md border px-2 ${ENTRY_KIND_CLASSES[entry.kind]} ${live ? 'ring-2 ring-primary' : ''}`}
                   style={place(entry.start_at, entry.end_at)}
@@ -296,6 +303,7 @@ function GuideGrid({
                   <span className="truncate text-sm">{title}</span>
                   <span className="truncate text-xs tabular-nums text-muted-foreground">
                     {fmtTime(entry.start_at)} – {fmtTime(entry.end_at)}
+                    {clips > 0 && ` · ${clips} ${clips === 1 ? 'clip' : 'clips'}`}
                   </span>
                 </div>
               )
@@ -329,15 +337,21 @@ export function ChannelGuide({ channel, active }: { channel: Channel; active: bo
 
   const stored = useQuery({
     queryKey: ['epg', 'channel', channel.id, windowStart, windowEnd],
-    queryFn: () => api.get<EpgEntry[]>(`/epg?channel_id=${channel.id}&start=${windowStart}&end=${windowEnd}`),
+    queryFn: () => api.get<EpgItem[]>(`/epg?channel_id=${channel.id}&start=${windowStart}&end=${windowEnd}&group_tail=1`),
     staleTime: 0,
   })
   const preview = useChannelEpgPreview(channel.id, { start: windowStart, end: windowEnd }, mode === 'preview')
   const current = mode === 'preview' ? preview : stored
   const entries = useMemo(() => current.data ?? [], [current.data])
 
+  // GET /epg carries the titles, so only an entry without one (an older
+  // backend) costs a catalog lookup. Tail groups never do.
   const titleIds = useMemo(
-    () => [...entries].sort((a, b) => a.start_at - b.start_at).map((e) => e.catalog_item_id),
+    () =>
+      [...entries]
+        .sort((a, b) => a.start_at - b.start_at)
+        .filter((e): e is EpgEntry => !isTailGroup(e) && epgItemTitle(e) === undefined)
+        .map((e) => e.catalog_item_id),
     [entries],
   )
   const titles = useCatalogItems(titleIds)

@@ -20,10 +20,11 @@ func registerEPG(mux *http.ServeMux, db storage.DB, mat *materializer.Materializ
 
 const epgEntryColumns = "id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at"
 
-// getEPG only reads epg_entry as it stands today — there is no materializer
-// yet (separate roadmap item), so this is expected to return an empty list
-// until one exists. Window filtering matches entries overlapping [start,end]
-// when those query params are given, not entries strictly starting inside it.
+// getEPG reads the materialized epg_entry rows and serves them enriched with
+// the catalog metadata a client needs (see epg_view.go), optionally with
+// consecutive tail clips grouped (`group_tail=1`). Window filtering matches
+// entries overlapping [start,end] when those query params are given, not
+// entries strictly starting inside it.
 func getEPG(db storage.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
@@ -60,7 +61,17 @@ func getEPG(db storage.DB) http.HandlerFunc {
 			handleDBError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, entries)
+		view, err := buildEPGView(r.Context(), db, entries, wantsTailGroups(r), true)
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		revision, err := currentEPGRevision(r.Context(), db)
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		writeEPGView(w, r, revision, view)
 	}
 }
 
@@ -95,7 +106,7 @@ func getEPGMeta(db storage.DB, mat *materializer.Materializer) http.HandlerFunc 
 }
 
 // previewChannelGridReset is a dry-run of POST /channels/{id}/reset-epg: it
-// returns the entries (same JSON shape as GET /epg) the channel would have if
+// returns the entries (same JSON shape as GET /epg, `group_tail` included) the channel would have if
 // its grid were reset now, from the stored configuration with no freeze
 // margin. It writes nothing: epg_entry and epg_revision stay untouched.
 // start/end (epoch millis) filter by overlap exactly like GET /epg; both are
@@ -128,7 +139,12 @@ func previewChannelGridReset(db storage.DB, mat *materializer.Materializer) http
 			writeError(w, http.StatusInternalServerError, "could not preview the channel grid")
 			return
 		}
-		writeJSON(w, http.StatusOK, entries)
+		view, err := buildEPGView(r.Context(), db, entries, wantsTailGroups(r), false)
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, view)
 	}
 }
 

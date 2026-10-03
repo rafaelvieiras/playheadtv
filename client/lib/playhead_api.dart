@@ -26,6 +26,58 @@ class PlayheadChannel {
       );
 }
 
+/// One stored tail clip inside a grouped tail [EpgEntry] — everything a
+/// player needs to play it with no further request. Mirrors the `clips` of
+/// `GET /epg?group_tail=1` (backend/internal/api/epg_view.go).
+class EpgClip {
+  final String id; // the epg_entry id
+  final String catalogItemId;
+  final String? externalId; // optional: absent on a backend that predates the enriched /epg
+  final String? title;
+  final DateTime startAt;
+  final DateTime endAt;
+  final int? durationMs;
+
+  const EpgClip({
+    required this.id,
+    required this.catalogItemId,
+    required this.startAt,
+    required this.endAt,
+    this.externalId,
+    this.title,
+    this.durationMs,
+  });
+
+  factory EpgClip.fromJson(Map<String, dynamic> json) => EpgClip(
+        id: json['id'] as String,
+        catalogItemId: json['catalog_item_id'] as String,
+        externalId: json['external_id'] as String?,
+        title: json['title'] as String?,
+        startAt: DateTime.fromMillisecondsSinceEpoch(json['start_at'] as int, isUtc: true),
+        endAt: DateTime.fromMillisecondsSinceEpoch(json['end_at'] as int, isUtc: true),
+        durationMs: json['duration_ms'] as int?,
+      );
+
+  EpgClip withCatalog(CatalogItemInfo info) => EpgClip(
+        id: id,
+        catalogItemId: catalogItemId,
+        startAt: startAt,
+        endAt: endAt,
+        externalId: info.externalId,
+        title: info.title,
+        durationMs: durationMs,
+      );
+}
+
+/// One program of a channel's guide. Programs and fillers are the same
+/// concept: [kind] says which it is (program, preroll, midroll, postroll,
+/// tail, fallback), nothing else about handling differs.
+///
+/// Required fields are the ones the client has always used to play
+/// (id/kind/catalog_item_id/start_at/end_at). Every other field is optional:
+/// it is only there when the backend sends the enriched `GET /epg`, and a
+/// missing one makes the client fall back to a per-item catalog lookup
+/// ([PlayheadApi.resolveCatalog]).
 class EpgEntry {
   final String id;
   final String kind;
@@ -33,21 +85,137 @@ class EpgEntry {
   final DateTime startAt; // UTC, from epoch millis
   final DateTime endAt; // UTC, from epoch millis
 
-  EpgEntry({
+  // Optional enrichment (catalog metadata). [externalId] is the media
+  // server's own item id, what the stream and image URLs are built from.
+  final String? externalId;
+  final String? title;
+  final String? seriesTitle;
+  final String? seriesExternalId;
+  final String? itemKind; // catalog kind (movie, episode, ...), not [kind]
+  final int? seasonNumber;
+  final int? episodeNumber;
+  final int? episodeNumberEnd;
+  final int? durationMs; // the item's own length; [endAt] - [startAt] is what is scheduled
+  final String? imagePrimaryTag;
+  final String? imageBackdropTag;
+  final String? imageThumbTag;
+  final String? seriesImagePrimaryTag;
+
+  /// Only for a grouped tail (`kind == 'tail'` with clips): the individual
+  /// clips, in playing order. [catalogItemId] is then the first clip's.
+  final List<EpgClip> clips;
+
+  const EpgEntry({
     required this.id,
     required this.kind,
     required this.catalogItemId,
     required this.startAt,
     required this.endAt,
+    this.externalId,
+    this.title,
+    this.seriesTitle,
+    this.seriesExternalId,
+    this.itemKind,
+    this.seasonNumber,
+    this.episodeNumber,
+    this.episodeNumberEnd,
+    this.durationMs,
+    this.imagePrimaryTag,
+    this.imageBackdropTag,
+    this.imageThumbTag,
+    this.seriesImagePrimaryTag,
+    this.clips = const [],
   });
 
-  factory EpgEntry.fromJson(Map<String, dynamic> json) => EpgEntry(
-        id: json['id'] as String,
-        kind: json['kind'] as String,
-        catalogItemId: json['catalog_item_id'] as String,
-        startAt: DateTime.fromMillisecondsSinceEpoch(json['start_at'] as int, isUtc: true),
-        endAt: DateTime.fromMillisecondsSinceEpoch(json['end_at'] as int, isUtc: true),
+  factory EpgEntry.fromJson(Map<String, dynamic> json) {
+    final rawClips = json['clips'] as List<dynamic>?;
+    final clips = rawClips == null ? const <EpgClip>[] : [for (final c in rawClips) EpgClip.fromJson(c as Map<String, dynamic>)];
+    return EpgEntry(
+      id: json['id'] as String,
+      kind: json['kind'] as String,
+      // A grouped tail has no catalog_item_id of its own.
+      catalogItemId: (json['catalog_item_id'] as String?) ?? clips.first.catalogItemId,
+      startAt: DateTime.fromMillisecondsSinceEpoch(json['start_at'] as int, isUtc: true),
+      endAt: DateTime.fromMillisecondsSinceEpoch(json['end_at'] as int, isUtc: true),
+      externalId: json['external_id'] as String?,
+      title: json['title'] as String?,
+      seriesTitle: json['series_title'] as String?,
+      seriesExternalId: json['series_external_id'] as String?,
+      itemKind: json['item_kind'] as String?,
+      seasonNumber: json['season_number'] as int?,
+      episodeNumber: json['episode_number'] as int?,
+      episodeNumberEnd: json['episode_number_end'] as int?,
+      durationMs: json['duration_ms'] as int?,
+      imagePrimaryTag: json['image_primary_tag'] as String?,
+      imageBackdropTag: json['image_backdrop_tag'] as String?,
+      imageThumbTag: json['image_thumb_tag'] as String?,
+      seriesImagePrimaryTag: json['series_image_primary_tag'] as String?,
+      clips: clips,
+    );
+  }
+
+  bool get isTailGroup => clips.isNotEmpty;
+
+  /// The media server item and image tag to build this entry's poster URL
+  /// from: its own primary image, else (an episode without one) its series'.
+  /// Null when the backend sent no art references.
+  ({String itemId, String tag})? get primaryArt {
+    final ext = externalId;
+    final own = imagePrimaryTag;
+    if (ext != null && own != null) return (itemId: ext, tag: own);
+    final series = seriesExternalId;
+    final seriesTag = seriesImagePrimaryTag;
+    if (series != null && seriesTag != null) return (itemId: series, tag: seriesTag);
+    return null;
+  }
+
+  /// True once everything needed to play and label this entry is known
+  /// without asking the backend again.
+  bool get isResolved => isTailGroup ? clips.every((c) => c.externalId != null) : externalId != null;
+
+  /// What to show for it: "Series · S1E2 · Title" for an episode that carries
+  /// series data, the plain title otherwise.
+  String get displayTitle {
+    final t = title ?? '';
+    final series = seriesTitle;
+    if (isTailGroup || series == null || series.isEmpty) return t;
+    final season = seasonNumber;
+    final ep = episodeNumber;
+    final epEnd = episodeNumberEnd;
+    final code = StringBuffer();
+    if (season != null) code.write('S$season');
+    if (ep != null) {
+      code.write('E$ep');
+      if (epEnd != null && epEnd != ep) code.write('-E$epEnd');
+    }
+    return [series, if (code.isNotEmpty) code.toString(), if (t.isNotEmpty) t].join(' · ');
+  }
+
+  EpgEntry _copy({String? externalId, String? title, List<EpgClip>? clips}) => EpgEntry(
+        id: id,
+        kind: kind,
+        catalogItemId: catalogItemId,
+        startAt: startAt,
+        endAt: endAt,
+        externalId: externalId ?? this.externalId,
+        title: title ?? this.title,
+        seriesTitle: seriesTitle,
+        seriesExternalId: seriesExternalId,
+        itemKind: itemKind,
+        seasonNumber: seasonNumber,
+        episodeNumber: episodeNumber,
+        episodeNumberEnd: episodeNumberEnd,
+        durationMs: durationMs,
+        imagePrimaryTag: imagePrimaryTag,
+        imageBackdropTag: imageBackdropTag,
+        imageThumbTag: imageThumbTag,
+        seriesImagePrimaryTag: seriesImagePrimaryTag,
+        clips: clips ?? this.clips,
       );
+
+  EpgEntry withCatalog(CatalogItemInfo info) => _copy(externalId: info.externalId, title: info.title);
+
+  EpgEntry withClips(List<EpgClip> newClips) => _copy(clips: newClips);
 }
 
 /// One ordered fallback step of a stream (audio/subtitle) selection cascade
@@ -125,9 +293,11 @@ class PlayheadApi {
   final http.Client _client;
   final Duration timeout;
 
-  // Callers fan out one request per EPG entry (a channel of short items can
-  // mean hundreds), and every in-flight request holds a socket: unbounded,
-  // that exhausts the process's file descriptors ("Too many open files").
+  // Only the fallback against a backend without the enriched GET /epg fans
+  // out one request per EPG entry (a channel of short items can mean
+  // hundreds), and every in-flight request holds a socket: unbounded, that
+  // exhausts the process's file descriptors ("Too many open files"). Kept so
+  // that fallback stays safe.
   static const maxConcurrentRequests = 6;
   int _inFlight = 0;
   final _waiting = <Completer<void>>[];
@@ -197,11 +367,17 @@ class PlayheadApi {
     return data.map((e) => PlayheadChannel.fromJson(e as Map<String, dynamic>)).toList();
   }
 
-  Future<List<EpgEntry>> getEpg(String channelId, DateTime start, DateTime end) async {
+  /// One request returns the window already enriched with titles, source ids
+  /// and art references. [groupTail] asks the backend to group consecutive
+  /// tail clips into one entry carrying them (`clips`); a backend that does
+  /// not know the parameter simply returns one flat entry per clip, which
+  /// callers handle like any other program.
+  Future<List<EpgEntry>> getEpg(String channelId, DateTime start, DateTime end, {bool groupTail = false}) async {
     final uri = Uri.parse('$_normalizedBaseUrl/epg').replace(queryParameters: {
       'channel_id': channelId,
       'start': start.toUtc().millisecondsSinceEpoch.toString(),
       'end': end.toUtc().millisecondsSinceEpoch.toString(),
+      if (groupTail) 'group_tail': '1',
     });
     final data = await _getJson(uri);
     if (data is! List) {
@@ -210,6 +386,22 @@ class PlayheadApi {
     final entries = data.map((e) => EpgEntry.fromJson(e as Map<String, dynamic>)).toList();
     entries.sort((a, b) => a.startAt.compareTo(b.startAt));
     return entries;
+  }
+
+  /// Makes [entry] playable and labelled. With the enriched `GET /epg` this
+  /// is a no-op (nothing is requested); against an older backend the missing
+  /// source id / title is fetched per catalog item (bounded concurrency,
+  /// cached per id), exactly as before the enrichment existed.
+  Future<EpgEntry> resolveCatalog(EpgEntry entry) async {
+    if (entry.isResolved) return entry;
+    if (entry.isTailGroup) {
+      final clips = await Future.wait(entry.clips.map((c) async {
+        if (c.externalId != null) return c;
+        return c.withCatalog(await getCatalogItem(c.catalogItemId));
+      }));
+      return entry.withClips(clips);
+    }
+    return entry.withCatalog(await getCatalogItem(entry.catalogItemId));
   }
 
   Future<CatalogItemInfo> getCatalogItem(String id) {

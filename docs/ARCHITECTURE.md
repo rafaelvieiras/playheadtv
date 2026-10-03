@@ -561,7 +561,9 @@ catalog edits) never reset; they keep the freeze margin.
   start, no freeze margin) and returns the entries in the same JSON shape as
   `GET /epg`. Nothing is written: `epg_entry` and `epg_revision` are
   untouched. Entry ids are throwaway, and random/weighted filler picks may
-  differ from a later real reset.
+  differ from a later real reset. It takes `group_tail=1` like `GET /epg` (the
+  admin guide uses it); the clips of a run cut by `start`/`end` are the ones
+  inside the window, since a preview has no stored rows to complete it from.
 - `GET /channels/{id}/epg-warnings`: problems in the channel's stored
   configuration that leave parts of its grid silently empty, as
   `[{kind, block_id, block_item_id?, message}]` (empty list when none). Today:
@@ -670,7 +672,46 @@ the proposal" produces a collection.
 - `GET /epg`: the full materialized schedule for every channel in the
   tenant, over a configurable window (default 24h). This is the "XMLTV" of
   the project, as JSON — one bulk fetch instead of a client polling
-  per-channel or per-minute.
+  per-channel or per-minute. Query: `channel_id`, `start`/`end` (epoch
+  millis, overlap filter) and `group_tail=1`. The response is a JSON array
+  ordered by channel then start, and carries everything a client needs to
+  show and play an entry with no further request:
+  - Every entry keeps the stored fields (`id`, `tenant_id`, `channel_id`,
+    `kind`, `catalog_item_id`, `start_at`, `end_at`, `source_schedule_item_id`,
+    `generated_at`) and adds, each one omitted when absent: `media_source_id`,
+    `external_id` (the source's own item id, what the stream and image URLs
+    are built from), `item_kind` (the catalog kind, not the entry `kind`),
+    `title`, `series_title`, `season_number`, `episode_number`,
+    `episode_number_end`, `series_external_id`, `duration_ms` (the item's own
+    length; `end_at - start_at` is what is scheduled) and the image tags
+    `image_primary_tag`, `image_backdrop_tag`, `image_thumb_tag`,
+    `series_image_primary_tag`. The backend never serves images: a client
+    builds `<media server>/Items/<external_id or series_external_id>/Images/
+    Primary?tag=<tag>` itself. Required for playing (the fields clients have
+    always used) versus optional (everything added): a client treats the
+    additions as optional and, when `external_id`/`title` are missing (a
+    backend that predates them), looks the catalog item up per id.
+  - Without `group_tail` there is one row per stored `epg_entry`, tail clips
+    included. With `group_tail=1` each run of back-to-back `tail` entries of
+    one channel (no other kind, gap or channel in between) is replaced by one
+    item: `{id (first clip's entry id), tenant_id, channel_id, kind: "tail",
+    title: "Tail", start_at, end_at, clips: [{id, catalog_item_id,
+    external_id, title, start_at, end_at, duration_ms}, ...]}`, clips in
+    playing order, none omitted: a run cut by the requested window is
+    completed on both sides, so the same run has the same id and span through
+    any window and a client can play the whole block, and keep playing it
+    offline, from this one item. A group has no `catalog_item_id`. Grouping is
+    opt-in because it changes the shape of the array (a client that only
+    understands flat entries would play one clip for the whole block); the
+    stored rows are never grouped. `fallback` entries are not grouped.
+  - Cache validators: `ETag` (`"<epg revision>-<hash of the body>"`, so it
+    also moves when catalog metadata changes without a new revision),
+    `Cache-Control: no-cache` (storable, always revalidated), `Vary:
+    Authorization, Accept-Encoding`, `X-Epg-Revision`; `If-None-Match` gets
+    `304`. A body over 4 KiB is gzip-compressed for a client that sends
+    `Accept-Encoding: gzip` (the representation then has a `-gzip` ETag
+    suffix); a tail run of hours of 10-second clips is mostly repetition and
+    compresses roughly 6-7x.
 - `GET /epg/meta`: `{revision, valid_until, freeze_margin_ms}` only — cheap enough to poll
   often. Clients cache the full `/epg` response locally and only refetch it
   when `revision` changes or `valid_until` is close.

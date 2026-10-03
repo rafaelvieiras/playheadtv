@@ -172,11 +172,13 @@ class _MosaicPageState extends State<MosaicPage> {
       final now = DateTime.now().toUtc();
       final entries = await _api.getEpg(featured.id, now, now.add(const Duration(hours: 1)));
       if (!mounted || entries.isEmpty) return;
-      final entry = entries.first;
-      final catalogItem = await _api.getCatalogItem(entry.catalogItemId);
-      if (!mounted) return;
+      // The enriched GET /epg already carries the source id; only a backend
+      // that predates it needs the per-item lookup.
+      final entry = await _api.resolveCatalog(entries.first);
+      final externalId = entry.externalId;
+      if (!mounted || externalId == null) return;
 
-      final controller = VideoPlayerController.networkUrl(Uri.parse(streamUrl(catalogItem.externalId)));
+      final controller = VideoPlayerController.networkUrl(Uri.parse(streamUrl(externalId)));
       await serializeGlOp(() => controller.initialize());
       if (!mounted) {
         unawaited(serializeGlOp(() => controller.dispose()));

@@ -162,6 +162,19 @@ or LLM, and to every artifact in the repo:
   default) closes the EPG if open, hides an armed OSD, and otherwise goes to
   the mosaic. `InputAction.trackSelector` has no default binding anymore
   (optional accelerator; opens the two-panel picker).
+- The client reads `GET /epg?group_tail=1` (enriched entries, a tail as one
+  item carrying its clips, see `docs/ARCHITECTURE.md`) and never looks up
+  catalog items per entry: titles, source ids and art tags come with the entry
+  (`EpgEntry` in `playhead_api.dart`; every enriched field is optional and
+  `PlayheadApi.resolveCatalog` is the bounded, cached per-id fallback for a
+  backend that lacks them). What it KNOWS (`_known`) is fetched in
+  `epgFetchWindow` slices as it plays; what it holds ready (`channel`, the
+  working set) is the program on air plus `AppConfig.workingSetSize` programs
+  (default 5), topped up by `_expandWorkingSet` after every item change. A
+  program is one guide item and may be several playable units (`ChannelEntry`):
+  a grouped tail is one program, one unit per clip, announced once by the OSD.
+  Don't reintroduce a per-entry `getCatalogItem` loop or load the whole window
+  into `channel` up front.
 - While a channel loads (boot or switch) the player shows a centered spinner
   instead of a status card; errors keep the plain status card. Each
   `VideoPlayerController` gets mdk's `buffer` property
