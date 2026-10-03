@@ -346,8 +346,9 @@ edges):
   (or the materialized window's end for the last one), and every entry it
   emits is tagged `kind=program` — real programming, not filler. A dynamic
   block's `preroll` filler rule still applies once, at the top of the
-  occurrence; `midroll`/`postroll`/`tail` don't apply to it, since an
-  endless loop has no single "end" to hang them off. A manual block is
+  occurrence; `postroll`/`tail` don't apply to it, since an endless loop has
+  no single "end" to hang them off, and `midroll` only breaks between series
+  episodes (see "Series block items"). A manual block is
   unaffected: it still airs its list once and stops, exactly as before.
 - **Series block items** (migration `0010`): `block_item.item_type` is
   `catalog` (one catalog item, as before, optional `trim_duration_ms`) or
@@ -374,8 +375,17 @@ edges):
   wins: an episode that would not end before it is not scheduled, the visit
   ends there and the block's remaining items do not air; a visit cut that way
   starts afresh (full amount) at the next gap. A manual block plays its list
-  once, a `count`/`series_end` visit handing over to the next item (no midroll
-  follows a series visit). In a continuous block the entry completing a visit
+  once, a `count`/`series_end` visit handing over to the next item. Midroll
+  applies to episodes exactly as to catalog items (series items, criteria
+  items and interleaved dynamic blocks alike, through the same
+  `pickFiller`): one break between two consecutive episodes of a visit and
+  one between a visit and the next item of the block (never after the block's
+  last item), subject to the same fit rule (a break that fits is aired even if
+  the next episode then does not, and the slot end always wins). Breaks carry
+  no `source_block_item_id`, so the cursor rebuild never counts them as
+  episodes. In a looping block (continuous item, interleaved dynamic block) a
+  break goes between consecutive episodes, including across two visits, but
+  plain catalog items there still get none. In a continuous block the entry completing a visit
   stores the unwrapped next rotation index and the others the item's own, and
   a regeneration whose kept head ends mid-visit counts the trailing adjacent
   entries still carrying the item's index to resume it. A spec without
@@ -497,7 +507,8 @@ rotating through its block, whole programs only, with a residual too short for
 the next program handed to the channel's fallback rule). At most one per
 schedule, enforced by the API (`409` otherwise). A timed item still starts at
 its nominal time; the continuous item resumes right after it where its
-rotation left off. A continuous item has no preroll/midroll/postroll/tail.
+rotation left off. A continuous item has no preroll/postroll/tail, and midroll only between
+series episodes.
 
 A channel whose schedule has a continuous item is not fully regenerated on
 every run. The materializer keeps the rows already materialized that start

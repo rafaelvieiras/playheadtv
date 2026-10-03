@@ -491,6 +491,7 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 	var keptUntil time.Time
 	continuousStart := 0
 	continuousVisitDone := 0
+	continuousPrevEpisode := false
 	var continuousID, continuousBlockID string
 	for _, si := range scheduleItems {
 		if si.Recurrence == domain.RecurrenceContinuous {
@@ -557,6 +558,7 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 			idx := continuousStart % len(items)
 			if run := in.Series[items[idx].ID]; items[idx].IsWalked() && run != nil && run.amount.Mode == domain.AmountCount {
 				var tail []struct {
+					Kind              string
 					StartAt           int64
 					EndAt             int64
 					SourceBlockItemID *string
@@ -564,13 +566,25 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 					SourceScheduleID  *string
 				}
 				if err := m.db.Query(ctx, &tail,
-					"SELECT start_at, end_at, source_block_item_id, rotation_next, source_schedule_item_id AS source_schedule_id FROM epg_entry WHERE channel_id = ? AND start_at < ? ORDER BY start_at DESC LIMIT ?",
-					ch.ID, keptCutMs, run.amount.Count,
+					"SELECT kind, start_at, end_at, source_block_item_id, rotation_next, source_schedule_item_id AS source_schedule_id FROM epg_entry WHERE channel_id = ? AND start_at < ? ORDER BY start_at DESC LIMIT ?",
+					ch.ID, keptCutMs, 2*run.amount.Count+1,
 				); err != nil {
 					return fmt.Errorf("read series visit: %w", err)
 				}
 				expectedEnd := keptUntil.UnixMilli()
 				for _, row := range tail {
+					// Midroll breaks between the visit's episodes are
+					// transparent: they only keep the chain adjacent.
+					if row.Kind == string(domain.EpgMidRoll) {
+						if row.EndAt != expectedEnd {
+							break
+						}
+						expectedEnd = row.StartAt
+						continue
+					}
+					if continuousVisitDone >= run.amount.Count {
+						break
+					}
 					if row.EndAt != expectedEnd || row.SourceBlockItemID == nil || *row.SourceBlockItemID != items[idx].ID ||
 						row.SourceScheduleID == nil || *row.SourceScheduleID != continuousID ||
 						row.RotationNext == nil || int(*row.RotationNext) != idx {
@@ -583,8 +597,23 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 		}
 	}
 
+	if continuousID != "" && !keptUntil.IsZero() {
+		// Whether the kept head ends on an episode of the continuous item (as
+		// opposed to a midroll break, a program or another item's entry): the
+		// generation resuming there then owes a break before its first episode.
+		var ends []int
+		if err := m.db.Query(ctx, &ends,
+			"SELECT 1 FROM epg_entry WHERE channel_id = ? AND end_at = ? AND start_at < ? AND source_schedule_item_id = ? AND source_block_item_id IS NOT NULL LIMIT 1",
+			ch.ID, keptUntil.UnixMilli(), keptCutMs, continuousID,
+		); err != nil {
+			return fmt.Errorf("read kept head end: %w", err)
+		}
+		continuousPrevEpisode = len(ends) > 0
+	}
+
 	in.ContinuousStart = continuousStart
 	in.ContinuousVisitDone = continuousVisitDone
+	in.ContinuousPrevEpisode = continuousPrevEpisode
 	in.KeptUntil = keptUntil
 	generated := expandChannel(in, now, scanFrom, windowEnd, state)
 

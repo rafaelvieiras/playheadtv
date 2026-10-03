@@ -46,6 +46,11 @@ type channelInput struct {
 	// the kept head already aired, when the head ends in the middle of a
 	// "count" visit (see materializeChannel). Zero otherwise.
 	ContinuousVisitDone int
+	// ContinuousPrevEpisode is true when the kept head's last entry is an
+	// episode of a series walk, so the generation resuming right after it
+	// owes a midroll break before its first episode (a head that ends on the
+	// break itself already paid it).
+	ContinuousPrevEpisode bool
 	// KeptUntil is non-zero when the channel's already-materialized head is
 	// being kept (grid stability): it is the end of the last kept entry.
 	// Nothing is generated for the continuous item before it, and any
@@ -328,6 +333,31 @@ type seriesVisit struct {
 	// replaces it on the entry that completes the visit, so the rotation moves
 	// on. Both nil for a manual block, which has no rotation.
 	RotIdx, RotNext *int
+	// Mid, when set, puts a midroll break between two consecutive episodes
+	// (see midrollSource). PrevEpisode says the entry right before the visit's
+	// cursor is itself an episode of a series walk, so a break also goes
+	// before the visit's first episode.
+	Mid         *midrollSource
+	PrevEpisode bool
+}
+
+// midrollSource is what a midroll break needs: the resolved midroll rule and
+// the data to pick from its pool. The very same pickFiller serves the breaks
+// between catalog items of a manual block and the ones between series
+// episodes, so rule resolution, pool selection and weights have no special
+// case for either. A nil source or a nil rule never breaks.
+type midrollSource struct {
+	rule      *domain.FillerRule
+	pools     map[string][]domain.FillerPoolItem
+	durations map[string]int64
+	state     *selectionState
+}
+
+func (m *midrollSource) pick() (domain.FillerPoolItem, int64, bool) {
+	if m == nil {
+		return domain.FillerPoolItem{}, 0, false
+	}
+	return pickFiller(m.rule, m.pools, m.durations, m.state)
 }
 
 // emitSeries expands one visit of a series block item into consecutive
@@ -354,6 +384,7 @@ func emitSeries(
 	sourceScheduleItemID *string,
 ) (entries []domain.EpgEntry, end time.Time, completed bool) {
 	aired := visit.Done
+	prevEpisode := visit.PrevEpisode
 	reached := func() bool {
 		switch visit.Amount.Mode {
 		case domain.AmountCount:
@@ -380,6 +411,41 @@ func emitSeries(
 		slot, ok := run.plan(startMs)
 		if !ok {
 			break
+		}
+		// A midroll break between two episodes, exactly like the one a manual
+		// block puts between two catalog items: it must fit before limit when
+		// strict (a break that fits followed by an episode that does not
+		// leaves the break last, as it does for catalog items). Breaks carry
+		// no block item id, so they are never mistaken for episodes when a
+		// later run rebuilds the cursor.
+		if prevEpisode && !slot.Skip {
+			if midItem, midDur, ok := visit.Mid.pick(); ok {
+				midEnd := cursor.Add(time.Duration(midDur) * time.Millisecond)
+				if strict && midEnd.After(limit) {
+					break
+				}
+				mid := domain.EpgEntry{
+					ID:                   uuid.NewString(),
+					TenantID:             tenantID,
+					ChannelID:            channelID,
+					Kind:                 domain.EpgMidRoll,
+					CatalogItemID:        midItem.CatalogItemID,
+					StartAt:              startMs,
+					EndAt:                midEnd.UnixMilli(),
+					SourceScheduleItemID: sourceScheduleItemID,
+					GeneratedAt:          generatedAt,
+				}
+				if visit.RotIdx != nil {
+					r := *visit.RotIdx
+					mid.RotationNext = &r
+				}
+				entries = append(entries, mid)
+				cursor = midEnd
+				startMs = cursor.UnixMilli()
+				if slot, ok = run.plan(startMs); !ok {
+					break
+				}
+			}
 		}
 		epEnd := cursor.Add(time.Duration(slot.Episode.DurationMs) * time.Millisecond)
 		if strict && epEnd.After(limit) {
@@ -414,6 +480,7 @@ func emitSeries(
 		run.commit(startMs, slot)
 		aired++
 		cursor = epEnd
+		prevEpisode = true
 		completed = reached()
 		if visit.RotIdx != nil {
 			r := *visit.RotIdx
@@ -462,6 +529,8 @@ func fillLoopingBlock(
 	sourceScheduleItemID *string,
 	cursorKey string,
 	resumeDone int,
+	mid *midrollSource,
+	prevEpisode bool,
 	state *selectionState,
 ) ([]domain.EpgEntry, time.Time) {
 	if len(items) == 0 {
@@ -494,10 +563,13 @@ func fillLoopingBlock(
 			emptySeries = 0
 			run.catchUp(cursor.UnixMilli())
 			rot, nxt := idx, idx+1
-			visit := seriesVisit{Amount: run.amount, Done: resumeDone, RotIdx: &rot, RotNext: &nxt}
+			visit := seriesVisit{Amount: run.amount, Done: resumeDone, RotIdx: &rot, RotNext: &nxt, Mid: mid, PrevEpisode: prevEpisode}
 			resumeDone = 0
 			seriesEntries, end, completed := emitSeries(run, bi.ID, visit, cursor, target, true, kind, tenantID, channelID, generatedAt, sourceScheduleItemID)
 			entries = append(entries, seriesEntries...)
+			if n := len(seriesEntries); n > 0 {
+				prevEpisode = seriesEntries[n-1].Kind != domain.EpgMidRoll
+			}
 			cursor = end
 			if !completed {
 				break
@@ -506,6 +578,7 @@ func fillLoopingBlock(
 			continue
 		}
 		emptySeries = 0
+		prevEpisode = false
 		durMs := effectiveDuration(bi, catalogDuration)
 		if durMs <= 0 {
 			break
@@ -604,7 +677,8 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		if !in.KeptUntil.IsZero() && start.Equal(in.KeptUntil) {
 			resume = in.ContinuousVisitDone
 		}
-		loopEntries, end := fillLoopingBlock(in.BlockItems[continuous.BlockID], in.Series, in.CatalogDuration, start, to, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, continuousKey, resume, state)
+		mid := &midrollSource{rule: resolveFillerRule(in.FillerRules, domain.FillerMidRoll, continuous.BlockID, in.ChannelID), pools: in.PoolItems, durations: in.CatalogDuration, state: state}
+		loopEntries, end := fillLoopingBlock(in.BlockItems[continuous.BlockID], in.Series, in.CatalogDuration, start, to, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, continuousKey, resume, mid, in.ContinuousPrevEpisode && start.Equal(in.KeptUntil), state)
 		entries = append(entries, loopEntries...)
 		if end.Before(to) {
 			fillFallbackOnly(end, to)
@@ -688,7 +762,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			// so two channels sharing this dynamic block via the same Schedule
 			// don't share loop position.
 			cursorKey := in.ChannelID + "|" + occ.BlockID
-			loopEntries, newCursor := fillLoopingBlock(items, in.Series, in.CatalogDuration, cursor, nominalNextStart, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, cursorKey, 0, state)
+			loopEntries, newCursor := fillLoopingBlock(items, in.Series, in.CatalogDuration, cursor, nominalNextStart, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, cursorKey, 0, &midrollSource{rule: midroll, pools: in.PoolItems, durations: in.CatalogDuration, state: state}, false, state)
 			entries = append(entries, loopEntries...)
 			cursor = newCursor
 			continue
@@ -729,6 +803,26 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			return !cursor.Add(time.Duration(dur) * time.Millisecond).After(itemsCutoff)
 		}
 
+		midSrc := &midrollSource{rule: midroll, pools: in.PoolItems, durations: in.CatalogDuration, state: state}
+		// midBreak is the midroll between item idx and the next one of the
+		// block: the same step for a catalog item and for a series visit's
+		// last episode. It reports false when the block must stop (the
+		// break does not fit before the boundary).
+		midBreak := func(idx int) bool {
+			if idx == len(items)-1 {
+				return true
+			}
+			midItem, midDur, ok := midSrc.pick()
+			if !ok {
+				return true
+			}
+			if !fits(midDur) {
+				return false
+			}
+			emit(midItem.CatalogItemID, midDur, domain.EpgMidRoll)
+			return true
+		}
+
 		for idx, bi := range items {
 			if bi.IsWalked() {
 				// A series item airs its amount per visit. "slot_end" airs
@@ -736,15 +830,21 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 				// postroll, or the window's end), so nothing after it in the
 				// block gets on the air; "count" and "series_end" visits end
 				// by themselves and the block moves on to its next item. A
-				// visit cut by the boundary ends the block's airing.
+				// visit cut by the boundary ends the block's airing. Midroll
+				// breaks go between the visit's episodes (emitSeries) and
+				// between the visit and the next item (midBreak), as they do
+				// between catalog items.
 				run := in.Series[bi.ID]
 				if run == nil || run.empty() {
 					continue
 				}
-				seriesEntries, end, completed := emitSeries(run, bi.ID, seriesVisit{Amount: run.amount}, cursor, itemsCutoff, hasNextOccurrence, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID)
+				seriesEntries, end, completed := emitSeries(run, bi.ID, seriesVisit{Amount: run.amount, Mid: midSrc}, cursor, itemsCutoff, hasNextOccurrence, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID)
 				entries = append(entries, seriesEntries...)
 				cursor = end
 				if !completed {
+					break
+				}
+				if len(seriesEntries) > 0 && !midBreak(idx) {
 					break
 				}
 				continue
@@ -754,17 +854,9 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 				break
 			}
 			emit(bi.CatalogItemID, dur, domain.EpgProgram)
-			if idx == len(items)-1 {
-				continue
-			}
-			midItem, midDur, ok := pickFiller(midroll, in.PoolItems, in.CatalogDuration, state)
-			if !ok {
-				continue
-			}
-			if !fits(midDur) {
+			if !midBreak(idx) {
 				break
 			}
-			emit(midItem.CatalogItemID, midDur, domain.EpgMidRoll)
 		}
 
 		if hasNextOccurrence {

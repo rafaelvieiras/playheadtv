@@ -162,6 +162,14 @@ actionable checklist.
       spec, REST/MCP/block editor): a number of episodes (default 1), until
       the end of the slot, or until the series ends (rest of the cycle in
       progress). Items stored earlier read as "until the end of the slot".
+- [x] Midroll for series episodes: episodes from series items, criteria items
+      and interleaved dynamic blocks get the same midroll breaks as catalog
+      items of a manual block (same rule resolution and pool pick), between
+      episodes and between a visit and the next item; also in continuous
+      channels, where breaks sit only between series episodes. Not yet:
+      breaks inside a single long episode (midroll has no such mode for
+      catalog items either), and midroll between plain catalog items of a
+      looping block.
 - [x] Dynamic `filler_pool`s: an optional `filler_pool.criteria`
       (`{kind, genres, year_from, year_to}`) makes `catalogsync.ResolveDynamicPools`
       own that pool's `filler_pool_item` rows, recomputed after every catalog
