@@ -318,6 +318,11 @@ void main() {
 // backend cannot be reached (see ExhaustedBehavior, the client's own setting).
 enum _Degraded { none, loop, slate }
 
+// Everything behind and around the video (letterbox/pillarbox bars, the loading
+// screen, crossfades, the gap slate) is pure black, like a TV. Set statically on
+// the player's Scaffold, never through setState (see the GL-texture gotcha).
+const Color playerBackgroundColor = Color(0xFF000000);
+
 class PlayheadSpikeApp extends StatelessWidget {
   const PlayheadSpikeApp({super.key});
 
@@ -364,7 +369,7 @@ class _InitialRouteResolverState extends State<_InitialRouteResolver> {
 
   @override
   Widget build(BuildContext context) {
-    return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    return const Scaffold(backgroundColor: playerBackgroundColor, body: Center(child: CircularProgressIndicator()));
   }
 }
 
@@ -1994,6 +1999,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
         }
       },
       child: Scaffold(
+        backgroundColor: playerBackgroundColor,
         body: Stack(
           children: [
             // Video: ALWAYS the first child of the Stack, never removed/reordered

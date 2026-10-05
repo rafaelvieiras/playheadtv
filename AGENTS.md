@@ -179,6 +179,10 @@ or LLM, and to every artifact in the repo:
   a grouped tail is one program, one unit per clip, announced once by the OSD.
   Don't reintroduce a per-entry `getCatalogItem` loop or load the whole window
   into `channel` up front.
+- Everything behind the video (letterbox bars, loading screen, crossfade, gap
+  slate) is pure black: the player `Scaffold` sets
+  `backgroundColor: playerBackgroundColor` statically (not the dark theme's
+  grey scaffold color, and never via `setState`).
 - While a channel loads (boot or switch) the player shows a centered spinner
   instead of a status card; errors keep the plain status card. Each
   `VideoPlayerController` gets mdk's `buffer` property
