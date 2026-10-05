@@ -9,9 +9,19 @@
 // ffmpeg is resolved from the `FFMPEG_PATH` environment variable, falling
 // back to plain `ffmpeg` on the PATH.
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
+// A 1x1 PNG.
+final _tinyPng = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+);
+
 class VideoFixture {
+  /// URIs of the art requests served so far (a test asserts what was or was
+  /// not fetched from the media server).
+  final List<String> imageRequests = [];
+
   static String get _ffmpegPath {
     final fromEnv = Platform.environment['FFMPEG_PATH'];
     return (fromEnv != null && fromEnv.isNotEmpty) ? fromEnv : 'ffmpeg';
@@ -91,6 +101,16 @@ class VideoFixture {
 
   Future<void> _respond(HttpRequest request) async {
     final bytes = _videoBytes;
+    // Poster/logo art: the same tiny PNG for any item (`/Items/<id>/Images/...`).
+    if (request.uri.path.startsWith('/Items/') && request.uri.path.contains('/Images/')) {
+      imageRequests.add(request.uri.toString());
+      request.response.statusCode = HttpStatus.ok;
+      request.response.headers.set(HttpHeaders.contentTypeHeader, 'image/png');
+      request.response.headers.contentLength = _tinyPng.length;
+      request.response.add(_tinyPng);
+      await request.response.close();
+      return;
+    }
     if (bytes == null || !request.uri.path.startsWith('/Videos/')) {
       request.response.statusCode = HttpStatus.notFound;
       await request.response.close();

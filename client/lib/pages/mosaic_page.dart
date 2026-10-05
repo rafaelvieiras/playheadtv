@@ -23,9 +23,12 @@ import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import 'package:fvp/fvp.dart'; // extension setSubtitleTracks on VideoPlayerController
 
+import '../cache/offline_runtime.dart';
+import '../cache/schedule_sync.dart';
 import '../main.dart';
 import '../playhead_api.dart';
 import '../widgets/app_icons.dart';
+import '../widgets/art_image.dart';
 import '../services/settings_service.dart';
 import '../util/gl_serial.dart';
 import 'settings_page.dart';
@@ -48,7 +51,7 @@ class MosaicPage extends StatefulWidget {
 }
 
 class _MosaicPageState extends State<MosaicPage> {
-  late final PlayheadApi _api;
+  late OfflineRuntime _runtime;
   late SettingsService _settings;
 
   bool _loading = true;
@@ -78,22 +81,31 @@ class _MosaicPageState extends State<MosaicPage> {
   @override
   void initState() {
     super.initState();
-    _api = PlayheadApi(
-      baseUrl: AppConfig.playheadBaseUrl,
-      deviceToken: AppConfig.playheadDeviceToken.isEmpty ? null : AppConfig.playheadDeviceToken,
-    );
     _bootstrap();
   }
 
   Future<void> _bootstrap() async {
     try {
       final settings = await SettingsService.create();
-      final channels = await _api.listChannels();
+      // Channels come from the offline cache, so the home works with the
+      // backend down. A first run has nothing cached and waits for the
+      // backend; otherwise the startup refresh only gets a moment to bring
+      // fresh data.
+      _runtime = await OfflineRuntime.ensure();
+      await _runtime.syncer.syncNow().timeout(startupSyncWait, onTimeout: () => SyncOutcome.offline);
+      var channels = _runtime.cache.channels();
+      if (channels.isEmpty) {
+        await _runtime.syncer.syncNow();
+        channels = _runtime.cache.channels();
+      }
       if (!mounted) return;
       if (channels.isEmpty) {
+        final status = _runtime.syncer.status.value;
         setState(() {
           _loading = false;
-          _error = 'ERROR: no channels configured on the backend (GET /channels is empty)';
+          _error = status.lastSucceeded
+              ? 'ERROR: no channels configured on the backend (GET /channels is empty)'
+              : 'ERROR: failed to load channels: ${status.lastError}';
         });
         return;
       }
@@ -170,12 +182,20 @@ class _MosaicPageState extends State<MosaicPage> {
     if (featured == null) return;
     try {
       final now = DateTime.now().toUtc();
-      final entries = await _api.getEpg(featured.id, now, now.add(const Duration(hours: 1)));
+      // From the offline cache: the first program on air or ahead.
+      final entries = _runtime.cache.entries(featured.id, now, now.add(const Duration(hours: 1)));
       if (!mounted || entries.isEmpty) return;
-      // The enriched GET /epg already carries the source id; only a backend
-      // that predates it needs the per-item lookup.
-      final entry = await _api.resolveCatalog(entries.first);
-      final externalId = entry.externalId;
+      final entry = entries.first;
+      // A grouped tail has no source id of its own: preview the clip on air.
+      var externalId = entry.externalId;
+      var itemStart = entry.startAt;
+      var itemEnd = entry.endAt;
+      if (entry.isTailGroup) {
+        final clip = entry.clips.firstWhere((c) => c.endAt.isAfter(now), orElse: () => entry.clips.first);
+        externalId = clip.externalId;
+        itemStart = clip.startAt;
+        itemEnd = clip.endAt;
+      }
       if (!mounted || externalId == null) return;
 
       final controller = VideoPlayerController.networkUrl(Uri.parse(streamUrl(externalId)));
@@ -185,8 +205,8 @@ class _MosaicPageState extends State<MosaicPage> {
         return;
       }
 
-      var seek = now.difference(entry.startAt);
-      final clipDuration = entry.endAt.difference(entry.startAt);
+      var seek = now.difference(itemStart);
+      final clipDuration = itemEnd.difference(itemStart);
       if (seek < Duration.zero) seek = Duration.zero;
       if (seek > clipDuration) seek = clipDuration;
       if (seek > Duration.zero) await controller.seekTo(seek);
@@ -337,10 +357,9 @@ class _MosaicPageState extends State<MosaicPage> {
                       ),
                     )
                   : channelData.guideArtUrl != null
-                      ? Image.network(
+                      ? ArtImage(
                           channelData.guideArtUrl!,
-                          fit: BoxFit.cover,
-                          errorBuilder: (context, error, stackTrace) => _channelFallback(channelData),
+                          fallback: (context) => _channelFallback(channelData),
                         )
                       : _channelFallback(channelData),
             ),
@@ -406,10 +425,9 @@ class _MosaicPageState extends State<MosaicPage> {
           borderRadius: BorderRadius.circular(8),
         ),
         child: channelData.guideArtUrl != null
-            ? Image.network(
+            ? ArtImage(
                 channelData.guideArtUrl!,
-                fit: BoxFit.cover,
-                errorBuilder: (context, error, stackTrace) => _channelFallback(channelData),
+                fallback: (context) => _channelFallback(channelData),
               )
             : _channelFallback(channelData),
       ),

@@ -19,4 +19,5 @@ abstract final class AppIcons {
   static const IconData favorite = Symbols.star;
   static const IconData settings = Symbols.settings;
   static const IconData controls = Symbols.sports_esports;
+  static const IconData offlineCache = Symbols.cloud_sync;
 }

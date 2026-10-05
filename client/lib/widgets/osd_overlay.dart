@@ -26,6 +26,7 @@ import 'package:video_player/video_player.dart';
 import 'package:fvp/fvp.dart'; // getMediaInfo() on VideoPlayerController
 
 import 'app_icons.dart';
+import 'art_image.dart';
 
 /// A recently watched channel offered in the OSD's "Channels" section.
 class OsdChannelShortcut {
@@ -253,7 +254,7 @@ class ChannelOsdState extends State<ChannelOsd> {
             decoration: const BoxDecoration(color: Colors.white12, shape: BoxShape.circle),
             clipBehavior: Clip.antiAlias,
             alignment: Alignment.center,
-            child: url == null ? fallback() : Image.network(url, fit: BoxFit.cover, errorBuilder: (_, _, _) => fallback()),
+            child: url == null ? fallback() : ArtImage(url, fallback: (_) => fallback()),
           ),
           const SizedBox(width: 8),
           Expanded(
@@ -285,7 +286,7 @@ class ChannelOsdState extends State<ChannelOsd> {
       decoration: const BoxDecoration(color: Colors.white12, shape: BoxShape.circle),
       clipBehavior: Clip.antiAlias,
       alignment: Alignment.center,
-      child: url == null ? fallback() : Image.network(url, fit: BoxFit.cover, errorBuilder: (_, _, _) => fallback()),
+      child: url == null ? fallback() : ArtImage(url, fallback: (_) => fallback()),
     );
   }
 

@@ -1029,10 +1029,32 @@ actionable checklist.
       `client/integration_test/epg_window_test.dart` (request counting proxy in
       `support/request_proxy.dart`, including a legacy-backend mode).
       Not done / known: only `tail` is grouped (a long `fallback` run of short
-      clips is still one entry per clip); the client does not yet send
-      `If-None-Match` or persist the schedule (the 48h local cache is separate
-      work); only the program on air and the next one are preloaded as
-      controllers.
+      clips is still one entry per clip); only the program on air and the next
+      one are preloaded as controllers.
+
+- [x] Client offline cache: a local SQLite copy of the channel list and every
+      channel's guide for the window (every tail clip, titles, art tags, source
+      ids) plus an on-disk poster cache with a size cap and LRU eviction, so a
+      cold start with the backend down plays. A background syncer (startup,
+      every 15 minutes, retry every 30 seconds after a failure) refreshes it
+      with `If-None-Match`; the player, guide and mosaic only read the cache.
+      The window is `PLAYHEADTV_EPG_WINDOW` on the backend (default 48h,
+      exposed as `window_ms` in `GET /epg/meta`) capped by a client limit
+      setting; a cache that ran out loops the last known programming or holds
+      the slate (client setting, default loop); a changed schedule is applied
+      like a grid reset; an auth or network error never discards the cache.
+      Settings -> Offline cache holds the settings, "Sync now" and "Clear
+      cache", all operable with the six buttons. Design:
+      `docs/ARCHITECTURE.md` "Client offline cache". Tests:
+      `client/test/{schedule_cache,schedule_sync,art_cache}_test.dart`,
+      `client/integration_test/offline_*_test.dart`,
+      `settings_offline_test.dart`, `backend/cmd/server/main_test.go` and the
+      window tests in `backend/internal/{api,materializer}`.
+      Not done / known: the device token is static configuration, so a hosted
+      token that expired is only retried every 30 seconds (the cache is kept
+      and refreshed as soon as the backend accepts the configured token), never
+      renewed; the poster cache holds only the primary image of programs and
+      channel logos.
 
 ## Phase 6 — Platforms
 

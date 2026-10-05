@@ -78,8 +78,9 @@ or LLM, and to every artifact in the repo:
   row still held for review (`docs/ARCHITECTURE.md` "Collections").
 - The EPG materializer (`internal/materializer`) expands
   `schedule_entry`/`block`/`filler_rule` into `epg_entry` rows via a
-  background worker (full-window regeneration, 48h rolling window — known
-  v1 tradeoffs documented in `docs/ROADMAP.md`). `GET /epg` and
+  background worker (full-window regeneration, rolling window of
+  `PLAYHEADTV_EPG_WINDOW`, 48h by default — known v1 tradeoffs documented in
+  `docs/ROADMAP.md`). `GET /epg` and
   `GET /epg/meta` just read the materialized `epg_entry`/`epg_revision`
   rows — don't duplicate schedule-expansion logic in the API layer, and
   don't reintroduce a "materializer doesn't exist yet" assumption.
@@ -200,9 +201,10 @@ or LLM, and to every artifact in the repo:
   follows the focused row, and horizontal scrolling kept as one animated
   offset in minutes (not `Scrollable`s) so header, rows and now line stay
   aligned. Up/Down pick the program covering the focus's time anchor in the
-  new row; moving right past the loaded window lazily fetches more of
-  `GET /epg` (up to the backend's 48h materialized horizon). All of this state
-  lives in `EpgOverlayState`, never in `_ChannelPlayerPageState`.
+  new row; moving right past the loaded window reads more of the offline
+  cache (up to its window, `ScheduleCache.window`: the smaller of the
+  backend's `window_ms` and the client limit). All of this state lives in
+  `EpgOverlayState`, never in `_ChannelPlayerPageState`.
   The grid draws `GuideCell`s (`lib/epg_guide.dart`, mirrored by
   `webui/src/lib/guideDisplay.ts`), not raw entries: only `program` and
   `fallback` entries get a cell, and the time of hidden preroll/midroll/
@@ -211,6 +213,63 @@ or LLM, and to every artifact in the repo:
   all work on the cells, so focus never lands on a hidden entry; the OSD
   "Up next" line skips the same kinds. Keep the two implementations and
   their unit tests in sync.
+
+## Client offline cache (offline first, excluding the video flow)
+
+Design and rationale: `docs/ARCHITECTURE.md` "Client offline cache". What to
+keep in mind when touching `client/`:
+
+- The player, the EPG grid, the mosaic and channel switching read the local
+  SQLite cache (`lib/cache/schedule_cache.dart`) and NEVER call the backend
+  for schedule data; only `ScheduleSyncer` (`lib/cache/schedule_sync.dart`)
+  does. `OfflineRuntime.ensure()` is the one shared instance (cache, art
+  cache, syncer, `PlayheadApi`); a new reader asks it, it does not build its
+  own `PlayheadApi`.
+- A failed refresh (backend down, `401`/`403`, any status) must leave the cache
+  untouched. Only a schema-version bump (`scheduleCacheSchemaVersion`: bump it
+  whenever the tables or the stored entry JSON change shape) or the explicit
+  "Clear cache" action empties it. Don't add a wipe on an error path.
+- Anything the client reads from the backend at runtime needs a cached copy and
+  a graceful fallback when absent (channels: cache; stream rules:
+  `StreamPreferencesService`, never caching "unreachable" as an answer).
+- The syncer's `GET /epg` starts at the top of the previous hour on purpose, so
+  the body and its `ETag` stay the same for the whole hour and an unchanged
+  guide is a `304`. A `start` of "now" would make every refresh a download.
+- `whenComplete(() => map.remove(key))` deadlocks when `map[key]` is the very
+  future being completed (the callback's returned future is awaited): use a
+  block body (see `ArtCache.fetch`).
+- Reconcile after a refresh (`_reconcileWithCache` in `main.dart`): reload the
+  channel when what is on air changed (the "applies it like a grid reset"
+  rule), otherwise replace only the programs after the one on air, in place.
+  The in-place path leaves `channel[0..current]` untouched (timers and
+  controllers hold indexes into it) and is skipped while a preload or gap hold
+  is parked.
+- The exhausted-cache fallback is the client's own setting
+  (`SettingsService.exhaustedBehavior`, default loop). It only applies when the
+  backend was just asked and could not be reached (`_backendUnreachable`); a
+  reachable backend with nothing scheduled keeps the "nothing more scheduled,
+  retrying" behavior.
+- In the integration harness: `AppConfig.overrideForTest` resets the shared
+  runtime and gives every call its own temporary cache directory (pass
+  `cacheDir:` to reuse one across boots, as a cold-start test does);
+  `BackendFixture.stopServer()`/`restartServer()` take the backend down and up
+  on the same address and data (it runs as a built binary, not `go run`);
+  `RequestProxy` records `If-None-Match` and statuses and can answer a forced
+  status. The media-server fixture also serves a tiny image for
+  `/Items/<id>/Images/...`.
+- `osd_test.dart`'s "Enter did not show the OSD" is intermittent on a clean
+  checkout too, mostly while the machine is busy (a build or another test run
+  in parallel): primary focus stayed on the root scope, so the key event never
+  reached the player page. Not caused by cache work; rerun it on an idle
+  machine and compare with a clean checkout before chasing it.
+- Fixtures: a manual block defaults to list_mode `repeat` and loops its items
+  to the end of the window, so a fixture block with a short item list fills the
+  whole window with repeats (hundreds of entries). Create fixture blocks with
+  `list_mode: "once"` (`BackendFixture.createBlockWithItems` does) unless the
+  test is about repeating.
+- Keep each real-boot budget in mind: `offline_playback_test.dart` (1 boot),
+  `offline_coldstart_test.dart` (2), `offline_reconcile_test.dart` (2),
+  `offline_exhausted_test.dart` (2), `settings_offline_test.dart` (1).
 
 ## Operational practices
 

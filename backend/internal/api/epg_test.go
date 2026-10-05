@@ -71,3 +71,36 @@ func TestEPGMetaReflectsRevisionRow(t *testing.T) {
 		t.Fatalf("meta = %+v, want {3 1700000000000}", meta)
 	}
 }
+
+// The materializer window (PLAYHEADTV_EPG_WINDOW) is exposed so a client
+// knows how much programming it can hold locally; the test helper builds the
+// materializer with a one hour window, with or without a revision row.
+func TestEPGMetaExposesWindow(t *testing.T) {
+	db, mux := newTestDB(t)
+
+	read := func() int64 {
+		rec := doRequest(t, mux, "GET", "/epg/meta", "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var meta struct {
+			WindowMs int64 `json:"window_ms"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &meta); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		return meta.WindowMs
+	}
+	if got := read(); got != 3600000 {
+		t.Fatalf("window_ms without a revision row = %d, want 3600000", got)
+	}
+	if err := db.Exec(context.Background(),
+		"INSERT INTO epg_revision (tenant_id, revision, valid_until, updated_at) VALUES (?, ?, ?, ?)",
+		DefaultTenantID, 1, 1, 1,
+	); err != nil {
+		t.Fatalf("seed epg_revision: %v", err)
+	}
+	if got := read(); got != 3600000 {
+		t.Fatalf("window_ms with a revision row = %d, want 3600000", got)
+	}
+}

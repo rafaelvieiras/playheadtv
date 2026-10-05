@@ -39,7 +39,7 @@ Working today:
 
 - **Backend** (Go, SQLite for the self-hosted tier): REST API for channels,
   media sources, catalog, blocks, filler pools/rules and schedule entries;
-  an EPG materializer that expands schedules into a rolling 48h window
+  an EPG materializer that expands schedules into a rolling window (48h by default, `PLAYHEADTV_EPG_WINDOW`)
   (`GET /epg`, `GET /epg/meta`); user sessions and device API tokens;
   credentials encrypted at rest; Jellyfin pull sync (plus push sync for
   sources the backend can't reach); dynamic, criteria-based blocks and

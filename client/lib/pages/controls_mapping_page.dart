@@ -121,8 +121,14 @@ class _ControlsMappingPageState extends State<ControlsMappingPage> {
 
   Future<void> _handleKeyEvent(KeyEvent event) async {
     final capturing = _capturingAction;
-    if (capturing == null) return;
     if (event is! KeyDownEvent) return;
+    if (capturing == null) {
+      // Back leaves the screen (while capturing, every key is the new binding).
+      if (_keyBindings?.resolve(event.logicalKey) == InputAction.back && mounted) {
+        unawaited(Navigator.of(context).maybePop());
+      }
+      return;
+    }
     await _keyBindings!.rebind(capturing, event.logicalKey);
     if (!mounted) return;
     setState(() {

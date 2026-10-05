@@ -19,6 +19,9 @@ class BackendFixture {
   Directory? _tempDir;
   Process? _process;
   String? _baseUrl;
+  String? _dbPath;
+  String? _binaryPath;
+  Map<String, String> _extraEnv = const {};
   String? _sessionToken;
   final http.Client _client = http.Client();
 
@@ -32,7 +35,12 @@ class BackendFixture {
   /// for `/healthz` to answer and does the one-time bootstrap of the tenant's
   /// app_user (POST /app-users + POST /sessions) to keep a session token used
   /// by all the other helpers of this class.
-  Future<void> start() async {
+  ///
+  /// The server is built once into the temp directory and run as that binary
+  /// (not through `go run`), so [stopServer] really takes it down and
+  /// [restartServer] brings it back on the same address with the same data.
+  /// [env] adds environment variables (e.g. `PLAYHEADTV_EPG_WINDOW`).
+  Future<void> start({Map<String, String> env = const {}}) async {
     final backendDir = Directory('${Directory.current.path}/../backend');
     if (!await backendDir.exists()) {
       throw StateError(
@@ -40,8 +48,14 @@ class BackendFixture {
       );
     }
 
+    _extraEnv = env;
     _tempDir = await Directory.systemTemp.createTemp('playheadtv_it_backend_');
-    final dbPath = '${_tempDir!.path}/playheadtv_it.db';
+    _dbPath = '${_tempDir!.path}/playheadtv_it.db';
+    final binaryPath = _binaryPath = '${_tempDir!.path}/server';
+    final build = await Process.run('go', ['build', '-o', binaryPath, './cmd/server'], workingDirectory: backendDir.path);
+    if (build.exitCode != 0) {
+      throw StateError('go build of the backend failed (exit ${build.exitCode}): ${build.stderr}');
+    }
 
     // Same bind-port-0-and-release trick as the widget test: small race
     // window, acceptable for local test use only.
@@ -50,18 +64,30 @@ class BackendFixture {
     await probeSocket.close();
     _baseUrl = 'http://127.0.0.1:$port';
 
-    _process = await Process.start(
-      'go',
-      ['run', './cmd/server'],
-      workingDirectory: backendDir.path,
+    await _spawn(port);
+
+    await _postJson('/app-users', {'email': 'e2e-test@example.com', 'password': 'test-password-123'});
+    final login = await _postJson(
+      '/sessions',
+      {'email': 'e2e-test@example.com', 'password': 'test-password-123'},
+    );
+    _sessionToken = login['token'] as String;
+  }
+
+  Future<void> _spawn(int port) async {
+    final process = _process = await Process.start(
+      _binaryPath!,
+      const [],
+      workingDirectory: _tempDir!.path,
       environment: {
-        'PLAYHEADTV_DB_PATH': dbPath,
+        'PLAYHEADTV_DB_PATH': _dbPath!,
         'PLAYHEADTV_ADDR': ':$port',
+        ..._extraEnv,
       },
       includeParentEnvironment: true,
     );
-    _process!.stdout.transform(utf8.decoder).listen((l) => stdout.write('[backend] $l'));
-    _process!.stderr.transform(utf8.decoder).listen((l) => stderr.write('[backend] $l'));
+    process.stdout.transform(utf8.decoder).listen((l) => stdout.write('[backend] $l'));
+    process.stderr.transform(utf8.decoder).listen((l) => stderr.write('[backend] $l'));
 
     final deadline = DateTime.now().add(const Duration(seconds: 30));
     while (true) {
@@ -69,19 +95,41 @@ class BackendFixture {
         final resp = await _client.get(Uri.parse('$_baseUrl/healthz')).timeout(const Duration(seconds: 1));
         if (resp.statusCode == 200) break;
       } catch (_) {
-        // backend still starting (or compiling, on the first run) — try again.
+        // backend still starting — try again.
       }
       if (DateTime.now().isAfter(deadline)) {
         throw StateError('backend did not answer /healthz at $_baseUrl in time (30s)');
       }
       await Future.delayed(const Duration(milliseconds: 200));
     }
+  }
 
-    await _postJson('/app-users', {'email': 'e2e-test@example.com', 'password': 'test-password-123'});
-    final login = await _postJson(
-      '/sessions',
-      {'email': 'e2e-test@example.com', 'password': 'test-password-123'},
-    );
+  /// Whether the backend process is up (false between [stopServer] and
+  /// [restartServer]).
+  bool get isRunning => _process != null;
+
+  /// Takes the backend process down but keeps its data and address: from now
+  /// on every request to [baseUrl] is refused, which is how a test simulates
+  /// the backend (or the internet) being out. [restartServer] brings it back.
+  Future<void> stopServer() async {
+    final process = _process;
+    _process = null;
+    if (process == null) return;
+    process.kill(ProcessSignal.sigterm);
+    try {
+      await process.exitCode.timeout(const Duration(seconds: 5));
+    } on TimeoutException {
+      process.kill(ProcessSignal.sigkill);
+      await process.exitCode;
+    }
+  }
+
+  /// Starts the backend again on the same address with the same database (the
+  /// schedule is re-materialized at boot) and logs in again.
+  Future<void> restartServer({Map<String, String>? env}) async {
+    if (env != null) _extraEnv = env;
+    await _spawn(Uri.parse(_baseUrl!).port);
+    final login = await _postJson('/sessions', {'email': 'e2e-test@example.com', 'password': 'test-password-123'}, auth: false);
     _sessionToken = login['token'] as String;
   }
 
@@ -177,7 +225,8 @@ class BackendFixture {
   }
 
   Future<String> createBlockWithItems(List<String> catalogItemIds) async {
-    final blockResp = await _postJson('/blocks', {'name': 'Block ${DateTime.now().microsecondsSinceEpoch}'});
+    // list_mode once: the items play a single time (the server default repeats the list to the end of the window).
+    final blockResp = await _postJson('/blocks', {'name': 'Block ${DateTime.now().microsecondsSinceEpoch}', 'list_mode': 'once'});
     final blockId = blockResp['id'] as String;
     for (final catalogItemId in catalogItemIds) {
       await _postJson('/blocks/$blockId/items', {'catalog_item_id': catalogItemId});
@@ -279,6 +328,11 @@ class BackendFixture {
       await Future.delayed(const Duration(milliseconds: 300));
     }
     throw StateError('channel $channelId never reached $minEntries epg entries (last: $count)');
+  }
+
+  /// POST /channels/{id}/reset-epg: the admin's grid reset of one channel.
+  Future<void> resetChannelEpg(String channelId) async {
+    await _postJson('/channels/$channelId/reset-epg', {});
   }
 
   Future<String> createDeviceToken({String name = 'E2E test client', String platform = 'linux'}) async {

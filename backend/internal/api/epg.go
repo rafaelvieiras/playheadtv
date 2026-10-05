@@ -82,11 +82,16 @@ type epgMetaResponse struct {
 	// programs are frozen: they will not change unless an author force-resets
 	// the channel (see materializer.DefaultFreezeMargin).
 	FreezeMarginMs int64 `json:"freeze_margin_ms"`
+	// WindowMs is how far ahead of now the backend keeps the guide
+	// materialized (PLAYHEADTV_EPG_WINDOW): the most programming a client can
+	// hold locally, and so the longest it can play with no backend.
+	WindowMs int64 `json:"window_ms"`
 }
 
 func getEPGMeta(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		freezeMs := mat.FreezeMargin().Milliseconds()
+		windowMs := mat.Window().Milliseconds()
 		var rev domain.EpgRevision
 		err := db.Query(r.Context(), &rev,
 			"SELECT tenant_id, revision, valid_until, updated_at FROM epg_revision WHERE tenant_id = ?",
@@ -95,13 +100,13 @@ func getEPGMeta(db storage.DB, mat *materializer.Materializer) http.HandlerFunc 
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
 				// Expected before the EPG materializer exists.
-				writeJSON(w, http.StatusOK, epgMetaResponse{Revision: 0, ValidUntil: 0, FreezeMarginMs: freezeMs})
+				writeJSON(w, http.StatusOK, epgMetaResponse{Revision: 0, ValidUntil: 0, FreezeMarginMs: freezeMs, WindowMs: windowMs})
 				return
 			}
 			handleDBError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, epgMetaResponse{Revision: rev.Revision, ValidUntil: rev.ValidUntil, FreezeMarginMs: freezeMs})
+		writeJSON(w, http.StatusOK, epgMetaResponse{Revision: rev.Revision, ValidUntil: rev.ValidUntil, FreezeMarginMs: freezeMs, WindowMs: windowMs})
 	}
 }
 

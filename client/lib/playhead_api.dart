@@ -7,8 +7,35 @@
 // decides how that turns into a status message for the user.
 import 'dart:async';
 import 'dart:convert';
+import 'dart:isolate';
 
 import 'package:http/http.dart' as http;
+
+/// The backend answered, with a status other than the one expected. 401/403
+/// is [isAuthRejection]: the token is missing, expired or revoked, which a
+/// caller must tell apart from the backend being unreachable (the offline
+/// cache keeps playing in both cases, but reconnects differently).
+class PlayheadHttpException implements Exception {
+  final Uri uri;
+  final int statusCode;
+  final String body;
+  const PlayheadHttpException(this.uri, this.statusCode, this.body);
+
+  bool get isAuthRejection => statusCode == 401 || statusCode == 403;
+
+  @override
+  String toString() => 'Exception: $uri responded $statusCode: $body';
+}
+
+/// The backend could not be reached at all (connection refused, DNS, timeout).
+class PlayheadConnectionException implements Exception {
+  final Uri uri;
+  final Object cause;
+  const PlayheadConnectionException(this.uri, this.cause);
+
+  @override
+  String toString() => 'Exception: failed to connect to $uri: $cause';
+}
 
 class PlayheadChannel {
   final String id;
@@ -24,6 +51,8 @@ class PlayheadChannel {
         name: json['name'] as String,
         guideArtUrl: json['guide_art_url'] as String?,
       );
+
+  Map<String, dynamic> toJson() => {'id': id, 'number': number, 'name': name, 'guide_art_url': guideArtUrl};
 }
 
 /// One stored tail clip inside a grouped tail [EpgEntry] — everything a
@@ -57,6 +86,16 @@ class EpgClip {
         endAt: DateTime.fromMillisecondsSinceEpoch(json['end_at'] as int, isUtc: true),
         durationMs: json['duration_ms'] as int?,
       );
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'catalog_item_id': catalogItemId,
+        'start_at': startAt.millisecondsSinceEpoch,
+        'end_at': endAt.millisecondsSinceEpoch,
+        'external_id': externalId,
+        'title': title,
+        'duration_ms': durationMs,
+      };
 
   EpgClip withCatalog(CatalogItemInfo info) => EpgClip(
         id: id,
@@ -154,6 +193,30 @@ class EpgEntry {
     );
   }
 
+  /// The shape [EpgEntry.fromJson] reads (the backend's own, minus the fields
+  /// the client never uses): what the offline cache stores.
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'kind': kind,
+        if (!isTailGroup) 'catalog_item_id': catalogItemId,
+        'start_at': startAt.millisecondsSinceEpoch,
+        'end_at': endAt.millisecondsSinceEpoch,
+        'external_id': externalId,
+        'title': title,
+        'series_title': seriesTitle,
+        'series_external_id': seriesExternalId,
+        'item_kind': itemKind,
+        'season_number': seasonNumber,
+        'episode_number': episodeNumber,
+        'episode_number_end': episodeNumberEnd,
+        'duration_ms': durationMs,
+        'image_primary_tag': imagePrimaryTag,
+        'image_backdrop_tag': imageBackdropTag,
+        'image_thumb_tag': imageThumbTag,
+        'series_image_primary_tag': seriesImagePrimaryTag,
+        if (isTailGroup) 'clips': [for (final c in clips) c.toJson()],
+      };
+
   bool get isTailGroup => clips.isNotEmpty;
 
   /// The media server item and image tag to build this entry's poster URL
@@ -213,6 +276,41 @@ class EpgEntry {
         clips: clips ?? this.clips,
       );
 
+  /// A copy moved by [by] in time (its clips too) under a new id: how the
+  /// "loop the last known programming" fallback replays a schedule.
+  EpgEntry shifted(Duration by, {required String idPrefix}) => EpgEntry(
+        id: '$idPrefix$id',
+        kind: kind,
+        catalogItemId: catalogItemId,
+        startAt: startAt.add(by),
+        endAt: endAt.add(by),
+        externalId: externalId,
+        title: title,
+        seriesTitle: seriesTitle,
+        seriesExternalId: seriesExternalId,
+        itemKind: itemKind,
+        seasonNumber: seasonNumber,
+        episodeNumber: episodeNumber,
+        episodeNumberEnd: episodeNumberEnd,
+        durationMs: durationMs,
+        imagePrimaryTag: imagePrimaryTag,
+        imageBackdropTag: imageBackdropTag,
+        imageThumbTag: imageThumbTag,
+        seriesImagePrimaryTag: seriesImagePrimaryTag,
+        clips: [
+          for (final c in clips)
+            EpgClip(
+              id: '$idPrefix${c.id}',
+              catalogItemId: c.catalogItemId,
+              startAt: c.startAt.add(by),
+              endAt: c.endAt.add(by),
+              externalId: c.externalId,
+              title: c.title,
+              durationMs: c.durationMs,
+            ),
+        ],
+      );
+
   EpgEntry withCatalog(CatalogItemInfo info) => _copy(externalId: info.externalId, title: info.title);
 
   EpgEntry withClips(List<EpgClip> newClips) => _copy(clips: newClips);
@@ -270,6 +368,51 @@ class StreamPreferencesMeta {
       StreamPreferencesMeta(revision: json['revision'] as int? ?? 0);
 }
 
+/// `GET /epg/meta`.
+class EpgMeta {
+  final int revision;
+
+  /// How far ahead of now the backend keeps the guide materialized; null when
+  /// the backend predates the field.
+  final Duration? window;
+
+  const EpgMeta({required this.revision, this.window});
+
+  factory EpgMeta.fromJson(Map<String, dynamic> json) {
+    final windowMs = json['window_ms'];
+    return EpgMeta(
+      revision: json['revision'] as int? ?? 0,
+      window: windowMs is int && windowMs > 0 ? Duration(milliseconds: windowMs) : null,
+    );
+  }
+}
+
+/// A complete `GET /epg` answer, grouped by channel id (each list ordered by
+/// start), with the validator and revision it came with.
+class EpgSnapshot {
+  final String? etag;
+  final int? revision;
+  final Map<String, List<EpgEntry>> byChannel;
+
+  const EpgSnapshot({required this.etag, required this.revision, required this.byChannel});
+}
+
+Map<String, List<EpgEntry>> _parseEpgByChannel(String body) {
+  final data = jsonDecode(body);
+  if (data is! List) {
+    throw Exception('GET /epg: expected a list, got ${data.runtimeType}');
+  }
+  final out = <String, List<EpgEntry>>{};
+  for (final raw in data) {
+    final json = raw as Map<String, dynamic>;
+    out.putIfAbsent(json['channel_id'] as String, () => []).add(EpgEntry.fromJson(json));
+  }
+  for (final list in out.values) {
+    list.sort((a, b) => a.startAt.compareTo(b.startAt));
+  }
+  return out;
+}
+
 class CatalogItemInfo {
   final String id;
   final String externalId; // Native ID of the item in the source (currently always a Jellyfin item)
@@ -293,6 +436,9 @@ class PlayheadApi {
   final http.Client _client;
   final Duration timeout;
 
+  /// The whole-window download is the one request that can be big.
+  final Duration snapshotTimeout;
+
   // Only the fallback against a backend without the enriched GET /epg fans
   // out one request per EPG entry (a channel of short items can mean
   // hundreds), and every in-flight request holds a socket: unbounded, that
@@ -310,6 +456,7 @@ class PlayheadApi {
     this.deviceToken,
     http.Client? client,
     this.timeout = const Duration(seconds: 10),
+    this.snapshotTimeout = const Duration(seconds: 60),
   }) : _client = client ?? http.Client();
 
   String get _normalizedBaseUrl => baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
@@ -339,18 +486,21 @@ class PlayheadApi {
     }
   }
 
-  Future<dynamic> _getJson(Uri uri) async {
-    final http.Response response;
+  Future<http.Response> _send(Uri uri, {Map<String, String> extraHeaders = const {}, Duration? timeout}) async {
     await _acquire();
     try {
-      response = await _client.get(uri, headers: _headers).timeout(timeout);
+      return await _client.get(uri, headers: {..._headers, ...extraHeaders}).timeout(timeout ?? this.timeout);
     } catch (e) {
-      throw Exception('failed to connect to $uri: $e');
+      throw PlayheadConnectionException(uri, e);
     } finally {
       _release();
     }
+  }
+
+  Future<dynamic> _getJson(Uri uri) async {
+    final response = await _send(uri);
     if (response.statusCode != 200) {
-      throw Exception('$uri responded ${response.statusCode}: ${response.body}');
+      throw PlayheadHttpException(uri, response.statusCode, response.body);
     }
     try {
       return jsonDecode(response.body);
@@ -386,6 +536,43 @@ class PlayheadApi {
     final entries = data.map((e) => EpgEntry.fromJson(e as Map<String, dynamic>)).toList();
     entries.sort((a, b) => a.startAt.compareTo(b.startAt));
     return entries;
+  }
+
+  /// `GET /epg/meta`: the revision plus how far ahead the backend keeps the
+  /// guide materialized ([EpgMeta.window], absent on an older backend).
+  Future<EpgMeta> getEpgMeta() async {
+    final data = await _getJson(Uri.parse('$_normalizedBaseUrl/epg/meta'));
+    if (data is! Map<String, dynamic>) {
+      throw Exception('GET /epg/meta: expected an object, got ${data.runtimeType}');
+    }
+    return EpgMeta.fromJson(data);
+  }
+
+  /// One conditional request for every channel's guide from [start] on
+  /// (`group_tail=1`, enriched): the offline cache's refresh. With [etag] (the
+  /// validator of the copy already held) an unchanged guide answers `304` and
+  /// this returns null, a few hundred bytes instead of the whole schedule.
+  /// A changed one returns the new [EpgSnapshot].
+  Future<EpgSnapshot?> getEpgSnapshot({required DateTime start, String? etag}) async {
+    final uri = Uri.parse('$_normalizedBaseUrl/epg').replace(queryParameters: {
+      'start': start.toUtc().millisecondsSinceEpoch.toString(),
+      'group_tail': '1',
+    });
+    final response = await _send(uri, extraHeaders: {'If-None-Match': ?etag}, timeout: snapshotTimeout);
+    if (response.statusCode == 304) return null;
+    if (response.statusCode != 200) {
+      throw PlayheadHttpException(uri, response.statusCode, response.body);
+    }
+    final bytes = response.bodyBytes;
+    // A whole window of every channel can be megabytes of JSON: decoded off
+    // the UI isolate so it never costs a video frame (always UTF-8, whatever
+    // the content type's charset says).
+    final byChannel = await Isolate.run(() => _parseEpgByChannel(utf8.decode(bytes)));
+    return EpgSnapshot(
+      etag: response.headers['etag'],
+      revision: int.tryParse(response.headers['x-epg-revision'] ?? ''),
+      byChannel: byChannel,
+    );
   }
 
   /// Makes [entry] playable and labelled. With the enriched `GET /epg` this

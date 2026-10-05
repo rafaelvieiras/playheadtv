@@ -19,12 +19,17 @@
 // arrow presses before the first load finished) could apply the result of the
 // wrong channel on top of the new channel's state.
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
 import 'package:fvp/fvp.dart' as fvp;
 
+import 'cache/offline_runtime.dart';
+import 'cache/schedule_cache.dart';
+import 'cache/schedule_sync.dart';
 import 'playhead_api.dart';
 import 'services/settings_service.dart';
 import 'services/stream_preferences_service.dart';
@@ -57,8 +62,8 @@ class AppConfig {
   static String? _playheadDeviceToken;
   static String? _playheadChannelId;
   static int? _workingSetSize;
-  static Duration? _epgFetchWindow;
-  static Duration? _epgExtendThreshold;
+  static Duration? _cacheSyncInterval;
+  static String? _cacheDir;
 
   static String get jellyfinUrl => _jellyfinUrl ?? const String.fromEnvironment('JELLYFIN_URL');
   static String get jellyfinApiKey => _jellyfinApiKey ?? const String.fromEnvironment('JELLYFIN_API_KEY');
@@ -79,10 +84,16 @@ class AppConfig {
   // number than long ones, hence a setting: `--dart-define=WORKING_SET_SIZE=`.
   static int get workingSetSize =>
       _workingSetSize ?? const int.fromEnvironment('WORKING_SET_SIZE', defaultValue: defaultWorkingSetSize);
-  // Size of one GET /epg slice, and the known runway below which the next
-  // slice is fetched while the channel plays.
-  static Duration get epgFetchWindow => _epgFetchWindow ?? defaultEpgFetchWindow;
-  static Duration get epgExtendThreshold => _epgExtendThreshold ?? defaultEpgExtendThreshold;
+  // How often the background syncer refreshes the offline cache from the
+  // backend (`--dart-define=EPG_SYNC_INTERVAL_MINUTES=`). Offline tolerance is
+  // the window minus the time since the last refresh, so keep it well below
+  // it.
+  static Duration get cacheSyncInterval =>
+      _cacheSyncInterval ??
+      const Duration(minutes: int.fromEnvironment('EPG_SYNC_INTERVAL_MINUTES', defaultValue: defaultCacheSyncMinutes));
+  // Where the offline cache lives, only overridden by integration tests; null
+  // (the app) means the platform's application support/cache directories.
+  static String? get cacheDirOverride => _cacheDir;
 
   /// Only used by `integration_test/` — never called in the real app (`main()`
   /// doesn't call this, so production never sees anything but the
@@ -94,17 +105,21 @@ class AppConfig {
     String playheadDeviceToken = '',
     String playheadChannelId = '',
     int? workingSetSize,
-    Duration? epgFetchWindow,
-    Duration? epgExtendThreshold,
+    Duration? cacheSyncInterval,
+    String? cacheDir,
   }) {
+    // A new configuration is a new app: forget the previous run's cache,
+    // syncer and shared runtime. Without an explicit directory each override
+    // gets a fresh one, so a test never inherits another's cache.
+    OfflineRuntime.reset();
     _jellyfinUrl = jellyfinUrl;
     _jellyfinApiKey = jellyfinApiKey;
     _playheadBaseUrl = playheadBaseUrl;
     _playheadDeviceToken = playheadDeviceToken;
     _playheadChannelId = playheadChannelId;
     _workingSetSize = workingSetSize;
-    _epgFetchWindow = epgFetchWindow;
-    _epgExtendThreshold = epgExtendThreshold;
+    _cacheSyncInterval = cacheSyncInterval;
+    _cacheDir = cacheDir ?? Directory.systemTemp.createTempSync('playheadtv_cache_').path;
   }
 }
 
@@ -113,22 +128,22 @@ class AppConfig {
 // many clips it carries.
 const defaultWorkingSetSize = 5;
 
-// What the client KNOWS is fetched from GET /epg in slices of this size and
-// extended while the channel plays (never hours up front). A slice that comes
-// back empty (a hole in the schedule) doubles the next request, up to
-// maxEpgFetchBackoff times, so a hole wider than one slice can still be
-// crossed.
-const defaultEpgFetchWindow = Duration(hours: 2);
-const maxEpgFetchBackoff = 4;
+// The default refresh period of the offline cache (minutes), see
+// AppConfig.cacheSyncInterval.
+const defaultCacheSyncMinutes = 15;
 
-// When the known runway (end of the last fetched program minus now) falls
-// below this, the next slice is fetched in the background.
-const defaultEpgExtendThreshold = Duration(hours: 1);
+// How long boot waits for the startup refresh before playing from what the
+// cache already holds (a later refresh is reconciled while playing).
+const startupSyncWait = Duration(seconds: 2);
 
-// Retry interval when the materialized schedule has really run out (a real
-// gap in the schedule, not just the end of the fetched window) — repeats until
-// something materialized is found and playback resumes on its own.
+// Retry interval when the cached schedule has really run out (a real gap in
+// the schedule, or the cache exhausted by a long outage) — repeats until
+// something is found and playback resumes on its own.
 const epgGapRetryInterval = Duration(seconds: 20);
+
+// How much of the last known programming the "loop" fallback replays once
+// the cached schedule has run out.
+const exhaustedLoopSpan = Duration(hours: 24);
 
 // Direct jump by channel number (real remote-control style navigation): time
 // without a new digit before the typed buffer resolves on its own, and the
@@ -187,6 +202,40 @@ List<ChannelEntry> unitsOfProgram(EpgEntry program, int ordinal, {DateTime? notB
   ];
 }
 
+/// What reading the cache beyond the cursor adds to a channel's known
+/// programs: entries starting at or after [cursor], and the longer version of
+/// the last known tail run when the cache has one (the materializer keeps
+/// appending clips to a run that reaches the end of its window). [extraUnits]
+/// are the new clips of that run, only when it was already expanded into
+/// playable units ([knownExpanded] covers it). Null when nothing grew.
+({List<EpgEntry> known, DateTime cursor, List<ChannelEntry> extraUnits})? growKnown({
+  required List<EpgEntry> known,
+  required int knownExpanded,
+  required DateTime cursor,
+  required List<EpgEntry> cached,
+}) {
+  final valid = cached.where((e) => e.endAt.isAfter(e.startAt)).toList();
+  final fresh = valid.where((e) => !e.startAt.isBefore(cursor)).toList();
+  final last = known.isEmpty ? null : known.last;
+  final longer = last == null || !last.isTailGroup
+      ? null
+      : valid.where((e) => e.isTailGroup && e.startAt == last.startAt && e.endAt.isAfter(last.endAt)).firstOrNull;
+  if (fresh.isEmpty && longer == null) return null;
+  var extra = const <ChannelEntry>[];
+  var next = known;
+  var newCursor = cursor;
+  if (longer != null) {
+    final ordinal = known.length - 1;
+    if (ordinal < knownExpanded) extra = unitsOfProgram(longer, ordinal, notBefore: last!.endAt);
+    next = [...known.take(ordinal), longer];
+    if (longer.endAt.isAfter(newCursor)) newCursor = longer.endAt;
+  }
+  for (final e in fresh) {
+    if (e.endAt.isAfter(newCursor)) newCursor = e.endAt;
+  }
+  return (known: [...next, ...fresh], cursor: newCursor, extraUnits: extra);
+}
+
 // Populated at runtime by _loadAndPlayChannel from the GET /epg materialized
 // by the backend — never a hardcoded constant.
 List<ChannelEntry> channel = <ChannelEntry>[];
@@ -228,6 +277,10 @@ const epgThumbnailHeight = 180.0;
 // Fallback for the backend's EPG freeze margin (GET /epg/meta
 // `freeze_margin_ms`): how far ahead the guide of a continuous-schedule channel
 // is frozen. Used when the backend does not report one.
+// The known runway (end of the last known program minus now) below which the
+// player reads what the cache gained beyond it.
+const epgExtendThreshold = Duration(hours: 1);
+
 const epgFreezeMarginFallback = Duration(hours: 3);
 
 // Playback buffer window handed to mdk (see _createController).
@@ -255,6 +308,10 @@ void main() {
   });
   runApp(const PlayheadSpikeApp());
 }
+
+// What a channel is doing when the cached schedule has run out while the
+// backend cannot be reached (see ExhaustedBehavior, the client's own setting).
+enum _Degraded { none, loop, slate }
 
 class PlayheadSpikeApp extends StatelessWidget {
   const PlayheadSpikeApp({super.key});
@@ -393,35 +450,37 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   // swallowed, not forwarded.
   bool _suppressNextEpgSelectUp = false;
 
-  // What the client KNOWS of this channel (programs fetched from GET /epg,
-  // already enriched: titles, source ids, art references, a tail's clips) vs
-  // what it holds ready (`channel`, the working set): `channel` only receives
-  // the programs of `_known` up to the one on air plus
+  // What the client KNOWS of this channel (programs read from the offline
+  // cache, already enriched: titles, source ids, art references, a tail's
+  // clips) vs what it holds ready (`channel`, the working set): `channel` only
+  // receives the programs of `_known` up to the one on air plus
   // AppConfig.workingSetSize, as playback advances (_expandWorkingSet).
-  // Reset on every new _loadAndPlayChannel.
+  // Reset on every new _loadAndPlayChannel; refreshed in place when a
+  // background sync changed the cache (_reconcileWithCache).
   List<EpgEntry> _known = <EpgEntry>[];
   // Entries before the first fetched one, only when it is a filler, so the OSD
   // can find the program that filler is attributed to (see osd_subject.dart).
   List<EpgEntry> _osdContext = <EpgEntry>[];
   // `_known[0.._knownExpanded)` have been turned into units of `channel`.
   int _knownExpanded = 0;
-  // Rolling EPG window: cursor of the `endAt` of the last program fetched in
-  // this load generation — where to continue fetching the next slice from.
+  // Cursor: the largest `endAt` among `_known` — where to continue reading
+  // the cache from.
   DateTime? _epgLoadedUntil;
-  // Consecutive empty slices (a hole in the schedule), see
-  // maxEpgFetchBackoff.
-  int _emptySlices = 0;
-  // Coalesces concurrent extension work: the proactive trigger
-  // (_maybeExtendGrid) and the immediate attempt/retry for the dead end in
-  // _crossfadeTo can fire almost together. Without this, two simultaneous
-  // fetches would read the same _epgLoadedUntil and each would append the same
-  // programs again — see _fetchNextEpgSlice.
-  Future<bool>? _pendingExtend;
   Future<void>? _pendingExpand;
-  // Only exists while the materialized schedule has really run out (a real
-  // gap, not just the end of the fetched window) — repeats the fetch until
-  // something turns up in that gap and playback resumes on its own.
+  // Only exists while the known schedule has really run out (a real gap, or
+  // the cache exhausted by a long outage) — repeats the check until something
+  // turns up and playback resumes on its own.
   Timer? _gapRetryTimer;
+  // Set while the channel plays the degraded fallback of an exhausted cache
+  // (see _Degraded): any later cache change that brings real programming
+  // reloads the channel out of it.
+  _Degraded _degraded = _Degraded.none;
+  // A cache change arrived while a channel was still loading: reconciled as
+  // soon as it is playing.
+  bool _reconcilePending = false;
+  // Counts looped copies of the last known programming (distinct entry ids).
+  int _loopCount = 0;
+  StreamSubscription<CacheChange>? _cacheSub;
   // Only exists while holding on the slate for a KNOWN interior schedule gap
   // (the next item is already materialized, just not due yet — see
   // _holdForGap). Distinct from _gapRetryTimer above, which is for when
@@ -436,7 +495,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   // as the second crossfade picks it back up.
   VideoPlayerController? _gapHoldPending;
 
-  late final PlayheadApi _api;
+  late OfflineRuntime _runtime;
+  ScheduleCache get _cache => _runtime.cache;
   List<PlayheadChannel> _channels = [];
   int _channelIndex = 0;
   // Incremented on every channel switch; captured by closure in every
@@ -490,38 +550,47 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
           '--dart-define=PLAYHEADTV_BASE_URL=...';
       return;
     }
-    _api = PlayheadApi(
-      baseUrl: AppConfig.playheadBaseUrl,
-      deviceToken: AppConfig.playheadDeviceToken.isEmpty ? null : AppConfig.playheadDeviceToken,
-    );
     _bootstrapChannels();
   }
 
-  // Fetches the channel list exactly once (it needs the whole list, not just
-  // the initial channel, to know what to switch to with arrow up/down),
-  // resolves the initial channel (dart-define or the one with the lowest
-  // `number`) and loads its schedule.
+  // Reads the channel list from the offline cache (it needs the whole list,
+  // not just the initial channel, to know what to switch to with arrow
+  // up/down), resolves the initial channel (dart-define or the one with the
+  // lowest `number`) and loads its schedule. The cache is refilled by the
+  // background syncer; boot gives the startup refresh a moment to bring fresh
+  // data and otherwise plays from what is already on disk — so a cold start
+  // with the backend down works. Only a first run with nothing cached yet has
+  // to wait for the backend.
   Future<void> _bootstrapChannels() async {
     setState(() => _status = 'loading channels…');
     try {
       _settings = await SettingsService.create();
       _keyBindings = KeyBindingsService(_settings);
-      _streamPrefs = await StreamPreferencesService.create(_api);
+      _runtime = await OfflineRuntime.ensure();
+      _streamPrefs = await StreamPreferencesService.create(_runtime.api);
       _streamPrefsReady = true;
-      // Initial fetch at boot, concurrently with the channel list (both are
-      // independent network calls) — awaited before the first
-      // _loadAndPlayChannel below, so the very first playback decision
-      // already has a populated cache instead of racing it.
+      // Tier 2-4 rules ride alongside the startup refresh (a failure keeps the
+      // cached rules, see StreamPreferencesService).
       final streamPrefsRefresh = _streamPrefs.refreshAll();
-      final channels = await _api.listChannels();
+      await _runtime.syncer.syncNow().timeout(startupSyncWait, onTimeout: () => SyncOutcome.offline);
+      var channels = _cache.channels();
+      if (channels.isEmpty) {
+        // Nothing cached yet (first run): the backend is the only source.
+        await _runtime.syncer.syncNow();
+        channels = _cache.channels();
+      }
       await streamPrefsRefresh;
       _streamPrefs.startPolling();
+      _cacheSub = _cache.changes.listen(_onCacheChange);
       if (channels.isEmpty) {
         if (!mounted) return;
-        setState(() => _status = 'ERROR: no channels configured on the backend (GET /channels is empty)');
+        final error = _runtime.syncer.status.value.lastError;
+        setState(() => _status = _runtime.syncer.status.value.lastSucceeded
+            ? 'ERROR: no channels configured on the backend (GET /channels is empty)'
+            : 'ERROR: failed to load channel list: $error');
         return;
       }
-      final sorted = [...channels]..sort((a, b) => a.number.compareTo(b.number));
+      final sorted = channels;
       var index = 0;
       final wantedId = widget.initialChannelId ??
           (AppConfig.playheadChannelIdDefine.isNotEmpty ? AppConfig.playheadChannelIdDefine : null);
@@ -579,8 +648,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       unawaited(serializeGlOp(() => _gapHoldPending!.dispose()));
       _gapHoldPending = null;
     }
-    _pendingExtend = null;
     _pendingExpand = null;
+    _degraded = _Degraded.none;
+    _reconcilePending = false;
     _channelInputCommitTimer?.cancel();
     _channelInputCommitTimer = null;
     // Fire-and-forget, but routed through serializeGlOp (see its doc
@@ -606,7 +676,6 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       _known = <EpgEntry>[];
       _osdContext = <EpgEntry>[];
       _knownExpanded = 0;
-      _emptySlices = 0;
       _epgLoadedUntil = null;
       _channelInputBuffer = null;
       _status = 'switching channel…';
@@ -647,41 +716,90 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     }
   }
 
-  // Fetches the materialized schedule (GET /epg, one request: the entries
-  // arrive already enriched with titles, source ids, art references and a
-  // tail's clips) in an epgFetchWindow-sized slice ahead of "now" for the
-  // given channel, hands the program on air plus the next
-  // AppConfig.workingSetSize to the player and starts playback. The client
-  // never decides WHAT plays — it only fetches what the backend already
-  // decided and plays it (see AGENTS.md). `generation` is checked before every
-  // `setState` that follows an `await`, so it doesn't trample a channel that
-  // was switched again in the meantime.
+  // What the cache knows of the channel from `now` on, minus whatever already
+  // ended (can only happen because of some clock/materialization slack, but
+  // safer than assuming it never occurs) and anything with a non-positive
+  // duration (a corrupt/unprobed source item — pullsync's own guard should
+  // already reject these at sync time, but _scheduleTransitions fires its
+  // next-item timer immediately for a zero-length clip, so a single one that
+  // slips through would churn real controller create/dispose cycles until the
+  // process runs out of file descriptors — reproduced 2026-09-30, see
+  // AGENTS.md).
+  List<EpgEntry> _upcomingFromCache(String channelId, DateTime now) =>
+      _cache.entries(channelId, now, _cache.horizonEnd).where((e) => e.endAt.isAfter(now) && e.endAt.isAfter(e.startAt)).toList();
+
+  // One last refresh attempt when the cache has nothing ahead, to tell "the
+  // backend really has nothing" (it answered) from "the cache ran out while
+  // the backend is out of reach" (it did not): only the latter is an
+  // exhausted cache that the degraded behavior setting applies to.
+  Future<bool> _backendUnreachable() async {
+    final outcome = await _runtime.syncer.syncNow().timeout(const Duration(seconds: 4), onTimeout: () => SyncOutcome.offline);
+    return outcome != SyncOutcome.updated && outcome != SyncOutcome.unchanged;
+  }
+
+  // The last known programming of the channel replayed from [from] on, as
+  // copies shifted in time with their own ids: the last exhaustedLoopSpan of
+  // what the cache holds, in order. Empty when the cache holds nothing.
+  List<EpgEntry> _loopedEntries(String channelId, DateTime from) {
+    final all = _cache.allEntries(channelId).where((e) => e.endAt.isAfter(e.startAt)).toList();
+    if (all.isEmpty) return const [];
+    final lastEnd = all.map((e) => e.endAt).reduce((a, b) => a.isAfter(b) ? a : b);
+    final cutoff = lastEnd.subtract(exhaustedLoopSpan);
+    final source = all.where((e) => !e.startAt.isBefore(cutoff)).toList();
+    if (source.isEmpty) return const [];
+    final shift = from.difference(source.first.startAt);
+    final copy = _loopCount++;
+    return [for (final e in source) e.shifted(shift, idPrefix: 'loop$copy:')];
+  }
+
+  // Appends another replay of the last known programming to `_known`. False
+  // when there is nothing to replay.
+  bool _appendLoop() {
+    if (_channelIndex >= _channels.length) return false;
+    final now = DateTime.now().toUtc();
+    var from = _epgLoadedUntil ?? now;
+    if (from.isBefore(now)) from = now;
+    final looped = _loopedEntries(_channels[_channelIndex].id, from);
+    if (looped.isEmpty) return false;
+    _known = [..._known, ...looped];
+    _epgLoadedUntil = _known.map((e) => e.endAt).reduce((a, b) => a.isAfter(b) ? a : b);
+    return true;
+  }
+
+  // Reads the channel from the offline cache — the entries are already
+  // enriched with titles, source ids, art references and a tail's clips —
+  // hands the program on air plus the next AppConfig.workingSetSize to the
+  // player and starts playback. The client never decides WHAT plays — it
+  // only plays what the backend already decided, as last synced (see
+  // AGENTS.md); with the backend down this is the whole flow. `generation`
+  // is checked before every `setState` that follows an `await`, so it
+  // doesn't trample a channel that was switched again in the meantime.
   Future<void> _loadAndPlayChannel(PlayheadChannel target, {required int generation}) async {
     try {
       final now = DateTime.now().toUtc();
-      // Kicked off in parallel with GET /epg below (never awaited until just
+      // Kicked off in parallel with the work below (never awaited until just
       // before it's needed) so resolving tier 3 (channel admin) rules never
-      // adds latency to the channel-load path on top of the network calls it
-      // already has to make — it just rides alongside them.
-      // _createController itself never awaits anything for this; see
-      // _currentChannelRules' doc comment.
+      // adds latency to the channel-load path. _createController itself never
+      // awaits anything for this; see _currentChannelRules' doc comment.
       final channelRulesFuture = _streamPrefs.ensureChannelRules(target.id);
-      final entries = await _api.getEpg(target.id, now, now.add(AppConfig.epgFetchWindow), groupTail: true);
-      if (generation != _loadGeneration) return;
-
-      // Drops whatever already ended (can only happen because of some
-      // clock/materialization slack, but safer than assuming it never
-      // occurs) and anything with a non-positive duration (a corrupt/unprobed
-      // source item — pullsync's own guard should already reject these at
-      // sync time, but _scheduleTransitions fires its next-item timer
-      // immediately for a zero-length clip, so a single one that slips
-      // through would churn real controller create/dispose cycles until the
-      // process runs out of file descriptors — reproduced 2026-09-30, see
-      // AGENTS.md).
-      final upcoming = entries.where((e) => e.endAt.isAfter(now) && e.endAt.isAfter(e.startAt)).toList();
+      var upcoming = _upcomingFromCache(target.id, now);
+      if (upcoming.isEmpty) {
+        final unreachable = await _backendUnreachable();
+        if (generation != _loadGeneration) return;
+        upcoming = _upcomingFromCache(target.id, now);
+        if (upcoming.isEmpty && unreachable) {
+          // The cache is exhausted: the client's own setting decides.
+          if (_settings.exhaustedBehavior == ExhaustedBehavior.slate) {
+            await _holdSlateAtLoad(generation);
+            return;
+          }
+          upcoming = _loopedEntries(target.id, now);
+          if (upcoming.isNotEmpty) _degraded = _Degraded.loop;
+        }
+      }
       if (upcoming.isEmpty) {
         if (!mounted) return;
-        setState(() => _status = 'ERROR: nothing scheduled in the next ${AppConfig.epgFetchWindow.inHours}h for channel ${target.number}');
+        setState(() => _status = 'ERROR: nothing scheduled in the next ${_cache.window.inHours}h for channel ${target.number}');
         return;
       }
 
@@ -689,10 +807,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       if (generation != _loadGeneration) return;
 
       _known = upcoming;
-      _osdContext = await _fetchOsdContext(target.id, upcoming.first);
+      _osdContext = _osdContextFromCache(target.id, upcoming.first);
       if (generation != _loadGeneration) return;
       _knownExpanded = 0;
-      _emptySlices = 0;
       _epgLoadedUntil = upcoming.map((e) => e.endAt).reduce((a, b) => a.isAfter(b) ? a : b);
       final loaded = <ChannelEntry>[];
       await _expandInto(loaded, generation, notBefore: now);
@@ -730,7 +847,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       }
     } catch (e) {
       if (!mounted || generation != _loadGeneration) return;
-      setState(() => _status = 'ERROR: failed to load schedule from backend: $e');
+      setState(() => _status = 'ERROR: failed to load the schedule: $e');
     }
   }
 
@@ -843,6 +960,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     // initialSeek before the crossfade fires.
     _scheduleTransitions(0, remaining: entry.clipDuration - initialSeek, generation: generation);
     unawaited(_maybeExtendGrid(0, generation));
+    if (_reconcilePending) {
+      _reconcilePending = false;
+      unawaited(_reconcileWithCache());
+    }
   }
 
   // Schedules the preload of the next item BEFORE the end of the current clip
@@ -893,9 +1014,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   Future<void> _crossfadeTo(int nextIndex, int generation) async {
     if (generation != _loadGeneration) return;
     if (nextIndex >= channel.length) {
-      // The fetched window ran out before the extension trigger
-      // (_maybeExtendGrid) could finish in time — try an immediate fetch of
-      // the next slice right here before giving up.
+      // What the cache knows ran out before the extension trigger
+      // (_maybeExtendGrid) found more — look once more right here before
+      // giving up.
       final extended = await _extendWindowNow(generation);
       if (generation != _loadGeneration) return;
       if (extended && nextIndex < channel.length) {
@@ -906,9 +1027,43 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
         return;
       }
 
-      // Still empty: either a real gap in the materialized schedule, or the
-      // fetch failed. Don't hang forever — show a status and retry
-      // periodically until something shows up, resuming on its own.
+      // Nothing more is known. Ask the backend one last time: if it cannot be
+      // reached the cache is exhausted (offline for longer than the window)
+      // and the client's own setting decides what the channel does; if it
+      // answers, the schedule really has nothing more and the retry below
+      // waits for it.
+      if (await _backendUnreachable()) {
+        if (generation != _loadGeneration) return;
+        if (await _extendWindowNow(generation) && nextIndex < channel.length) {
+          await _resumeAt(nextIndex, generation);
+          return;
+        }
+        if (generation != _loadGeneration) return;
+        if (_settings.exhaustedBehavior == ExhaustedBehavior.loopLast && _appendLoop()) {
+          await _expandWorkingSet(generation);
+          if (generation != _loadGeneration) return;
+          if (nextIndex < channel.length) {
+            _degraded = _Degraded.loop;
+            await _resumeAt(nextIndex, generation);
+            return;
+          }
+        }
+        if (_settings.exhaustedBehavior == ExhaustedBehavior.slate) {
+          await _holdSlateExhausted(generation);
+          return;
+        }
+      } else {
+        if (generation != _loadGeneration) return;
+        if (await _extendWindowNow(generation) && nextIndex < channel.length) {
+          await _resumeAt(nextIndex, generation);
+          return;
+        }
+      }
+      if (generation != _loadGeneration) return;
+
+      // Still empty: a real gap in the schedule. Don't hang forever — show a
+      // status and retry periodically until something shows up, resuming on
+      // its own.
       if (!mounted) return;
       setState(() => _status = 'ERROR: nothing more scheduled right now — retrying…');
       _gapRetryTimer?.cancel();
@@ -1150,18 +1305,17 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   // `out`, until the one on air plus AppConfig.workingSetSize are covered (a
   // grouped tail is one program however many clips it carries). `notBefore`
   // trims units that already ended (only the very first program at tune-in
-  // can have any). The only place that asks the backend about a catalog item,
-  // and only when an older backend did not enrich it (PlayheadApi
-  // .resolveCatalog is a no-op otherwise).
+  // can have any). Nothing here asks the backend: the entries in the cache
+  // were completed (a backend that did not enrich them is resolved once, by
+  // the syncer) before they were stored, and one that still is not playable
+  // is skipped by [unitsOfProgram].
   Future<void> _expandInto(List<ChannelEntry> out, int generation, {DateTime? notBefore, int? currentOrdinal}) async {
     while (_knownExpanded < _known.length) {
       final cur = currentOrdinal ?? (out.isEmpty ? null : out.first.programOrdinal);
       if (cur != null && (_knownExpanded - 1) - cur >= AppConfig.workingSetSize) break;
-      final ordinal = _knownExpanded;
-      final resolved = await _api.resolveCatalog(_known[ordinal]);
       if (generation != _loadGeneration) return;
-      _known[ordinal] = resolved;
-      out.addAll(unitsOfProgram(resolved, ordinal, notBefore: ordinal == 0 ? notBefore : null));
+      final ordinal = _knownExpanded;
+      out.addAll(unitsOfProgram(_known[ordinal], ordinal, notBefore: ordinal == 0 ? notBefore : null));
       _knownExpanded = ordinal + 1;
     }
   }
@@ -1193,90 +1347,217 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     return future;
   }
 
-  // Rolling-window trigger, run after every item change: tops up the working
-  // set, and if the known runway (end of the last fetched program minus now)
-  // fell below AppConfig.epgExtendThreshold, fetches the next slice of the
-  // schedule in the background.
+  // Run after every item change: tops up the working set, and if the known
+  // runway (end of the last known program minus now) fell below an hour, reads
+  // whatever the cache gained beyond it (the background sync keeps topping the
+  // cache up; this is the view over it).
   Future<void> _maybeExtendGrid(int fromIndex, int generation) async {
     if (generation != _loadGeneration) return;
     await _expandWorkingSet(generation);
     if (generation != _loadGeneration) return;
     final loadedUntil = _epgLoadedUntil;
     if (loadedUntil == null) return;
-    if (loadedUntil.difference(DateTime.now().toUtc()) >= AppConfig.epgExtendThreshold) return;
-    if (await _fetchNextEpgSlice(generation)) await _expandWorkingSet(generation);
+    if (loadedUntil.difference(DateTime.now().toUtc()) >= epgExtendThreshold) return;
+    if (_readNextFromCache()) await _expandWorkingSet(generation);
   }
 
   // For the dead end (the next unit isn't in `channel` yet): expands what is
-  // already known, else fetches the next slice and expands that. True when
-  // `channel` grew.
+  // already known, else reads what the cache holds beyond it and expands that.
+  // True when `channel` grew.
   Future<bool> _extendWindowNow(int generation) async {
     final before = channel.length;
     await _expandWorkingSet(generation);
     if (generation != _loadGeneration) return false;
     if (channel.length == before && _knownExpanded >= _known.length) {
-      if (await _fetchNextEpgSlice(generation)) await _expandWorkingSet(generation);
+      if (_readNextFromCache()) await _expandWorkingSet(generation);
     }
     return generation == _loadGeneration && channel.length > before;
   }
 
-  // Fetches `GET /epg` from `_epgLoadedUntil` for one slice (widened after
-  // empty ones) and appends the programs to `_known`. Returns true only when
-  // new programs actually arrived. If a fetch is already in flight (triggered
-  // by the proactive trigger or by a concurrent call), returns the SAME Future
-  // instead of starting another — two simultaneous fetches would read the same
-  // cursor and each would append the same programs, duplicating content in
-  // the schedule.
-  Future<bool> _fetchNextEpgSlice(int generation) {
-    final pending = _pendingExtend;
-    if (pending != null) return pending;
-    final future = _doFetchNextEpgSlice(generation);
-    _pendingExtend = future;
-    future.whenComplete(() {
-      if (identical(_pendingExtend, future)) _pendingExtend = null;
-    });
-    return future;
+  // Appends what the cache has from the cursor on to `_known` and advances the
+  // cursor to the largest endAt among the new programs. True only when
+  // something new arrived. Defensively skips an entry starting before the
+  // cursor (already incorporated) and, as in _upcomingFromCache, any with a
+  // non-positive duration. A tail run that reaches the end of the cached
+  // window grows with it (the materializer keeps appending clips): the last
+  // known program is replaced by the longer run and its new clips are
+  // appended to the working set, so a channel that plays a tail for as long
+  // as the window never hits a dead end that the cache can actually fill.
+  bool _readNextFromCache() {
+    final cursor = _epgLoadedUntil;
+    if (cursor == null || _channelIndex >= _channels.length) return false;
+    final readFrom = cursor.subtract(const Duration(milliseconds: 1));
+    final cached = _cache.entries(_channels[_channelIndex].id, readFrom, _cache.horizonEnd);
+    final growth = growKnown(known: _known, knownExpanded: _knownExpanded, cursor: cursor, cached: cached);
+    if (growth == null) return false;
+    if (growth.extraUnits.isNotEmpty && mounted) setState(() => channel = [...channel, ...growth.extraUnits]);
+    _known = growth.known;
+    _epgLoadedUntil = growth.cursor;
+    return true;
   }
 
-  // Defensively filters out any EpgEntry with a startAt before the cursor
-  // (avoids duplicating the last item already incorporated because of the
-  // backend filter's inclusive overlap) and advances the cursor to the largest
-  // endAt among the new items.
-  Future<bool> _doFetchNextEpgSlice(int generation) async {
-    if (generation != _loadGeneration) return false;
-    final cursor = _epgLoadedUntil;
-    if (cursor == null) return false;
-    if (_channelIndex >= _channels.length) return false;
-    final channelId = _channels[_channelIndex].id;
-
-    try {
-      final window = AppConfig.epgFetchWindow * (1 << (_emptySlices < maxEpgFetchBackoff ? _emptySlices : maxEpgFetchBackoff));
-      final entries = await _api.getEpg(channelId, cursor, cursor.add(window), groupTail: true);
-      if (generation != _loadGeneration) return false;
-
-      // See the matching filter in _loadAndPlayChannel for why non-positive
-      // duration entries are dropped here too.
-      final fresh = entries.where((e) => !e.startAt.isBefore(cursor) && e.endAt.isAfter(e.startAt)).toList();
-      if (fresh.isEmpty) {
-        _emptySlices++;
-        return false;
+  // The cache changed under the channel on air (a background sync brought a
+  // different schedule, e.g. after an admin grid reset or a backend that was
+  // unreachable came back): applies it exactly like a grid reset on this
+  // channel — if the program on air differs from what the new schedule has
+  // on air now, the channel is reloaded and switches to it; otherwise only
+  // what comes after the program on air is refreshed in place.
+  void _onCacheChange(CacheChange change) {
+    if (!mounted || _channels.isEmpty) return;
+    if (change.channelsChanged) {
+      final fresh = _cache.channels();
+      if (fresh.isNotEmpty) {
+        final currentId = _channels[_channelIndex].id;
+        final at = fresh.indexWhere((c) => c.id == currentId);
+        if (at >= 0) {
+          setState(() {
+            _channels = fresh;
+            _channelIndex = at;
+          });
+        } else {
+          // The channel on air was removed: go to the first one.
+          setState(() => _channels = fresh);
+          unawaited(_switchToChannelIndex(0));
+          return;
+        }
       }
-      _emptySlices = 0;
-      var newLoadedUntil = cursor;
-      for (final e in fresh) {
-        if (e.endAt.isAfter(newLoadedUntil)) newLoadedUntil = e.endAt;
-      }
-
-      if (!mounted || generation != _loadGeneration) return false;
-      _known = [..._known, ...fresh];
-      _epgLoadedUntil = newLoadedUntil;
-      return true;
-    } catch (_) {
-      // A network/parsing failure in a background extension must not bring
-      // down the playback in progress — the caller (_maybeExtendGrid or the
-      // retry in _crossfadeTo) tries again later.
-      return false;
     }
+    if (change.channelIds.contains(_channels[_channelIndex].id)) unawaited(_reconcileWithCache());
+  }
+
+  // Two entries are the same airing when they are the same item over the same
+  // span (their ids change when a grid reset regenerates them). A tail run
+  // only has to start the same way: the materializer keeps appending clips to
+  // a run that reaches the end of its window, which must not restart the clip
+  // that is playing.
+  bool _sameAiring(EpgEntry a, EpgEntry b) {
+    if (a.kind != b.kind || a.startAt != b.startAt) return false;
+    if (a.isTailGroup || b.isTailGroup) return a.isTailGroup && b.isTailGroup && a.clips.first.catalogItemId == b.clips.first.catalogItemId;
+    return a.catalogItemId == b.catalogItemId && a.endAt == b.endAt;
+  }
+
+  Future<void> _reconcileWithCache() async {
+    if (!mounted || _channelIndex >= _channels.length) return;
+    if (_channelLoadInFlight || _currentIndex < 0 || _currentIndex >= channel.length) {
+      // Still loading (or holding with nothing playing): reconciled once a
+      // channel is playing, or by the degraded-mode check just below.
+      if (_degraded == _Degraded.none) {
+        _reconcilePending = true;
+        return;
+      }
+    }
+    final generation = _loadGeneration;
+    final target = _channels[_channelIndex];
+    final now = DateTime.now().toUtc();
+    final fresh = _upcomingFromCache(target.id, now);
+
+    if (_degraded != _Degraded.none) {
+      // Playing the fallback of an exhausted cache: real programming is back,
+      // so leave the fallback for it.
+      if (fresh.isNotEmpty) unawaited(_switchToChannelIndex(_channelIndex));
+      return;
+    }
+
+    final onAirNow = fresh.where((e) => !e.startAt.isAfter(now) && e.endAt.isAfter(now)).firstOrNull;
+    final playing = channel[_currentIndex].program;
+    if (onAirNow != null && (playing == null || !_sameAiring(playing, onAirNow))) {
+      // What is on air changed: switch to the new schedule, as a reset would.
+      unawaited(_switchToChannelIndex(_channelIndex));
+      return;
+    }
+    if (playing == null) return;
+
+    // Same program on air: refresh what follows it in place. Not while a
+    // preloaded controller (or a gap hold) is parked for the old next unit;
+    // the next change (or the next sync) tries again.
+    final inactive = _aIsActive ? _controllerB : _controllerA;
+    if (inactive != null || _gapHoldPending != null || _gapHoldTimer != null) return;
+    final curOrdinal = channel[_currentIndex].programOrdinal;
+    if (curOrdinal >= _known.length) return;
+    // A tail run on air that grew (its window end moved): the clips after the
+    // ones already queued are appended below, the clip playing is untouched.
+    final grown = onAirNow != null && playing.isTailGroup && onAirNow.isTailGroup && onAirNow.endAt.isAfter(playing.endAt) ? onAirNow : null;
+    final curEnd = grown?.endAt ?? playing.endAt;
+    final following = fresh.where((e) => !e.startAt.isBefore(curEnd)).toList();
+    final held = _known.skip(curOrdinal + 1).toList();
+    bool same() {
+      if (held.length != following.length) return false;
+      for (var i = 0; i < held.length; i++) {
+        if (jsonEncode(held[i].toJson()) != jsonEncode(following[i].toJson())) return false;
+      }
+      return true;
+    }
+
+    if (same() && grown == null) return;
+    final extra = grown == null ? const <ChannelEntry>[] : unitsOfProgram(grown, curOrdinal, notBefore: playing.endAt);
+    _known = [..._known.take(curOrdinal), grown ?? _known[curOrdinal], ...following];
+    _knownExpanded = curOrdinal + 1;
+    _epgLoadedUntil = _known.map((e) => e.endAt).reduce((a, b) => a.isAfter(b) ? a : b);
+    // The units of the programs after the one on air are replaced (the list is
+    // a prefix up to the on-air program, so the indexes in use stay valid).
+    channel = [...channel.where((u) => u.programOrdinal <= curOrdinal), ...extra];
+    await _expandWorkingSet(generation);
+  }
+
+  // The cache is exhausted and the client's setting is to hold the slate:
+  // crossfades the program that just ended into it and waits, checking for a
+  // refreshed schedule (a cache change reconciles at once, the timer is the
+  // fallback).
+  Future<void> _holdSlateExhausted(int generation) async {
+    final outgoing = _aIsActive ? _controllerA : _controllerB;
+    final slate = await _createSlateController();
+    if (generation != _loadGeneration || !mounted) {
+      unawaited(serializeGlOp(() => slate.dispose()));
+      return;
+    }
+    setState(() {
+      if (_aIsActive) {
+        _controllerB = slate;
+      } else {
+        _controllerA = slate;
+      }
+      _status = 'HOLD — schedule unavailable, retrying…';
+    });
+    await _rampCrossfade(outgoing: outgoing, incoming: slate, generation: generation);
+    if (generation != _loadGeneration) return;
+    _degraded = _Degraded.slate;
+    _startExhaustedRetry(generation);
+  }
+
+  // Same, for a channel that had nothing at all to start with (a cold start
+  // after the cache ran out): the slate is the only thing playing.
+  Future<void> _holdSlateAtLoad(int generation) async {
+    final slate = await _createSlateController();
+    if (generation != _loadGeneration || !mounted) {
+      unawaited(serializeGlOp(() => slate.dispose()));
+      return;
+    }
+    await slate.play();
+    if (generation != _loadGeneration || !mounted) {
+      unawaited(serializeGlOp(() => slate.dispose()));
+      return;
+    }
+    setState(() {
+      _controllerA = slate;
+      _controllerB = null;
+      _aIsActive = true;
+      _opacityA = 1;
+      _opacityB = 0;
+      _status = 'HOLD — schedule unavailable, retrying…';
+    });
+    _degraded = _Degraded.slate;
+    _startExhaustedRetry(generation);
+  }
+
+  void _startExhaustedRetry(int generation) {
+    _gapRetryTimer?.cancel();
+    _gapRetryTimer = Timer.periodic(epgGapRetryInterval, (t) {
+      if (generation != _loadGeneration) {
+        t.cancel();
+        return;
+      }
+      unawaited(_reconcileWithCache());
+    });
   }
 
   // What the OSD describes for unit `index` of `channel`: the guide program
@@ -1288,14 +1569,17 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     return osdSubjectFor([..._osdContext, ..._known], current);
   }
 
-  // The entries just before `first`, fetched only when `first` is a filler
-  // already on air at tune-in, whose program lies before the window. Best
-  // effort: without it the OSD attributes the filler to the other neighbour.
-  Future<List<EpgEntry>> _fetchOsdContext(String channelId, EpgEntry first) async {
+  // The entries just before `first`, read from the cache (never the backend),
+  // only when `first` is a filler already on air at tune-in, whose program
+  // lies before the window. Best effort: without it the OSD attributes the
+  // filler to the other neighbour.
+  List<EpgEntry> _osdContextFromCache(String channelId, EpgEntry first) {
     if (!isHiddenGuideKind(first.kind)) return <EpgEntry>[];
     try {
-      final entries = await _api.getEpg(channelId, first.startAt.subtract(osdContextLookback), first.startAt);
-      return entries.where((e) => e.startAt.isBefore(first.startAt) && e.endAt.isAfter(e.startAt)).toList();
+      return _cache
+          .entries(channelId, first.startAt.subtract(osdContextLookback), first.startAt)
+          .where((e) => e.startAt.isBefore(first.startAt) && e.endAt.isAfter(e.startAt))
+          .toList();
     } catch (_) {
       return <EpgEntry>[];
     }
@@ -1478,6 +1762,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     _gapRetryTimer?.cancel();
     _gapHoldTimer?.cancel();
     _channelInputCommitTimer?.cancel();
+    unawaited(_cacheSub?.cancel());
     if (_streamPrefsReady) _streamPrefs.dispose();
     // State.dispose() itself can't await, but still routes through the
     // shared queue so this doesn't race a create() the mosaic page (or a
@@ -1736,7 +2021,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
             ),
             // Loading a channel (boot or switch): a spinner in the middle of the
             // screen until playback starts. Errors keep the plain status card.
-            if (!hasContent && !_status.startsWith('ERROR'))
+            if (!hasContent && !_status.startsWith('ERROR') && !_status.startsWith('HOLD'))
               const Positioned.fill(
                 child: Center(
                   child: SizedBox(
@@ -1746,7 +2031,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
                   ),
                 ),
               ),
-            if (!hasContent && _status.startsWith('ERROR'))
+            if (!hasContent && (_status.startsWith('ERROR') || _status.startsWith('HOLD')))
               Positioned(
                 left: 16,
                 top: 16,
@@ -1886,7 +2171,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
                   child: EpgOverlay(
                     key: _epgOverlayKey,
                     channels: _channels,
-                    api: _api,
+                    cache: _cache,
                     currentChannelId: _channels[_channelIndex].id,
                     videoThumbnailRect: _videoThumbnailRect(MediaQuery.sizeOf(context)),
                     onSelectLiveChannel: (channelId) {

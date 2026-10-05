@@ -39,6 +39,11 @@ class StreamPreferencesService {
   // meaningful resource cost either way.
   static const pollInterval = Duration(minutes: 5);
 
+  // How long a boot/channel load waits for the backend before using what is
+  // cached: with the backend out of reach these calls must not hold playback
+  // up (offline first — see AGENTS.md "Offline cache").
+  static const requestBudget = Duration(seconds: 3);
+
   final SharedPreferences _prefs;
   final PlayheadApi _api;
   Timer? _pollTimer;
@@ -72,7 +77,7 @@ class StreamPreferencesService {
         _api.getMyStreamPreference(),
         _api.getStreamPreferenceConfig(scopeType: 'global'),
         _api.getStreamPreferencesMeta(),
-      ]);
+      ]).timeout(requestBudget);
       final userRules = results[0] as StreamRuleCascade;
       final globalRules = results[1] as StreamRuleCascade;
       final meta = results[2] as StreamPreferencesMeta;
@@ -131,12 +136,18 @@ class StreamPreferencesService {
     // doomed network request on every single switch — needless latency on
     // the channel-load path for no benefit (the periodic poll's
     // revision-triggered cache clear, see _pollIfStale, is what eventually
-    // retries once the underlying condition might have changed).
+    // retries once the underlying condition might have changed). Only a real
+    // answer from the backend is cached this way, never an unreachable one.
     StreamRuleCascade result;
     try {
-      result = await _api.getStreamPreferenceConfig(scopeType: 'channel', scopeId: channelId);
-    } catch (_) {
+      result = await _api.getStreamPreferenceConfig(scopeType: 'channel', scopeId: channelId).timeout(requestBudget);
+    } on PlayheadHttpException {
       result = StreamRuleCascade.empty;
+    } catch (_) {
+      // The backend could not be reached (offline): play with no tier 3 rules
+      // for now but do NOT cache that as the channel's answer — it would
+      // outlive the outage. The next load of this channel asks again.
+      return StreamRuleCascade.empty;
     }
     await _prefs.setString('$_channelRulesPrefix$channelId', _encode(result));
     final index = _prefs.getStringList(_channelRulesIndexKey) ?? const [];

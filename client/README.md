@@ -10,11 +10,17 @@ transcoding. See the [root README](../README.md) and
 
 ## What it does today
 
-- **Channel playback**: for the current channel it loads `GET /epg`, resolves each
-  item via `GET /catalog-items/{id}` to a Jellyfin item, joins the first program
+- **Offline-first schedule**: a background syncer keeps a local SQLite copy of the
+  channel list and every channel's guide for the next window (48h by default), plus
+  the poster art on disk. Playback, the guide and the mosaic read only that copy, so
+  a cold start works with the backend down and playback goes on for about as long as
+  the copy lasts. See [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) "Client
+  offline cache".
+- **Channel playback**: for the current channel it reads the cached guide (titles,
+  Jellyfin item ids and art come with each entry), joins the first program
   mid-way if it is already on air, preloads the next item shortly before the current
   one ends and crossfades video and audio between the two `VideoPlayerController`s.
-  It keeps pulling further EPG windows in the background so playback never runs out.
+  A schedule refresh that changes what is on air switches to it, like a grid reset.
 - **Mosaic home**: a frame of channel tiles around a live preview of the featured
   channel. Shown on first run and when pressing Home from the player; later boots go
   straight to the last watched channel.
@@ -24,7 +30,10 @@ transcoding. See the [root README](../README.md) and
   position, and the next item.
 - **Full-screen EPG**: a schedule grid for all channels, with the live video shrunk
   into a corner thumbnail. Holding Enter on a program expands its details.
-- **Settings**: currently one section, **Remap controls**, to rebind every key.
+- **Settings**: **Remap controls** to rebind every key, and **Offline cache**: what a
+  channel does when the cached schedule has run out (loop the last known programming,
+  the default, or hold the local slate), the cache window limit, sync now and clear
+  cache. Both are operable with the six baseline buttons.
 - **Debug overlay** (`D`): decoder, FPS/jank, CPU/memory, buffer state and detected
   video freezes.
 
@@ -69,13 +78,16 @@ setting for these values yet.
 | `JELLYFIN_API_KEY` | yes | A Jellyfin API key, sent as the `api_key` query parameter of the stream URL. |
 | `PLAYHEADTV_BASE_URL` | yes | Base URL of the Playhead TV backend, e.g. `http://localhost:9394`. |
 | `PLAYHEADTV_DEVICE_TOKEN` | in practice | Device API token, sent as `Authorization: Bearer <token>`. Create a device in the backend's admin web UI to get one. If empty no header is sent, and a backend with auth on will reject the requests. |
+| `EPG_SYNC_INTERVAL_MINUTES` | no | How often the background syncer refreshes the offline cache (default 15). A failed refresh is retried every 30 seconds until it succeeds. |
 | `PLAYHEADTV_CHANNEL_ID` | no | Channel id to start on, only used when the player is opened without an explicit channel. The normal flow (last watched channel, or a mosaic selection) always supplies one, so this currently has little effect. When no channel matches, the player falls back to the channel with the lowest `number`. |
 
 If any of the three required values is empty the player screen shows an `ERROR:`
 message telling you which defines to pass.
 
 The client also persists, in `shared_preferences`: the last watched channel, a short
-list of recently watched channels (used by the mosaic) and your key binding overrides.
+list of recently watched channels (used by the mosaic), your key binding overrides and
+the offline cache settings. The schedule cache itself is a SQLite file in the app support
+directory and the poster cache a folder in the app cache directory.
 
 ## Run
 
@@ -115,8 +127,9 @@ Left/Right walks the tiles. Grid navigation is deliberately not remappable.
 lib/
   main.dart                     app entry, AppConfig, channel player (preload + crossfade), OSD
   playhead_api.dart             HTTP client for the backend (channels, EPG, catalog items)
+  cache/                        offline cache: SQLite schedule cache, background syncer, poster cache
   input/input_action.dart       InputAction enum, default key bindings, KeyBindingsService
-  pages/                        mosaic home, settings, "Remap controls"
+  pages/                        mosaic home, settings, "Remap controls", "Offline cache"
   services/settings_service.dart   shared_preferences persistence
   services/perf_stats.dart      FPS/jank, process CPU/memory and video freeze detection
   widgets/epg_overlay.dart      full-screen EPG (an overlay inside the player page)

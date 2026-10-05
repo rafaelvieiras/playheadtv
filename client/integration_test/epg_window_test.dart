@@ -1,14 +1,18 @@
-// E2E coverage for the enriched GET /epg and the rolling working set (boots
-// the real app against a real Go backend, a fake video server and a counting
-// proxy in front of the backend — see support/request_proxy.dart):
+// E2E coverage for the enriched GET /epg, as the offline cache's background
+// sync consumes it, and the rolling working set (boots the real app against a
+// real Go backend, a fake video server and a counting proxy in front of the
+// backend — see support/request_proxy.dart):
 //
-//  - a channel with hundreds of entries (a long tail of short clips) loads
-//    with a handful of requests, titles and art references come with the
-//    entries, and the guide hides the tail (it only shows programs);
+//  - a channel with hundreds of entries (a long tail of short clips) is
+//    downloaded by ONE request for every channel, titles and art references
+//    come with the entries, the player and the guide read them from the cache
+//    (no further request, no per-item lookups) and the guide hides the tail
+//    (it only shows programs);
 //  - the working set is the program on air plus the next N programs and
-//    keeps rolling while the channel plays;
+//    keeps rolling while the channel plays, read from the cache;
 //  - against a backend without the new fields (the proxy's legacy mode) the
-//    client falls back to per-item lookups, cached and bounded.
+//    syncer falls back to per-item lookups, cached per id and bounded, before
+//    the schedule is stored.
 //
 // Three real app boots only, on purpose (see AGENTS.md: many boots per file
 // can stall a later one). Every key sent is one of the six baseline buttons
@@ -61,8 +65,6 @@ void main() {
       required String channelId,
       required bool legacy,
       required int workingSetSize,
-      Duration? epgFetchWindow,
-      Duration? epgExtendThreshold,
     }) async {
       proxy = RequestProxy(backendBaseUrl: backend.baseUrl, legacy: legacy);
       await proxy!.start();
@@ -73,8 +75,6 @@ void main() {
         playheadDeviceToken: deviceToken,
         playheadChannelId: channelId,
         workingSetSize: workingSetSize,
-        epgFetchWindow: epgFetchWindow,
-        epgExtendThreshold: epgExtendThreshold,
       );
       final prefs = await SharedPreferences.getInstance();
       await prefs.setString('last_watched_channel_id', channelId);
@@ -170,11 +170,13 @@ void main() {
       // Title with series data, straight from the enriched entry.
       expect(osdTitle(tester), 'The Show · S1E2 · PROGRAM A');
 
-      // One GET /epg for the whole channel load, no per-item lookups at all.
-      expect(p.to('/epg'), hasLength(1), reason: describe(p));
-      expect(p.to('/epg').single.query['group_tail'], '1');
+      // One GET /epg downloaded every channel (the syncer, no channel filter),
+      // and no per-item lookups at all.
+      expect(p.exact('/epg'), hasLength(1), reason: describe(p));
+      expect(p.exact('/epg').single.query['group_tail'], '1');
+      expect(p.exact('/epg').single.query.containsKey('channel_id'), isFalse);
       expect(p.to('/catalog-items'), isEmpty, reason: describe(p));
-      expect(p.requests.length, lessThanOrEqualTo(8), reason: 'a handful of requests for a channel of hundreds of entries:\n  ${describe(p)}');
+      expect(p.requests.length, lessThanOrEqualTo(10), reason: 'a handful of requests for a channel of hundreds of entries:\n  ${describe(p)}');
       // ignore: avoid_print
       print('REQUESTS for the channel load (${p.requests.length}):\n  ${describe(p)}');
 
@@ -188,9 +190,10 @@ void main() {
       expect(tail.displayTitle, 'Tail');
       expect(channel[1].programLabel, 'Tail');
 
-      // The guide hides the tail (no cell, no title) and still needs no lookups.
+      // The guide hides the tail (no cell, no title) and needs no request at
+      // all: it reads the cache.
       await openEpg(tester);
-      expect(p.to('/epg'), hasLength(2));
+      expect(p.exact('/epg'), hasLength(1), reason: describe(p));
       expect(p.to('/catalog-items'), isEmpty, reason: describe(p));
       final cells = cellsOf(channelId);
       expect(cells.length, lessThanOrEqualTo(2), reason: 'A and B only: the tail has no cell, let alone one per clip');
@@ -206,15 +209,16 @@ void main() {
       expect(find.byKey(const Key('epg-details-panel-expanded')), findsOneWidget);
       final art = find.byWidgetPredicate((w) => w is Image && w.key is ValueKey<String> && (w.key as ValueKey<String>).value.startsWith('epg-details-art-'));
       expect(art, findsOneWidget);
-      final url = ((tester.widget<Image>(art).image) as NetworkImage).url;
-      expect(url, startsWith('${video.baseUrl}/Items/big-a/Images/Primary?tag=tagA'));
+      expect(tester.widget<Image>(art).image, anyOf(isA<NetworkImage>(), isA<FileImage>()));
+      // The syncer prefetched the poster from the media server (never through the backend).
+      expect(video.imageRequests.where((u) => u.startsWith('/Items/big-a/Images/Primary?tag=tagA')), isNotEmpty, reason: '${video.imageRequests}');
       expect(p.to('/catalog-items'), isEmpty, reason: describe(p));
 
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pump();
     });
 
-    testWidgets('the working set rolls forward while the channel plays and the schedule is fetched in slices', (tester) async {
+    testWidgets('the working set rolls forward while the channel plays, read from the cache', (tester) async {
       final channelId = await backend.createChannel(number: 32, name: 'Window roll');
       final ms = await backend.createLocalFolderMediaSource(name: 'Window roll source');
       final ids = await backend.syncCatalogItems(ms, [
@@ -228,15 +232,7 @@ void main() {
       );
       await backend.waitForEpgEntries(channelId, 8);
 
-      const fetchWindow = Duration(seconds: 12);
-      await boot(
-        tester,
-        channelId: channelId,
-        legacy: false,
-        workingSetSize: 1,
-        epgFetchWindow: fetchWindow,
-        epgExtendThreshold: const Duration(seconds: 8),
-      );
+      await boot(tester, channelId: channelId, legacy: false, workingSetSize: 1);
       int? currentProgram() {
         final t = osdTitle(tester);
         if (t == null || !t.startsWith('ROLL ')) return null;
@@ -246,9 +242,8 @@ void main() {
       await pumpUntil(tester, () => currentProgram() != null, failMessage: 'never started playing');
       final p = proxy!;
 
-      // Not hours up front: the first slice is exactly the configured window.
-      final first = p.to('/epg').first.query;
-      expect(int.parse(first['end']!) - int.parse(first['start']!), fetchWindow.inMilliseconds);
+      // The whole schedule came in with the first download: no slices.
+      expect(p.exact('/epg').first.query.containsKey('end'), isFalse);
 
       var worstLead = 0;
       await pumpUntil(
@@ -265,23 +260,14 @@ void main() {
         failMessage: 'never reached ROLL 4 (last shown: ${osdTitle(tester)})',
       );
 
-      // The window really rolled: later slices were fetched, each starting
-      // further ahead than the previous one, and the working set kept
-      // exactly one program ahead of the one on air.
-      final epgRequests = p.to('/epg');
-      expect(epgRequests.length, greaterThanOrEqualTo(2), reason: describe(p));
-      final starts = [for (final r in epgRequests) int.parse(r.query['start']!)];
-      for (var i = 1; i < starts.length; i++) {
-        expect(starts[i], greaterThan(starts[i - 1]));
-      }
+      // The working set rolled with the working set size, entirely from the
+      // cache: playing on never asked the backend for the schedule again.
       expect(worstLead, 1);
+      expect(p.exact('/epg'), hasLength(1), reason: describe(p));
       expect(p.to('/catalog-items'), isEmpty, reason: describe(p));
-      // ignore: avoid_print
-      print('ROLLING: ${epgRequests.length} /epg requests, starts relative to the first: '
-          '${[for (final s in starts) '+${((s - starts.first) / 1000).round()}s']}');
     });
 
-    testWidgets('against a backend without the new fields it falls back to per-item lookups, cached and bounded', (tester) async {
+    testWidgets('against a backend without the new fields the syncer falls back to per-item lookups, cached and bounded', (tester) async {
       final channelId = await backend.createChannel(number: 33, name: 'Window legacy');
       final ms = await backend.createLocalFolderMediaSource(name: 'Window legacy source');
       final ids = await backend.syncCatalogItems(ms, [
@@ -307,24 +293,21 @@ void main() {
       final p = proxy!;
 
       expect(osdTitle(tester), 'LEGACY A', reason: 'the title came from the per-item fallback');
-      expect(p.to('/epg'), hasLength(1));
-      // Fallback lookups only for the working set (A + the next program, one
-      // flat tail clip), each id once.
+      expect(p.exact('/epg'), hasLength(1));
+      // The fallback resolved every distinct catalog item of the downloaded
+      // schedule once, before it was stored (far fewer than the hundreds of
+      // flat entries that reference them).
       final lookups = p.to('/catalog-items/');
       expect(lookups, isNotEmpty, reason: 'the fallback must actually have been exercised');
-      expect(lookups.length, lessThanOrEqualTo(3), reason: describe(p));
+      expect(lookups.length, lessThan(60), reason: describe(p));
       expect(lookups.map((r) => r.path).toSet().length, lookups.length, reason: 'cached per id');
       expect(channel.map((u) => u.programOrdinal).toSet(), {0, 1});
       expect(channel.every((u) => u.program?.isTailGroup != true), isTrue, reason: 'a legacy backend sends no groups');
 
-      // The guide still works: its rows (every channel of this shared
-      // backend, hundreds of flat entries over a few distinct items) resolve
-      // through the same cache, so each catalog item is looked up once, not
-      // once per row — and never more than the bounded concurrency at a time.
+      // The guide still works, from the same stored entries: no further lookups.
+      final before = p.to('/catalog-items/').length;
       await openEpg(tester);
-      final all = p.to('/catalog-items/').map((r) => r.path).toList();
-      expect(all.toSet().length, all.length, reason: 'cached per id across the player and the guide:\n  ${describe(p)}');
-      expect(all.length, lessThan(40), reason: 'one per distinct item, far below the hundreds of rows');
+      expect(p.to('/catalog-items/').length, before, reason: 'the guide reads the cache:\n  ${describe(p)}');
       expect(find.text('LEGACY A'), findsWidgets);
       await tester.sendKeyEvent(LogicalKeyboardKey.escape);
       await tester.pump();

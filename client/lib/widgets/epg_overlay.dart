@@ -43,20 +43,22 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../epg_guide.dart';
+import '../cache/schedule_cache.dart';
 import '../main.dart' show jellyfinImageUrl;
 import '../playhead_api.dart';
 import 'app_icons.dart';
+import 'art_image.dart';
 
 // How much time the grid shows at once; pixels per minute follow from the
 // available width.
 const _visibleSpan = Duration(hours: 3);
 const _tickInterval = Duration(minutes: 30);
-// How much of the past the grid starts with, and how much each lazy fetch
-// adds. The materialized schedule only covers a 48h rolling window, so the
-// grid never asks beyond that.
+// How much of the past the grid starts with, and how much each step of the
+// window adds. The offline cache only holds its window (the smaller of the
+// backend's and the client's limit, `ScheduleCache.window`), so the grid never
+// reaches beyond that.
 const _initialWindowAhead = Duration(hours: 4);
 const _extendStep = Duration(hours: 3);
-const _horizon = Duration(hours: 48);
 const _extendMargin = Duration(hours: 1);
 const _nowTickInterval = Duration(seconds: 10);
 const _scrollAnimation = Duration(milliseconds: 150);
@@ -69,7 +71,7 @@ const _cellMarginH = 2.0;
 
 class EpgOverlay extends StatefulWidget {
   final List<PlayheadChannel> channels;
-  final PlayheadApi api;
+  final ScheduleCache cache;
   final String currentChannelId;
   final Rect videoThumbnailRect; // SAME rectangle as _videoThumbnailRect — never draw anything opaque on top of it
   final void Function(String channelId) onSelectLiveChannel;
@@ -78,7 +80,7 @@ class EpgOverlay extends StatefulWidget {
   const EpgOverlay({
     required Key key,
     required this.channels,
-    required this.api,
+    required this.cache,
     required this.currentChannelId,
     required this.videoThumbnailRect,
     required this.onSelectLiveChannel,
@@ -103,6 +105,7 @@ class EpgOverlayState extends State<EpgOverlay> {
   late DateTime _windowEnd;
   late DateTime _maxWindowEnd;
   bool _extending = false;
+  StreamSubscription<CacheChange>? _cacheSub;
 
   int _focusedRow = 0;
   int _focusedCol = 0;
@@ -134,11 +137,13 @@ class EpgOverlayState extends State<EpgOverlay> {
       if (mounted) setState(() => _now = DateTime.now());
     });
     unawaited(_load());
+    _cacheSub = widget.cache.changes.listen((_) => _refreshFromCache());
   }
 
   @override
   void dispose() {
     _nowTimer?.cancel();
+    unawaited(_cacheSub?.cancel());
     _longPressTimer?.cancel();
     _verticalController.dispose();
     super.dispose();
@@ -161,14 +166,25 @@ class EpgOverlayState extends State<EpgOverlay> {
     _entriesByChannel = [for (final raw in _rawByChannel) buildGuideCells(raw)];
   }
 
-  // One request per channel; the entries arrive enriched (titles, art
-  // references) and consecutive tail clips arrive grouped into one entry, so
-  // a tail shows as one cell. Against a backend that predates that, entries
-  // missing their title are resolved with the per-item lookup (cached per
-  // id, bounded concurrency) as before.
-  Future<List<EpgEntry>> _fetchEpg(PlayheadChannel c, DateTime start, DateTime end) async {
-    final entries = await widget.api.getEpg(c.id, start, end, groupTail: true);
-    return Future.wait(entries.map(widget.api.resolveCatalog));
+  // The channel's entries in the span, read from the offline cache (the
+  // guide never asks the backend): already enriched (titles, art references)
+  // with consecutive tail clips grouped into one entry, so a tail shows as one
+  // cell.
+  List<EpgEntry> _readEpg(PlayheadChannel c, DateTime start, DateTime end) => widget.cache.entries(c.id, start, end);
+
+  // A background sync changed the cache while the guide is open: the rows are
+  // read again over the window already shown, keeping the focus where it is
+  // (clamped if its row got shorter).
+  void _refreshFromCache() {
+    if (!mounted || _loading || _error != null) return;
+    setState(() {
+      _rawByChannel = [for (final c in widget.channels) _readEpg(c, _windowStart, _windowEnd)];
+      _rebuildCells();
+      if (_focusedRow < _entriesByChannel.length) {
+        final len = _entriesByChannel[_focusedRow].length;
+        if (_focusedCol >= len) _focusedCol = len == 0 ? 0 : len - 1;
+      }
+    });
   }
 
   Future<void> _load() async {
@@ -177,10 +193,10 @@ class EpgOverlayState extends State<EpgOverlay> {
     final end = now.add(_initialWindowAhead);
     _windowStart = start;
     _windowEnd = end;
-    _maxWindowEnd = now.add(_horizon);
+    _maxWindowEnd = widget.cache.horizonEnd;
 
     try {
-      final results = await Future.wait(widget.channels.map((c) => _fetchEpg(c, start, end)));
+      final results = [for (final c in widget.channels) _readEpg(c, start, end)];
       if (!mounted) return;
 
       final channelIndex = widget.channels.indexWhere((c) => c.id == widget.currentChannelId);
@@ -223,7 +239,7 @@ class EpgOverlayState extends State<EpgOverlay> {
       final oldEnd = _windowEnd;
       var newEnd = oldEnd.add(_extendStep);
       if (newEnd.isAfter(_maxWindowEnd)) newEnd = _maxWindowEnd;
-      final results = await Future.wait(widget.channels.map((c) => _fetchEpg(c, oldEnd, newEnd)));
+      final results = [for (final c in widget.channels) _readEpg(c, oldEnd, newEnd)];
       if (!mounted) return false;
       setState(() {
         for (var i = 0; i < _rawByChannel.length && i < results.length; i++) {
@@ -624,11 +640,11 @@ class EpgOverlayState extends State<EpgOverlay> {
                   child: SizedBox(
                     width: 120,
                     height: 180,
-                    child: Image.network(
+                    child: ArtImage(
                       jellyfinImageUrl(art.itemId, art.tag),
-                      key: Key('epg-details-art-${entry.id}'),
+                      imageKey: Key('epg-details-art-${entry.id}'),
                       fit: BoxFit.cover,
-                      errorBuilder: (context, error, stack) => const ColoredBox(color: Colors.white12),
+                      fallback: (context) => const ColoredBox(color: Colors.white12),
                     ),
                   ),
                 ),

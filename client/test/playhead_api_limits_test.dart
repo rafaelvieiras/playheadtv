@@ -1,6 +1,5 @@
 // Unit test (mock HTTP client, no backend) for the request fan-out guards in
 // PlayheadApi: bounded concurrency and per-id catalog item caching.
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:client/playhead_api.dart';

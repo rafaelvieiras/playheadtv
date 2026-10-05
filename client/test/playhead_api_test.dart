@@ -155,7 +155,7 @@ void main() {
     final itemAId = catalogItems.firstWhere((i) => i['external_id'] == 'jf-item-a')['id'] as String;
     final itemBId = catalogItems.firstWhere((i) => i['external_id'] == 'jf-item-b')['id'] as String;
 
-    final blockResp = await postJson('/blocks', {'name': 'Test Block'}, token: sessionToken);
+    final blockResp = await postJson('/blocks', {'name': 'Test Block', 'list_mode': 'once'}, token: sessionToken);
     final blockId = blockResp['id'] as String;
     await postJson('/blocks/$blockId/items', {'catalog_item_id': itemAId}, token: sessionToken);
     await postJson('/blocks/$blockId/items', {'catalog_item_id': itemBId}, token: sessionToken);

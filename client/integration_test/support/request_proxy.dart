@@ -19,7 +19,13 @@ class RecordedRequest {
   final String method;
   final String path;
   final Map<String, String> query;
-  const RecordedRequest(this.method, this.path, this.query);
+
+  /// The request's `If-None-Match` header, when it sent one.
+  final String? ifNoneMatch;
+
+  /// The status the proxy answered with (null until the answer is known).
+  int? status;
+  RecordedRequest(this.method, this.path, this.query, {this.ifNoneMatch});
 
   @override
   String toString() => '$method $path${query.isEmpty ? '' : '?${Uri(queryParameters: query).query}'}';
@@ -29,6 +35,11 @@ class RequestProxy {
   final String backendBaseUrl;
   final bool legacy;
   final List<RecordedRequest> requests = [];
+
+  /// When set, every request is answered with this status and never reaches
+  /// the backend (e.g. 401 to simulate a rejected/expired token, 503 for an
+  /// outage that is not a refused connection).
+  int? forceStatus;
 
   HttpServer? _server;
   final http.Client _client = http.Client();
@@ -65,11 +76,22 @@ class RequestProxy {
   /// Requests whose path starts with [pathPrefix] (any method).
   List<RecordedRequest> to(String pathPrefix) => requests.where((r) => r.path.startsWith(pathPrefix)).toList();
 
+  /// Requests to exactly [path] (`/epg` without `/epg/meta`).
+  List<RecordedRequest> exact(String path) => requests.where((r) => r.path == path).toList();
+
   Future<void> _forward(HttpRequest req) async {
     var query = Map<String, String>.from(req.uri.queryParameters);
     final isEpg = req.method == 'GET' && req.uri.path == '/epg';
     if (legacy && isEpg) query.remove('group_tail');
-    requests.add(RecordedRequest(req.method, req.uri.path, Map.of(req.uri.queryParameters)));
+    final recorded = RecordedRequest(req.method, req.uri.path, Map.of(req.uri.queryParameters), ifNoneMatch: req.headers.value('if-none-match'));
+    requests.add(recorded);
+    final forced = forceStatus;
+    if (forced != null) {
+      recorded.status = forced;
+      req.response.statusCode = forced;
+      await req.response.close();
+      return;
+    }
 
     final target = Uri.parse(backendBaseUrl).replace(path: req.uri.path, queryParameters: query.isEmpty ? null : query);
     final body = await req.fold<List<int>>(<int>[], (acc, chunk) => acc..addAll(chunk));
@@ -88,11 +110,17 @@ class RequestProxy {
             {for (final k in _legacyEpgFields) if (e.containsKey(k)) k: e[k]},
         ]));
       }
+      recorded.status = resp.statusCode;
       req.response.statusCode = resp.statusCode;
       final ct = resp.headers['content-type'];
       if (ct != null) req.response.headers.set(HttpHeaders.contentTypeHeader, ct);
+      for (final name in const ['etag', 'x-epg-revision']) {
+        final v = resp.headers[name];
+        if (v != null) req.response.headers.set(name, v);
+      }
       req.response.add(bytes);
     } catch (e) {
+      recorded.status = HttpStatus.badGateway;
       req.response.statusCode = HttpStatus.badGateway;
     }
     await req.response.close();

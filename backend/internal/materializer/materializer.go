@@ -82,8 +82,9 @@ type Materializer struct {
 }
 
 // New creates a Materializer. window is how far ahead of "now" epg_entry is
-// kept populated (docs/ROADMAP.md suggests 48h for cmd/server/main.go);
-// callers pass it explicitly rather than relying on a package default.
+// kept populated (cmd/server reads it from PLAYHEADTV_EPG_WINDOW, 48h by
+// default); callers pass it explicitly rather than relying on a package
+// default.
 func New(db storage.DB, window time.Duration) *Materializer {
 	return &Materializer{
 		db:      db,
@@ -100,6 +101,11 @@ func (m *Materializer) SetFreezeMargin(d time.Duration) {
 		m.freeze = d
 	}
 }
+
+// Window reports how far ahead of now epg_entry is kept populated; clients
+// are told about it (GET /epg/meta `window_ms`) so they know how much
+// programming a local copy can hold.
+func (m *Materializer) Window() time.Duration { return m.window }
 
 // FreezeMargin reports the margin clients are told about (GET /epg/meta).
 func (m *Materializer) FreezeMargin() time.Duration { return m.freeze }

@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -29,9 +30,34 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/migrations"
 )
 
-// epgWindow is how far ahead of "now" the materializer keeps epg_entry
-// populated (docs/ROADMAP.md's EPG materializer bullet default).
-const epgWindow = 48 * time.Hour
+// defaultEPGWindow is how far ahead of "now" the materializer keeps epg_entry
+// populated unless PLAYHEADTV_EPG_WINDOW says otherwise. A hosted deployment
+// may want longer: clients cache the window locally and can play offline for
+// about that long.
+const defaultEPGWindow = 48 * time.Hour
+
+// Bounds of an accepted PLAYHEADTV_EPG_WINDOW: below the minimum a client
+// could not even ride out a short outage, above the maximum a full
+// regeneration and every client download grow without a real use.
+const (
+	minEPGWindow = time.Hour
+	maxEPGWindow = 30 * 24 * time.Hour
+)
+
+// epgWindowFromEnv parses PLAYHEADTV_EPG_WINDOW (a Go duration such as "72h"),
+// returning the default for an empty, invalid or out-of-bounds value, plus a
+// message to log in the latter two cases.
+func epgWindowFromEnv(value string) (time.Duration, string) {
+	if value == "" {
+		return defaultEPGWindow, ""
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil || d < minEPGWindow || d > maxEPGWindow {
+		return defaultEPGWindow, "ignoring invalid PLAYHEADTV_EPG_WINDOW " + strconv.Quote(value) +
+			" (want a duration between " + minEPGWindow.String() + " and " + maxEPGWindow.String() + ")"
+	}
+	return d, ""
+}
 
 func main() {
 	if err := run(); err != nil {
@@ -127,6 +153,10 @@ func run() error {
 		log.Printf("api: PLAYHEADTV_SEED_ADMIN_EMAIL is set — seeded/kept dev admin user %s (never set this in a real deployment)", seedEmail)
 	}
 
+	epgWindow, windowWarning := epgWindowFromEnv(os.Getenv("PLAYHEADTV_EPG_WINDOW"))
+	if windowWarning != "" {
+		log.Printf("materializer: %s", windowWarning)
+	}
 	mat := materializer.New(db, epgWindow)
 	// PLAYHEADTV_EPG_FREEZE_MARGIN (a Go duration, e.g. "3h") overrides the
 	// default freeze margin; an invalid value is logged and ignored.

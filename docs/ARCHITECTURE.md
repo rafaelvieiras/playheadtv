@@ -508,8 +508,13 @@ into flat `epg_entry` rows — concrete
 
 - Triggered immediately on any write to a scheduling table (schedule
   change → regenerate affected channels).
-- Rolled forward on a timer so a window (e.g. 48h) always stays materialized
-  ahead of "now", independent of writes.
+- Rolled forward on a timer so a window always stays materialized ahead of
+  "now", independent of writes. The window is 48h by default and configurable
+  with `PLAYHEADTV_EPG_WINDOW` (a Go duration such as `72h`, between 1h and
+  720h; an invalid value is logged and ignored). A hosted deployment may want
+  it longer: it is how long a client can play with no backend (see "Client
+  offline cache"). The materializer horizon and `GET /epg/meta`'s `window_ms`
+  both come from it.
 - Implemented as an in-process goroutine/queue in the Go server — not a
   Cloudflare Cron/Queue, since the backend is a normal long-running process
   either way (self-hosted or cloud-sync), not a Worker.
@@ -804,8 +809,9 @@ the proposal" produces a collection.
 ### API
 
 - `GET /epg`: the full materialized schedule for every channel in the
-  tenant, over a configurable window (default 24h). This is the "XMLTV" of
-  the project, as JSON — one bulk fetch instead of a client polling
+  tenant, over the materialization window (`PLAYHEADTV_EPG_WINDOW`, 48h by
+  default; past entries are kept, so a client passes `start`). This is the
+  "XMLTV" of the project, as JSON — one bulk fetch instead of a client polling
   per-channel or per-minute. Query: `channel_id`, `start`/`end` (epoch
   millis, overlap filter) and `group_tail=1`. The response is a JSON array
   ordered by channel then start, and carries everything a client needs to
@@ -877,9 +883,12 @@ the proposal" produces a collection.
   at its real span instead. The rules are one pure function per platform
   (`client/lib/epg_guide.dart`, `webui/src/lib/guideDisplay.ts`) with the
   same unit tests. There is no per-channel or per-block setting.
-- `GET /epg/meta`: `{revision, valid_until, freeze_margin_ms}` only — cheap enough to poll
-  often. Clients cache the full `/epg` response locally and only refetch it
-  when `revision` changes or `valid_until` is close.
+- `GET /epg/meta`: `{revision, valid_until, freeze_margin_ms, window_ms}` only —
+  cheap enough to poll often. `window_ms` is the materialization window
+  (`PLAYHEADTV_EPG_WINDOW`): the most programming a client can hold, which it
+  caps with its own limit (see "Client offline cache"). Clients keep the full
+  `/epg` response locally and refresh it conditionally (`If-None-Match`), see
+  below.
 
 ### Edge caching
 
@@ -899,6 +908,90 @@ tuner would: look up the `epg_entry` covering the current instant. Two
 devices watching the same channel land on the same position without any
 session/state server in the loop — this is what makes the "no WebSocket"
 constraint free rather than a limitation.
+
+## Client offline cache
+
+Principle: offline first, excluding the video flow itself. Playback already
+talks to the media server directly (on the user's own network, whether the
+backend is self-hosted or hosted), so with a complete local copy of the
+schedule a client needs no backend to keep playing, for about as long as the
+copy lasts. Everything below is the client (`client/lib/cache/`); the backend
+only gained `window_ms` and the configurable window.
+
+- **Storage.** One SQLite file (`schedule_<hash of the backend address>.db`
+  under the app support directory; one file per backend address, so pointing
+  the app at another backend never shows or wipes the first one's schedule),
+  the same engine on Linux/Windows now and Android/Android TV later. The
+  package is [`sqlite3`](https://pub.dev/packages/sqlite3) (3.x), which
+  bundles SQLite through Dart build hooks (native assets) for every Flutter
+  target, so there is no per-platform plugin, system library or ABI to
+  manage; `path_provider` finds the directories. Tables: `meta` (validator,
+  revision, last sync time, backend window), `channel` (the channel list, in
+  `number` order) and `epg_entry` (one row per entry, its JSON being the
+  backend's own `GET /epg?group_tail=1` shape: titles, source ids, art tags,
+  and for a grouped tail EVERY individual clip). `PRAGMA user_version` is the
+  cache schema version (`scheduleCacheSchemaVersion`): opening a file of
+  another version recreates it empty and the next sync refills it. That bump
+  and the "Clear cache" action in Settings are the only things that ever empty
+  the cache: a network or auth error never does.
+- **Images.** The posters of the cached window and the channel logos are files
+  in an `art` folder under the app cache directory, one per URL (named by a
+  hash of it, since a URL carries the media server key), with a size cap
+  (96 MiB) and least-recently-used eviction (a file's modification time is its
+  last use). The art comes from the media server (or wherever a logo points),
+  never from the backend, so it is shown from disk with the backend down.
+  `ArtImage` reads the file when it is there and the network otherwise.
+- **Refresh.** The only code that asks the backend for schedule data is the
+  background `ScheduleSyncer`. It runs at startup, every 15 minutes
+  (`--dart-define=EPG_SYNC_INTERVAL_MINUTES`) and, after a failure, again every
+  30 seconds until one succeeds (this is how a returning connection is noticed
+  on every platform, with no connectivity plugin). One refresh is `GET
+  /epg/meta` (the window), `GET /channels` and one `GET /epg?group_tail=1`
+  for every channel from the top of the previous hour, sent with the
+  `If-None-Match` of the copy held: an unchanged guide is a `304` of a few
+  hundred bytes, a changed one downloads the new body, which is decoded off
+  the UI isolate and replaces the rows it differs on. Offline tolerance is the
+  window minus the time since the last successful refresh, so the buffer is
+  topped up often rather than only when the revision changes. Against a
+  backend that predates the enriched `GET /epg`, the syncer resolves the
+  missing source ids and titles once, before storing.
+- **Reads.** The player's working set (the program on air plus the next N),
+  the EPG grid, the mosaic and channel switching read only the cache; the
+  rolling per-slice fetching is now a view over it. The channel list and the
+  stream-selection rules (`StreamPreferencesService`, which keeps its own
+  copy in `shared_preferences` and degrades to "no preference" when absent;
+  an unreachable backend is never cached as an answer) are the other things
+  read at runtime.
+- **Window.** The effective window is the smaller of the backend's
+  (`window_ms`, 48h assumed when absent) and the client's own limit (a
+  setting, 48h by default, Settings -> Offline cache). Reads never go past it
+  and a sync stores nothing past it; the validator is not offered for a
+  different limit, so raising it downloads again.
+- **Cache exhausted** (offline for longer than the window; the backend is
+  asked once more to tell this from "the backend really has nothing"): the
+  client's own setting, in `shared_preferences`, decides. *Loop the last known
+  programming* (default) replays the last 24h of what the cache holds as
+  time-shifted copies, in order, over and over; *hold the slate* crossfades
+  into the local slate and waits. There is no backend setting for this.
+- **Reconnect.** A refresh that brings a different schedule applies it exactly
+  like an admin grid reset on the channel on air (`reset-epg` regenerates the
+  on-air entry): if what is on air differs from what the new schedule has on
+  air now (item and span), the player reloads the channel and switches to it;
+  otherwise only the programs after the one on air are replaced in place,
+  without restarting it, and only when no preload is parked for the old next
+  one (the next change or refresh retries). A channel playing the exhausted
+  fallback leaves it as soon as the cache has real programming again.
+- **Auth.** A hosted sync uses the device token. A rejected or expired token
+  (`401`/`403`) is a failed refresh like any other: the cache is kept, playback
+  continues from it, and the next attempt (30 seconds later) sends the
+  configured credentials again, so the cache is refreshed as soon as the
+  backend accepts them. The device token is static configuration today, so
+  there is no token renewal flow.
+- **Six buttons.** Settings -> Offline cache (Up/Down move the focus, Select
+  changes a value or runs an action, Back leaves) holds the exhausted-cache
+  setting, the window limit, "Sync now" with the age of the copy and how long
+  playback could go on without the backend, and "Clear cache" behind a
+  confirmation.
 
 ## Status
 
