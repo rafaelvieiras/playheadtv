@@ -146,6 +146,9 @@ or LLM, and to every artifact in the repo:
     buttons, with zero remapping — unless it's a declared accelerator per
     the exception above, in which case verify the *non-accelerator*
     equivalent path is the one actually exercised in testing.
+- The OSD never describes a filler: for a hidden-kind entry on air it shows the
+  program the guide attributes it to, over that program's displayed span
+  (`lib/osd_subject.dart`, same `buildGuideCells` rule as the EPG).
 - `select`'s default binding is `Enter` (not `I`). The channel OSD
   (`lib/widgets/osd_overlay.dart`) has three states, read off
   `_osdVisibleNotifier`/`_osdArmed`/`_osdFocusNotifier`: merely *displayed*

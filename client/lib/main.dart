@@ -33,6 +33,7 @@ import 'input/input_action.dart';
 import 'pages/mosaic_page.dart';
 import 'util/gl_serial.dart';
 import 'epg_guide.dart' show isHiddenGuideKind;
+import 'osd_subject.dart';
 import 'widgets/epg_overlay.dart';
 import 'widgets/osd_overlay.dart';
 import 'widgets/debug_overlay.dart';
@@ -399,6 +400,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   // AppConfig.workingSetSize, as playback advances (_expandWorkingSet).
   // Reset on every new _loadAndPlayChannel.
   List<EpgEntry> _known = <EpgEntry>[];
+  // Entries before the first fetched one, only when it is a filler, so the OSD
+  // can find the program that filler is attributed to (see osd_subject.dart).
+  List<EpgEntry> _osdContext = <EpgEntry>[];
   // `_known[0.._knownExpanded)` have been turned into units of `channel`.
   int _knownExpanded = 0;
   // Rolling EPG window: cursor of the `endAt` of the last program fetched in
@@ -600,6 +604,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       _currentIndex = -1;
       channel = <ChannelEntry>[];
       _known = <EpgEntry>[];
+      _osdContext = <EpgEntry>[];
       _knownExpanded = 0;
       _emptySlices = 0;
       _epgLoadedUntil = null;
@@ -684,6 +689,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       if (generation != _loadGeneration) return;
 
       _known = upcoming;
+      _osdContext = await _fetchOsdContext(target.id, upcoming.first);
+      if (generation != _loadGeneration) return;
       _knownExpanded = 0;
       _emptySlices = 0;
       _epgLoadedUntil = upcoming.map((e) => e.endAt).reduce((a, b) => a.isAfter(b) ? a : b);
@@ -955,14 +962,14 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     await _rampCrossfade(outgoing: outgoing, incoming: incoming, generation: generation);
     if (generation != _loadGeneration) return;
     if (!mounted) return;
-    final previousOrdinal = _currentIndex >= 0 && _currentIndex < channel.length ? channel[_currentIndex].programOrdinal : -1;
+    final previousKey = _osdSubjectAt(_currentIndex)?.key;
     setState(() {
       _currentIndex = nextIndex;
       _status = 'playing: ${nextEntry.label}';
     });
-    // Clips of one tail are one program: the OSD announces programs, not
-    // every 10-second clip inside a tail.
-    if (nextEntry.programOrdinal != previousOrdinal) _showOsd();
+    // The OSD announces programs: a filler of the same program, or one more
+    // 10-second clip inside a tail, is not an announcement.
+    if (_osdSubjectAt(nextIndex)?.key != previousKey) _showOsd();
     _scheduleTransitions(nextIndex, generation: generation);
     unawaited(_maybeExtendGrid(nextIndex, generation));
   }
@@ -1094,12 +1101,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
       await _rampCrossfade(outgoing: slateOutgoing, incoming: pending, generation: generation);
       if (generation != _loadGeneration) return;
       if (!mounted) return;
-      final previousOrdinal = _currentIndex >= 0 && _currentIndex < channel.length ? channel[_currentIndex].programOrdinal : -1;
+      final previousKey = _osdSubjectAt(_currentIndex)?.key;
       setState(() {
         _currentIndex = nextIndex;
         _status = 'playing: ${nextEntry.label}';
       });
-      if (nextEntry.programOrdinal != previousOrdinal) _showOsd();
+      if (_osdSubjectAt(nextIndex)?.key != previousKey) _showOsd();
       _scheduleTransitions(nextIndex, generation: generation);
       unawaited(_maybeExtendGrid(nextIndex, generation));
     });
@@ -1272,20 +1279,26 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     }
   }
 
-  // Label of the next real program after the one on air: skips the remaining
-  // clips of a tail and every filler (preroll, midroll, postroll, tail), the
-  // same ones the guide hides. Display only — playback still plays them all.
-  // Null when none has entered the working set yet.
-  String? _nextProgramLabel() {
-    final ordinal = channel[_currentIndex].programOrdinal;
-    for (var i = _currentIndex + 1; i < channel.length; i++) {
-      final unit = channel[i];
-      if (unit.programOrdinal == ordinal) continue;
-      final kind = unit.program?.kind;
-      if (kind != null && isHiddenGuideKind(kind)) continue;
-      return unit.programLabel;
+  // What the OSD describes for unit `index` of `channel`: the guide program
+  // (never a filler), see osd_subject.dart.
+  OsdSubject? _osdSubjectAt(int index) {
+    if (index < 0 || index >= channel.length) return null;
+    final current = channel[index].program;
+    if (current == null) return null;
+    return osdSubjectFor([..._osdContext, ..._known], current);
+  }
+
+  // The entries just before `first`, fetched only when `first` is a filler
+  // already on air at tune-in, whose program lies before the window. Best
+  // effort: without it the OSD attributes the filler to the other neighbour.
+  Future<List<EpgEntry>> _fetchOsdContext(String channelId, EpgEntry first) async {
+    if (!isHiddenGuideKind(first.kind)) return <EpgEntry>[];
+    try {
+      final entries = await _api.getEpg(channelId, first.startAt.subtract(osdContextLookback), first.startAt);
+      return entries.where((e) => e.startAt.isBefore(first.startAt) && e.endAt.isAfter(e.startAt)).toList();
+    } catch (_) {
+      return <EpgEntry>[];
     }
-    return null;
   }
 
   // Shows the OSD (or restarts the countdown if it was already visible). The
@@ -1520,6 +1533,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     // switching channel) the only visible feedback is the plain debug text —
     // the real OSD needs a valid `channel`/`_currentIndex`.
     final hasContent = channel.isNotEmpty && _currentIndex >= 0 && _currentIndex < channel.length;
+    final osd = hasContent ? _osdSubjectAt(_currentIndex) : null;
     final showErrorBanner = hasContent && _status.startsWith('ERROR');
     return KeyboardListener(
       focusNode: _focusNode,
@@ -1777,10 +1791,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
                     channelNumber: _channels[_channelIndex].number,
                     channelName: _channels[_channelIndex].name,
                     channelArtUrl: _channels[_channelIndex].guideArtUrl,
-                    itemLabel: channel[_currentIndex].programLabel,
-                    nextItemLabel: _nextProgramLabel(),
-                    startAt: channel[_currentIndex].programStartAt,
-                    endAt: channel[_currentIndex].programEndAt,
+                    itemLabel: osd?.program.displayTitle ?? channel[_currentIndex].programLabel,
+                    nextItemLabel: osd?.next?.displayTitle,
+                    startAt: osd?.start ?? channel[_currentIndex].programStartAt,
+                    endAt: osd?.end ?? channel[_currentIndex].programEndAt,
+                    progressByClock: osd != null,
                     controller: _aIsActive ? _controllerA : _controllerB,
                     focusMode: _osdFocusNotifier,
                     onOpenSubtitles: () => _openTrackPicker(TrackSelectorPanel.subtitle, singlePanel: true),

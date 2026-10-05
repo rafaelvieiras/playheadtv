@@ -50,6 +50,10 @@ class ChannelOsd extends StatefulWidget {
   final String? nextItemLabel;
   final DateTime startAt;
   final DateTime endAt;
+  // When true, the progress bar and the time readout run on the wall clock
+  // across the displayed span [startAt, endAt] (a program plus its filler, as
+  // the guide draws it) instead of following the clip on air.
+  final bool progressByClock;
   final VideoPlayerController? controller;
   final ValueListenable<bool> focusMode;
   final VoidCallback onOpenSubtitles;
@@ -66,6 +70,7 @@ class ChannelOsd extends StatefulWidget {
     required this.nextItemLabel,
     required this.startAt,
     required this.endAt,
+    this.progressByClock = false,
     required this.controller,
     required this.focusMode,
     required this.onOpenSubtitles,
@@ -286,8 +291,16 @@ class ChannelOsdState extends State<ChannelOsd> {
 
   @override
   Widget build(BuildContext context) {
-    final position = widget.controller?.value.position ?? Duration.zero;
-    final duration = widget.controller?.value.duration ?? Duration.zero;
+    final Duration position;
+    final Duration duration;
+    if (widget.progressByClock) {
+      duration = widget.endAt.difference(widget.startAt);
+      final elapsed = DateTime.now().toUtc().difference(widget.startAt);
+      position = elapsed.isNegative ? Duration.zero : (elapsed > duration ? duration : elapsed);
+    } else {
+      position = widget.controller?.value.position ?? Duration.zero;
+      duration = widget.controller?.value.duration ?? Duration.zero;
+    }
     final progress =
         duration.inMilliseconds > 0 ? (position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0) : 0.0;
     final rows = _rows();

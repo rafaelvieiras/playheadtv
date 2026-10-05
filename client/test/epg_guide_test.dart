@@ -84,4 +84,49 @@ void main() {
     expect(spans(buildGuideCells(input)), [['a', 0, 100], ['b', 100, 200]]);
     expect(input.map((x) => x.id), ids);
   });
+
+  // A 20 minute episode with three 5 minute fillers is ONE 35 minute program
+  // (times in seconds: 20 min = 1200, 5 min = 300).
+  test('a 20 minute episode with preroll, postroll and midroll displays as one 35 minute program', () {
+    final cells = buildGuideCells([
+      e('pre', 'preroll', 0, 300),
+      e('a', 'program', 300, 1500),
+      e('post', 'postroll', 1500, 1800),
+      e('mid', 'midroll', 1800, 2100),
+      e('pre2', 'preroll', 2100, 2400),
+      e('b', 'program', 2400, 3600),
+    ]);
+    expect(spans(cells), [['a', 0, 2100], ['b', 2100, 3600]]);
+    expect(cells[0].displayEnd.difference(cells[0].displayStart), const Duration(minutes: 35));
+    expect(cells[0].absorbed.map((x) => x.id), ['pre', 'post', 'mid']);
+  });
+
+  test('filler at the start only: the preroll belongs to the program after it', () {
+    expect(spans(buildGuideCells([e('pre', 'preroll', 0, 300), e('a', 'program', 300, 1500)])), [['a', 0, 1500]]);
+  });
+
+  test('filler in the middle: a midroll between two programs belongs to the one before it', () {
+    expect(spans(buildGuideCells([e('a', 'program', 0, 1200), e('mid', 'midroll', 1200, 1500), e('b', 'program', 1500, 2700)])),
+        [['a', 0, 1500], ['b', 1500, 2700]]);
+  });
+
+  test('filler at the end only: the postroll belongs to the program before it', () {
+    expect(spans(buildGuideCells([e('a', 'program', 0, 1200), e('post', 'postroll', 1200, 1500)])), [['a', 0, 1500]]);
+  });
+
+  test('two adjacent fillers go to the same program', () {
+    final cells = buildGuideCells([e('a', 'program', 0, 1200), e('post', 'postroll', 1200, 1500), e('mid', 'midroll', 1500, 1800), e('b', 'program', 1800, 3000)]);
+    expect(spans(cells), [['a', 0, 1800], ['b', 1800, 3000]]);
+    expect(cells[0].absorbed.map((x) => x.id), ['post', 'mid']);
+  });
+
+  test('a first entry that is a filler whose program started before the window goes to the next one', () {
+    // The previous program is not in the list (it lies before the window).
+    expect(spans(buildGuideCells([e('post', 'postroll', 0, 300), e('b', 'program', 300, 1500)])), [['b', 0, 1500]]);
+  });
+
+  test('a tail belongs to the previous program, however long', () {
+    final cells = buildGuideCells([e('a', 'program', 0, 1200), e('t1', 'tail', 1200, 1800), e('t2', 'tail', 1800, 9000)]);
+    expect(spans(cells), [['a', 0, 9000]]);
+  });
 }

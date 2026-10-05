@@ -860,9 +860,20 @@ the proposal" produces a collection.
   real one: a cell keeps its entry's own `start_at`/`end_at`, and "on air
   now" (live highlight, progress, select-to-tune) is decided on the displayed
   span, so a live filler counts as the program it was attributed to. The cell
-  and the client's details panel show the displayed span; the OSD keeps
-  describing what is actually playing, except its "Up next" line, which skips
-  filler. The web UI's "Show filler" toggle (UI state only) draws every entry
+  and the client's details panel show the displayed span. The player OSD
+  follows the same rule (`client/lib/osd_subject.dart`, built on
+  `buildGuideCells`): while a hidden entry is on air it describes the program
+  the guide attributes that entry to, never the filler. Its title, "Ends" time,
+  start-end times and progress all use the program's displayed span (progress
+  runs on the wall clock across program plus filler), "Up next" is the next
+  visible program, and it only re-announces when the attributed program
+  changes, so a filler of the same program (or another clip of a tail) never
+  pops it again. A `fallback` is described as itself, and so is a hidden entry
+  nothing could be attributed to. When the filler already on air at tune-in
+  belongs to a program that ended before the first fetched entry, the client
+  fetches the few hours before it to find that program. A long `tail` is
+  attributed to the previous program for its whole length, so the OSD keeps
+  naming that program until the next one starts. The web UI's "Show filler" toggle (UI state only) draws every entry
   at its real span instead. The rules are one pure function per platform
   (`client/lib/epg_guide.dart`, `webui/src/lib/guideDisplay.ts`) with the
   same unit tests. There is no per-channel or per-block setting.
