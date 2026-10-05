@@ -473,6 +473,15 @@ keep in mind when touching `client/`:
   video server) that the normal lifecycle itself doesn't leak file
   descriptors — the leak only shows up when something schedules a genuinely
   broken-duration item.
+- A `tail` is attributed to the previous program for 30 minutes at most
+  (`buildGuideCells`, `client/lib/epg_guide.dart` and
+  `webui/src/lib/guideDisplay.ts` — keep the two in step, with the same unit
+  cases); past it the guide shows a gap and the OSD names the channel
+  (`osdSubjectFor`, which needs `now`). The EPG overlay and the OSD must feed
+  `buildGuideCells` the same context (`guideContextLookback` of cache entries
+  before their first instant) or they attribute a tail differently. Tests
+  shrink the cap with `AppConfig.overrideForTest(tailAttributionCap:)`; never
+  wait real minutes. Details: `docs/ARCHITECTURE.md` "Guide display".
 - `ChannelEntry` (`client/lib/main.dart`) carries each item's real,
   materialized `startAt`, and `_crossfadeTo` compares it against wall-clock
   `now` before starting the next item instead of always chaining durations

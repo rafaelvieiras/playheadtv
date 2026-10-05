@@ -119,7 +119,60 @@ test('a first entry that is a filler whose program started before the window goe
   assert.deepEqual(spans(buildGuideCells([e('post', 'postroll', 0, 300), e('b', 'program', 300, 1500)])), [['b', 0, 1500]])
 })
 
-test('a tail belongs to the previous program, however long', () => {
-  const cells = buildGuideCells([e('a', 'program', 0, 1200), e('t1', 'tail', 1200, 1800), e('t2', 'tail', 1800, 9000)])
-  assert.deepEqual(spans(cells), [['a', 0, 9000]])
+// The tail cap is 30 minutes (1800 s). A tail's attribution is measured from
+// the start of its run; what lies past it belongs to no program.
+test('a tail shorter than the cap is absorbed whole', () => {
+  const cells = buildGuideCells([e('a', 'program', 0, 1200), e('t', 'tail', 1200, 2400)])
+  assert.deepEqual(spans(cells), [['a', 0, 2400]])
+  assert.deepEqual(cells[0].absorbed.map((x) => x.id), ['t'])
+})
+
+test('a tail exactly at the cap is absorbed whole', () => {
+  assert.deepEqual(spans(buildGuideCells([e('a', 'program', 0, 1200), e('t', 'tail', 1200, 3000)])), [['a', 0, 3000]])
+})
+
+test('a longer tail is absorbed for the cap only, the rest is a gap', () => {
+  const cells = buildGuideCells([e('a', 'program', 0, 1200), e('t', 'tail', 1200, 9000), e('b', 'program', 9000, 9600)])
+  assert.deepEqual(spans(cells), [['a', 0, 3000], ['b', 9000, 9600]])
+  assert.deepEqual(cells[0].absorbed.map((x) => x.id), ['t'])
+  assert.deepEqual(cells[1].absorbed, [])
+})
+
+test('back-to-back tail entries share one cap', () => {
+  const cells = buildGuideCells([
+    e('a', 'program', 0, 1200),
+    e('t1', 'tail', 1200, 1800),
+    e('t2', 'tail', 1800, 3000),
+    e('t3', 'tail', 3000, 3600),
+    e('b', 'program', 3600, 4200),
+  ])
+  assert.deepEqual(spans(cells), [['a', 0, 3000], ['b', 3600, 4200]])
+  assert.deepEqual(cells[0].absorbed.map((x) => x.id), ['t1', 't2'])
+  assert.deepEqual(cells[1].absorbed, [])
+})
+
+test('the cap runs from the start of the tail, not from the end of the program', () => {
+  const cells = buildGuideCells([e('a', 'program', 0, 1200), e('post', 'postroll', 1200, 1500), e('t', 'tail', 1500, 9000)])
+  assert.deepEqual(spans(cells), [['a', 0, 3300]])
+})
+
+test('a tail with no previous program falls to the next one only when it fits the cap', () => {
+  assert.deepEqual(spans(buildGuideCells([e('t', 'tail', 0, 1800), e('a', 'program', 1800, 2400)])), [['a', 0, 2400]])
+  assert.deepEqual(spans(buildGuideCells([e('t', 'tail', 0, 3600), e('a', 'program', 3600, 4200)])), [['a', 3600, 4200]])
+})
+
+test('the part of a tail past the cap never goes to the next program', () => {
+  const cells = buildGuideCells([e('a', 'program', 0, 1200), e('t1', 'tail', 1200, 3000), e('t2', 'tail', 3000, 3300), e('b', 'program', 3300, 4000)])
+  assert.deepEqual(spans(cells), [['a', 0, 3000], ['b', 3300, 4000]])
+})
+
+test("a tail followed by the next program's preroll: the preroll still belongs to the next program", () => {
+  const cells = buildGuideCells([e('a', 'program', 0, 1200), e('t', 'tail', 1200, 9000), e('pre', 'preroll', 9000, 9300), e('b', 'program', 9300, 10000)])
+  assert.deepEqual(spans(cells), [['a', 0, 3000], ['b', 9000, 10000]])
+  assert.deepEqual(cells[1].absorbed.map((x) => x.id), ['pre'])
+})
+
+test('the cap is a parameter', () => {
+  const cells = buildGuideCells([e('a', 'program', 0, 100), e('t', 'tail', 100, 1000)], 1000, 60_000)
+  assert.deepEqual(spans(cells), [['a', 0, 160]])
 })

@@ -37,7 +37,8 @@ import 'services/stream_selection_resolver.dart';
 import 'input/input_action.dart';
 import 'pages/mosaic_page.dart';
 import 'util/gl_serial.dart';
-import 'epg_guide.dart' show isHiddenGuideKind;
+import 'epg_guide.dart' as guide show defaultTailAttributionCap, tailAttributionCap;
+import 'epg_guide.dart' show guideContextLookback, isHiddenGuideKind;
 import 'osd_subject.dart';
 import 'widgets/epg_overlay.dart';
 import 'widgets/osd_overlay.dart';
@@ -107,7 +108,11 @@ class AppConfig {
     int? workingSetSize,
     Duration? cacheSyncInterval,
     String? cacheDir,
+    Duration? tailAttributionCap,
   }) {
+    // Not part of the app's config: the guide's tail cap, shrunk by tests so a
+    // tail goes past it within seconds. Every override resets it.
+    guide.tailAttributionCap = tailAttributionCap ?? guide.defaultTailAttributionCap;
     // A new configuration is a new app: forget the previous run's cache,
     // syncer and shared runtime. Without an explicit directory each override
     // gets a fresh one, so a test never inherits another's cache.
@@ -1566,7 +1571,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     if (index < 0 || index >= channel.length) return null;
     final current = channel[index].program;
     if (current == null) return null;
-    return osdSubjectFor([..._osdContext, ..._known], current);
+    // An entry about to air (the crossfade's key check) is read as of its start.
+    final now = DateTime.now().toUtc();
+    return osdSubjectFor([..._osdContext, ..._known], current, now: now.isBefore(current.startAt) ? current.startAt : now);
   }
 
   // The entries just before `first`, read from the cache (never the backend),
@@ -1577,7 +1584,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     if (!isHiddenGuideKind(first.kind)) return <EpgEntry>[];
     try {
       return _cache
-          .entries(channelId, first.startAt.subtract(osdContextLookback), first.startAt)
+          .entries(channelId, first.startAt.subtract(guideContextLookback), first.startAt)
           .where((e) => e.startAt.isBefore(first.startAt) && e.endAt.isAfter(e.startAt))
           .toList();
     } catch (_) {
@@ -2081,6 +2088,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
                     startAt: osd?.start ?? channel[_currentIndex].programStartAt,
                     endAt: osd?.end ?? channel[_currentIndex].programEndAt,
                     progressByClock: osd != null,
+                    resolveSubject: () => _osdSubjectAt(_currentIndex),
                     controller: _aIsActive ? _controllerA : _controllerB,
                     focusMode: _osdFocusNotifier,
                     onOpenSubtitles: () => _openTrackPicker(TrackSelectorPanel.subtitle, singlePanel: true),

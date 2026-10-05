@@ -1,5 +1,6 @@
 // Unit test for the guide's hidden-filler attribution (lib/epg_guide.dart).
 // The cases mirror webui/test/guideDisplay.test.ts one for one.
+import 'package:client/cache/schedule_cache.dart' show cachePastRetention;
 import 'package:client/epg_guide.dart';
 import 'package:client/playhead_api.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -125,8 +126,68 @@ void main() {
     expect(spans(buildGuideCells([e('post', 'postroll', 0, 300), e('b', 'program', 300, 1500)])), [['b', 0, 1500]]);
   });
 
-  test('a tail belongs to the previous program, however long', () {
-    final cells = buildGuideCells([e('a', 'program', 0, 1200), e('t1', 'tail', 1200, 1800), e('t2', 'tail', 1800, 9000)]);
-    expect(spans(cells), [['a', 0, 9000]]);
+  // The tail cap is 30 minutes (1800 s). A tail's attribution is measured from
+  // the start of its run; what lies past it belongs to no program.
+  group('tail attribution cap', () {
+    test('a tail shorter than the cap is absorbed whole', () {
+      final cells = buildGuideCells([e('a', 'program', 0, 1200), e('t', 'tail', 1200, 2400)]);
+      expect(spans(cells), [['a', 0, 2400]]);
+      expect(cells[0].absorbed.map((x) => x.id), ['t']);
+    });
+
+    test('a tail exactly at the cap is absorbed whole', () {
+      expect(spans(buildGuideCells([e('a', 'program', 0, 1200), e('t', 'tail', 1200, 3000)])), [['a', 0, 3000]]);
+    });
+
+    test('a longer tail is absorbed for the cap only, the rest is a gap', () {
+      final cells = buildGuideCells([e('a', 'program', 0, 1200), e('t', 'tail', 1200, 9000), e('b', 'program', 9000, 9600)]);
+      expect(spans(cells), [['a', 0, 3000], ['b', 9000, 9600]]);
+      expect(cells[0].absorbed.map((x) => x.id), ['t']);
+      expect(cells[1].absorbed, isEmpty);
+    });
+
+    test('back-to-back tail entries share one cap', () {
+      final cells = buildGuideCells([
+        e('a', 'program', 0, 1200),
+        e('t1', 'tail', 1200, 1800),
+        e('t2', 'tail', 1800, 3000),
+        e('t3', 'tail', 3000, 3600),
+        e('b', 'program', 3600, 4200),
+      ]);
+      expect(spans(cells), [['a', 0, 3000], ['b', 3600, 4200]]);
+      expect(cells[0].absorbed.map((x) => x.id), ['t1', 't2']);
+      expect(cells[1].absorbed, isEmpty);
+    });
+
+    test('the cap runs from the start of the tail, not from the end of the program', () {
+      final cells = buildGuideCells([e('a', 'program', 0, 1200), e('post', 'postroll', 1200, 1500), e('t', 'tail', 1500, 9000)]);
+      expect(spans(cells), [['a', 0, 3300]]);
+    });
+
+    test('a tail with no previous program falls to the next one only when it fits the cap', () {
+      expect(spans(buildGuideCells([e('t', 'tail', 0, 1800), e('a', 'program', 1800, 2400)])), [['a', 0, 2400]]);
+      expect(spans(buildGuideCells([e('t', 'tail', 0, 3600), e('a', 'program', 3600, 4200)])), [['a', 3600, 4200]]);
+    });
+
+    test('the part of a tail past the cap never goes to the next program', () {
+      final cells = buildGuideCells([e('a', 'program', 0, 1200), e('t1', 'tail', 1200, 3000), e('t2', 'tail', 3000, 3300), e('b', 'program', 3300, 4000)]);
+      expect(spans(cells), [['a', 0, 3000], ['b', 3300, 4000]]);
+    });
+
+    test('a tail followed by the next program\'s preroll: the preroll still belongs to the next program', () {
+      final cells = buildGuideCells([e('a', 'program', 0, 1200), e('t', 'tail', 1200, 9000), e('pre', 'preroll', 9000, 9300), e('b', 'program', 9300, 10000)]);
+      expect(spans(cells), [['a', 0, 3000], ['b', 9000, 10000]]);
+      expect(cells[1].absorbed.map((x) => x.id), ['pre']);
+    });
+
+    test('the cap is a parameter', () {
+      final input = [e('a', 'program', 0, 100), e('t', 'tail', 100, 1000)];
+      expect(spans(buildGuideCells(input, tailCap: const Duration(seconds: 60))), [['a', 0, 160]]);
+    });
+
+    test('the lookback both views read stays inside what the cache keeps, and covers the cap', () {
+      expect(guideContextLookback, lessThanOrEqualTo(cachePastRetention));
+      expect(guideContextLookback, greaterThan(defaultTailAttributionCap));
+    });
   });
 }

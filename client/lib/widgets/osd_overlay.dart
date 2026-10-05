@@ -25,6 +25,7 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'package:fvp/fvp.dart'; // getMediaInfo() on VideoPlayerController
 
+import '../osd_subject.dart';
 import 'app_icons.dart';
 import 'art_image.dart';
 
@@ -55,6 +56,11 @@ class ChannelOsd extends StatefulWidget {
   // across the displayed span [startAt, endAt] (a program plus its filler, as
   // the guide draws it) instead of following the clip on air.
   final bool progressByClock;
+  // Re-reads what the OSD describes on every tick, so a subject that changes
+  // with the clock (a tail past its attribution cap becomes the channel's)
+  // updates without the parent rebuilding. When given, it wins over the
+  // item/next/start/end props above, which stay as the fallback.
+  final OsdSubject? Function()? resolveSubject;
   final VideoPlayerController? controller;
   final ValueListenable<bool> focusMode;
   final VoidCallback onOpenSubtitles;
@@ -72,6 +78,7 @@ class ChannelOsd extends StatefulWidget {
     required this.startAt,
     required this.endAt,
     this.progressByClock = false,
+    this.resolveSubject,
     required this.controller,
     required this.focusMode,
     required this.onOpenSubtitles,
@@ -292,11 +299,21 @@ class ChannelOsdState extends State<ChannelOsd> {
 
   @override
   Widget build(BuildContext context) {
+    final subject = widget.resolveSubject?.call();
+    final channelOnly = subject?.channelOnly ?? false;
+    final itemLabel = channelOnly ? widget.channelName : (subject?.program.displayTitle ?? widget.itemLabel);
+    final nextItemLabel = subject != null ? subject.next?.displayTitle : widget.nextItemLabel;
+    final startAt = subject?.start ?? widget.startAt;
+    final endAt = subject?.end ?? widget.endAt;
+    final progressByClock = subject != null || widget.progressByClock;
     final Duration position;
     final Duration duration;
-    if (widget.progressByClock) {
-      duration = widget.endAt.difference(widget.startAt);
-      final elapsed = DateTime.now().toUtc().difference(widget.startAt);
+    if (channelOnly) {
+      position = Duration.zero;
+      duration = Duration.zero;
+    } else if (progressByClock) {
+      duration = endAt.difference(startAt);
+      final elapsed = DateTime.now().toUtc().difference(startAt);
       position = elapsed.isNegative ? Duration.zero : (elapsed > duration ? duration : elapsed);
     } else {
       position = widget.controller?.value.position ?? Duration.zero;
@@ -321,11 +338,12 @@ class ChannelOsdState extends State<ChannelOsd> {
                 key: const Key('osd-clock'),
                 style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w500),
               ),
-              Text(
-                'Ends ${_hhmm(widget.endAt)}',
-                key: const Key('osd-ends-at'),
-                style: const TextStyle(color: Colors.white70, fontSize: 14),
-              ),
+              if (!channelOnly)
+                Text(
+                  'Ends ${_hhmm(endAt)}',
+                  key: const Key('osd-ends-at'),
+                  style: const TextStyle(color: Colors.white70, fontSize: 14),
+                ),
             ],
           ),
         ),
@@ -355,7 +373,7 @@ class ChannelOsdState extends State<ChannelOsd> {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            widget.itemLabel,
+                            itemLabel,
                             key: const Key('osd-item-title'),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
@@ -379,8 +397,9 @@ class ChannelOsdState extends State<ChannelOsd> {
                                   style: const TextStyle(color: Colors.white70, fontSize: 15, letterSpacing: 0.5),
                                 ),
                               ),
+                              if (!channelOnly)
                               Text(
-                                ' · ${_hhmm(widget.startAt)}–${_hhmm(widget.endAt)}',
+                                ' · ${_hhmm(startAt)}–${_hhmm(endAt)}',
                                 key: const Key('osd-program-times'),
                                 style: const TextStyle(color: Colors.white70, fontSize: 15),
                               ),
@@ -419,11 +438,13 @@ class ChannelOsdState extends State<ChannelOsd> {
                         ),
                       ),
                     ),
-                    const SizedBox(width: 12),
-                    Text(
-                      '${_fmtDuration(position)} / ${_fmtDuration(duration)}',
-                      style: const TextStyle(color: Colors.white70, fontSize: 13),
-                    ),
+                    if (!channelOnly) ...[
+                      const SizedBox(width: 12),
+                      Text(
+                        '${_fmtDuration(position)} / ${_fmtDuration(duration)}',
+                        style: const TextStyle(color: Colors.white70, fontSize: 13),
+                      ),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 8),
@@ -433,11 +454,11 @@ class ChannelOsdState extends State<ChannelOsd> {
                       _button(const Key('osd-btn-captions'), AppIcons.captions, focused: _focused == _captions),
                     if (has(_audio))
                       _button(const Key('osd-btn-audio'), AppIcons.audioTrack, focused: _focused == _audio),
-                    if (widget.nextItemLabel != null) ...[
+                    if (nextItemLabel != null) ...[
                       const SizedBox(width: 16),
                       Flexible(
                         child: Text(
-                          'Up next: ${widget.nextItemLabel}',
+                          'Up next: $nextItemLabel',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
                           style: const TextStyle(color: Colors.white60, fontSize: 13, fontStyle: FontStyle.italic),

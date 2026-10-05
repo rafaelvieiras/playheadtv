@@ -162,9 +162,21 @@ class EpgOverlayState extends State<EpgOverlay> {
 
   bool _isLive(GuideCell c, DateTime now) => c.isLiveAt(now);
 
+  // Cells of one row. `raw` also holds the entries read from before the
+  // window (`guideContextLookback`, the same reach the OSD reads), so a tail
+  // is attributed to the same program as in the OSD; the cells that end before
+  // the window are not part of the grid.
+  List<GuideCell> _cellsOf(List<EpgEntry> raw) => [
+        for (final c in buildGuideCells(raw))
+          if (c.displayEnd.isAfter(_windowStart)) c,
+      ];
+
   void _rebuildCells() {
-    _entriesByChannel = [for (final raw in _rawByChannel) buildGuideCells(raw)];
+    _entriesByChannel = [for (final raw in _rawByChannel) _cellsOf(raw)];
   }
+
+  // A row's entries over the window, plus the lookback before it.
+  List<EpgEntry> _readWindow(PlayheadChannel c) => _readEpg(c, _windowStart.subtract(guideContextLookback), _windowEnd);
 
   // The channel's entries in the span, read from the offline cache (the
   // guide never asks the backend): already enriched (titles, art references)
@@ -178,7 +190,7 @@ class EpgOverlayState extends State<EpgOverlay> {
   void _refreshFromCache() {
     if (!mounted || _loading || _error != null) return;
     setState(() {
-      _rawByChannel = [for (final c in widget.channels) _readEpg(c, _windowStart, _windowEnd)];
+      _rawByChannel = [for (final c in widget.channels) _readWindow(c)];
       _rebuildCells();
       if (_focusedRow < _entriesByChannel.length) {
         final len = _entriesByChannel[_focusedRow].length;
@@ -196,13 +208,13 @@ class EpgOverlayState extends State<EpgOverlay> {
     _maxWindowEnd = widget.cache.horizonEnd;
 
     try {
-      final results = [for (final c in widget.channels) _readEpg(c, start, end)];
+      final results = [for (final c in widget.channels) _readWindow(c)];
       if (!mounted) return;
 
       final channelIndex = widget.channels.indexWhere((c) => c.id == widget.currentChannelId);
       final initialRow = channelIndex >= 0 ? channelIndex : 0;
       var initialCol = 0;
-      final initialCells = [for (final raw in results) buildGuideCells(raw)];
+      final initialCells = [for (final raw in results) _cellsOf(raw)];
       if (initialRow < initialCells.length) {
         final liveIdx = initialCells[initialRow].indexWhere((c) => _isLive(c, now));
         if (liveIdx >= 0) initialCol = liveIdx;

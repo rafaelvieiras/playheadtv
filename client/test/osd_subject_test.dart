@@ -44,14 +44,33 @@ void main() {
     final pre2 = osdSubjectFor(lineup, lineup.firstWhere((x) => x.id == 'pre2'));
     expect(pre2.program.id, 'b');
     expect(secs(pre2.start), 2100);
-    expect(secs(pre2.end), 7200, reason: 'B plus the tail attributed to it');
+    expect(secs(pre2.end), 5400, reason: 'B plus the first 30 minutes of the tail');
     expect(pre2.next, isNull);
   });
 
-  test('a tail is described as the program before it', () {
-    final s = osdSubjectFor(lineup, lineup.last);
-    expect(s.program.id, 'b');
-    expect(s.attributed, isTrue);
+  DateTime at(int seconds) => DateTime.fromMillisecondsSinceEpoch(seconds * 1000, isUtc: true);
+
+  test('a tail inside its cap is described as the program before it', () {
+    for (final t in [3600, 4000, 5399]) {
+      final s = osdSubjectFor(lineup, lineup.last, now: at(t));
+      expect(s.program.id, 'b', reason: '$t');
+      expect(s.attributed, isTrue);
+      expect(s.channelOnly, isFalse);
+      expect(secs(s.end), 5400);
+    }
+  });
+
+  test('a tail past its cap is the channel\'s, with no program', () {
+    final s = osdSubjectFor(lineup, lineup.last, now: at(5400));
+    expect(s.channelOnly, isTrue);
+    expect(s.key, 'channel');
+    expect(osdSubjectFor(lineup, lineup.last, now: at(7000)).channelOnly, isTrue);
+  });
+
+  test('a tail clip that starts past the cap is the channel\'s', () {
+    final clips = [e('b', 'program', 0, 600), e('t1', 'tail', 600, 2400), e('t2', 'tail', 2400, 3000)];
+    expect(osdSubjectFor(clips, clips[1], now: at(700)).program.id, 'b');
+    expect(osdSubjectFor(clips, clips[2], now: at(2500)).channelOnly, isTrue);
   });
 
   test('the key only changes with the program, so a filler never re-announces', () {
@@ -79,9 +98,15 @@ void main() {
   });
 
   test('a filler with nothing to attach to is described as itself', () {
-    final t = e('t', 'tail', 0, 600);
-    final s = osdSubjectFor([t], t);
-    expect(s.program.id, 't');
+    final p = e('p', 'postroll', 0, 600);
+    final s = osdSubjectFor([p], p);
+    expect(s.program.id, 'p');
     expect(secs(s.end), 600);
+  });
+
+  test('a tail with nothing to attach to is the channel\'s', () {
+    final t = e('t', 'tail', 0, 600);
+    final s = osdSubjectFor([t], t, now: at(10));
+    expect(s.channelOnly, isTrue);
   });
 }

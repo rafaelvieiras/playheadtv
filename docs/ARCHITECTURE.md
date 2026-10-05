@@ -877,10 +877,27 @@ the proposal" produces a collection.
   pops it again. A `fallback` is described as itself, and so is a hidden entry
   nothing could be attributed to. When the filler already on air at tune-in
   belongs to a program that ended before the first fetched entry, the client
-  fetches the few hours before it to find that program. A long `tail` is
-  attributed to the previous program for its whole length, so the OSD keeps
-  naming that program until the next one starts. The web UI's "Show filler" toggle (UI state only) draws every entry
-  at its real span instead. The rules are one pure function per platform
+  reads the entries before it from the cache to find that program. A `tail`
+  can last hours, so it is attributed to the previous program only for its
+  first 30 minutes (`tailAttributionCap` / `TAIL_ATTRIBUTION_CAP_MS`, one
+  constant per platform), measured from the start of the run of tail entries
+  (a postroll before it does not eat the budget). Past the cap the rest of the
+  tail belongs to no program, not to the next one either: the guide shows it
+  as a gap (no live cell, nothing to select-to-tune), and the OSD shows the
+  channel's number and name as its title, with no program times, no "Ends"
+  and no progress ("Up next" stays). A tail with no previous program (nothing
+  before it, or a fallback in the way) can still fall to the next program, but
+  only when the whole tail fits in the cap. The cap applies to tails only;
+  preroll, midroll and postroll are short and keep their rule. The OSD's
+  subject is re-read on its own tick, so it flips to the channel when the cap
+  passes without any entry change. The guide and the OSD feed
+  `buildGuideCells` the same context: the cache entries from
+  `guideContextLookback` (2h) before their first instant, which covers the
+  cap plus the filler between a program's end and its tail with a wide margin
+  (the cache query returns anything overlapping the span, so the program's own
+  length does not matter) and stays inside `cachePastRetention` (6h); the
+  guide drops the cells that end before its window. The web UI's "Show filler"
+  toggle (UI state only) draws every entry at its real span instead. The rules are one pure function per platform
   (`client/lib/epg_guide.dart`, `webui/src/lib/guideDisplay.ts`) with the
   same unit tests. There is no per-channel or per-block setting.
 - `GET /epg/meta`: `{revision, valid_until, freeze_margin_ms, window_ms}` only —

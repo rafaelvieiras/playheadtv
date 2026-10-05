@@ -32,8 +32,9 @@ const defaultBackendWindow = Duration(hours: 48);
 const defaultClientWindowLimit = Duration(hours: 48);
 
 /// Entries that ended longer ago than this are dropped by a sync (the guide
-/// shows a little of the past, and the OSD looks back up to six hours to
-/// attribute a filler to its program; nothing needs more).
+/// shows a little of the past, and the guide and the OSD both look back
+/// `guideContextLookback` (2h) to attribute a filler to its program; nothing
+/// needs more).
 const cachePastRetention = Duration(hours: 6);
 
 /// The effective window: the smaller of what the backend materializes and

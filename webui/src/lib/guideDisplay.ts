@@ -14,6 +14,13 @@
 // A neighbour only absorbs an entry that touches it (within `toleranceMs`,
 // counting what it already absorbed), so a real gap next to a filler is never
 // painted over. A fallback is a visible cell of its own and absorbs nothing.
+//
+// A tail can last hours, so its attribution is capped: the previous program
+// absorbs at most the first `TAIL_ATTRIBUTION_CAP_MS` of a run of tail
+// entries, measured from the start of the run. The rest of the tail is
+// attributed to no program (not to the next one either) and shows as a gap. A
+// tail with no previous program can only fall to the next program when it fits
+// in the cap as a whole. The other hidden kinds are short and keep their rule.
 import type { EpgEntryKind } from './types.ts'
 
 export const HIDDEN_GUIDE_KINDS: ReadonlySet<EpgEntryKind> = new Set(['preroll', 'midroll', 'postroll', 'tail'])
@@ -41,7 +48,15 @@ export interface GuideCell<T extends TimedEntry> {
 
 const DEFAULT_TOLERANCE_MS = 1000
 
-export function buildGuideCells<T extends TimedEntry>(entries: readonly T[], toleranceMs = DEFAULT_TOLERANCE_MS): GuideCell<T>[] {
+// How much of a tail the previous program absorbs (30 minutes). The client's
+// guide and OSD use the same value (`defaultTailAttributionCap`).
+export const TAIL_ATTRIBUTION_CAP_MS = 30 * 60 * 1000
+
+export function buildGuideCells<T extends TimedEntry>(
+  entries: readonly T[],
+  toleranceMs = DEFAULT_TOLERANCE_MS,
+  tailCapMs = TAIL_ATTRIBUTION_CAP_MS,
+): GuideCell<T>[] {
   const sorted = [...entries].sort((a, b) => a.start_at - b.start_at || a.end_at - b.end_at)
   const cells = new Map<T, GuideCell<T>>()
   for (const e of sorted) {
@@ -50,6 +65,17 @@ export function buildGuideCells<T extends TimedEntry>(entries: readonly T[], tol
     }
   }
   const done = new Set<T>()
+
+  // Whether the nearest visible entry before each hidden one is a program: a
+  // tail that has one never falls to the next program.
+  const hasPreviousProgram = new Map<T, boolean>()
+  let lastVisibleIsProgram = false
+  for (const e of sorted) {
+    if (cells.has(e)) lastVisibleIsProgram = e.kind === 'program'
+    else hasPreviousProgram.set(e, lastVisibleIsProgram)
+  }
+  // Where the run of tail entries absorbed by a program starts.
+  const tailStart = new Map<GuideCell<T>, number>()
 
   // Walks the entries toward `dir` ('next' = from the end backwards, so the
   // nearest following visible entry is known) and hands every hidden entry in
@@ -67,11 +93,19 @@ export function buildGuideCells<T extends TimedEntry>(entries: readonly T[], tol
       if (done.has(e) || !pick(e) || !neighbour) continue
       if (dir === 'next') {
         if (e.end_at < neighbour.displayStart - toleranceMs) continue
+        if (e.kind === 'tail' && (hasPreviousProgram.get(e) || neighbour.entry.start_at - e.start_at > tailCapMs)) continue
         neighbour.displayStart = Math.min(neighbour.displayStart, e.start_at)
         neighbour.absorbed.unshift(e)
       } else {
         if (e.start_at > neighbour.displayEnd + toleranceMs) continue
-        neighbour.displayEnd = Math.max(neighbour.displayEnd, e.end_at)
+        let end = e.end_at
+        if (e.kind === 'tail') {
+          const limit = (tailStart.get(neighbour) ?? e.start_at) + tailCapMs
+          if (e.start_at >= limit) continue
+          if (!tailStart.has(neighbour)) tailStart.set(neighbour, e.start_at)
+          end = Math.min(end, limit)
+        }
+        neighbour.displayEnd = Math.max(neighbour.displayEnd, end)
         neighbour.absorbed.push(e)
       }
       done.add(e)
