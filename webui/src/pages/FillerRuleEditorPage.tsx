@@ -13,7 +13,14 @@ import { Combobox } from '@/components/ui/combobox'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { KIND_LABELS, SCOPE_LABELS, STRATEGY_LABELS } from '@/lib/filler'
+import {
+  KIND_LABELS,
+  MAX_FIT_ATTEMPTS_MAX,
+  MAX_FIT_ATTEMPTS_MIN,
+  SCOPE_LABELS,
+  STRATEGY_LABELS,
+  validMaxFitAttempts,
+} from '@/lib/filler'
 import { api, ApiError } from '@/lib/http'
 import type {
   Block,
@@ -35,6 +42,7 @@ const emptyDraft: FillerRuleInput = {
   filler_pool_id: '',
   selection_strategy: 'sequential',
   position: 0,
+  max_fit_attempts: 1,
 }
 
 function ruleToInput(rule: FillerRule): FillerRuleInput {
@@ -45,6 +53,7 @@ function ruleToInput(rule: FillerRule): FillerRuleInput {
     filler_pool_id: rule.filler_pool_id,
     selection_strategy: rule.selection_strategy,
     position: rule.position,
+    max_fit_attempts: rule.max_fit_attempts ?? 1,
   }
 }
 
@@ -55,7 +64,8 @@ function sameInput(a: FillerRuleInput, b: FillerRuleInput): boolean {
     a.kind === b.kind &&
     a.filler_pool_id === b.filler_pool_id &&
     a.selection_strategy === b.selection_strategy &&
-    a.position === b.position
+    a.position === b.position &&
+    a.max_fit_attempts === b.max_fit_attempts
   )
 }
 
@@ -150,6 +160,10 @@ export function FillerRuleEditorPage() {
     }
     if (!Number.isInteger(current.position)) {
       setFormError('Position must be a whole number.')
+      return
+    }
+    if (!validMaxFitAttempts(current.max_fit_attempts)) {
+      setFormError(`Fit attempts must be a whole number from ${MAX_FIT_ATTEMPTS_MIN} to ${MAX_FIT_ATTEMPTS_MAX}.`)
       return
     }
     save.mutate(current)
@@ -264,6 +278,27 @@ export function FillerRuleEditorPage() {
           />
           <FieldDescription>Order among rules of the same scope and type.</FieldDescription>
         </Field>
+
+        {(current.kind === 'tail' || current.kind === 'fallback') && (
+          <Field>
+            <FieldLabel htmlFor="rule-fit-attempts">Fit attempts</FieldLabel>
+            <Input
+              id="rule-fit-attempts"
+              data-testid="rule-fit-attempts"
+              type="number"
+              step={1}
+              min={MAX_FIT_ATTEMPTS_MIN}
+              max={MAX_FIT_ATTEMPTS_MAX}
+              value={Number.isNaN(current.max_fit_attempts) ? '' : current.max_fit_attempts}
+              onChange={(e) => patch({ max_fit_attempts: e.target.value === '' ? NaN : Number(e.target.value) })}
+            />
+            <FieldDescription>
+              When an item does not fit the time left, try other items of the pool, up to this many misses in a row
+              (1 to {MAX_FIT_ATTEMPTS_MAX}). 1 stops at the first miss. The fill keeps going with whatever fits while
+              time is left; skipped items do not lose their turn in a sequential rotation.
+            </FieldDescription>
+          </Field>
+        )}
       </FieldGroup>
 
       {pool && (

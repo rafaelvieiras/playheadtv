@@ -65,7 +65,7 @@ const channelTimeout = 30 * time.Second
 // — duplicated here (rather than imported) because this package must not
 // depend on internal/api.
 const scheduleItemColumns = "id, tenant_id, schedule_id, block_id, recurrence_type AS recurrence, days_of_week, start_time_local, start_at, active, created_at, updated_at"
-const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, filler_pool_id, selection_strategy AS selection, position, created_at"
+const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, filler_pool_id, selection_strategy AS selection, position, max_fit_attempts, created_at"
 const blockItemColumns = "id, block_id, position, item_type, COALESCE(catalog_item_id, '') AS catalog_item_id, trim_duration_ms, spec"
 const fillerPoolItemColumns = "id, filler_pool_id, catalog_item_id, weight"
 const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, schedule_id, created_at, updated_at"
@@ -783,6 +783,10 @@ const (
 	// endless block (continuous item, dynamic block) can exceed half of its
 	// shortest program. Informational; nothing is limited.
 	WarningFillerRatio = "filler-ratio"
+	// WarningUnfilledSlot: a block's slot can end with a stretch of a minute or
+	// more that no item, tail filler or channel fallback rule covers, so the
+	// guide has a gap before the next timed item. Informational.
+	WarningUnfilledSlot = "unfilled-slot"
 )
 
 // Warning is a problem found in a channel's stored configuration that makes
@@ -841,10 +845,13 @@ func (m *Materializer) Warnings(ctx context.Context, tenantID string, ch domain.
 	if err != nil {
 		return nil, err
 	}
-	if in.Warnings == nil {
+	// Last: the expansion behind it consumes the loaded series runs, and
+	// nothing reads them afterwards.
+	warnings := append(in.Warnings, in.unfilledSlotWarnings(now)...)
+	if warnings == nil {
 		return []Warning{}, nil
 	}
-	return in.Warnings, nil
+	return warnings, nil
 }
 
 // dynamicWalk is the interleaved walk of a dynamic block: the query it

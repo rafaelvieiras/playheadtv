@@ -67,6 +67,15 @@ type FillerRule struct {
 	Selection    SelectionStrategy `json:"selection_strategy"`
 	// Position orders multiple rules sharing the same Scope+Kind (e.g. two
 	// midroll rules pulling from different pools).
-	Position  int   `json:"position"`
-	CreatedAt int64 `json:"created_at"`
+	Position int `json:"position"`
+	// MaxFitAttempts (tail and fallback rules) is how many candidates in a row
+	// may be rejected for not fitting before the fill gives up on the rest of
+	// the span. 1 gives up at the first miss; ignored by the other kinds.
+	MaxFitAttempts int   `json:"max_fit_attempts"`
+	CreatedAt      int64 `json:"created_at"`
 }
+
+// MaxFitAttemptsLimit is the largest FillerRule.MaxFitAttempts accepted on
+// write. Each failed attempt costs one more look at the pool during a
+// full-window regeneration, so it is bounded.
+const MaxFitAttemptsLimit = 20

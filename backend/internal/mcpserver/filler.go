@@ -3,6 +3,7 @@ package mcpserver
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -20,7 +21,7 @@ import (
 const fillerPoolColumns = "id, tenant_id, name, collection_id, " +
 	"(SELECT c.name FROM collection c WHERE c.tenant_id = filler_pool.tenant_id AND c.id = filler_pool.collection_id) AS collection_name, " +
 	"(collection_id IS NOT NULL OR criteria IS NOT NULL) AS dynamic, created_at"
-const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, filler_pool_id, selection_strategy AS selection, position, created_at"
+const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, filler_pool_id, selection_strategy AS selection, position, max_fit_attempts, created_at"
 
 // manage_filler covers only the minimal useful surface for v1 — no
 // update/delete on filler_pool/filler_rule, see docs/ROADMAP.md.
@@ -138,6 +139,7 @@ type createFillerRuleInput struct {
 	FillerPoolID      string `json:"filler_pool_id" jsonschema:"the filler pool this rule draws from"`
 	SelectionStrategy string `json:"selection_strategy" jsonschema:"one of: sequential, random, weighted"`
 	Position          int    `json:"position,omitempty" jsonschema:"ordering among multiple rules of the same kind/scope"`
+	MaxFitAttempts    int    `json:"max_fit_attempts,omitempty" jsonschema:"tail and fallback rules only: how many candidates in a row may be rejected for not fitting before the fill gives up (1 to 20, default 1)"`
 }
 
 func validateFillerRuleInput(in createFillerRuleInput) error {
@@ -162,6 +164,9 @@ func validateFillerRuleInput(in createFillerRuleInput) error {
 	default:
 		return errors.New("selection_strategy must be one of sequential, random, weighted")
 	}
+	if in.MaxFitAttempts != 0 && (in.MaxFitAttempts < 1 || in.MaxFitAttempts > domain.MaxFitAttemptsLimit) {
+		return fmt.Errorf("max_fit_attempts must be between 1 and %d", domain.MaxFitAttemptsLimit)
+	}
 	return nil
 }
 
@@ -170,22 +175,27 @@ func createFillerRuleHandler(db storage.DB, mat *materializer.Materializer) mcp.
 		if err := validateFillerRuleInput(in); err != nil {
 			return nil, domain.FillerRule{}, err
 		}
+		maxFit := in.MaxFitAttempts
+		if maxFit == 0 {
+			maxFit = 1
+		}
 		fr := domain.FillerRule{
-			ID:           uuid.NewString(),
-			TenantID:     defaultTenantID,
-			Scope:        domain.FillerScope(in.ScopeType),
-			ScopeID:      in.ScopeID,
-			Kind:         domain.FillerKind(in.Kind),
-			FillerPoolID: in.FillerPoolID,
-			Selection:    domain.SelectionStrategy(in.SelectionStrategy),
-			Position:     in.Position,
-			CreatedAt:    nowMillis(),
+			MaxFitAttempts: maxFit,
+			ID:             uuid.NewString(),
+			TenantID:       defaultTenantID,
+			Scope:          domain.FillerScope(in.ScopeType),
+			ScopeID:        in.ScopeID,
+			Kind:           domain.FillerKind(in.Kind),
+			FillerPoolID:   in.FillerPoolID,
+			Selection:      domain.SelectionStrategy(in.SelectionStrategy),
+			Position:       in.Position,
+			CreatedAt:      nowMillis(),
 		}
 		err := db.Exec(ctx,
-			`INSERT INTO filler_rule (id, tenant_id, scope_type, scope_id, kind, filler_pool_id, selection_strategy, position, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO filler_rule (id, tenant_id, scope_type, scope_id, kind, filler_pool_id, selection_strategy, position, max_fit_attempts, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			fr.ID, fr.TenantID, string(fr.Scope), fr.ScopeID, string(fr.Kind), fr.FillerPoolID,
-			string(fr.Selection), fr.Position, fr.CreatedAt,
+			string(fr.Selection), fr.Position, fr.MaxFitAttempts, fr.CreatedAt,
 		)
 		if err != nil {
 			return nil, domain.FillerRule{}, err

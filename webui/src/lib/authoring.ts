@@ -84,7 +84,7 @@ export function useChannelEpgPreview(
 }
 
 export interface EpgWarning {
-  kind: 'criteria-error' | 'series-error' | 'filler-ratio'
+  kind: 'criteria-error' | 'series-error' | 'filler-ratio' | 'unfilled-slot'
   block_id: string
   block_item_id?: string
   message: string

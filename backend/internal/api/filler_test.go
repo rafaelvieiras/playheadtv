@@ -151,6 +151,63 @@ func TestFillerRuleInvalidKind(t *testing.T) {
 	}
 }
 
+func TestFillerRuleMaxFitAttempts(t *testing.T) {
+	_, mux := newTestDB(t)
+	rec := doRequest(t, mux, "POST", "/filler-pools", `{"name":"Bumpers"}`)
+	var pool domain.FillerPool
+	json.Unmarshal(rec.Body.Bytes(), &pool)
+
+	base := func(extra string) string {
+		return fmt.Sprintf(`{"scope_type":"channel","scope_id":"chan-1","kind":"tail","filler_pool_id":%q,"selection_strategy":"random"%s}`, pool.ID, extra)
+	}
+
+	// Omitted means 1, today's behavior.
+	rec = doRequest(t, mux, "POST", "/filler-rules", base(""))
+	var rule domain.FillerRule
+	json.Unmarshal(rec.Body.Bytes(), &rule)
+	if rec.Code != http.StatusCreated || rule.MaxFitAttempts != 1 {
+		t.Fatalf("default: status %d, rule %+v", rec.Code, rule)
+	}
+
+	// Explicit value is stored and served.
+	rec = doRequest(t, mux, "POST", "/filler-rules", base(`,"max_fit_attempts":7`))
+	var seven domain.FillerRule
+	json.Unmarshal(rec.Body.Bytes(), &seven)
+	if rec.Code != http.StatusCreated || seven.MaxFitAttempts != 7 {
+		t.Fatalf("explicit: status %d, rule %+v", rec.Code, seven)
+	}
+
+	// PUT without the field keeps the stored value; with it, replaces it.
+	rec = doRequest(t, mux, "PUT", "/filler-rules/"+seven.ID, base(`,"position":2`))
+	var kept domain.FillerRule
+	json.Unmarshal(rec.Body.Bytes(), &kept)
+	if rec.Code != http.StatusOK || kept.MaxFitAttempts != 7 || kept.Position != 2 {
+		t.Fatalf("put without field: status %d, rule %+v", rec.Code, kept)
+	}
+	rec = doRequest(t, mux, "PUT", "/filler-rules/"+seven.ID, base(`,"max_fit_attempts":3`))
+	var three domain.FillerRule
+	json.Unmarshal(rec.Body.Bytes(), &three)
+	if rec.Code != http.StatusOK || three.MaxFitAttempts != 3 {
+		t.Fatalf("put with field: status %d, rule %+v", rec.Code, three)
+	}
+
+	// Out-of-range values are a 400 on both verbs.
+	for _, bad := range []string{`0`, `-1`, `21`} {
+		rec = doRequest(t, mux, "POST", "/filler-rules", base(`,"max_fit_attempts":`+bad))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("POST %s: status %d, want 400", bad, rec.Code)
+		}
+		rec = doRequest(t, mux, "PUT", "/filler-rules/"+rule.ID, base(`,"max_fit_attempts":`+bad))
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("PUT %s: status %d, want 400", bad, rec.Code)
+		}
+	}
+	rec = doRequest(t, mux, "POST", "/filler-rules", base(`,"max_fit_attempts":20`))
+	if rec.Code != http.StatusCreated {
+		t.Errorf("20 is the limit and must be accepted: status %d", rec.Code)
+	}
+}
+
 // seedGenreCatalogItem is seedCatalogItem plus a genres value, so dynamic
 // filler_pool criteria tests have something to actually match against.
 func seedGenreCatalogItem(t *testing.T, db storage.DB, id, genres string) string {

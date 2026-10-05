@@ -397,8 +397,15 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 		"scope_type": "channel", "scope_id": ch.ID, "kind": "fallback",
 		"filler_pool_id": pool.ID, "selection_strategy": "sequential", "position": 0,
 	})
-	if rule.ID == "" {
+	if rule.ID == "" || rule.MaxFitAttempts != 1 {
 		t.Fatalf("create_filler_rule: unexpected result %+v", rule)
+	}
+	tailRule := callTool[domain.FillerRule](t, ctx, session, "create_filler_rule", map[string]any{
+		"scope_type": "channel", "scope_id": ch.ID, "kind": "tail",
+		"filler_pool_id": pool.ID, "selection_strategy": "sequential", "max_fit_attempts": 4,
+	})
+	if tailRule.MaxFitAttempts != 4 {
+		t.Fatalf("create_filler_rule with attempts: unexpected result %+v", tailRule)
 	}
 
 	poolsOut := callTool[struct {

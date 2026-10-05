@@ -11,6 +11,41 @@ import (
 // configured between two programs may take before a warning is raised.
 const fillerRatioLimit = 0.5
 
+// unfilledSlotMin is the shortest uncovered stretch at the end of a slot worth
+// an unfilled-slot warning (the guide ignores seams under a minute too).
+const unfilledSlotMin = time.Minute
+
+// unfilledSlotWarnings flags the blocks whose slot can end with a stretch no
+// entry covers: whole items, the tail rule and then the channel's fallback
+// rule (none applies, or this wouldn't be reported) leave it empty, and the
+// client runs ahead of the guide through it. It expands a week of the
+// channel's configuration read-only, so it reports what a regeneration would
+// really leave, per block with the longest stretch seen. Nothing is blocked.
+func (in channelInput) unfilledSlotWarnings(now time.Time) []Warning {
+	var found []residual
+	in.Residuals = &found
+	expandChannel(in, now, now, now.Add(7*24*time.Hour), newSelectionState())
+	longest := map[string]time.Duration{}
+	var order []string
+	for _, r := range found {
+		if _, ok := longest[r.BlockID]; !ok {
+			order = append(order, r.BlockID)
+		}
+		if r.Length > longest[r.BlockID] {
+			longest[r.BlockID] = r.Length
+		}
+	}
+	var out []Warning
+	for _, blockID := range order {
+		out = append(out, Warning{
+			Kind:    WarningUnfilledSlot,
+			BlockID: blockID,
+			Message: fmt.Sprintf("its slot can end with up to %s of empty time: nothing in the block, its tail filler or the channel fallback fills the rest before the next scheduled item. Add a tail filler with more fit attempts or a channel fallback rule.", formatMs(longest[blockID].Milliseconds())),
+		})
+	}
+	return out
+}
+
 // poolMaxDuration is the longest item of a rule's pool (0 for no rule or no
 // usable item): the worst case one pick can add.
 func (in channelInput) poolMaxDuration(rule *domain.FillerRule) int64 {

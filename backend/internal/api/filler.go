@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -45,7 +46,7 @@ const fillerPoolItemColumns = "id, filler_pool_id, catalog_item_id, weight"
 // field names domain.FillerRule actually has (Scope/Selection) — storage's
 // scan matches columns by snake_case(field name), and those two fields don't
 // spell out to the DB's column names.
-const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, filler_pool_id, selection_strategy AS selection, position, created_at"
+const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, filler_pool_id, selection_strategy AS selection, position, max_fit_attempts, created_at"
 
 type fillerPoolRequest struct {
 	Name string `json:"name"`
@@ -373,6 +374,8 @@ type fillerRuleRequest struct {
 	FillerPoolID      string `json:"filler_pool_id"`
 	SelectionStrategy string `json:"selection_strategy"`
 	Position          int    `json:"position"`
+	// MaxFitAttempts: nil keeps the stored value on PUT and means 1 on POST.
+	MaxFitAttempts *int `json:"max_fit_attempts"`
 }
 
 func fetchFillerRule(db storage.DB, r *http.Request, id string) (domain.FillerRule, error) {
@@ -406,6 +409,9 @@ func validateFillerRuleRequest(req fillerRuleRequest) (string, bool) {
 	default:
 		return "selection_strategy must be one of sequential, random, weighted", false
 	}
+	if req.MaxFitAttempts != nil && (*req.MaxFitAttempts < 1 || *req.MaxFitAttempts > domain.MaxFitAttemptsLimit) {
+		return fmt.Sprintf("max_fit_attempts must be between 1 and %d", domain.MaxFitAttemptsLimit), false
+	}
 	return "", true
 }
 
@@ -420,22 +426,27 @@ func createFillerRule(db storage.DB, mat *materializer.Materializer) http.Handle
 			writeError(w, http.StatusBadRequest, msg)
 			return
 		}
+		maxFit := 1
+		if req.MaxFitAttempts != nil {
+			maxFit = *req.MaxFitAttempts
+		}
 		fr := domain.FillerRule{
-			ID:           uuid.NewString(),
-			TenantID:     DefaultTenantID,
-			Scope:        domain.FillerScope(req.ScopeType),
-			ScopeID:      req.ScopeID,
-			Kind:         domain.FillerKind(req.Kind),
-			FillerPoolID: req.FillerPoolID,
-			Selection:    domain.SelectionStrategy(req.SelectionStrategy),
-			Position:     req.Position,
-			CreatedAt:    time.Now().UnixMilli(),
+			MaxFitAttempts: maxFit,
+			ID:             uuid.NewString(),
+			TenantID:       DefaultTenantID,
+			Scope:          domain.FillerScope(req.ScopeType),
+			ScopeID:        req.ScopeID,
+			Kind:           domain.FillerKind(req.Kind),
+			FillerPoolID:   req.FillerPoolID,
+			Selection:      domain.SelectionStrategy(req.SelectionStrategy),
+			Position:       req.Position,
+			CreatedAt:      time.Now().UnixMilli(),
 		}
 		err := db.Exec(r.Context(),
-			`INSERT INTO filler_rule (id, tenant_id, scope_type, scope_id, kind, filler_pool_id, selection_strategy, position, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			`INSERT INTO filler_rule (id, tenant_id, scope_type, scope_id, kind, filler_pool_id, selection_strategy, position, max_fit_attempts, created_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			fr.ID, fr.TenantID, string(fr.Scope), fr.ScopeID, string(fr.Kind), fr.FillerPoolID,
-			string(fr.Selection), fr.Position, fr.CreatedAt,
+			string(fr.Selection), fr.Position, fr.MaxFitAttempts, fr.CreatedAt,
 		)
 		if err != nil {
 			handleDBError(w, err)
@@ -475,7 +486,8 @@ func getFillerRule(db storage.DB) http.HandlerFunc {
 func updateFillerRule(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if _, err := fetchFillerRule(db, r, id); err != nil {
+		existing, err := fetchFillerRule(db, r, id)
+		if err != nil {
 			handleDBError(w, err)
 			return
 		}
@@ -488,10 +500,14 @@ func updateFillerRule(db storage.DB, mat *materializer.Materializer) http.Handle
 			writeError(w, http.StatusBadRequest, msg)
 			return
 		}
-		err := db.Exec(r.Context(),
-			`UPDATE filler_rule SET scope_type = ?, scope_id = ?, kind = ?, filler_pool_id = ?, selection_strategy = ?, position = ?
+		maxFit := existing.MaxFitAttempts
+		if req.MaxFitAttempts != nil {
+			maxFit = *req.MaxFitAttempts
+		}
+		err = db.Exec(r.Context(),
+			`UPDATE filler_rule SET scope_type = ?, scope_id = ?, kind = ?, filler_pool_id = ?, selection_strategy = ?, position = ?, max_fit_attempts = ?
 			 WHERE tenant_id = ? AND id = ?`,
-			req.ScopeType, req.ScopeID, req.Kind, req.FillerPoolID, req.SelectionStrategy, req.Position,
+			req.ScopeType, req.ScopeID, req.Kind, req.FillerPoolID, req.SelectionStrategy, req.Position, maxFit,
 			DefaultTenantID, id,
 		)
 		if err != nil {

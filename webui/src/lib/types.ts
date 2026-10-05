@@ -590,6 +590,9 @@ export interface FillerRule {
   filler_pool_id: string
   selection_strategy: SelectionStrategy
   position: number
+  // Tail and fallback rules: candidates in a row that may miss the time left
+  // before the fill gives up (1 to 20, 1 gives up at the first miss).
+  max_fit_attempts: number
   created_at: number
 }
 
@@ -602,6 +605,7 @@ export interface FillerRuleInput {
   filler_pool_id: string
   selection_strategy: SelectionStrategy
   position: number
+  max_fit_attempts: number
 }
 
 // Mirrors backend/internal/domain.StreamRuleStep. subtitle_language is null

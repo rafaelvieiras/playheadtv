@@ -403,6 +403,18 @@ actionable checklist.
       its already-materialized grid is rebuilt on the next regeneration; no data
       migration.
 
+- [x] Explicit block tail behavior: `filler_rule.max_fit_attempts` (migration
+      `0017`, 1 to 20, default 1 = give up at the first miss; REST, MCP
+      `create_filler_rule` and the filler rule form) lets a tail or fallback
+      fill try other pool items when one does not fit and keep going with
+      what fits; skipped items do not use up a sequential rotation slot. The
+      cascade items, tail, channel fallback, gap is documented in
+      `docs/ARCHITECTURE.md` ("Block tail and the fill cascade"), and an
+      `unfilled-slot` epg warning (shown in the channel guide) reports a slot
+      that can end empty with no fallback rule. Known: a manual block's last
+      timed occurrence has no next item, so its tail fills up to the window's
+      end (not changed).
+
 ## Phase 2 — MCP surface
 
 - [x] MCP server (`github.com/modelcontextprotocol/go-sdk` v1.8.0) in the same

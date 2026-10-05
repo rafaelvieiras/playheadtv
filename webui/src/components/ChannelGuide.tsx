@@ -191,7 +191,7 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
     })
     ;(serverWarnings ?? []).forEach((w) => {
       out.push({
-        kind: w.kind === 'filler-ratio' ? 'filler-ratio' : 'criteria-error',
+        kind: w.kind === 'filler-ratio' || w.kind === 'unfilled-slot' ? w.kind : 'criteria-error',
         key: `${w.kind}-${w.block_id}-${w.block_item_id ?? ''}`,
         blockId: w.block_id,
         blockName: blocksById.get(w.block_id)?.name ?? w.block_id,
@@ -471,7 +471,9 @@ export function ChannelGuide({ channel, active }: { channel: Channel; active: bo
                     ? 'Query could not be evaluated'
                     : w.kind === 'filler-ratio'
                       ? 'Long fillers between programs'
-                      : 'Criteria match nothing'
+                      : w.kind === 'unfilled-slot'
+                        ? 'Slot can end empty'
+                        : 'Criteria match nothing'
             }
           >
             {w.message}{' '}

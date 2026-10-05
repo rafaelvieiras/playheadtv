@@ -451,7 +451,9 @@ edges):
 - **`filler_pool`**: a named collection of filler content (commercials,
   bumpers, station IDs). **`filler_rule`** scopes a filler kind
   (preroll/midroll/postroll/tail/fallback) to a channel or a single block,
-  drawing from a pool with a selection strategy (sequential/random/weighted).
+  drawing from a pool with a selection strategy (sequential/random/weighted);
+  tail and fallback rules also carry `max_fit_attempts` (see "Block tail and
+  the fill cascade").
   A pool's `filler_pool_item` rows are either curated by hand (the default,
   via `POST`/`PUT`/`DELETE /filler-pools/{id}/items`) or, when `filler_pool.collection_id`
   is set (a collection, see "Collections"), owned entirely by
@@ -674,6 +676,53 @@ resets that channel (REST and MCP alike). The reset runs synchronously inside
 the request, like the endpoint above, and waits at most for a materializer run
 already in progress (they share one mutex). Catalog-only changes (sync,
 catalog edits) never reset; they keep the freeze margin.
+
+### Block tail and the fill cascade (migration `0017`)
+
+What a slot (a timed occurrence, or the continuous item's stretch before the
+next timed item) airs is decided in layers, each covering only what the one
+before left:
+
+1. **Items**: the block's own content, whole items only, never cut short (a
+   manual block per its list mode, a dynamic block or continuous item looping).
+2. **Tail filler**: the resolved `tail` rule (block scope over channel scope)
+   fills `[end of items, next occurrence)` with `kind=tail` entries. This
+   applies to manual blocks, dynamic blocks and the continuous item alike.
+3. **Fallback**: the channel-scoped `fallback` rule fills whatever the tail
+   left, up to the next occurrence.
+4. **Gap**: with no rule that applies (or nothing in the pool short enough),
+   the rest has no `epg_entry`.
+
+A tail or fallback fill picks whole pool items. `filler_rule.max_fit_attempts`
+(1 to 20, default 1, validated on write with a 400, ignored by the other
+kinds) says how many candidates in a row it may reject for not fitting before
+giving up on the rest of the span:
+
+- A rejected pick is replaced by another candidate: the next ones in order for
+  `sequential`, a draw without replacement for `random`/`weighted`. The fill
+  keeps going with whatever fits while time is left; the attempts bound
+  consecutive misses, not the number of items aired. With 1 it stops at the
+  first miss.
+- Skipped candidates do not use up a `sequential` rotation slot: the rotation
+  advances past the item that actually aired, and a stretch in which nothing
+  fits leaves it where it was. Consequence: with 1 attempt, a sequential pool
+  whose next item is longer than every residual never rotates past it; raise
+  the attempts to let shorter items through.
+- A residual shorter than the shortest item of the pool is not attempted at
+  all. The cost of attempts is bounded by the limit, and the 50000-entry cap
+  per fill still applies.
+
+Tail entries stay `kind=tail`, so the guide hides them and `group_tail=1`
+groups a run of them whatever block produced it. The guide/OSD attribution cap
+for a tail (30 minutes) is unrelated and unchanged. The last timed occurrence
+of a manual block has no next item, so its tail runs to the end of the
+materialized window; the next regeneration continues from there.
+
+`GET /channels/{id}/epg-warnings` reports `unfilled-slot` for a block whose
+slot can end with a minute or more that nothing covers (items, tail and the
+channel fallback considered, a real next timed item required). It expands a
+week of the stored configuration read-only to find it, and is informational:
+the web UI shows it in the channel guide next to the other block warnings.
 
 ### Authoring endpoints (item editing, previews)
 

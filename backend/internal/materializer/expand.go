@@ -60,6 +60,19 @@ type channelInput struct {
 	// generated entry starting before it is dropped, since the kept rows
 	// already cover that span.
 	KeptUntil time.Time
+	// Residuals, when non-nil, collects the spans a timed slot (or the
+	// continuous item's stretch) ends with nothing in them after items, tail
+	// and fallback, for the unfilled-slot warning. Collection is off in the
+	// normal materialization.
+	Residuals *[]residual
+}
+
+// residual is a stretch of a slot that no entry covers although a real
+// boundary (the next timed item) follows it, and no channel fallback rule
+// applies to take it over.
+type residual struct {
+	BlockID string
+	Length  time.Duration
 }
 
 // selectionState carries the mutable, ephemeral bookkeeping a single Run()
@@ -269,11 +282,154 @@ func pickFiller(rule *domain.FillerRule, poolItems map[string][]domain.FillerPoo
 	return item, dur, true
 }
 
+// maxFitAttemptsLimit is the largest max_fit_attempts a filler rule may carry
+// (validated by the API and MCP on write). Each failed attempt costs one more
+// look at the pool, so the bound keeps a full-window regeneration cheap.
+const maxFitAttemptsLimit = domain.MaxFitAttemptsLimit
+
+// fitAttempts is how many candidates a fit-seeking fill (tail, fallback) may
+// reject in a row before it gives up: the rule's max_fit_attempts, 1 (the
+// pre-attempts behavior) when unset.
+func fitAttempts(rule *domain.FillerRule) int {
+	if rule.MaxFitAttempts < 1 {
+		return 1
+	}
+	if rule.MaxFitAttempts > maxFitAttemptsLimit {
+		return maxFitAttemptsLimit
+	}
+	return rule.MaxFitAttempts
+}
+
+// fitPicker draws the candidates of one fillGap call. Unlike
+// selectFillerItem it can look at several candidates for one stretch of time
+// (up to attempts of them, each at most once per round) and it only commits a
+// "sequential" rotation position for an item that actually airs: a candidate
+// skipped because it did not fit never uses up a slot, and a round in which
+// nothing fits leaves the rotation where it was.
+type fitPicker struct {
+	rule     *domain.FillerRule
+	pool     []domain.FillerPoolItem
+	durMs    map[string]int64
+	attempts int
+	state    *selectionState
+	// minDur is the shortest positive item of the pool: a residual below it can
+	// never be filled, whatever the attempts.
+	minDur int64
+	// totalWeight is the pool's weight sum, for the weighted strategy.
+	totalWeight int
+	tried       []int // scratch: pool indexes rejected in the current round
+}
+
+func newFitPicker(rule *domain.FillerRule, pool []domain.FillerPoolItem, durMs map[string]int64, state *selectionState) *fitPicker {
+	p := &fitPicker{rule: rule, pool: pool, durMs: durMs, attempts: fitAttempts(rule), state: state}
+	if p.attempts > len(pool) {
+		p.attempts = len(pool)
+	}
+	for _, it := range pool {
+		if d := durMs[it.CatalogItemID]; d > 0 && (p.minDur == 0 || d < p.minDur) {
+			p.minDur = d
+		}
+		p.totalWeight += it.Weight
+	}
+	return p
+}
+
+func (p *fitPicker) wasTried(idx int) bool {
+	for _, t := range p.tried {
+		if t == idx {
+			return true
+		}
+	}
+	return false
+}
+
+// candidate returns the pool index of the k-th candidate of a round (k counts
+// from 0), or false when the strategy has nothing left to offer.
+func (p *fitPicker) candidate(k, seqStart int) (int, bool) {
+	n := len(p.pool)
+	switch p.rule.Selection {
+	case domain.SelectionSequential:
+		return (seqStart + k) % n, true
+	case domain.SelectionWeighted:
+		remaining := p.totalWeight
+		for _, t := range p.tried {
+			remaining -= p.pool[t].Weight
+		}
+		if remaining <= 0 {
+			// Same fallback as selectFillerItem: unusable weights, first item
+			// still on offer.
+			for i := range p.pool {
+				if !p.wasTried(i) {
+					return i, true
+				}
+			}
+			return 0, false
+		}
+		roll := rand.Intn(remaining)
+		acc := 0
+		for i, it := range p.pool {
+			if p.wasTried(i) {
+				continue
+			}
+			acc += it.Weight
+			if roll < acc {
+				return i, true
+			}
+		}
+		return 0, false
+	default: // SelectionRandom, or any unrecognized value
+		if k >= n {
+			return 0, false
+		}
+		for {
+			idx := rand.Intn(n)
+			if !p.wasTried(idx) {
+				return idx, true
+			}
+		}
+	}
+}
+
+// pick returns an item that ends within remaining milliseconds, trying up to
+// attempts candidates; ok is false when none fit.
+func (p *fitPicker) pick(remaining int64) (domain.FillerPoolItem, int64, bool) {
+	if p.minDur == 0 || remaining < p.minDur {
+		return domain.FillerPoolItem{}, 0, false
+	}
+	seqStart := 0
+	if p.rule.Selection == domain.SelectionSequential {
+		seqStart = p.state.seqCursor[p.rule.ID] % len(p.pool)
+	}
+	p.tried = p.tried[:0]
+	for k := 0; k < p.attempts; k++ {
+		idx, ok := p.candidate(k, seqStart)
+		if !ok {
+			break
+		}
+		item := p.pool[idx]
+		// A non-positive duration (bad catalog data) never fits, so it cannot
+		// loop forever either.
+		if d := p.durMs[item.CatalogItemID]; d > 0 && d <= remaining {
+			if p.rule.Selection == domain.SelectionSequential {
+				p.state.seqCursor[p.rule.ID] += k + 1
+			}
+			return item, d, true
+		}
+		p.tried = append(p.tried, idx)
+	}
+	return domain.FillerPoolItem{}, 0, false
+}
+
 // fillGap inserts, starting at cursor, as many whole items selected from
 // rule's pool as fit before target, advancing the cursor after each one. It
-// never cuts an item short: the residual space smaller than the next
-// candidate item is left without an epg_entry (a known v1 limitation). It is
-// a no-op (returns cursor unchanged) when rule is nil or its pool is empty.
+// never cuts an item short. When a picked item does not fit it tries other
+// candidates, up to the rule's max_fit_attempts in a row (1 gives up at the
+// first miss), and keeps going with whatever does fit while the residual is
+// not filled: the attempts bound consecutive misses, not the number of items
+// aired. Skipped candidates do not use up a sequential rotation slot (see
+// fitPicker). What no candidate can fill is left without an epg_entry, for the
+// caller's next layer (the fallback rule, then a gap). It is a no-op
+// (returns cursor unchanged) when rule is nil or its pool is empty.
 func fillGap(
 	rule *domain.FillerRule,
 	poolItemsByPool map[string][]domain.FillerPoolItem,
@@ -293,21 +449,15 @@ func fillGap(
 		return nil, cursor
 	}
 
+	picker := newFitPicker(rule, pool, catalogDuration, state)
 	var entries []domain.EpgEntry
 	for len(entries) < maxLoopEntries {
-		item, ok := selectFillerItem(*rule, pool, state)
+		remaining := target.Sub(cursor).Milliseconds()
+		item, durMs, ok := picker.pick(remaining)
 		if !ok {
 			break
 		}
-		durMs := catalogDuration[item.CatalogItemID]
-		if durMs <= 0 {
-			// Guards against bad/missing catalog data looping forever.
-			break
-		}
 		end := cursor.Add(time.Duration(durMs) * time.Millisecond)
-		if end.After(target) {
-			break
-		}
 		entries = append(entries, domain.EpgEntry{
 			ID:                   uuid.NewString(),
 			TenantID:             tenantID,
@@ -320,6 +470,9 @@ func fillGap(
 			GeneratedAt:          generatedAt,
 		})
 		cursor = end
+	}
+	if len(entries) >= maxLoopEntries {
+		warnLoopCap(channelID, sourceScheduleItemID)
 	}
 	return entries, cursor
 }
@@ -771,6 +924,19 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		return !in.DynamicBlockIDs[blockID] && !in.RepeatBlockIDs[blockID]
 	}
 
+	// noteResidual records what a slot is left with at a real boundary when no
+	// fallback rule will cover it (see residual); seams under a minute are not
+	// worth a warning.
+	noteResidual := func(blockID string, from, to time.Time) {
+		if in.Residuals == nil || to.Sub(from) < unfilledSlotMin || !to.After(now) {
+			return
+		}
+		if resolveFillerRule(in.FillerRules, domain.FillerFallback, "", in.ChannelID) != nil {
+			return
+		}
+		*in.Residuals = append(*in.Residuals, residual{BlockID: blockID, Length: to.Sub(from)})
+	}
+
 	fillFallbackOnly := func(from, to time.Time) {
 		rule := resolveFillerRule(in.FillerRules, domain.FillerFallback, "", in.ChannelID)
 		gapEntries, _ := fillGap(rule, in.PoolItems, in.CatalogDuration, from, to, domain.EpgFallback, in.TenantID, in.ChannelID, generatedAt, nil, state)
@@ -781,7 +947,10 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 	// item's rotation when the schedule has one (whole programs only, so a
 	// residual shorter than the next program is handed to the fallback rule),
 	// otherwise with the channel-scoped fallback rule alone.
-	fillFallbackGap := func(from, to time.Time) {
+	//
+	// boundary says the span ends at a real next timed item, as opposed to the
+	// end of the window.
+	fillFallbackGap := func(from, to time.Time, boundary bool) {
 		if continuous == nil {
 			fillFallbackOnly(from, to)
 			return
@@ -816,6 +985,9 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			end = tailEnd
 		}
 		if end.Before(to) {
+			if boundary {
+				noteResidual(continuous.BlockID, end, to)
+			}
 			fillFallbackOnly(end, to)
 		}
 	}
@@ -829,7 +1001,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			// A gap with nothing scheduled: [cursor, actualStart). Only a
 			// channel-scoped fallback rule fills this (Passo B.2) — no
 			// schedule_item owns it, so SourceScheduleItemID stays nil.
-			fillFallbackGap(cursor, actualStart)
+			fillFallbackGap(cursor, actualStart, true)
 		}
 		cursor = actualStart
 
@@ -904,6 +1076,9 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 				tailEntries, tailEnd := fillGap(tailRule, in.PoolItems, in.CatalogDuration, cursor, nominalNextStart, domain.EpgTail, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, state)
 				entries = append(entries, tailEntries...)
 				cursor = tailEnd
+			}
+			if hasNextOccurrence {
+				noteResidual(occ.BlockID, cursor, nominalNextStart)
 			}
 			continue
 		}
@@ -1054,10 +1229,13 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		} else {
 			cursor = postActualEnd
 		}
+		if hasNextOccurrence {
+			noteResidual(occ.BlockID, cursor, nominalNextStart)
+		}
 	}
 
 	if cursor.Before(windowEnd) {
-		fillFallbackGap(cursor, windowEnd)
+		fillFallbackGap(cursor, windowEnd, false)
 	}
 
 	if !in.KeptUntil.IsZero() {

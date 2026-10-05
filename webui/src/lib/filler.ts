@@ -21,6 +21,14 @@ export const STRATEGY_LABELS: Record<SelectionStrategy, string> = {
   weighted: 'Weighted',
 }
 
+// Bounds of filler_rule.max_fit_attempts, as the backend validates them.
+export const MAX_FIT_ATTEMPTS_MIN = 1
+export const MAX_FIT_ATTEMPTS_MAX = 20
+
+export function validMaxFitAttempts(n: number): boolean {
+  return Number.isInteger(n) && n >= MAX_FIT_ATTEMPTS_MIN && n <= MAX_FIT_ATTEMPTS_MAX
+}
+
 export function formatDurationMs(ms: number): string {
   // Under a minute, minutes would round to "0min": show seconds instead.
   if (ms < 60000) return `${Math.round(ms / 1000)}s`

@@ -569,7 +569,7 @@ func TestExpandChannel_PrerollAppearsBeforeFirstProgram(t *testing.T) {
 // TestExpandChannel_DynamicBlockLoopsAsProgram proves a dynamic block
 // (DynamicBlockIDs[blockID] == true) loops its item list continuously to
 // fill the entire window between one schedule_entry occurrence and the
-// next, tagged as domain.EpgProgram (never fallback/tail) — the behavior
+// next, tagged as domain.EpgProgram (a tail may follow its residual, never a fallback) — the behavior
 // that makes a "genre channel" real programming instead of filler.
 func TestExpandChannel_DynamicBlockLoopsAsProgram(t *testing.T) {
 	channelID := "chan1"
@@ -623,10 +623,10 @@ func TestExpandChannel_DynamicBlockLoopsAsProgram(t *testing.T) {
 		t.Fatal("expected entries, got none")
 	}
 
-	// (a) every entry for this dynamic block is kind=program.
+	// (a) every entry for this dynamic block is kind=program (no filler rules are configured here; the tail and fallback cases live in fit_attempts_test.go).
 	for _, e := range entries {
 		if e.Kind != domain.EpgProgram {
-			t.Errorf("entry %+v: Kind = %q, want %q (dynamic block must never emit fallback/tail)", e, e.Kind, domain.EpgProgram)
+			t.Errorf("entry %+v: Kind = %q, want %q (dynamic block must never emit fallback)", e, e.Kind, domain.EpgProgram)
 		}
 	}
 
