@@ -200,8 +200,11 @@ or LLM, and to every artifact in the repo:
   refreshed by a timer, rows of fixed height in a vertical `ListView` that
   follows the focused row, and horizontal scrolling kept as one animated
   offset in minutes (not `Scrollable`s) so header, rows and now line stay
-  aligned. Up/Down pick the program covering the focus's time anchor in the
-  new row; moving right past the loaded window reads more of the offline
+  aligned. Up/Down from a live program (its displayed span covers now) land on
+  the adjacent row's live program (`guideVerticalTarget`) and set the anchor to
+  now, so repeated moves track the on-air column; from a non-live program, or
+  when that row has no live cell, they pick the program covering the focus's
+  time anchor in the new row (Left/Right re-anchor on the new cell); moving right past the loaded window reads more of the offline
   cache (up to its window, `ScheduleCache.window`: the smaller of the
   backend's `window_ms` and the client limit). All of this state lives in
   `EpgOverlayState`, never in `_ChannelPlayerPageState`.

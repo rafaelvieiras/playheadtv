@@ -190,4 +190,96 @@ void main() {
       expect(guideContextLookback, greaterThan(defaultTailAttributionCap));
     });
   });
+
+  group('guideVerticalTarget', () {
+    DateTime t(int sec) => DateTime.fromMillisecondsSinceEpoch(sec * 1000, isUtc: true);
+    const now = 1000;
+
+    // Row 1: a long program started well before now. Row 2: a short finished
+    // program covering row 1's start, then the live one. Row 3: the same
+    // shape, shifted so the short one covers row 2's live start.
+    final row1 = buildGuideCells([e('long1', 'program', 100, 5000)]);
+    final row2 = buildGuideCells([e('old2', 'program', 0, 200), e('live2', 'program', 200, 5000)]);
+    final row3 = buildGuideCells([e('old3a', 'program', 0, 100), e('old3b', 'program', 100, 300), e('live3', 'program', 300, 5000)]);
+    final row4 = buildGuideCells([e('old4', 'program', 0, 150), e('mid4', 'program', 150, 400), e('live4', 'program', 400, 5000)]);
+    final gapRow = buildGuideCells([e('old', 'program', 0, 200), e('later', 'program', 2000, 3000)]);
+
+    String id(List<GuideCell> row, int i) => row[i].entry.id;
+
+    // A tiny model of the overlay's focus: a vertical move sets the anchor to
+    // now when it followed the live column, a horizontal move to the start of
+    // the new cell (as _followFocusHorizontally does).
+    late List<List<GuideCell>> rows;
+    late int r;
+    late int c;
+    late DateTime anchor;
+    void vertical(int delta) {
+      final target = guideVerticalTarget(rows[r + delta], anchor: anchor, now: t(now), fromLive: rows[r][c].isLiveAt(t(now)));
+      r += delta;
+      c = target.index;
+      anchor = target.landedLive ? t(now) : rows[r][c].displayStart;
+    }
+
+    void horizontal(int delta) {
+      c += delta;
+      anchor = rows[r][c].displayStart;
+    }
+
+    setUp(() {
+      rows = [row1, row2, row3, row4];
+      r = 0;
+      c = 0;
+      anchor = row1[0].displayStart;
+    });
+
+    test('live goes to the live cell of the next row, not the one covering its start', () {
+      expect(id(row2, guideIndexForTime(row2, row1[0].displayStart)), 'old2');
+      final target = guideVerticalTarget(row2, anchor: row1[0].displayStart, now: t(now), fromLive: true);
+      expect(id(row2, target.index), 'live2');
+      expect(target.landedLive, isTrue);
+    });
+
+    test('live goes up to the live cell as well', () {
+      final target = guideVerticalTarget(row2, anchor: t(100), now: t(now), fromLive: true);
+      expect(id(row2, target.index), 'live2');
+    });
+
+    test('live with no live cell in the target row falls back to the anchor rule', () {
+      final target = guideVerticalTarget(gapRow, anchor: t(150), now: t(now), fromLive: true);
+      expect(id(gapRow, target.index), 'old');
+      expect(target.landedLive, isFalse);
+    });
+
+    test('non-live keeps the anchor rule', () {
+      final target = guideVerticalTarget(row2, anchor: t(100), now: t(now), fromLive: false);
+      expect(id(row2, target.index), 'old2');
+      expect(target.landedLive, isFalse);
+    });
+
+    test('repeated Down keeps the live column, and Up comes back along it', () {
+      vertical(1);
+      expect(id(rows[r], c), 'live2');
+      vertical(1);
+      expect(id(rows[r], c), 'live3');
+      expect(anchor, t(now));
+      vertical(1);
+      expect(id(rows[r], c), 'live4');
+      vertical(-1);
+      expect(id(rows[r], c), 'live3');
+    });
+
+    test('Left then Down re-anchors on the non-live cell; Right back to live follows the live column again', () {
+      vertical(1);
+      vertical(1);
+      horizontal(-1);
+      expect(id(rows[r], c), 'old3b');
+      vertical(1);
+      expect(id(rows[r], c), 'old4', reason: 'old3b starts at 100, which old4 covers');
+      horizontal(1);
+      horizontal(1);
+      expect(id(rows[r], c), 'live4');
+      vertical(-1);
+      expect(id(rows[r], c), 'live3');
+    });
+  });
 }

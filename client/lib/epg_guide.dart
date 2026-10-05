@@ -63,6 +63,37 @@ class GuideCell {
   bool isLiveAt(DateTime now) => !now.isBefore(displayStart) && now.isBefore(displayEnd);
 }
 
+/// Index of the cell in [cells] covering [t], else the next one starting at or
+/// after it, else the last one (0 for an empty row).
+int guideIndexForTime(List<GuideCell> cells, DateTime t) {
+  if (cells.isEmpty) return 0;
+  for (var i = 0; i < cells.length; i++) {
+    if (cells[i].isLiveAt(t)) return i;
+  }
+  for (var i = 0; i < cells.length; i++) {
+    if (!cells[i].displayStart.isBefore(t)) return i;
+  }
+  return cells.length - 1;
+}
+
+/// Where a vertical move lands in the adjacent row [target]. From a live cell
+/// ([fromLive]) it is the row's live cell at [now], so Up/Down keep the user on
+/// the on-air column; with no live cell there, or from a non-live cell, it is
+/// the cell covering [anchor] (see [guideIndexForTime]). [landedLive] tells
+/// the caller the move followed the live column, so the anchor becomes [now].
+({int index, bool landedLive}) guideVerticalTarget(
+  List<GuideCell> target, {
+  required DateTime anchor,
+  required DateTime now,
+  required bool fromLive,
+}) {
+  if (fromLive) {
+    final live = target.indexWhere((c) => c.isLiveAt(now));
+    if (live >= 0) return (index: live, landedLive: true);
+  }
+  return (index: guideIndexForTime(target, anchor), landedLive: false);
+}
+
 /// The cells for [entries] (any order, not mutated), sorted by start.
 List<GuideCell> buildGuideCells(Iterable<EpgEntry> entries, {Duration tolerance = const Duration(seconds: 1), Duration? tailCap}) {
   final cap = tailCap ?? tailAttributionCap;

@@ -113,6 +113,8 @@ class EpgOverlayState extends State<EpgOverlay> {
 
   // Time the focus "sits at": moving to another row picks the program there
   // that covers this instant, so Up/Down feels like moving along the time axis.
+  // A vertical move from a live program instead lands on the adjacent row's
+  // live program (and the anchor becomes "now"); see guideVerticalTarget.
   late DateTime _anchor;
 
   // Left edge of the visible span, in minutes from _windowStart.
@@ -324,19 +326,6 @@ class EpgOverlayState extends State<EpgOverlay> {
     }
   }
 
-  // Index of the entry in `entries` covering `t`, else the next one starting
-  // after it, else the last one.
-  int _indexForTime(List<GuideCell> entries, DateTime t) {
-    if (entries.isEmpty) return 0;
-    for (var i = 0; i < entries.length; i++) {
-      if (entries[i].isLiveAt(t)) return i;
-    }
-    for (var i = 0; i < entries.length; i++) {
-      if (!entries[i].displayStart.isBefore(t)) return i;
-    }
-    return entries.length - 1;
-  }
-
   // Called by the parent on KeyDownEvent of raw arrowDown (delta 1) /
   // arrowUp (delta -1) — ROW (channel) navigation, without wrapping around
   // the edges.
@@ -344,11 +333,21 @@ class EpgOverlayState extends State<EpgOverlay> {
     if (_loading || _error != null || _entriesByChannel.isEmpty) return;
     final newRow = _focusedRow + delta;
     if (newRow < 0 || newRow >= _entriesByChannel.length) return;
+    final now = DateTime.now().toUtc();
+    final focused = _focusedEntry;
+    final target = guideVerticalTarget(
+      _entriesByChannel[newRow],
+      anchor: _anchor,
+      now: now,
+      fromLive: focused != null && _isLive(focused, now),
+    );
     setState(() {
       _focusedRow = newRow;
-      _focusedCol = _indexForTime(_entriesByChannel[newRow], _anchor);
+      _focusedCol = target.index;
       _detailsExpanded = false;
       _followFocusHorizontally();
+      // Following the live column: keep tracking it on the next vertical move.
+      if (target.landedLive) _anchor = now;
     });
     _ensureRowVisible();
     _maybeExtendAhead();
