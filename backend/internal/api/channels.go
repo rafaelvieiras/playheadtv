@@ -13,7 +13,7 @@ import (
 // mat is only needed because a channel's own ScheduleID assignment affects
 // EPG materialization (create/update trigger it) — issue #7's
 // Schedule/Playout split. Nothing else about a channel does.
-func registerChannels(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer) {
+func registerChannels(mux Router, db storage.DB, mat *materializer.Materializer) {
 	mux.HandleFunc("POST /channels", createChannel(db, mat))
 	mux.HandleFunc("GET /channels", listChannels(db))
 	mux.HandleFunc("GET /channels/{id}", getChannel(db))

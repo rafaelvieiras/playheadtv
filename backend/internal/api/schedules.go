@@ -14,7 +14,7 @@ import (
 // Schedule itself (a reusable, named group of rules — assigning one to a
 // channel is PUT /channels/{id}'s job, see channels.go) and ScheduleItem (one
 // recurrence rule inside it, schedule_entry's old shape minus channel_id).
-func registerSchedules(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer) {
+func registerSchedules(mux Router, db storage.DB, mat *materializer.Materializer) {
 	mux.HandleFunc("POST /schedules", createSchedule(db))
 	mux.HandleFunc("GET /schedules", listSchedules(db))
 	mux.HandleFunc("GET /schedules/{id}", getSchedule(db))

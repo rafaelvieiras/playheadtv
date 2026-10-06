@@ -16,7 +16,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
-func registerCollections(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer) {
+func registerCollections(mux Router, db storage.DB, mat *materializer.Materializer) {
 	mux.HandleFunc("POST /collections", createCollection(db))
 	mux.HandleFunc("GET /collections", listCollections(db))
 	mux.HandleFunc("GET /collections/{id}", getCollection(db))

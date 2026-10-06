@@ -11,7 +11,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
-func registerEPG(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer) {
+func registerEPG(mux Router, db storage.DB, mat *materializer.Materializer) {
 	mux.HandleFunc("GET /epg", getEPG(db))
 	mux.HandleFunc("GET /epg/meta", getEPGMeta(db, mat))
 	mux.HandleFunc("GET /channels/{id}/epg-preview", previewChannelGridReset(db, mat))

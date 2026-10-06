@@ -95,7 +95,7 @@ func TestMCPSeriesBlockItems(t *testing.T) {
 	})
 	callTool[struct {
 		Deleted bool `json:"deleted"`
-	}](t, ctx, session, "delete_block_item", map[string]any{"block_id": block.ID, "item_id": counted.ID})
+	}](t, ctx, session, "delete_block_item", map[string]any{"block_id": block.ID, "item_id": counted.ID, "confirm": true})
 
 	listed := callTool[struct {
 		Items []domain.BlockItem `json:"items"`
@@ -138,7 +138,7 @@ func TestMCPSeriesBlockItems(t *testing.T) {
 
 	out := callTool[struct {
 		Deleted bool `json:"deleted"`
-	}](t, ctx, session, "delete_block_item", map[string]any{"block_id": block.ID, "item_id": item.ID})
+	}](t, ctx, session, "delete_block_item", map[string]any{"block_id": block.ID, "item_id": item.ID, "confirm": true})
 	if !out.Deleted {
 		t.Error("delete_block_item did not report deleted")
 	}
@@ -148,5 +148,5 @@ func TestMCPSeriesBlockItems(t *testing.T) {
 	if len(after.Items) != 0 {
 		t.Errorf("items after delete = %+v", after.Items)
 	}
-	callToolExpectError(t, ctx, session, "delete_block_item", map[string]any{"block_id": block.ID, "item_id": item.ID})
+	callToolExpectError(t, ctx, session, "delete_block_item", map[string]any{"block_id": block.ID, "item_id": item.ID, "confirm": true})
 }

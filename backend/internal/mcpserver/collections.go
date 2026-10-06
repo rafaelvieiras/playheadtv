@@ -34,7 +34,7 @@ func registerCollectionTools(s *mcp.Server, db storage.DB, mat *materializer.Mat
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "delete_collection",
 		Description: "Delete a collection. Refused while any block, filler pool or criteria item uses it; the error lists them " +
-			"(point them at another collection first). Mirrors DELETE /collections/{id}.",
+			"(point them at another collection first). DESTRUCTIVE: requires the argument confirm=true; without it the call is rejected and nothing changes. Mirrors DELETE /collections/{id}.",
 	}, deleteCollectionHandler(db))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -62,6 +62,11 @@ func registerCollectionTools(s *mcp.Server, db storage.DB, mat *materializer.Mat
 
 type collectionIDInput struct {
 	CollectionID string `json:"collection_id" jsonschema:"the collection"`
+}
+
+type deleteCollectionInput struct {
+	CollectionID string `json:"collection_id" jsonschema:"the collection"`
+	Confirmation
 }
 
 type createCollectionInput struct {
@@ -143,8 +148,11 @@ type deleteCollectionOutput struct {
 	Deleted bool `json:"deleted"`
 }
 
-func deleteCollectionHandler(db storage.DB) mcp.ToolHandlerFor[collectionIDInput, deleteCollectionOutput] {
-	return func(ctx context.Context, _ *mcp.CallToolRequest, in collectionIDInput) (*mcp.CallToolResult, deleteCollectionOutput, error) {
+func deleteCollectionHandler(db storage.DB) mcp.ToolHandlerFor[deleteCollectionInput, deleteCollectionOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in deleteCollectionInput) (*mcp.CallToolResult, deleteCollectionOutput, error) {
+		if err := requireConfirm("delete_collection", in); err != nil {
+			return nil, deleteCollectionOutput{}, err
+		}
 		c, err := catalogsync.GetCollection(ctx, db, defaultTenantID, in.CollectionID)
 		if err != nil {
 			return nil, deleteCollectionOutput{}, err

@@ -17,7 +17,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
-func registerBlocks(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer) {
+func registerBlocks(mux Router, db storage.DB, mat *materializer.Materializer) {
 	// A block's own name/description/criteria all affect EPG materialization
 	// when criteria changes (createBlock/updateBlock trigger both
 	// ResolveDynamicBlocks and mat themselves, right after the write) — a

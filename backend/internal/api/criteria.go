@@ -13,7 +13,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
-func registerCriteria(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer) {
+func registerCriteria(mux Router, db storage.DB, mat *materializer.Materializer) {
 	mux.HandleFunc("GET /criteria-migration-review", listCriteriaReview(db))
 	mux.HandleFunc("POST /criteria-migration-review/apply", applyReview(db, mat))
 }

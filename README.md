@@ -44,8 +44,9 @@ Working today:
   credentials encrypted at rest; Jellyfin pull sync (plus push sync for
   sources the backend can't reach); dynamic, criteria-based blocks and
   filler pools.
-- **MCP server**: a partial slice of the authoring API exposed as MCP tools
-  at `/mcp`, in the same binary.
+- **MCP server**: everything the web UI can do, as MCP tools at `/mcp` in the
+  same binary (one tool per REST operation; destructive tools need
+  `confirm=true`; a test fails when a route has no tool).
 - **Admin web UI** (`webui/`): React SPA embedded in the Go binary and
   served under `/admin/` — EPG grid, channels, blocks, schedule, filler,
   media sources and devices.

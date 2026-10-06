@@ -66,7 +66,7 @@ func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Material
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "delete_block_item",
-		Description: "Remove one item (catalog or series) from a manual block. Positions are not renumbered. Triggers EPG regeneration. Mirrors DELETE /blocks/{id}/items/{item_id}.",
+		Description: "Remove one item (catalog or series) from a manual block. Positions are not renumbered. Triggers EPG regeneration. DESTRUCTIVE: requires the argument confirm=true; without it the call is rejected and nothing changes. Mirrors DELETE /blocks/{id}/items/{item_id}.",
 	}, deleteBlockItemHandler(db, mat))
 
 	mcp.AddTool(s, &mcp.Tool{
@@ -438,6 +438,7 @@ func addBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.Tool
 type deleteBlockItemInput struct {
 	BlockID string `json:"block_id" jsonschema:"the block the item belongs to"`
 	ItemID  string `json:"item_id" jsonschema:"the block item to remove"`
+	Confirmation
 }
 
 type deleteBlockItemOutput struct {
@@ -446,6 +447,9 @@ type deleteBlockItemOutput struct {
 
 func deleteBlockItemHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[deleteBlockItemInput, deleteBlockItemOutput] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in deleteBlockItemInput) (*mcp.CallToolResult, deleteBlockItemOutput, error) {
+		if err := requireConfirm("delete_block_item", in); err != nil {
+			return nil, deleteBlockItemOutput{}, err
+		}
 		if in.BlockID == "" || in.ItemID == "" {
 			return nil, deleteBlockItemOutput{}, errors.New("block_id and item_id are required")
 		}

@@ -183,7 +183,7 @@ func TestMCPCollectionTools(t *testing.T) {
 	if len(usage.Blocks) != 1 || usage.Blocks[0].ID != block.ID || len(usage.FillerPools) != 1 || len(usage.BlockItems) != 0 {
 		t.Errorf("get_collection_usage = %+v", usage)
 	}
-	if msg := callToolExpectError(t, ctx, session, "delete_collection", map[string]any{"collection_id": col.ID}); !strings.Contains(msg, "Dyn") || !strings.Contains(msg, "Pool") {
+	if msg := callToolExpectError(t, ctx, session, "delete_collection", map[string]any{"collection_id": col.ID, "confirm": true}); !strings.Contains(msg, "Dyn") || !strings.Contains(msg, "Pool") {
 		t.Errorf("delete in use error = %q, want it to list the users", msg)
 	}
 
@@ -197,7 +197,7 @@ func TestMCPCollectionTools(t *testing.T) {
 	}
 	callToolExpectError(t, ctx, session, "get_collection", map[string]any{"collection_id": "nope"})
 
-	callTool[domain.Block](t, ctx, session, "update_block", map[string]any{"block_id": block.ID, "name": "Dyn"}) // manual again
-	callToolExpectError(t, ctx, session, "delete_collection", map[string]any{"collection_id": col.ID})           // the pool still uses it
+	callTool[domain.Block](t, ctx, session, "update_block", map[string]any{"block_id": block.ID, "name": "Dyn"})        // manual again
+	callToolExpectError(t, ctx, session, "delete_collection", map[string]any{"collection_id": col.ID, "confirm": true}) // the pool still uses it
 	callToolExpectError(t, ctx, session, "apply_criteria_review_proposal", map[string]any{"owner_type": "block", "owner_id": block.ID})
 }

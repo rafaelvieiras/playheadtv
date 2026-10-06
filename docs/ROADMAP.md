@@ -542,6 +542,18 @@ actionable checklist.
       materialized program+fallback result observed in the automated test.
       `go test ./...` passes in full.
 
+- [x] MCP covers everything the web UI covers: one tool per REST operation
+      (channel update/delete/warnings/reset, block, schedule and schedule
+      item, filler pool/rule, break template and cut rule set read/update/
+      delete, media source CRUD plus catalog and pull sync, devices, stream
+      preferences, EPG read), as thin in-process REST dispatch so validation
+      and the materializer trigger are the REST handlers'. Destructive tools
+      need `confirm=true`; credentials and device tokens are never returned by
+      a read tool; `TestEveryRESTRouteHasAnMCPTool` fails on a REST route with
+      no tool and no justified exception. See `docs/ARCHITECTURE.md` "MCP
+      surface". No permission model exists beyond a valid session, so the new
+      tools run under the session the MCP caller already has.
+
 ## Phase 3 — Web UI (authoring)
 
 - [x] Web UI scaffolding + auth + channel authoring: React + TypeScript +

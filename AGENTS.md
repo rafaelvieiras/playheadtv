@@ -77,6 +77,9 @@ or LLM, and to every artifact in the repo:
 - Authoring (channel/block/schedule) only happens through the web UI + MCP
   (neither exists yet) — playback clients never create or edit scheduling,
   they only resolve and play it.
+- A new web UI capability ships with its MCP tool (`internal/mcpserver`, map
+  the route in `RouteTools`): `TestEveryRESTRouteHasAnMCPTool` fails on a REST
+  route with neither a tool nor a justified `NoMCPCounterpart` entry.
 - `storage.DB` is the only interface the rest of the backend sees — never
   branch on "self-hosted vs cloud-sync" outside `internal/storage`.
 - No auth yet: every API handler runs under one fixed tenant

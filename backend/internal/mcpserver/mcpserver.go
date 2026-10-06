@@ -21,16 +21,12 @@
 // token>" header POST /sessions returns, exactly like the web UI does; no
 // session/auth logic is duplicated here.
 //
-// v1 scope is intentionally partial, matching the exact parenthetical list
-// in docs/ROADMAP.md's Phase 2 bullet: create/list channel, register media
-// source, search catalog, build block, manage filler, create schedule
-// entry, preview EPG — issue #7's Schedule/Playout split (create_schedule,
-// create_schedule_item, assign_channel_schedule) extends that same "create
-// schedule entry" slice rather than widening scope. Full CRUD (update/delete)
-// on media_source, filler_pool, and filler_rule; catalog-sync;
-// devices/pairing; and any auth/session-issuing tool are out of scope — see
-// the roadmap entry for the full list of what was deliberately left out and
-// why.
+// Scope: every REST operation the web UI uses has a tool (coverage.go lists
+// which tool serves which route, and TestEveryRESTRouteHasAnMCPTool enforces
+// it). The older tools above talk to storage.DB directly or through the shared
+// domain packages; the REST-backed ones (rest.go, rest_tools.go) dispatch to
+// the REST handler in-process, so they import internal/api and carry no logic
+// of their own. Destructive tools require confirm=true.
 package mcpserver
 
 import (
@@ -77,6 +73,8 @@ func Register(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer,
 	registerScheduleTools(server, db, mat)
 	registerEPGTools(server, db)
 	registerAuthoringTools(server, db, mat)
+	// Every other REST operation, as a thin in-process dispatch (rest.go).
+	registerRESTTools(server, db, mux)
 
 	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server {
 		return server

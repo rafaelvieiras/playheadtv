@@ -82,7 +82,7 @@ func hashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func registerAuth(mux *http.ServeMux, db storage.DB) {
+func registerAuth(mux Router, db storage.DB) {
 	mux.HandleFunc("POST /app-users", bootstrapAppUser(db))
 	mux.HandleFunc("POST /sessions", login(db))
 	mux.HandleFunc("DELETE /sessions", logout(db))

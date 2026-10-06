@@ -12,7 +12,7 @@ import (
 // steps that replaces the single item a preroll, midroll or postroll filler
 // rule inserts at a program boundary (docs/ARCHITECTURE.md "Break templates").
 // Every write retriggers the materializer, like a filler rule does.
-func registerBreakTemplates(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer) {
+func registerBreakTemplates(mux Router, db storage.DB, mat *materializer.Materializer) {
 	mux.HandleFunc("POST /break-templates", createBreakTemplate(db, mat))
 	mux.HandleFunc("GET /break-templates", listBreakTemplates(db))
 	mux.HandleFunc("GET /break-templates/{id}", getBreakTemplate(db))

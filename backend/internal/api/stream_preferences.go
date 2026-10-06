@@ -22,7 +22,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
-func registerStreamPreferences(mux *http.ServeMux, db storage.DB) {
+func registerStreamPreferences(mux Router, db storage.DB) {
 	mux.HandleFunc("GET /stream-preferences/me", getMyStreamPreference(db))
 	mux.HandleFunc("PUT /stream-preferences/me", putMyStreamPreference(db))
 	mux.HandleFunc("GET /stream-preferences/config", getStreamPreferenceRule(db))

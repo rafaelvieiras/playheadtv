@@ -13,7 +13,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
-func registerCatalogItems(mux *http.ServeMux, db storage.DB) {
+func registerCatalogItems(mux Router, db storage.DB) {
 	mux.HandleFunc("GET /catalog-items", listCatalogItems(db))
 	mux.HandleFunc("POST /catalog-items/preview-criteria", previewCriteria(db))
 	mux.HandleFunc("GET /catalog-items/{id}", getCatalogItem(db))

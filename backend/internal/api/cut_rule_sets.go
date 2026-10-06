@@ -13,7 +13,7 @@ import (
 // The materializer cuts items by the stored sets, so every write retriggers it,
 // like a break template does. POST /cut-rule-sets/preview evaluates a rule
 // list for a sample item without storing anything.
-func registerCutRuleSets(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer) {
+func registerCutRuleSets(mux Router, db storage.DB, mat *materializer.Materializer) {
 	mux.HandleFunc("POST /cut-rule-sets", createCutRuleSet(db, mat))
 	mux.HandleFunc("GET /cut-rule-sets", listCutRuleSets(db))
 	mux.HandleFunc("POST /cut-rule-sets/preview", previewCutRuleSet())

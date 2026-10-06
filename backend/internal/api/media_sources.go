@@ -15,7 +15,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
-func registerMediaSources(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer, sync *pullsync.Syncer, encKey [32]byte) {
+func registerMediaSources(mux Router, db storage.DB, mat *materializer.Materializer, sync *pullsync.Syncer, encKey [32]byte) {
 	mux.HandleFunc("POST /media-sources", createMediaSource(db, sync, encKey))
 	mux.HandleFunc("GET /media-sources", listMediaSources(db))
 	mux.HandleFunc("GET /media-sources/{id}", getMediaSource(db))

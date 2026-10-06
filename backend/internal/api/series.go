@@ -9,7 +9,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
-func registerSeries(mux *http.ServeMux, db storage.DB) {
+func registerSeries(mux Router, db storage.DB) {
 	mux.HandleFunc("GET /series", listSeries(db))
 	mux.HandleFunc("POST /series/slice-preview", previewSeriesSlice(db))
 }

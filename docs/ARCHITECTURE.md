@@ -58,6 +58,47 @@ sources" below). This was a deliberate scope cut: better authoring UX on a
 proper web UI, and MCP tools need to operate on this data regardless, so
 duplicating authoring UI into every client platform bought nothing.
 
+### MCP surface: everything the web UI can do
+
+The MCP server (`/mcp`, `internal/mcpserver`) covers every REST operation the
+web UI uses, one tool per operation. Two kinds of tool exist:
+
+- Hand-written tools that share a domain package with the REST handlers
+  (`internal/cutruleset`, `internal/breaktemplate`, `internal/blockitem`,
+  `internal/catalogsync`, `internal/series`).
+- Thin REST-backed tools (`rest.go`, `rest_tools.go`): the tool builds a
+  request for the REST route and runs it in-process through
+  `api.RequireAuth(mux)` with the caller's own `Authorization` header (no
+  network hop). Validation, status codes and error messages, the
+  materializer trigger of a schedule-changing write, and the auth decision
+  are therefore the REST handler's, with no second implementation to keep in
+  step. A REST error comes back as a tool error carrying its message and
+  status; a list result is `{"items": [...]}`.
+
+Conventions:
+
+- **Destructive tools** (every `delete_*` and `reset_channel_epg`) require
+  the argument `confirm=true`; without it the call is rejected with a clear
+  message before anything runs. The convention is in each tool's description
+  and input schema.
+- **Authorization**: the REST layer has no permission model beyond "a valid
+  app_user session" (there is one user per tenant; device tokens are refused
+  on everything but the playback reads). Devices, stream preferences and
+  media source credentials therefore need exactly that session, over MCP as
+  over REST, and a device token cannot reach `/mcp`. A real permission model
+  belongs to the Auth roadmap item and will apply to both surfaces at once.
+- **Secrets**: read tools never return media source credentials or device
+  tokens (the domain types do not serialize them). A credential is
+  write-only (`register_media_source`, `update_media_source`); a device
+  token is returned once, by `create_device`.
+- **Parity is enforced**: `mcpserver.RouteTools` maps each REST route to its
+  tool and `NoMCPCounterpart` lists the routes deliberately without one
+  (login/logout, bootstrapping the user, `GET /me`, the preference staleness
+  poll), each with a reason. `TestEveryRESTRouteHasAnMCPTool` takes the route
+  list from `api.Routes()` (recorded from the same code that registers the
+  routes) and fails on a route in neither list, so a new web UI capability
+  cannot ship without its tool.
+
 ## Media sources
 
 A `media_source` is a Jellyfin/Plex/local-folder library. Only `jellyfin` is
@@ -126,8 +167,8 @@ empty from Jellyfin, so its genre is inherited from the parent series via one
 extra `GET /Items/{seriesId}` per unique `SeriesId` seen that sync (a `userId`
 is required on that call by this Jellyfin version, resolved once per sync
 from the first entry of `GET /Users`).
-Deliberately excluded from the MCP surface in v1, same rationale as
-`catalog-sync`: it's data sync, not authoring.
+Both syncs have an MCP tool (`sync_media_source_catalog`,
+`pull_sync_media_source`) for parity with the web UI.
 
 ### Catalog metadata (migration `0009`)
 

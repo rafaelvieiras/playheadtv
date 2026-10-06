@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"sort"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/pullsync"
@@ -17,7 +18,7 @@ import (
 // call sync.Trigger()). encKey encrypts/decrypts data-at-rest fields
 // (currently just media_source.credential_cipher); see
 // internal/crypto.LoadOrGenerateKey for how callers should obtain it.
-func Register(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer, sync *pullsync.Syncer, encKey [32]byte) {
+func Register(mux Router, db storage.DB, mat *materializer.Materializer, sync *pullsync.Syncer, encKey [32]byte) {
 	registerAuth(mux, db)
 	registerChannels(mux, db, mat)
 	registerMediaSources(mux, db, mat, sync, encKey)
@@ -30,4 +31,28 @@ func Register(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer,
 	registerSchedules(mux, db, mat)
 	registerEPG(mux, db, mat)
 	registerStreamPreferences(mux, db)
+}
+
+// Router is the slice of *http.ServeMux the register functions use. Taking an
+// interface lets Routes record the route table from the same code that wires
+// the real mux, so nothing has to keep a second list in step.
+type Router interface {
+	HandleFunc(pattern string, handler func(http.ResponseWriter, *http.Request))
+}
+
+type routeRecorder struct{ patterns []string }
+
+func (rr *routeRecorder) HandleFunc(pattern string, _ func(http.ResponseWriter, *http.Request)) {
+	rr.patterns = append(rr.patterns, pattern)
+}
+
+// Routes returns every "METHOD /path" pattern Register wires, sorted. It runs
+// Register against a recorder with no database, so it only reflects what is
+// registered and never serves anything. The MCP parity test (see
+// internal/mcpserver) is built on it.
+func Routes() []string {
+	rr := &routeRecorder{}
+	Register(rr, nil, nil, nil, [32]byte{})
+	sort.Strings(rr.patterns)
+	return rr.patterns
 }

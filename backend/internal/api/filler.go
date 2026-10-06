@@ -13,7 +13,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
-func registerFiller(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer) {
+func registerFiller(mux Router, db storage.DB, mat *materializer.Materializer) {
 	// filler_pool's own CRUD affects EPG materialization only when its
 	// criteria changes (createFillerPool/updateFillerPool trigger both
 	// ResolveDynamicPools and mat themselves, right after the write) — a
