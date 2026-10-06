@@ -1,0 +1,64 @@
+#!/bin/sh
+# Playhead TV AppImage entry point (the AppImage runtime runs this).
+#
+# Like the launcher of the tar.gz install, it runs the headless updater first
+# (rolls back an update that never came up healthy, installs a newer release if
+# there is one) and can never be kept from starting by it: the updater is
+# bounded by a timeout and its status is ignored. What differs is what an update
+# replaces: the AppImage FILE itself ($APPIMAGE, set by the runtime). The running
+# process keeps the old file's contents, so after an update or a rollback this
+# script starts the file now at $APPIMAGE instead (once: PLAYHEADTV_REEXEC).
+#
+# State (state.json, update.log) lives in ${XDG_STATE_HOME:-~/.local/state}/playheadtv;
+# the config is looked up like for any other run: PLAYHEADTV_CONFIG, else
+# ${XDG_CONFIG_HOME:-~/.config}/playheadtv/config.json (created from the example
+# on first start).
+#
+# Environment:
+#   PLAYHEADTV_UPDATE_TIMEOUT  seconds the update step may take (default 150)
+#   PLAYHEADTV_AUTO_UPDATE=0   skip the update check (config.json auto_update
+#                              does the same); rollback still happens
+#   PLAYHEADTV_CONFIG          config file
+
+SELF=$(readlink -f "$0" 2>/dev/null || echo "$0")
+HERE=$(cd "$(dirname "$SELF")" && pwd -P)
+APPDIR="${APPDIR:-$HERE}"
+
+CONFIG_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/playheadtv"
+if [ -z "${PLAYHEADTV_CONFIG:-}" ] && [ ! -f "$CONFIG_DIR/config.json" ] && [ -f "$APPDIR/config.example.json" ]; then
+    mkdir -p "$CONFIG_DIR" 2>/dev/null &&
+        cp "$APPDIR/config.example.json" "$CONFIG_DIR/config.json" 2>/dev/null &&
+        chmod 600 "$CONFIG_DIR/config.json" 2>/dev/null # it may hold a device token
+fi
+
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/playheadtv"
+UPDATER="$APPDIR/bundle/playheadtv-updater"
+
+if [ -n "${APPIMAGE:-}" ] && [ -z "${PLAYHEADTV_REEXEC:-}" ] && [ -x "$UPDATER" ] && [ -f "$APPDIR/VERSION" ]; then
+    mkdir -p "$STATE_DIR" 2>/dev/null
+    LOG="$STATE_DIR/update.log"
+    # Keep the log small: drop it once it grows past ~100 KB.
+    if [ -f "$LOG" ] && [ "$(wc -c <"$LOG" 2>/dev/null || echo 0)" -gt 100000 ]; then
+        : >"$LOG"
+    fi
+    VERSION=$(cat "$APPDIR/VERSION")
+    if command -v timeout >/dev/null 2>&1; then
+        OUT=$(timeout -k 5 "${PLAYHEADTV_UPDATE_TIMEOUT:-150}" "$UPDATER" prepare --appimage "$APPIMAGE" --version "$VERSION" --state-dir "$STATE_DIR" 2>>"$LOG")
+    else
+        OUT=$("$UPDATER" prepare --appimage "$APPIMAGE" --version "$VERSION" --state-dir "$STATE_DIR" 2>>"$LOG")
+    fi
+    # Deliberately ignored: any outcome still starts the app below.
+    [ -n "$OUT" ] && echo "$OUT" >>"$LOG"
+    case "$OUT" in
+        *": updated:"* | *"(rolled back "*)
+            # The file at $APPIMAGE is another version now: run that one.
+            if [ -x "$APPIMAGE" ]; then
+                PLAYHEADTV_REEXEC=1
+                export PLAYHEADTV_REEXEC
+                exec "$APPIMAGE" "$@"
+            fi
+            ;;
+    esac
+fi
+
+exec "$APPDIR/bundle/client" "$@"

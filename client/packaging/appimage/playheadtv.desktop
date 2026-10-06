@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Playhead TV
+Comment=Simulated linear TV from your own media library
+Exec=AppRun
+Icon=playheadtv
+Terminal=false
+Categories=AudioVideo;Video;Player;TV;
+StartupWMClass=io.github.rafaelvieiras.playheadtv.client

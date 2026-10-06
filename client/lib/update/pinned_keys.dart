@@ -33,7 +33,7 @@ const List<String> pinnedUpdatePublicKeys = <String>[
 ];
 
 const _definedKeys = String.fromEnvironment('PLAYHEADTV_UPDATE_PUBLIC_KEYS');
-const _allowUnsigned = bool.fromEnvironment('PLAYHEADTV_ALLOW_UNSIGNED_UPDATES');
+const allowUnsignedUpdatesBuild = bool.fromEnvironment('PLAYHEADTV_ALLOW_UNSIGNED_UPDATES');
 
 /// The keys this build verifies against: the build-time define when set, else
 /// [pinnedUpdatePublicKeys].
@@ -43,4 +43,4 @@ List<String> effectivePinnedKeys() => _definedKeys.isNotEmpty
 
 /// The verifier the real updater uses.
 UpdateVerifier defaultUpdateVerifier() =>
-    UpdateVerifier(publicKeys: effectivePinnedKeys(), allowUnsigned: _allowUnsigned);
+    UpdateVerifier(publicKeys: effectivePinnedKeys(), allowUnsigned: allowUnsignedUpdatesBuild);

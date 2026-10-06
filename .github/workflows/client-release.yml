@@ -1,10 +1,16 @@
 name: Client release
 
-# A `client-vX.Y.Z` tag builds the Linux x86_64 client package and attaches it,
-# with its SHA-256 checksums file, to a GitHub Release. The client's headless
-# updater reads exactly these assets (client/lib/update/release_source.dart):
+# A `client-vX.Y.Z` tag builds the Linux x86_64 client package and AppImage,
+# signs the checksums file with the release key and attaches everything to a
+# GitHub Release. The client's headless updater reads exactly these assets
+# (client/lib/update/release_source.dart):
 #   playheadtv-client-X.Y.Z-linux-x64.tar.gz
-#   playheadtv-client-X.Y.Z-checksums.txt
+#   playheadtv-client-X.Y.Z-linux-x64.AppImage
+#   playheadtv-client-X.Y.Z-checksums.txt       SHA-256 of both artifacts
+#   playheadtv-client-X.Y.Z-checksums.txt.sig   Ed25519 signature (base64) of the checksums file
+# The signing key is the repository secret CLIENT_SIGNING_KEY (docs/RELEASING.md
+# "Signing key"); the matching PUBLIC key must be pinned in
+# client/lib/update/pinned_keys.dart, and this workflow fails when it is not.
 # Backend releases use `vX.Y.Z` tags and their own workflow.
 on:
   push:
@@ -15,19 +21,31 @@ permissions:
 
 jobs:
   package:
-    name: Build, package, release
+    name: Build, package, sign, release
     runs-on: ubuntu-24.04
     permissions:
       contents: write # create the release and upload its assets
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0 # the release notes read the history since the previous client tag
+
+      - name: Signing key is configured
+        env:
+          SIGNING_KEY: ${{ secrets.CLIENT_SIGNING_KEY }}
+        run: |
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::the repository secret CLIENT_SIGNING_KEY is not set (docs/RELEASING.md, Signing key)"
+            exit 1
+          fi
 
       - name: Linux build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev \
-            libstdc++-14-dev libc++-dev libc++abi-dev curl unzip xz-utils
+            libstdc++-14-dev libc++-dev libc++abi-dev curl unzip xz-utils \
+            squashfs-tools
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -54,7 +72,33 @@ jobs:
           DART: dart
         run: |
           export SOURCE_DATE_EPOCH="$(git log -1 --format=%ct)"
+          # Refuses to package when no update public key is pinned.
           client/tool/package_linux.sh "$TAG" client/dist
+          client/tool/package_appimage.sh "$TAG" client/dist
+
+      - name: Sign the checksums file
+        env:
+          SIGNING_KEY: ${{ secrets.CLIENT_SIGNING_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          KEY="$RUNNER_TEMP/client-signing-key.pem"
+          printf '%s\n' "$SIGNING_KEY" >"$KEY"
+          trap 'rm -f "$KEY"' EXIT
+          SUMS="$(ls client/dist/*-checksums.txt)"
+          # The public half of the secret must be one of the keys the client pins,
+          # or no installed client could verify this release.
+          PUB="$(openssl pkey -in "$KEY" -pubout -outform DER | tail -c 32 | base64 -w0)"
+          if ! grep -qF "$PUB" client/lib/update/pinned_keys.dart; then
+            echo "::error::the public key of CLIENT_SIGNING_KEY ($PUB) is not pinned in client/lib/update/pinned_keys.dart"
+            exit 1
+          fi
+          openssl pkeyutl -sign -rawin -inkey "$KEY" -in "$SUMS" -out "$RUNNER_TEMP/checksums.sig.bin"
+          base64 -w0 "$RUNNER_TEMP/checksums.sig.bin" >"$SUMS.sig"
+          # Check what was just produced, with the public key only.
+          openssl pkey -in "$KEY" -pubout -out "$RUNNER_TEMP/client-signing-pub.pem"
+          openssl pkeyutl -verify -rawin -pubin -inkey "$RUNNER_TEMP/client-signing-pub.pem" \
+            -in "$SUMS" -sigfile "$RUNNER_TEMP/checksums.sig.bin"
 
       - name: Verify the package
         working-directory: client/dist
@@ -63,6 +107,9 @@ jobs:
           tar -tzf ./*.tar.gz | grep -q '/bundle/client$'
           tar -tzf ./*.tar.gz | grep -q '/bundle/playheadtv-updater$'
           tar -tzf ./*.tar.gz | grep -q '/install.sh$'
+          test -x ./*.AppImage
+          grep -q 'linux-x64.AppImage$' ./*-checksums.txt
+          test -s ./*-checksums.txt.sig
 
       - name: Create the release
         env:
@@ -72,7 +119,15 @@ jobs:
           VERSION="${TAG#client-v}"
           MIN="$(grep -oP 'minSupportedApiVersion = \K[0-9]+' client/lib/update/compat.dart)"
           MAX="$(grep -oP 'maxSupportedApiVersion = \K[0-9]+' client/lib/update/compat.dart)"
+          # The body is the changelog an updated client shows once, as plain
+          # text: the changes first, the install text after.
+          {
+            client/tool/release_notes.sh "$TAG"
+            echo
+            echo "Linux x86_64 client. Works with backends whose API version (GET /version) is between $MIN and $MAX."
+            echo "Install: extract the archive and run install.sh, or download the AppImage, make it executable and run it. An installed client updates itself from these releases."
+            echo "Verify the download with the checksums file (sha256sum -c); the checksums file is signed (Ed25519, the .sig asset)."
+          } >"$RUNNER_TEMP/release-body.txt"
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
-            --title "Client $VERSION" --generate-notes \
-            --notes "Linux x86_64 client. Works with backends whose API version (GET /version) is between $MIN and $MAX. Install: extract the archive and run install.sh; an installed client updates itself from these releases. Verify the download with the checksums file (sha256sum -c)." \
-            client/dist/*.tar.gz client/dist/*-checksums.txt
+            --title "Client $VERSION" --notes-file "$RUNNER_TEMP/release-body.txt" \
+            client/dist/*.tar.gz client/dist/*.AppImage client/dist/*-checksums.txt client/dist/*-checksums.txt.sig

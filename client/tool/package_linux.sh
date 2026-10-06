@@ -12,6 +12,14 @@
 # an example config. It is the same script CI runs (.github/workflows/
 # client-release.yml); docs/RELEASING.md describes the release flow.
 #
+# The updater inside the package authenticates every update against the public
+# keys pinned in lib/update/pinned_keys.dart. This script REFUSES to package a
+# build that pins none (such an updater would refuse every update), unless
+# ALLOW_UNSIGNED_DEV=1, which builds an updater that installs unsigned releases
+# and says so loudly: for trying the updater on a scratch server, never to be
+# released. UPDATE_PUBLIC_KEYS="<key>[,<key>]" pins keys at build time instead
+# of editing the file (forks).
+#
 # Environment: FLUTTER overrides the flutter command (default: "fvm flutter"
 # when fvm is installed, else "flutter"); DART likewise ("fvm dart" / "dart");
 # SKIP_BUILD=1 reuses an existing build/linux/x64/release/bundle (used to test
@@ -42,10 +50,22 @@ if [ "${SKIP_BUILD:-0}" != 1 ]; then
     $FLUTTER pub get
     $FLUTTER build linux --release --dart-define=PLAYHEADTV_CLIENT_VERSION="$VERSION"
     mkdir -p build
-    $DART compile exe tool/updater.dart -o build/playheadtv-updater
+    UPDATER_DEFINES=()
+    if [ -n "${UPDATE_PUBLIC_KEYS:-}" ]; then UPDATER_DEFINES+=("-DPLAYHEADTV_UPDATE_PUBLIC_KEYS=$UPDATE_PUBLIC_KEYS"); fi
+    if [ "${ALLOW_UNSIGNED_DEV:-0}" = 1 ]; then UPDATER_DEFINES+=("-DPLAYHEADTV_ALLOW_UNSIGNED_UPDATES=true"); fi
+    $DART compile exe "${UPDATER_DEFINES[@]}" tool/updater.dart -o build/playheadtv-updater
 fi
 [ -x "$BUNDLE/client" ] || { echo "package_linux.sh: $BUNDLE/client not found" >&2; exit 1; }
 [ -x build/playheadtv-updater ] || { echo "package_linux.sh: build/playheadtv-updater not found" >&2; exit 1; }
+# Ask the compiled updater itself what it pins (exit 0 only when it pins a key).
+if ! build/playheadtv-updater keys; then
+    if [ "${ALLOW_UNSIGNED_DEV:-0}" = 1 ]; then
+        echo "package_linux.sh: WARNING: no update key is pinned: this package installs UNSIGNED updates (ALLOW_UNSIGNED_DEV=1). Do not release it." >&2
+    else
+        echo "package_linux.sh: no update signing key is pinned in lib/update/pinned_keys.dart: refusing to package an updater that cannot authenticate any release (see docs/RELEASING.md \"Signing key\")" >&2
+        exit 1
+    fi
+fi
 
 NAME="playheadtv-client-$VERSION-linux-x64"
 STAGE="$(mktemp -d)"

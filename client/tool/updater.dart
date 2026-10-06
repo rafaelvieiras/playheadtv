@@ -12,6 +12,9 @@
 //   playheadtv-updater prepare --appimage <file> --version <running version> [--state-dir <dir>]
 //       An AppImage: swaps <file> itself. The update state lives in --state-dir
 //       (default $XDG_STATE_HOME/playheadtv).
+//   playheadtv-updater keys
+//       Prints how many update keys this build pins; exit status 0 only when
+//       at least one is (the packaging scripts gate on it).
 // Environment: PLAYHEADTV_AUTO_UPDATE=0 disables the update (config.json
 // `auto_update` does the same), PLAYHEADTV_UPDATE_REPO overrides the
 // "owner/name" the releases come from.
@@ -44,7 +47,13 @@ Never _usage(String message) {
 }
 
 Future<void> main(List<String> args) async {
-  if (args.isEmpty || args.first != 'prepare') _usage('expected the "prepare" command');
+  if (args.isNotEmpty && args.first == 'keys') {
+    final keys = effectivePinnedKeys();
+    stdout.writeln('playheadtv-updater: ${keys.length} update key(s) pinned'
+        '${allowUnsignedUpdatesBuild ? ' (development build: unsigned updates allowed when no key is pinned)' : ''}');
+    exit(keys.isEmpty ? 1 : 0);
+  }
+  if (args.isEmpty || args.first != 'prepare') _usage('expected the "prepare" or "keys" command');
   final env = Platform.environment;
 
   final UpdateTarget target;
