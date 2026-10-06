@@ -13,6 +13,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
+import 'support/key_focus.dart';
 import 'support/video_fixture.dart';
 
 void main() {
@@ -144,11 +145,11 @@ void main() {
         timeout: const Duration(seconds: 8),
         failMessage: 'OSD never hid on its own after the boot auto-show',
       );
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Enter (OSD hidden) did not show the OSD');
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(
         tester,
@@ -190,10 +191,11 @@ void main() {
         timeout: const Duration(seconds: 8),
         failMessage: 'OSD never hid on its own after the boot auto-show',
       );
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Enter (OSD hidden) did not show the OSD');
 
+      await ensurePlayerFocus(tester);
       await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(
@@ -244,20 +246,20 @@ void main() {
       // the channel 8 row, Up moves back, and the remapped channelNext key
       // (K) does nothing inside the EPG.
       expect(focusedEpgChannelNumber(tester), '3');
-      await tester.sendKeyEvent(LogicalKeyboardKey.keyK);
+      await pressKey(tester, LogicalKeyboardKey.keyK);
       await tester.pump();
       expect(focusedEpgChannelNumber(tester), '3', reason: 'remapped channelNext must not move EPG rows');
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await pressKey(tester, LogicalKeyboardKey.arrowDown);
       await tester.pump();
       expect(focusedEpgChannelNumber(tester), '8', reason: 'Down must move to the next row');
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await pressKey(tester, LogicalKeyboardKey.arrowUp);
       await tester.pump();
       expect(focusedEpgChannelNumber(tester), '3', reason: 'Up must move to the previous row');
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await pressKey(tester, LogicalKeyboardKey.arrowDown);
       await tester.pump();
       // Activate (short Enter tap) the channel 8 live cell — program A
       // (column index 0) is the "live now" one.
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter); // short tap: quick down+up
+      await pressKey(tester, LogicalKeyboardKey.enter); // short tap: quick down+up
       await tester.pump();
 
       await waitForChannelNumber(tester, 8);
@@ -277,9 +279,10 @@ void main() {
       // Initial focus: row of the current channel (3), column of the live
       // program (A, index 0). Move to the column of the future program (B,
       // index 1).
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight); // moveColumn(1)
+      await pressKey(tester, LogicalKeyboardKey.arrowRight); // moveColumn(1)
       await tester.pump();
 
+      await ensurePlayerFocus(tester);
       await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
       await tester.pump(const Duration(milliseconds: 700));
       await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
@@ -297,7 +300,7 @@ void main() {
 
       await openEpg(tester);
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await pressKey(tester, LogicalKeyboardKey.escape);
       await tester.pump();
       await pumpUntil(
         tester,

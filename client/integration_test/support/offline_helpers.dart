@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'backend_fixture.dart';
+import 'key_focus.dart';
 
 Future<void> pumpUntil(
   WidgetTester tester,
@@ -44,10 +45,10 @@ bool osdVisible(WidgetTester tester) {
 /// six-button path to the guide.
 Future<void> openEpg(WidgetTester tester) async {
   await pumpUntil(tester, () => !osdVisible(tester), timeout: const Duration(seconds: 10), failMessage: 'OSD never auto-hid');
-  await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+  await pressKey(tester, LogicalKeyboardKey.enter);
   await tester.pump();
   await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Select did not show the OSD');
-  await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+  await pressKey(tester, LogicalKeyboardKey.enter);
   await tester.pump();
   await pumpUntil(
     tester,

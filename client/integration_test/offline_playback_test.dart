@@ -18,6 +18,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
+import 'support/key_focus.dart';
 import 'support/offline_helpers.dart';
 import 'support/video_fixture.dart';
 
@@ -105,12 +106,12 @@ void main() {
       await openEpg(tester);
       expect(epgCellsOf(channelA), isNotEmpty);
       expect(epgCellsOf(channelB), isNotEmpty);
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await pressKey(tester, LogicalKeyboardKey.escape);
       await tester.pump();
       await pumpUntil(tester, () => find.byKey(const Key('epg-details-panel')).evaluate().isEmpty, failMessage: 'Back did not close the guide');
 
       // Channel switching (Up = next channel) loads the other channel from the cache.
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await pressKey(tester, LogicalKeyboardKey.arrowUp);
       await tester.pump();
       await pumpUntil(
         tester,
@@ -119,7 +120,7 @@ void main() {
       );
 
       // Back goes to the mosaic, which lists the cached channels.
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await pressKey(tester, LogicalKeyboardKey.escape);
       await tester.pump();
       await pumpUntil(tester, () => find.byKey(const Key('mosaic-page')).evaluate().isNotEmpty, failMessage: 'Back did not reach the mosaic');
       await pumpUntil(
@@ -129,7 +130,7 @@ void main() {
       );
 
       // Select on the featured tile (the last watched channel) plays it again, still offline.
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(
         tester,

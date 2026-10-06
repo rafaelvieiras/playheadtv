@@ -24,6 +24,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
+import 'support/key_focus.dart';
 import 'support/video_fixture.dart';
 
 void main() {
@@ -170,9 +171,9 @@ void main() {
 
       // Move down from the featured tile (row 0) to the only surrounding tile
       // (channel 7, row 1) and activate with Enter.
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await pressKey(tester, LogicalKeyboardKey.arrowDown);
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
 
       await waitForChannelNumber(tester, 7);

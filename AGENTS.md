@@ -264,11 +264,19 @@ keep in mind when touching `client/`:
   `RequestProxy` records `If-None-Match` and statuses and can answer a forced
   status. The media-server fixture also serves a tiny image for
   `/Items/<id>/Images/...`.
-- `osd_test.dart`'s "Enter did not show the OSD" is intermittent on a clean
-  checkout too, mostly while the machine is busy (a build or another test run
-  in parallel): primary focus stayed on the root scope, so the key event never
-  reached the player page. Not caused by cache work; rerun it on an idle
-  machine and compare with a clean checkout before chasing it.
+- Key events and OS window focus: when another window takes OS focus from the
+  test app (a terminal, a notification), Flutter drops primary focus to the
+  root scope and the player page's `KeyboardListener` stops receiving keys
+  ("Enter did not show the OSD"), although `HardwareKeyboard` still sees them.
+  It is deterministic, not load-related. Suites send keys through
+  `pressKey` / `ensurePlayerFocus` (`integration_test/support/key_focus.dart`),
+  which re-request the player's node when focus fell to a scope; use them
+  instead of `tester.sendKeyEvent`, and call `ensurePlayerFocus` before a raw
+  `sendKeyDownEvent`. The app itself re-requests focus on
+  `AppLifecycleState.resumed` (`didChangeAppLifecycleState` in
+  `_ChannelPlayerPageState`, no `setState`; `focus_lifecycle_test.dart`).
+  GUI suites still need a desktop where nothing else takes focus while they
+  run, and only one `flutter_tester` at a time.
 - Fixtures: a manual block defaults to list_mode `repeat` and loops its items
   to the end of the window, so a fixture block with a short item list fills the
   whole window with repeats (hundreds of entries). Create fixture blocks with
@@ -389,8 +397,10 @@ keep in mind when touching `client/`:
 - `channel_navigation_test.dart`'s "typing an existing channel number
   switches channel" case is
   intermittent on a clean checkout (5s window after the 1.5s digit debounce
-  is tight). Not caused by client changes — verify against a clean stash
-  before chasing it.
+  is tight). Not the window-focus cause above (the digit overlay does appear,
+  so the key arrived; the failure is the channel switch not landing within the
+  5s after the debounce) and not caused by client changes — verify against a
+  clean stash before chasing it.
 - Several real `PlayheadSpikeApp` boots (`tester.pumpWidget`, each with real
   dual crossfade `VideoPlayerController`s and real GL textures) in ONE
   `flutter test` process — i.e. several `testWidgets` in one

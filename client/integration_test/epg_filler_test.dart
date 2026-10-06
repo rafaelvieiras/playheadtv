@@ -16,6 +16,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
+import 'support/key_focus.dart';
 import 'support/video_fixture.dart';
 
 void main() {
@@ -128,10 +129,10 @@ void main() {
 
     Future<void> openEpg(WidgetTester tester) async {
       await pumpUntil(tester, () => !osdVisible(tester), timeout: const Duration(seconds: 8), failMessage: 'OSD never hid');
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Enter did not show the OSD');
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(
         tester,
@@ -174,21 +175,21 @@ void main() {
       expect(find.byKey(const Key('epg-details-progress')), findsOneWidget, reason: 'a live filler counts as its program being on air');
 
       // Right/Left step over programs only: A, B, C and back.
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await pressKey(tester, LogicalKeyboardKey.arrowRight);
       await tester.pump();
       expect(detailsTitle('PROG B'), findsOneWidget);
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await pressKey(tester, LogicalKeyboardKey.arrowRight);
       await tester.pump();
       expect(detailsTitle('PROG C'), findsOneWidget, reason: 'the postroll and the tail are not stops');
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await pressKey(tester, LogicalKeyboardKey.arrowLeft);
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+      await pressKey(tester, LogicalKeyboardKey.arrowLeft);
       await tester.pump();
       expect(detailsTitle('PROG A'), findsOneWidget);
 
       // Select on the live cell switches to that channel (it is already
       // playing, so the EPG just closes) even though the live entry is hidden.
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(
         tester,

@@ -17,6 +17,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
+import 'support/key_focus.dart';
 import 'support/video_fixture.dart';
 
 void main() {
@@ -147,11 +148,11 @@ void main() {
       // = [featured], row 1 = [channel 6, Settings]. Go down from the featured
       // row to channel 6 (col 0), go right to the Settings tile (col 1) and
       // activate with Enter.
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await pressKey(tester, LogicalKeyboardKey.arrowDown);
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await pressKey(tester, LogicalKeyboardKey.arrowRight);
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(
         tester,
@@ -169,7 +170,7 @@ void main() {
 
       await tester.tap(find.byKey(const Key('remap-button-channelNext')));
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await pressKey(tester, LogicalKeyboardKey.arrowRight);
       await tester.pump();
       await pumpUntil(
         tester,
@@ -219,20 +220,20 @@ void main() {
         () => find.byKey(featuredTileKey).evaluate().isNotEmpty,
         failMessage: 'featured tile (channel 2) did not appear in the mosaic',
       );
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await pressKey(tester, LogicalKeyboardKey.arrowUp);
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await waitForChannelNumber(tester, 2);
 
       // The OLD binding of channelNext (arrowUp) no longer does anything — it
       // isn't associated with any InputAction after the remap.
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await pressKey(tester, LogicalKeyboardKey.arrowUp);
       await tester.pump(const Duration(seconds: 1));
       expect(osdChannelNumberText(tester), '2');
 
       // The NEW binding (arrowRight) switches channel normally.
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await pressKey(tester, LogicalKeyboardKey.arrowRight);
       await tester.pump();
       await waitForChannelNumber(tester, 6);
     });
@@ -264,11 +265,11 @@ void main() {
         failMessage: 'mosaic did not appear on boot with no history',
       );
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await pressKey(tester, LogicalKeyboardKey.arrowDown);
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await pressKey(tester, LogicalKeyboardKey.arrowRight);
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(
         tester,
@@ -312,7 +313,7 @@ void main() {
       // Assign a key to cycleAudioTrack, same capture flow as any other action.
       await tester.tap(find.byKey(const Key('remap-button-cycleAudioTrack')));
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.keyA);
+      await pressKey(tester, LogicalKeyboardKey.keyA);
       await tester.pump();
       await pumpUntil(
         tester,

@@ -8,6 +8,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
+import 'support/key_focus.dart';
 import 'support/video_fixture.dart';
 
 void main() {
@@ -97,7 +98,7 @@ void main() {
 
     testWidgets('OSD shows title, channel line, clock, end time, disabled transport controls and the audio button', (tester) async {
       await bootAndHideOsd(tester);
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Enter did not show the OSD');
 
@@ -123,15 +124,15 @@ void main() {
 
     testWidgets('in focus mode Up/Down move OSD focus instead of switching channel, and Back hides the OSD', (tester) async {
       await bootAndHideOsd(tester);
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Enter did not show the OSD');
 
       // The first arrow after Select enters focus mode instead of switching
       // channel; later arrows only move focus.
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await pressKey(tester, LogicalKeyboardKey.arrowDown);
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await pressKey(tester, LogicalKeyboardKey.arrowUp);
       await tester.pump();
       expect(tester.widget<Text>(find.byKey(const Key('osd-channel-number'))).data, '4',
           reason: 'arrow keys in focus mode must not switch channel (only one channel exists, so also check the OSD stayed)');
@@ -139,7 +140,7 @@ void main() {
       expect(find.byKey(const Key('osd-btn-channels')), findsNothing, reason: 'there is no Channels button anymore');
       expect(find.byKey(const Key('osd-channels-title')), findsNothing, reason: 'no recent channels with a single channel');
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await pressKey(tester, LogicalKeyboardKey.escape);
       await tester.pump();
       await pumpUntil(tester, () => !osdVisible(tester), failMessage: 'Back did not hide the OSD in focus mode');
       expect(find.byKey(const Key('osd-channel-number')), findsOneWidget, reason: 'Back must not leave the player');

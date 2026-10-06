@@ -32,6 +32,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
+import 'support/key_focus.dart';
 import 'support/video_fixture.dart';
 
 void main() {
@@ -139,16 +140,16 @@ void main() {
         timeout: const Duration(seconds: 8),
         failMessage: 'OSD never hid on its own after the boot auto-show',
       );
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Enter (OSD hidden) did not show the OSD');
     }
 
     Future<void> openTrackSelector(WidgetTester tester) async {
       await showOsd(tester);
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight); // first arrow after Select enters OSD focus mode (audio button)
+      await pressKey(tester, LogicalKeyboardKey.arrowRight); // first arrow after Select enters OSD focus mode (audio button)
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter); // activate the focused audio button
+      await pressKey(tester, LogicalKeyboardKey.enter); // activate the focused audio button
       await tester.pump();
       await pumpUntil(
         tester,
@@ -190,11 +191,11 @@ void main() {
       // Raw Up/Down are captured by the picker instead of switching channel:
       // Down focuses the next option, Up the previous one.
       expect(focused('track-option-audio-0'), isTrue);
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await pressKey(tester, LogicalKeyboardKey.arrowDown);
       await tester.pump();
       expect(focused('track-option-audio-1'), isTrue, reason: 'Down must focus the next option');
       expect(osdChannelNumberText(tester), '4', reason: 'arrowDown must not switch channel while the picker is open');
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await pressKey(tester, LogicalKeyboardKey.arrowUp);
       await tester.pump();
       expect(focused('track-option-audio-0'), isTrue, reason: 'Up must focus the previous option');
       expect(find.byKey(const Key('track-selector-overlay')), findsOneWidget, reason: 'picker should still be open');
@@ -207,7 +208,7 @@ void main() {
 
       await openTrackSelector(tester);
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await pressKey(tester, LogicalKeyboardKey.escape);
       await tester.pump();
       await pumpUntil(
         tester,

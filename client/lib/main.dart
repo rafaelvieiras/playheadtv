@@ -381,7 +381,7 @@ class ChannelPlayerPage extends StatefulWidget {
   State<ChannelPlayerPage> createState() => _ChannelPlayerPageState();
 }
 
-class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
+class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindingObserver {
   // Each slot holds the VideoPlayerController of the item that is playing
   // (active) or being preloaded (inactive). Unlike media_kit, video_player/fvp
   // doesn't reuse the same instance to switch media — every new item is a new
@@ -549,6 +549,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _osdVisibleNotifier.addListener(() {
       if (!_osdVisibleNotifier.value) {
         _osdFocusNotifier.value = false;
@@ -1761,8 +1762,22 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> {
     }
   }
 
+  /// When the window loses and regains OS focus Flutter drops primary focus
+  /// to the root scope, and the key listener below stops receiving keys.
+  /// Hand focus back on resume. Deliberately no `setState`: rebuilding this
+  /// page risks the GL-texture bug (see AGENTS.md).
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed || !mounted) return;
+    final primary = FocusManager.instance.primaryFocus;
+    if (primary != null && primary is! FocusScopeNode) return;
+    if (ModalRoute.of(context)?.isCurrent == false) return;
+    _focusNode.requestFocus();
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _advanceTimer?.cancel();
     _volumeRampTimer?.cancel();
     _osdHideTimer?.cancel();

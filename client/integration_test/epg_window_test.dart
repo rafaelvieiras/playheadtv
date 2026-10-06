@@ -25,6 +25,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
+import 'support/key_focus.dart';
 import 'support/request_proxy.dart';
 import 'support/video_fixture.dart';
 
@@ -109,10 +110,10 @@ void main() {
     // Select (OSD hidden) shows the OSD, a second Select opens the full EPG.
     Future<void> openEpg(WidgetTester tester) async {
       await pumpUntil(tester, () => !osdVisible(tester), timeout: const Duration(seconds: 10), failMessage: 'OSD never auto-hid');
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Select did not show the OSD');
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(
         tester,
@@ -202,6 +203,7 @@ void main() {
       // Art: long-press Select on the focused (live) program expands the
       // details; the poster URL is built from the media server address and
       // the tag the backend sent.
+      await ensurePlayerFocus(tester);
       await tester.sendKeyDownEvent(LogicalKeyboardKey.enter);
       await tester.pump(const Duration(milliseconds: 700));
       await tester.sendKeyUpEvent(LogicalKeyboardKey.enter);
@@ -214,7 +216,7 @@ void main() {
       expect(video.imageRequests.where((u) => u.startsWith('/Items/big-a/Images/Primary?tag=tagA')), isNotEmpty, reason: '${video.imageRequests}');
       expect(p.to('/catalog-items'), isEmpty, reason: describe(p));
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await pressKey(tester, LogicalKeyboardKey.escape);
       await tester.pump();
     });
 
@@ -309,7 +311,7 @@ void main() {
       await openEpg(tester);
       expect(p.to('/catalog-items/').length, before, reason: 'the guide reads the cache:\n  ${describe(p)}');
       expect(find.text('LEGACY A'), findsWidgets);
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await pressKey(tester, LogicalKeyboardKey.escape);
       await tester.pump();
     });
   });

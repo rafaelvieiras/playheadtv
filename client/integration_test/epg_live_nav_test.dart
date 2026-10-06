@@ -22,6 +22,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
+import 'support/key_focus.dart';
 import 'support/video_fixture.dart';
 
 void main() {
@@ -104,22 +105,10 @@ void main() {
         return finder.evaluate().isNotEmpty && tester.widget<Text>(finder).data == '1';
       }, failMessage: 'channel 1 never tuned');
       await pumpUntil(tester, () => !osdVisible(tester), timeout: const Duration(seconds: 8), failMessage: 'OSD never hid');
-      // The first key event can be lost while primary focus is still on the
-      // root scope (see AGENTS.md), so retry the Select a few times.
-      for (var attempt = 0; attempt < 4 && !osdVisible(tester); attempt++) {
-        if (attempt > 0) {
-          tester.widget<KeyboardListener>(find.byType(KeyboardListener).first).focusNode.requestFocus();
-          await tester.pump();
-        }
-        await tester.sendKeyEvent(LogicalKeyboardKey.enter);
-        await tester.pump();
-        final deadline = DateTime.now().add(const Duration(seconds: 3));
-        while (!osdVisible(tester) && DateTime.now().isBefore(deadline)) {
-          await tester.pump(const Duration(milliseconds: 100));
-        }
-      }
-      expect(osdVisible(tester), isTrue, reason: 'Select (OSD hidden) did not show the OSD');
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
+      await tester.pump();
+      await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Select (OSD hidden) did not show the OSD');
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => find.byKey(const Key('epg-details-panel')).evaluate().isNotEmpty, failMessage: 'EPG never finished loading');
     }
@@ -130,7 +119,7 @@ void main() {
     }
 
     Future<void> press(WidgetTester tester, LogicalKeyboardKey key) async {
-      await tester.sendKeyEvent(key);
+      await pressKey(tester, key);
       await tester.pump();
     }
 

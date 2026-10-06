@@ -16,6 +16,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
+import 'support/key_focus.dart';
 import 'support/offline_helpers.dart';
 import 'support/video_fixture.dart';
 
@@ -43,7 +44,7 @@ void main() {
     });
 
     Future<void> press(WidgetTester tester, LogicalKeyboardKey key) async {
-      await tester.sendKeyEvent(key);
+      await pressKey(tester, key);
       await tester.pump();
     }
 

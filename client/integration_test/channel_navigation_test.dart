@@ -27,6 +27,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
+import 'support/key_focus.dart';
 import 'support/video_fixture.dart';
 
 void main() {
@@ -171,12 +172,12 @@ void main() {
       await tester.pumpWidget(const PlayheadSpikeApp());
       await waitForChannelNumber(tester, 1);
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await pressKey(tester, LogicalKeyboardKey.arrowUp);
       await tester.pump();
       await waitForChannelNumber(tester, 5);
       expect(osdChannelNameText(tester), channelNames[5]!.toUpperCase());
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await pressKey(tester, LogicalKeyboardKey.arrowUp);
       await tester.pump();
       await waitForChannelNumber(tester, 9);
       expect(osdChannelNameText(tester), channelNames[9]!.toUpperCase());
@@ -187,11 +188,11 @@ void main() {
       await waitForChannelNumber(tester, 1);
 
       // From the lowest number (1), arrow down wraps around to the highest (9).
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await pressKey(tester, LogicalKeyboardKey.arrowDown);
       await tester.pump();
       await waitForChannelNumber(tester, 9);
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await pressKey(tester, LogicalKeyboardKey.arrowDown);
       await tester.pump();
       await waitForChannelNumber(tester, 5);
     });
@@ -205,7 +206,7 @@ void main() {
       // (channelInputCommitDelay) to resolve "59" — which doesn't exist.
       // Instead, type only "5" and wait for the debounce to commit it as
       // channel 5.
-      await tester.sendKeyEvent(LogicalKeyboardKey.digit5);
+      await pressKey(tester, LogicalKeyboardKey.digit5);
       await tester.pump();
       await pumpUntil(
         tester,
@@ -224,11 +225,11 @@ void main() {
       // "9" "9" "9": 3 digits hits channelInputMaxDigits, commits immediately
       // without waiting for the debounce. No configured channel has number
       // 999.
-      await tester.sendKeyEvent(LogicalKeyboardKey.digit9);
+      await pressKey(tester, LogicalKeyboardKey.digit9);
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.digit9);
+      await pressKey(tester, LogicalKeyboardKey.digit9);
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.digit9);
+      await pressKey(tester, LogicalKeyboardKey.digit9);
       await tester.pump();
 
       await pumpUntil(
@@ -261,11 +262,11 @@ void main() {
         failMessage: 'OSD never hid on its own after the boot auto-show',
       );
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Enter (OSD hidden) did not show the OSD');
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(
         tester,
@@ -276,7 +277,7 @@ void main() {
         failMessage: 'second Enter (OSD already visible) did not open the EPG',
       );
 
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await pressKey(tester, LogicalKeyboardKey.escape);
       await tester.pump();
       await pumpUntil(
         tester,

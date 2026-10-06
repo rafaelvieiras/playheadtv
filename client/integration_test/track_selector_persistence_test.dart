@@ -16,6 +16,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
+import 'support/key_focus.dart';
 import 'support/video_fixture.dart';
 
 void main() {
@@ -131,16 +132,16 @@ void main() {
         timeout: const Duration(seconds: 8),
         failMessage: 'OSD never hid on its own after the boot auto-show',
       );
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Enter (OSD hidden) did not show the OSD');
     }
 
     Future<void> openTrackSelector(WidgetTester tester) async {
       await showOsd(tester);
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight); // first arrow after Select enters OSD focus mode (audio button)
+      await pressKey(tester, LogicalKeyboardKey.arrowRight); // first arrow after Select enters OSD focus mode (audio button)
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter); // activate the focused audio button
+      await pressKey(tester, LogicalKeyboardKey.enter); // activate the focused audio button
       await tester.pump();
       await pumpUntil(
         tester,
@@ -162,9 +163,9 @@ void main() {
 
       // Default focus is the 1st audio option (index 0, "eng"). Move down
       // once (arrowDown -> moveFocus(1)) to focus the 2nd ("por").
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+      await pressKey(tester, LogicalKeyboardKey.arrowDown);
       await tester.pump();
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
 
       await pumpUntil(
@@ -194,7 +195,7 @@ void main() {
       // and track_selector_test.dart's doc comments) explicitly confirmed
       // does NOT happen for a real user; only repeated fresh *app* boots in
       // one test process do.
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+      await pressKey(tester, LogicalKeyboardKey.arrowUp);
       await tester.pump();
       await waitForChannelNumber(tester, 11, timeout: const Duration(seconds: 20));
     });

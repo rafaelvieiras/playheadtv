@@ -18,6 +18,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
+import 'support/key_focus.dart';
 import 'support/video_fixture.dart';
 
 void main() {
@@ -109,10 +110,10 @@ void main() {
 
     Future<void> openEpg(WidgetTester tester) async {
       await pumpUntil(tester, () => !osdVisible(tester), timeout: const Duration(seconds: 8), failMessage: 'OSD never hid');
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Enter did not show the OSD');
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(
         tester,
@@ -122,7 +123,7 @@ void main() {
     }
 
     Future<void> closeEpg(WidgetTester tester) async {
-      await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+      await pressKey(tester, LogicalKeyboardKey.escape);
       await tester.pump();
       await pumpUntil(tester, () => find.byKey(const Key('epg-overlay')).evaluate().isEmpty, failMessage: 'Back did not close the EPG');
     }
@@ -172,7 +173,7 @@ void main() {
       expect(detailsTitle('PROG A'), findsOneWidget);
       expect(find.byKey(const Key('epg-details-progress')), findsNothing, reason: 'nothing is live in the gap');
       expect(inEpg(find.textContaining('FILLER')), findsNothing);
-      await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+      await pressKey(tester, LogicalKeyboardKey.arrowRight);
       await tester.pump();
       expect(detailsTitle('PROG C'), findsOneWidget, reason: 'the tail is not a stop');
     });

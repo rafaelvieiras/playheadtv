@@ -10,6 +10,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
+import 'support/key_focus.dart';
 import 'support/video_fixture.dart';
 
 void main() {
@@ -110,10 +111,10 @@ void main() {
         timeout: const Duration(seconds: 8),
         failMessage: 'OSD never hid on its own after the boot auto-show',
       );
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Enter (OSD hidden) did not show the OSD');
-      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(
         tester,
@@ -150,7 +151,7 @@ void main() {
 
       // Reach the last channel using only Down: the list has to scroll.
       for (var i = 1; i < channelCount; i++) {
-        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await pressKey(tester, LogicalKeyboardKey.arrowDown);
         await tester.pump(const Duration(milliseconds: 250));
       }
       await tester.pump(const Duration(milliseconds: 400));
@@ -169,7 +170,7 @@ void main() {
       final liveHeight = tester.getSize(find.byKey(const Key('epg-details-panel'))).height;
       // Item 9 starts 4.5h from now, past the initial window (4h ahead).
       for (var i = 0; i < 9; i++) {
-        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await pressKey(tester, LogicalKeyboardKey.arrowRight);
         await tester.pump(const Duration(milliseconds: 300));
       }
       await pumpUntil(
