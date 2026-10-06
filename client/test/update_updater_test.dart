@@ -1,8 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:client/update/install_layout.dart';
+import 'package:client/update/install_target.dart';
 import 'package:client/update/release_source.dart';
 import 'package:client/update/semver.dart';
+import 'package:client/update/signature.dart';
 import 'package:client/update/updater.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -14,6 +17,9 @@ void main() {
   late FakeReleaseSource server;
   late DateTime clock;
   final logs = <String>[];
+  late TestSigner signer;
+
+  setUpAll(() async => signer = await TestSigner.generate());
 
   setUp(() {
     scratch = Directory.systemTemp.createTempSync('playheadtv_updater_');
@@ -27,8 +33,9 @@ void main() {
 
   Updater updaterWith({UpdateSettings settings = const UpdateSettings(), Duration budget = const Duration(seconds: 30)}) =>
       Updater(
-        layout: layout,
+        target: TarballTarget(layout),
         source: server,
+        verifier: signer.verifier,
         settings: settings,
         now: () => clock,
         healthyWindow: const Duration(seconds: 15),
@@ -36,7 +43,7 @@ void main() {
         log: logs.add,
       );
 
-  Future<void> publish(String version) async => server.publish(await buildRelease(scratch, version));
+  Future<void> publish(String version) async => server.publish(await buildRelease(scratch, version, signer: signer));
 
   void expectUntouched() {
     expect(layout.installedVersion, SemVer.tryParse('1.0.0'));
@@ -97,8 +104,11 @@ void main() {
     });
 
     test('a checksum mismatch is rejected and nothing is installed', () async {
-      final release = await buildRelease(scratch, '1.1.0');
-      release.checksums = '${'0' * 64}  ${clientPackageName(release.version)}\n';
+      // A correctly SIGNED list that does not match the package: integrity is
+      // still checked separately from authenticity.
+      final release = await buildRelease(scratch, '1.1.0', signer: signer);
+      release.checksums = utf8.encode('${'0' * 64}  ${clientPackageName(release.version)}\n');
+      release.signature = await signer.sign(release.checksums);
       server.publish(release);
       final result = await updaterWith().prepare();
       expect(result.outcome, UpdateOutcome.checksumMismatch);
@@ -107,8 +117,9 @@ void main() {
     });
 
     test('a package missing from the checksums file is rejected', () async {
-      final release = await buildRelease(scratch, '1.1.0');
-      release.checksums = '${'a' * 64}  some-other-file.tar.gz\n';
+      final release = await buildRelease(scratch, '1.1.0', signer: signer);
+      release.checksums = utf8.encode('${'a' * 64}  some-other-file.tar.gz\n');
+      release.signature = await signer.sign(release.checksums);
       server.publish(release);
       expect((await updaterWith().prepare()).outcome, UpdateOutcome.checksumMismatch);
       expectUntouched();
@@ -124,7 +135,7 @@ void main() {
     });
 
     test('a package without bundle/client is rejected', () async {
-      server.publish(await buildRelease(scratch, '1.1.0', withExecutable: false));
+      server.publish(await buildRelease(scratch, '1.1.0', withExecutable: false, signer: signer));
       final result = await updaterWith().prepare();
       expect(result.outcome, UpdateOutcome.failed);
       expectUntouched();
@@ -152,6 +163,131 @@ void main() {
       await publish('1.1.0');
       expect((await updaterWith().prepare()).outcome, UpdateOutcome.notInstalled);
       expect(server.downloads, 0);
+    });
+  });
+
+  group('signed releases', () {
+    Future<void> expectRefused(UpdateResult result, String reasonFragment) async {
+      expect(result.outcome, UpdateOutcome.signatureRejected);
+      expect(result.message, contains(reasonFragment));
+      expect(server.downloads, 0, reason: 'the package is not even downloaded');
+      expect(logs.any((l) => l.contains('refusing release')), isTrue, reason: 'the refusal is logged');
+      expectUntouched();
+    }
+
+    test('a release signed with the pinned key is accepted', () async {
+      await publish('1.1.0');
+      final result = await updaterWith().prepare();
+      expect(result.outcome, UpdateOutcome.updated);
+      expect(server.downloads, 1);
+    });
+
+    test('a signature made with another key is refused (key mismatch)', () async {
+      final other = await TestSigner.generate();
+      server.publish(await buildRelease(scratch, '1.1.0', signer: other));
+      await expectRefused(await updaterWith().prepare(), 'does not verify');
+    });
+
+    test('a missing signature is a refusal, not a warning', () async {
+      server.publish(await buildRelease(scratch, '1.1.0'));
+      await expectRefused(await updaterWith().prepare(), 'no signature');
+    });
+
+    test('a garbled signature is refused', () async {
+      final release = await buildRelease(scratch, '1.1.0', signer: signer);
+      release.signature = 'not base64 !!';
+      server.publish(release);
+      await expectRefused(await updaterWith().prepare(), 'base64');
+    });
+
+    test('a signature of the wrong length is refused', () async {
+      final release = await buildRelease(scratch, '1.1.0', signer: signer);
+      release.signature = base64.encode(List.filled(10, 1));
+      server.publish(release);
+      await expectRefused(await updaterWith().prepare(), 'expected 64');
+    });
+
+    test('a tampered checksums file no longer matches its signature', () async {
+      final release = await buildRelease(scratch, '1.1.0', signer: signer);
+      // An attacker swaps the package and rewrites the list to match it, but
+      // cannot re-sign it.
+      release.checksums = utf8.encode('${'f' * 64}  ${clientPackageName(release.version)}\n');
+      server.publish(release);
+      await expectRefused(await updaterWith().prepare(), 'does not verify');
+    });
+
+    test('a build that pins no key refuses every update', () async {
+      await publish('1.1.0');
+      final updater = Updater(
+        target: TarballTarget(layout),
+        source: server,
+        verifier: const UpdateVerifier(publicKeys: []),
+        now: () => clock,
+        log: logs.add,
+      );
+      final result = await updater.prepare();
+      expect(result.outcome, UpdateOutcome.signatureRejected);
+      expect(result.message, contains('no update signing key'));
+      expect(server.downloads, 0);
+      expectUntouched();
+    });
+
+    test('the explicit development switch accepts an unsigned release only when no key is pinned', () async {
+      server.publish(await buildRelease(scratch, '1.1.0'));
+      final dev = Updater(
+        target: TarballTarget(layout),
+        source: server,
+        verifier: const UpdateVerifier(publicKeys: [], allowUnsigned: true),
+        now: () => clock,
+        log: logs.add,
+      );
+      expect((await dev.prepare()).outcome, UpdateOutcome.updated);
+      expect(logs.any((l) => l.contains('NOT authenticated')), isTrue, reason: 'it says so loudly');
+    });
+
+    test('the development switch does not weaken a build that pins a key', () async {
+      server.publish(await buildRelease(scratch, '1.1.0'));
+      final updater = Updater(
+        target: TarballTarget(layout),
+        source: server,
+        verifier: UpdateVerifier(publicKeys: [signer.publicKey], allowUnsigned: true),
+        now: () => clock,
+        log: logs.add,
+      );
+      expect((await updater.prepare()).outcome, UpdateOutcome.signatureRejected);
+      expectUntouched();
+    });
+
+    test('a rotated key list accepts a release signed by either key', () async {
+      final oldSigner = signer;
+      final newSigner = await TestSigner.generate();
+      final rotated = UpdateVerifier(publicKeys: [oldSigner.publicKey, newSigner.publicKey]);
+      Updater with_(UpdateVerifier v) => Updater(target: TarballTarget(layout), source: server, verifier: v, now: () => clock, log: logs.add);
+
+      server.publish(await buildRelease(scratch, '1.1.0', signer: newSigner));
+      expect((await with_(rotated).prepare()).outcome, UpdateOutcome.updated, reason: 'signed with the new key');
+
+      // The old key retired: a release signed with it is no longer accepted.
+      final retired = UpdateVerifier(publicKeys: [newSigner.publicKey]);
+      server.publish(await buildRelease(scratch, '1.2.0', signer: oldSigner));
+      confirmPendingHealthy(layout, SemVer.tryParse('1.1.0')!);
+      clock = clock.add(const Duration(minutes: 1));
+      expect((await with_(retired).prepare()).outcome, UpdateOutcome.signatureRejected);
+      expect(layout.installedVersion, SemVer.tryParse('1.1.0'));
+      // ... while a clients still holding both keys accepts it.
+      expect((await with_(rotated).prepare()).outcome, UpdateOutcome.updated);
+    });
+
+    test('a malformed pinned key never verifies anything', () async {
+      await publish('1.1.0');
+      final updater = Updater(
+        target: TarballTarget(layout),
+        source: server,
+        verifier: const UpdateVerifier(publicKeys: ['not a key', 'AAAA']),
+        now: () => clock,
+        log: logs.add,
+      );
+      expect((await updater.prepare()).outcome, UpdateOutcome.signatureRejected);
     });
   });
 

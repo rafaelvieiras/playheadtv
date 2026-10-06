@@ -21,8 +21,16 @@ const clientPlatform = 'linux-x64';
 /// `playheadtv-client-1.2.3-linux-x64.tar.gz`
 String clientPackageName(SemVer version) => 'playheadtv-client-$version-$clientPlatform.tar.gz';
 
-/// `playheadtv-client-1.2.3-checksums.txt` (sha256sum format).
+/// `playheadtv-client-1.2.3-linux-x64.AppImage`
+String clientAppImageName(SemVer version) => 'playheadtv-client-$version-$clientPlatform.AppImage';
+
+/// `playheadtv-client-1.2.3-checksums.txt` (sha256sum format). It lists every
+/// downloadable artifact of the release and is the one file that is signed.
 String clientChecksumsName(SemVer version) => 'playheadtv-client-$version-checksums.txt';
+
+/// `playheadtv-client-1.2.3-checksums.txt.sig`: the detached Ed25519 signature
+/// of the checksums file (base64 text).
+String clientSignatureName(SemVer version) => '${clientChecksumsName(version)}.sig';
 
 /// One published client release.
 class ReleaseInfo {
@@ -32,7 +40,25 @@ class ReleaseInfo {
   final Uri packageUrl;
   final Uri checksumsUrl;
 
-  const ReleaseInfo({required this.version, required this.packageUrl, required this.checksumsUrl});
+  /// The detached signature of the checksums file; null when the release has
+  /// none (the updater refuses such a release, it is never a warning).
+  final Uri? signatureUrl;
+
+  /// The AppImage of this release, null when it was published without one.
+  final Uri? appImageUrl;
+
+  /// The body of the GitHub Release (the changelog), as published. Untrusted
+  /// text: it is only ever shown as plain text, see `update_notes.dart`.
+  final String notes;
+
+  const ReleaseInfo({
+    required this.version,
+    required this.packageUrl,
+    required this.checksumsUrl,
+    this.signatureUrl,
+    this.appImageUrl,
+    this.notes = '',
+  });
 }
 
 /// Source of client releases.
@@ -42,8 +68,9 @@ abstract class ReleaseSource {
   /// something unusable (the updater treats any throw as "check failed").
   Future<ReleaseInfo?> latestStable();
 
-  /// The text of [url] (the checksums file).
-  Future<String> fetchText(Uri url);
+  /// The bytes of [url] (the checksums file and its signature): the signature
+  /// is checked over exactly these bytes.
+  Future<List<int>> fetchBytes(Uri url);
 
   /// Downloads [url] into [dest], replacing it.
   Future<void> download(Uri url, File dest);
@@ -92,12 +119,12 @@ class GithubReleaseSource implements ReleaseSource {
   }
 
   @override
-  Future<String> fetchText(Uri url) async {
+  Future<List<int>> fetchBytes(Uri url) async {
     final response = await _client.get(url).timeout(timeout);
     if (response.statusCode != 200) {
       throw HttpException('$url answered ${response.statusCode}', uri: url);
     }
-    return response.body;
+    return response.bodyBytes;
   }
 
   @override
@@ -121,8 +148,10 @@ class GithubReleaseSource implements ReleaseSource {
 
 /// Picks the newest client release out of a decoded GitHub `releases` listing
 /// (a JSON list): tag `client-vX.Y.Z`, not a draft, not a prerelease, with both
-/// the package and the checksums asset for its own version. Anything
-/// malformed is skipped. Exposed for tests.
+/// the package and the checksums asset for its own version (the signature and
+/// the AppImage are optional here: a release without a signature is picked and
+/// then refused by the updater, so the refusal is logged instead of the release
+/// silently not existing). Anything malformed is skipped. Exposed for tests.
 ReleaseInfo? pickLatestClientRelease(Object? listing) {
   if (listing is! List) return null;
   ReleaseInfo? best;
@@ -137,6 +166,8 @@ ReleaseInfo? pickLatestClientRelease(Object? listing) {
     if (assets is! List) continue;
     Uri? packageUrl;
     Uri? checksumsUrl;
+    Uri? signatureUrl;
+    Uri? appImageUrl;
     for (final asset in assets) {
       if (asset is! Map) continue;
       final name = asset['name'];
@@ -144,10 +175,20 @@ ReleaseInfo? pickLatestClientRelease(Object? listing) {
       if (name is! String || url is! String) continue;
       if (name == clientPackageName(version)) packageUrl = Uri.tryParse(url);
       if (name == clientChecksumsName(version)) checksumsUrl = Uri.tryParse(url);
+      if (name == clientSignatureName(version)) signatureUrl = Uri.tryParse(url);
+      if (name == clientAppImageName(version)) appImageUrl = Uri.tryParse(url);
     }
     if (packageUrl == null || checksumsUrl == null) continue;
     if (best == null || version > best.version) {
-      best = ReleaseInfo(version: version, packageUrl: packageUrl, checksumsUrl: checksumsUrl);
+      final body = release['body'];
+      best = ReleaseInfo(
+        version: version,
+        packageUrl: packageUrl,
+        checksumsUrl: checksumsUrl,
+        signatureUrl: signatureUrl,
+        appImageUrl: appImageUrl,
+        notes: body is String ? body : '',
+      );
     }
   }
   return best;

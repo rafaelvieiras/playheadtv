@@ -114,16 +114,54 @@ class PendingUpdate {
   }
 }
 
-/// state.json: the pending marker and the versions that were rolled back (never
-/// offered again; a newer release is tried normally).
+/// The last successful update, kept so the app can tell the user once what
+/// changed: the version it moved from and to, and the changelog (the release
+/// body, already sanitised and truncated, plain text).
+class LastUpdate {
+  final String version;
+  final String previous;
+  final String notes;
+  final DateTime installedAt;
+
+  const LastUpdate({required this.version, required this.previous, required this.notes, required this.installedAt});
+
+  Map<String, Object?> toJson() => {
+        'version': version,
+        'previous': previous,
+        'notes': notes,
+        'installed_at': installedAt.toUtc().toIso8601String(),
+      };
+
+  static LastUpdate? fromJson(Object? json) {
+    if (json is! Map) return null;
+    final version = json['version'];
+    final previous = json['previous'];
+    final at = DateTime.tryParse('${json['installed_at']}');
+    if (version is! String || previous is! String || at == null) return null;
+    final notes = json['notes'];
+    return LastUpdate(version: version, previous: previous, notes: notes is String ? notes : '', installedAt: at);
+  }
+}
+
+/// state.json: the pending marker, the versions that were rolled back (never
+/// offered again; a newer release is tried normally) and the last update.
 class UpdateState {
   final PendingUpdate? pending;
   final Set<String> failed;
-  const UpdateState({this.pending, this.failed = const {}});
+  final LastUpdate? lastUpdate;
+  const UpdateState({this.pending, this.failed = const {}, this.lastUpdate});
 
-  UpdateState copyWith({PendingUpdate? pending, bool clearPending = false, Set<String>? failed}) => UpdateState(
+  UpdateState copyWith({
+    PendingUpdate? pending,
+    bool clearPending = false,
+    Set<String>? failed,
+    LastUpdate? lastUpdate,
+    bool clearLastUpdate = false,
+  }) =>
+      UpdateState(
         pending: clearPending ? null : (pending ?? this.pending),
         failed: failed ?? this.failed,
+        lastUpdate: clearLastUpdate ? null : (lastUpdate ?? this.lastUpdate),
       );
 
   /// Reads the state; a missing or corrupt file is an empty state (never an
@@ -136,18 +174,21 @@ class UpdateState {
       return UpdateState(
         pending: PendingUpdate.fromJson(json['pending']),
         failed: failed is List ? failed.whereType<String>().toSet() : const {},
+        lastUpdate: LastUpdate.fromJson(json['last_update']),
       );
     } on Object {
       return const UpdateState();
     }
   }
 
-  /// Writes atomically (temp file + rename).
+  /// Writes atomically (temp file + rename), creating the directory.
   void write(File file) {
+    file.parent.createSync(recursive: true);
     final tmp = File('${file.path}.tmp');
     tmp.writeAsStringSync(jsonEncode({
       'pending': pending?.toJson(),
       'failed': failed.toList()..sort(),
+      'last_update': lastUpdate?.toJson(),
     }));
     tmp.renameSync(file.path);
   }

@@ -5,11 +5,13 @@
 // the launcher before the app starts.
 //
 // Rules, in the order they matter:
-//  - A failure of any kind (offline, bad answer, bad download, bad checksum,
-//    bad package, no disk) leaves the installed version untouched: the new
-//    version is only swapped in after it was downloaded, verified against the
-//    release's SHA-256 checksums, extracted and found complete. The swap is one
-//    atomic rename of the `current` symlink.
+//  - A failure of any kind (offline, bad answer, bad download, missing or
+//    invalid signature, bad checksum, bad package, no disk) leaves the
+//    installed version untouched: the new version is only swapped in after the
+//    release's checksums file was authenticated (Ed25519 signature against the
+//    pinned keys), the artifact was downloaded and matched that signed list,
+//    and it was found complete. The swap is one atomic rename (the `current`
+//    symlink, or the AppImage file).
 //  - A swapped-in version is "pending" until the app confirms it is healthy.
 //    A start that finds it still unconfirmed after the window rolls back to the
 //    previous version and never offers that version again.
@@ -21,8 +23,11 @@ import 'dart:io';
 import 'package:crypto/crypto.dart';
 
 import 'install_layout.dart';
+import 'install_target.dart';
 import 'release_source.dart';
 import 'semver.dart';
+import 'signature.dart';
+import 'update_notes.dart';
 
 /// How long a freshly swapped-in version has to confirm it is healthy.
 const defaultHealthyWindow = Duration(seconds: 15);
@@ -73,6 +78,11 @@ enum UpdateOutcome {
   /// The package did not match the published SHA-256.
   checksumMismatch,
 
+  /// The checksums file could not be authenticated: the release has no
+  /// signature, the signature is invalid or made with another key, or this
+  /// build pins no key. Nothing was downloaded or installed.
+  signatureRejected,
+
   /// Anything else that went wrong while staging or swapping.
   failed,
 
@@ -103,9 +113,9 @@ class UpdateResult {
 }
 
 class Updater {
-  final InstallLayout layout;
+  final UpdateTarget target;
   final ReleaseSource source;
-  final ArchiveExtractor extractor;
+  final UpdateVerifier verifier;
   final UpdateSettings settings;
   final DateTime Function() now;
   final Duration healthyWindow;
@@ -113,9 +123,9 @@ class Updater {
   final void Function(String message) log;
 
   Updater({
-    required this.layout,
+    required this.target,
     required this.source,
-    this.extractor = const TarExtractor(),
+    required this.verifier,
     this.settings = const UpdateSettings(),
     DateTime Function()? now,
     this.healthyWindow = defaultHealthyWindow,
@@ -156,24 +166,24 @@ class Updater {
 
   /// Called by the running app once it considers itself healthy: confirms the
   /// pending update of [runningVersion] (no-op for any other version).
-  void confirmHealthy(SemVer runningVersion) => confirmPendingHealthy(layout, runningVersion);
+  void confirmHealthy(SemVer runningVersion) => confirmPendingHealthyAt(target.stateFile, runningVersion);
 
   // ---- pending update ----
 
   _Resolution _resolvePending() {
-    final state = UpdateState.read(layout.stateFile);
+    final state = UpdateState.read(target.stateFile);
     final pending = state.pending;
     if (pending == null) return const _Resolution();
 
-    final installed = layout.installedVersion;
+    final installed = target.installedVersion;
     if (installed == null || installed.toString() != pending.version) {
       // The swap never happened (or was already undone): the marker is stale.
-      state.copyWith(clearPending: true).write(layout.stateFile);
+      state.copyWith(clearPending: true).write(target.stateFile);
       return const _Resolution();
     }
     if (pending.confirmed) {
-      state.copyWith(clearPending: true).write(layout.stateFile);
-      layout.prune({pending.version, pending.previous});
+      state.copyWith(clearPending: true).write(target.stateFile);
+      target.afterConfirmed(pending);
       return const _Resolution();
     }
     if (now().difference(pending.startedAt) < healthyWindow) {
@@ -183,21 +193,22 @@ class Updater {
     // Unconfirmed past the window: the new version did not come up healthy.
     final failed = {...state.failed, pending.version};
     final previous = SemVer.tryParse(pending.previous);
-    if (previous != null && layout.executableOf(previous).existsSync()) {
-      layout.pointAt(layout.currentLink, previous);
+    if (previous != null && target.rollback(previous: previous, bad: installed)) {
       log('rolled back ${pending.version} -> ${pending.previous}');
-      layout.prune({pending.previous});
     } else {
       log('cannot roll back ${pending.version}: previous version ${pending.previous} is missing');
     }
-    state.copyWith(clearPending: true, failed: failed).write(layout.stateFile);
+    final last = state.lastUpdate;
+    state
+        .copyWith(clearPending: true, failed: failed, clearLastUpdate: last != null && last.version == pending.version)
+        .write(target.stateFile);
     return _Resolution(rolledBackFrom: pending.version);
   }
 
   // ---- check, download, verify, swap ----
 
   Future<UpdateResult> _checkAndInstall() async {
-    final installed = layout.installedVersion;
+    final installed = target.installedVersion;
     if (installed == null) {
       return const UpdateResult(UpdateOutcome.notInstalled, 'no current version installed');
     }
@@ -217,77 +228,95 @@ class Updater {
     if (release == null || !(release.version > installed)) {
       return UpdateResult(UpdateOutcome.upToDate, 'installed $installed is the latest');
     }
-    final state = UpdateState.read(layout.stateFile);
-    if (state.failed.contains(release.version.toString())) {
-      return UpdateResult(UpdateOutcome.upToDate, '${release.version} was rolled back earlier, not offered again');
+    final version = release.version;
+    final notes = sanitizeNotes(release.notes);
+    final state = UpdateState.read(target.stateFile);
+    if (state.failed.contains(version.toString())) {
+      return UpdateResult(UpdateOutcome.upToDate, '$version was rolled back earlier, not offered again');
     }
-    // The checksums and the package are only ever fetched over HTTPS.
-    if (release.packageUrl.scheme != 'https' || release.checksumsUrl.scheme != 'https') {
+    final artifactUrl = target.artifactUrl(release);
+    if (artifactUrl == null) {
+      return UpdateResult(UpdateOutcome.checkFailed, 'release $version has no ${target.kind} asset');
+    }
+    // The checksums, the signature and the artifact are only ever fetched over
+    // HTTPS.
+    final signatureUrl = release.signatureUrl;
+    if (artifactUrl.scheme != 'https' ||
+        release.checksumsUrl.scheme != 'https' ||
+        (signatureUrl != null && signatureUrl.scheme != 'https')) {
       return const UpdateResult(UpdateOutcome.checkFailed, 'release assets are not served over HTTPS');
     }
 
-    final stage = Directory('${layout.stagingDir.path}/${release.version}');
+    final stage = Directory('${target.stagingDir.path}/$version');
     _cleanStaging();
-    stage.createSync(recursive: true);
-    final archive = File('${stage.path}/package.tar.gz');
-
-    String checksums;
     try {
-      checksums = await source.fetchText(release.checksumsUrl);
-      await source.download(release.packageUrl, archive);
+      stage.createSync(recursive: true);
+    } on FileSystemException catch (e) {
+      return UpdateResult(UpdateOutcome.failed, 'cannot prepare a staging directory: $e');
+    }
+    final artifact = File('${stage.path}/artifact');
+
+    // 1. Authenticate the checksums file: the signature is checked over the
+    //    exact bytes, before the (large) artifact is downloaded.
+    List<int> checksums;
+    String? signature;
+    try {
+      checksums = await source.fetchBytes(release.checksumsUrl);
+      signature = signatureUrl == null ? null : utf8.decode(await source.fetchBytes(signatureUrl), allowMalformed: true);
     } on Object catch (e) {
       return UpdateResult(UpdateOutcome.downloadFailed, 'download failed: $e');
     }
-
-    final expected = expectedChecksum(checksums, clientPackageName(release.version));
-    if (expected == null) {
-      return UpdateResult(UpdateOutcome.checksumMismatch,
-          '${clientPackageName(release.version)} is not listed in the release checksums');
+    final check = await verifier.verify(checksums, signature);
+    if (check.accepted && check.message.startsWith('WARNING')) log(check.message);
+    if (!check.accepted) {
+      log('refusing release $version: ${check.message}');
+      return UpdateResult(UpdateOutcome.signatureRejected, 'release $version rejected: ${check.message}');
     }
-    final actual = (await sha256.bind(archive.openRead()).first).toString();
+
+    // 2. Download the artifact and match it against the signed list.
+    try {
+      await source.download(artifactUrl, artifact);
+    } on Object catch (e) {
+      return UpdateResult(UpdateOutcome.downloadFailed, 'download failed: $e');
+    }
+    final name = target.artifactName(version);
+    final expected = expectedChecksum(utf8.decode(checksums, allowMalformed: true), name);
+    if (expected == null) {
+      return UpdateResult(UpdateOutcome.checksumMismatch, '$name is not listed in the release checksums');
+    }
+    final actual = (await sha256.bind(artifact.openRead()).first).toString();
     if (actual != expected) {
-      return UpdateResult(UpdateOutcome.checksumMismatch, 'SHA-256 mismatch for ${release.version}');
+      return UpdateResult(UpdateOutcome.checksumMismatch, 'SHA-256 mismatch for $version');
     }
 
     try {
-      final unpacked = Directory('${stage.path}/unpacked')..createSync();
-      await extractor.extract(archive, unpacked);
-      final top = Directory('${unpacked.path}/playheadtv-client-${release.version}-$clientPlatform');
-      if (!File('${top.path}/bundle/client').existsSync()) {
-        return UpdateResult(UpdateOutcome.failed, 'package of ${release.version} has no bundle/client');
-      }
-      _swapIn(top, release.version, installed, state);
+      await target.install(
+        artifact: artifact,
+        stage: stage,
+        version: version,
+        installed: installed,
+        beforeSwap: () => state
+            .copyWith(
+              pending: PendingUpdate(version: version.toString(), previous: installed.toString(), startedAt: now()),
+              lastUpdate: LastUpdate(
+                version: version.toString(),
+                previous: installed.toString(),
+                notes: notes,
+                installedAt: now(),
+              ),
+            )
+            .write(target.stateFile),
+      );
     } on Object catch (e) {
-      return UpdateResult(UpdateOutcome.failed, 'installing ${release.version} failed: $e');
+      return UpdateResult(UpdateOutcome.failed, 'installing $version failed: $e');
     }
-    log('installed ${release.version} (was $installed)');
-    return UpdateResult(UpdateOutcome.updated, 'updated $installed -> ${release.version}', version: release.version);
-  }
-
-  void _swapIn(Directory extracted, SemVer version, SemVer installed, UpdateState state) {
-    layout.versionsDir.createSync(recursive: true);
-    final target = layout.versionDir(version);
-    if (target.existsSync()) target.deleteSync(recursive: true);
-    extracted.renameSync(target.path); // same filesystem: staging is inside the root
-    final executable = layout.executableOf(version);
-    if (!executable.existsSync()) throw FileSystemException('installed bundle is incomplete', target.path);
-    // chmod +x is preserved by tar; make sure anyway.
-    Process.runSync('chmod', ['+x', executable.path]);
-
-    // Marker first: if the process dies between the marker and the swap, the
-    // stale marker is recognised (installed != pending.version) and dropped.
-    state
-        .copyWith(
-          pending: PendingUpdate(version: version.toString(), previous: installed.toString(), startedAt: now()),
-        )
-        .write(layout.stateFile);
-    layout.pointAt(layout.previousLink, installed);
-    layout.pointAt(layout.currentLink, version);
+    log('installed $version (was $installed)');
+    return UpdateResult(UpdateOutcome.updated, 'updated $installed -> $version', version: version);
   }
 
   void _cleanStaging() {
     try {
-      if (layout.stagingDir.existsSync()) layout.stagingDir.deleteSync(recursive: true);
+      if (target.stagingDir.existsSync()) target.stagingDir.deleteSync(recursive: true);
     } on FileSystemException {
       // Best effort.
     }
@@ -313,9 +342,13 @@ String? expectedChecksum(String checksums, String fileName) {
 /// Confirms the pending update of [runningVersion] (no-op when there is none,
 /// it is already confirmed, or it belongs to another version). The running app
 /// calls this once it has been healthy for [defaultHealthyWindow].
-void confirmPendingHealthy(InstallLayout layout, SemVer runningVersion) {
-  final state = UpdateState.read(layout.stateFile);
+void confirmPendingHealthy(InstallLayout layout, SemVer runningVersion) =>
+    confirmPendingHealthyAt(layout.stateFile, runningVersion);
+
+/// [confirmPendingHealthy] for any install kind: all it needs is the state file.
+void confirmPendingHealthyAt(File stateFile, SemVer runningVersion) {
+  final state = UpdateState.read(stateFile);
   final pending = state.pending;
   if (pending == null || pending.confirmed || pending.version != runningVersion.toString()) return;
-  state.copyWith(pending: pending.confirm()).write(layout.stateFile);
+  state.copyWith(pending: pending.confirm()).write(stateFile);
 }
