@@ -55,6 +55,16 @@ or LLM, and to every artifact in the repo:
   contents of `.env*` files. Use placeholders (`example.com`, `<path>`) and
   environment variables. If a hardware quirk matters, state it as a
   condition ("on setups with X ...") and link the upstream issue.
+  The rule covers everything published about the project, not only files:
+  issues, issue and PR comments, PR descriptions, release notes, and their
+  edit history. It also covers inference, not just literal values: never say
+  or imply which hardware, operating system, hosting, tooling or deployment
+  the maintainers or any user runs. Describe a platform or tool only as a
+  supported target or a generic option ("a Linux x86_64 client", "a
+  Compose-aware GitOps manager"), never as "the one in use". Write issues
+  from the project's point of view, not from a person's setup. If a
+  decision depends on someone's setup, record the decision itself, not
+  whose setup it is.
 - Quick self-check before committing:
   `git grep -nIP '[áéíóúâêôãõçÁÉÍÓÚÂÊÔÃÕÇ]'` and
   `git grep -nIE '/home/|/Users/'` should print nothing except deliberate
