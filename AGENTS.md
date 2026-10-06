@@ -395,12 +395,13 @@ keep in mind when touching `client/`:
   texture with a healthy compositor. Don't use it to rule out that class of
   bug.
 - `channel_navigation_test.dart`'s "typing an existing channel number
-  switches channel" case is
-  intermittent on a clean checkout (5s window after the 1.5s digit debounce
-  is tight). Not the window-focus cause above (the digit overlay does appear,
-  so the key arrived; the failure is the channel switch not landing within the
-  5s after the debounce) and not caused by client changes — verify against a
-  clean stash before chasing it.
+  switches channel" case once failed intermittently, and the cause is the
+  test's wait, not the app: measured across 5 runs, the switch after the
+  1.5s digit debounce fires (cache read, controller create, first frame,
+  OSD shown) takes ~70-100ms. The old explicit 5s bound left ~3.5s after
+  the debounce, which a machine busy with another GUI run (native GL/mdk
+  init stalls) can exceed. The wait now uses the suite's 15s default
+  condition-based bound; don't shrink it back.
 - Several real `PlayheadSpikeApp` boots (`tester.pumpWidget`, each with real
   dual crossfade `VideoPlayerController`s and real GL textures) in ONE
   `flutter test` process — i.e. several `testWidgets` in one

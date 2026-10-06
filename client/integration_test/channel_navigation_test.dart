@@ -214,7 +214,7 @@ void main() {
         failMessage: 'digit overlay did not appear after typing "5"',
       );
 
-      await waitForChannelNumber(tester, 5, timeout: const Duration(seconds: 5));
+      await waitForChannelNumber(tester, 5);
       expect(osdChannelNameText(tester), channelNames[5]!.toUpperCase());
     });
 
