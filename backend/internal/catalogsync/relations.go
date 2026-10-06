@@ -18,9 +18,9 @@ const ListColumns = "id, tenant_id, media_source_id, external_id, kind, title, s
 	" width, height, video_codec, container, bitrate," +
 	" image_primary_tag, image_backdrop_tag, image_thumb_tag, series_image_primary_tag"
 
-// DetailColumns adds the two JSON columns (aliased to the *_json fields of
+// DetailColumns adds the JSON columns (aliased to the *_json fields of
 // domain.CatalogItem) for the single-item endpoint.
-const DetailColumns = ListColumns + ", production_locations AS locations_json, chapters AS chapters_json"
+const DetailColumns = ListColumns + ", production_locations AS locations_json, chapters AS chapters_json, media_segments AS segments_json"
 
 type relationRow struct {
 	CatalogItemID string
@@ -113,6 +113,11 @@ func LoadRelations(ctx context.Context, db storage.DB, tenantID string, items []
 		if it.LocationsJSON != nil {
 			if err := json.Unmarshal([]byte(*it.LocationsJSON), &it.Locations); err != nil {
 				return fmt.Errorf("catalogsync: decode production_locations of %s: %w", it.ID, err)
+			}
+		}
+		if it.SegmentsJSON != nil {
+			if err := json.Unmarshal([]byte(*it.SegmentsJSON), &it.Segments); err != nil {
+				return fmt.Errorf("catalogsync: decode media_segments of %s: %w", it.ID, err)
 			}
 		}
 		if it.ChaptersJSON != nil {

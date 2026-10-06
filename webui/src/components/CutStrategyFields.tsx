@@ -200,7 +200,9 @@ export function CutStrategyFields({
               </label>
             ))}
             <FieldDescription>
-              Snapped to the nearest chapter boundary within the snap distance of the rule (5 minutes by default).
+              The middle is snapped to the nearest chapter boundary within the snap distance of the rule (5 minutes by
+              default). After the intro is the end of the item's intro marker from the media server (Jellyfin intro
+              segment) when it has one; otherwise the chapter after the intro chapter.
             </FieldDescription>
           </fieldset>
           <label className="flex items-center gap-2 text-sm">
@@ -209,7 +211,7 @@ export function CutStrategyFields({
               checked={value.fallback_enabled}
               onCheckedChange={(on) => patch({ fallback_enabled: on === true })}
             />
-            Use another cut when the item has no chapters
+            Use another cut when the item has no intro marker or chapters
           </label>
           {value.fallback_enabled && value.fallback && (
             <div className="rounded-lg border p-3" data-testid={`${id}-fallback`}>
@@ -223,7 +225,8 @@ export function CutStrategyFields({
           )}
           {!value.fallback_enabled && (
             <FieldDescription>
-              Without it, an item with no chapters gets one break in the middle (never none for lack of data).
+              Without it, an item with no intro marker or chapters gets one break in the middle (never none for lack of
+              data).
             </FieldDescription>
           )}
         </div>

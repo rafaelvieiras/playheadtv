@@ -43,7 +43,7 @@ export const CUT_STRATEGY_LABELS: Record<CutStrategyType, string> = {
 export const CUT_FALLBACK_TYPES: CutStrategyType[] = ['percentage', 'interval', 'offsets', 'phased', 'none']
 
 export const CUT_ROLE_LABELS: Record<CutChapterRole, string> = {
-  after_intro: 'After the intro chapter',
+  after_intro: 'After the intro',
   middle: 'Middle chapter',
 }
 
@@ -470,10 +470,12 @@ export interface SampleDraft {
   duration_minutes: string
   // Optional chapter starts in minutes, e.g. "0, 5, 22, 41".
   chapter_minutes: string
+  // Optional end of the intro media segment in minutes, e.g. "4".
+  intro_end_minutes: string
 }
 
-export function emptySample(kind: CutItemKind, minutes: string, chapters = ''): SampleDraft {
-  return { key: newKey('sample'), kind, duration_minutes: minutes, chapter_minutes: chapters }
+export function emptySample(kind: CutItemKind, minutes: string, chapters = '', introEnd = ''): SampleDraft {
+  return { key: newKey('sample'), kind, duration_minutes: minutes, chapter_minutes: chapters, intro_end_minutes: introEnd }
 }
 
 export function defaultSamples(): SampleDraft[] {
@@ -490,6 +492,11 @@ export function sampleToPreview(config: CutConfigInput, s: SampleDraft): Parsed<
     if (list === null) return fail('Enter the chapter starts as minutes, e.g. 0, 5, 22.')
     const chapters: CutChapter[] = list.map((m, i) => ({ name: `Chapter ${i + 1}`, start_ms: msFromMinutes(m) }))
     body.chapters = chapters
+  }
+  if ((s.intro_end_minutes ?? '').trim() !== '') {
+    const end = parseNumber(s.intro_end_minutes)
+    if (end === null || Number.isNaN(end) || end <= 0) return fail('Enter the intro end as minutes, e.g. 4.')
+    body.segments = [{ type: 'intro', start_ms: 0, end_ms: msFromMinutes(end) }]
   }
   return { ok: true, value: body }
 }

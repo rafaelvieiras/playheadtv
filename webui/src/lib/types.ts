@@ -747,6 +747,14 @@ export interface CutChapter {
   start_ms: number
 }
 
+// A media segment of a sample item (Jellyfin intro, outro, ...), as the
+// preview takes it.
+export interface CutSegment {
+  type: 'intro' | 'outro' | 'recap' | 'preview' | 'commercial'
+  start_ms: number
+  end_ms: number
+}
+
 // Body of POST /cut-rule-sets/preview.
 export interface CutPreviewInput {
   rules: CutRule[]
@@ -755,13 +763,17 @@ export interface CutPreviewInput {
   kind: CutItemKind
   duration_ms: number
   chapters?: CutChapter[]
+  segments?: CutSegment[]
 }
 
 export interface CutPreviewResult {
   cuts_ms: number[]
   segments_ms: number[]
   rule_index: number
-  source: 'rule' | 'default' | 'fallback' | 'builtin' | 'none'
+  // What decided: 'segment' (an intro media segment), 'chapter' (the chapters),
+  // 'fallback' (the rule's fallback), 'builtin' (the middle), 'rule'/'default'
+  // (a non-chapter strategy), or 'none'.
+  source: 'rule' | 'default' | 'segment' | 'chapter' | 'fallback' | 'builtin' | 'none'
   strategy: CutStrategyType
   notes: string[]
 }

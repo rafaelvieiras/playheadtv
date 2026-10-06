@@ -19,8 +19,11 @@ func registerCutRuleTools(s *mcp.Server, db storage.DB, mat *materializer.Materi
 		Description: "Attach a cut rule set to a channel or block: an ordered list of rules (at most 20) that decide " +
 			"where inside an item a break goes. The first rule whose match (kinds, duration range, has_chapters) fits " +
 			"an item wins; its strategy is none, interval (every_ms), percentage (percentages), offsets (offsets_ms), " +
-			"phased (phases, e.g. every 40 minutes until the last 20, then every 5) or chapter (roles middle/after_intro, " +
-			"with an optional fallback used when the item has no chapters). Guard rails (minimum segment, distance from " +
+			"phased (phases, e.g. every 40 minutes until the last 20, then every 5) or chapter (roles middle/after_intro; " +
+			"after_intro is decided by the end of the item's Jellyfin Intro media segment when it has one, else by the chapter " +
+			"heuristic, else by the rule's fallback, and the plan's source says which, " +
+			"with an optional fallback used when the item has no segment or chapters; intro segments are read from Jellyfin by " +
+			"the pull sync, from the first sync after a set uses after_intro). Guard rails (minimum segment, distance from " +
 			"start and end, max breaks) apply to every rule. Triggers EPG regeneration. " +
 			"Mirrors POST /cut-rule-sets.",
 	}, createCutRuleSetHandler(db, mat))
@@ -32,8 +35,9 @@ func registerCutRuleTools(s *mcp.Server, db storage.DB, mat *materializer.Materi
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "preview_cut_plan",
-		Description: "Show where the cuts would fall for a sample item (kind, duration_ms, optional chapters) under a " +
-			"list of cut rules, without storing anything. Mirrors POST /cut-rule-sets/preview.",
+		Description: "Show where the cuts would fall for a sample item (kind, duration_ms, optional chapters and media segments) under a " +
+			"list of cut rules, without storing anything. An intro segment takes priority over chapters for after_intro; the " +
+			"result's source says what decided (rule, default, segment, chapter, fallback, builtin or none). Mirrors POST /cut-rule-sets/preview.",
 	}, previewCutPlanHandler())
 }
 

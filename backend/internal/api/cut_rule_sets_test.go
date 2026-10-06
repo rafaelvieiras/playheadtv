@@ -149,6 +149,20 @@ func TestCutRuleSetsPreview(t *testing.T) {
 		t.Fatalf("chapter preview: %d %s", rec.Code, rec.Body.String())
 	}
 
+	// An intro segment decides after_intro before the chapters, and the source says so.
+	seg := `{"rules":[{"strategy":{"type":"chapter","roles":["after_intro"]}}],"kind":"episode","duration_ms":2700000,
+	  "chapters":[{"name":"A","start_ms":0},{"name":"B","start_ms":600000}],
+	  "segments":[{"type":"intro","start_ms":30000,"end_ms":240000}]}`
+	rec = doRequest(t, mux, "POST", "/cut-rule-sets/preview", seg)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"cuts_ms":[240000]`) || !strings.Contains(rec.Body.String(), `"source":"segment"`) {
+		t.Fatalf("segment preview: %d %s", rec.Code, rec.Body.String())
+	}
+	noSeg := strings.Replace(seg, `"segments":[{"type":"intro","start_ms":30000,"end_ms":240000}]`, `"segments":[]`, 1)
+	rec = doRequest(t, mux, "POST", "/cut-rule-sets/preview", noSeg)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"cuts_ms":[600000]`) || !strings.Contains(rec.Body.String(), `"source":"chapter"`) {
+		t.Fatalf("chapter preview without segments: %d %s", rec.Code, rec.Body.String())
+	}
+
 	for name, bad := range map[string]string{
 		"bad kind":     `{"rules":[{"strategy":{"type":"none"}}],"kind":"clip","duration_ms":1000}`,
 		"no duration":  `{"rules":[{"strategy":{"type":"none"}}],"kind":"movie"}`,

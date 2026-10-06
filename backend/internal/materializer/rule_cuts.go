@@ -23,7 +23,7 @@ type passCutPlanner interface {
 // (cut_rule_set): the set governing an airing is the block's own, else its
 // channel's (cutplan.PickSet), and its rules decide the offsets
 // (cutplan.Planner). An item that no set governs costs nothing; a set that can
-// use chapters makes one indexed read per distinct item. A failing lookup is
+// use chapters or segments makes one indexed read per distinct item. A failing lookup is
 // logged and means no cuts for that item, never a failed materialization.
 func RuleSetCuts(db storage.DB) CutPlanner { return ruleSetCuts{db: db} }
 
@@ -51,6 +51,7 @@ type cutItemInfo struct {
 	ok       bool
 	kind     domain.CatalogItemKind
 	chapters []domain.CatalogChapter
+	segments []domain.CatalogSegment
 }
 
 type ruleSetSnapshot struct {
@@ -65,20 +66,23 @@ func (s *ruleSetSnapshot) PlanCuts(it CutItem) []int64 {
 	if set == nil {
 		return nil
 	}
-	info := s.item(it.CatalogItemID, usesChapters(set.CutConfig))
+	info := s.item(it.CatalogItemID, usesChapters(set.CutConfig), cutplan.UsesSegments(set.CutConfig))
 	if !info.ok {
 		return nil
 	}
-	return cutplan.NewPlanner(*set).Plan(cutplan.Item{Kind: info.kind, DurationMs: it.DurationMs, Chapters: info.chapters}).CutsMs
+	return cutplan.NewPlanner(*set).Plan(cutplan.Item{Kind: info.kind, DurationMs: it.DurationMs, Chapters: info.chapters, Segments: info.segments}).CutsMs
 }
 
-// item reads the kind (and the chapters, when wanted) of one catalog item,
-// memoized for the snapshot. A set that never looks at chapters skips the
-// chapters column.
-func (s *ruleSetSnapshot) item(id string, withChapters bool) cutItemInfo {
+// item reads the kind (and the chapters and media segments, when wanted) of one
+// catalog item, memoized for the snapshot. A set that never looks at chapters or
+// segments skips those columns.
+func (s *ruleSetSnapshot) item(id string, withChapters, withSegments bool) cutItemInfo {
 	key := id
 	if withChapters {
 		key += "#c"
+	}
+	if withSegments {
+		key += "#s"
 	}
 	if info, ok := s.items[key]; ok {
 		return info
@@ -86,11 +90,15 @@ func (s *ruleSetSnapshot) item(id string, withChapters bool) cutItemInfo {
 	var info cutItemInfo
 	cols := "kind"
 	if withChapters {
-		cols = "kind, chapters AS chapters_json"
+		cols += ", chapters AS chapters_json"
+	}
+	if withSegments {
+		cols += ", media_segments AS segments_json"
 	}
 	var rows []struct {
 		Kind         string
 		ChaptersJSON *string
+		SegmentsJSON *string
 	}
 	if err := s.db.Query(s.ctx, &rows, "SELECT "+cols+" FROM catalog_item WHERE id = ?", id); err != nil {
 		log.Printf("materializer: cut planner: load catalog_item %s: %v (item not cut)", id, err)
@@ -100,6 +108,12 @@ func (s *ruleSetSnapshot) item(id string, withChapters bool) cutItemInfo {
 			if err := json.Unmarshal([]byte(*rows[0].ChaptersJSON), &info.chapters); err != nil {
 				log.Printf("materializer: cut planner: decode chapters of %s: %v (planned without chapters)", id, err)
 				info.chapters = nil
+			}
+		}
+		if rows[0].SegmentsJSON != nil {
+			if err := json.Unmarshal([]byte(*rows[0].SegmentsJSON), &info.segments); err != nil {
+				log.Printf("materializer: cut planner: decode media segments of %s: %v (planned without segments)", id, err)
+				info.segments = nil
 			}
 		}
 	}

@@ -25,7 +25,7 @@ func registerCatalogTools(s *mcp.Server, db storage.DB) {
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "get_catalog_item",
 		Description: "Get one catalog item by id with everything search_catalog returns plus cast, directors, production locations and " +
-			"chapters. Mirrors GET /catalog-items/{id}.",
+			"chapters and media segments (intro, outro, ...; empty unless a cut rule set uses them and the Jellyfin server has the API). Mirrors GET /catalog-items/{id}.",
 	}, getCatalogItemHandler(db))
 }
 

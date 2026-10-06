@@ -919,9 +919,11 @@ Strategies (the `type` of a rule's `strategy`):
   with `until_ms` (from the start) or `until_before_end_ms` (from the end), all
   of the same kind, strictly ordered, so phases cannot overlap and the order
   never depends on the item's duration;
-- `chapter`: `roles` `after_intro` (the chapter boundary after the first
-  chapter named intro/opening/prologue/cold open/teaser, else after the first
-  chapter when it ends within 10 minutes) and `middle` (the chapter boundary
+- `chapter`: `roles` `after_intro` (the end of the item's first Jellyfin
+  `Intro` media segment when it has one, see "Media segments" below; else the
+  chapter boundary after the first chapter named
+  intro/opening/prologue/cold open/teaser, else after the first chapter when it
+  ends within 10 minutes) and `middle` (the chapter boundary
   nearest the middle, or the middle itself when none is within the tolerance),
   snapped within `snap_tolerance_ms` (5 minutes by default);
 - `none`: an explicit "do not cut".
@@ -936,10 +938,10 @@ to the edges, `min_from_start_ms` and `min_from_end_ms` (3 minutes), and
 `max_breaks` (10, at most 50; the earliest are kept). Cuts are sorted,
 de-duplicated and thinned in that order, so an item too short for them gets no
 cut. The output is a pure function of the rules, the item's kind and duration
-and its chapters: regenerating the guide never moves a break.
+and its chapters and media segments: regenerating the guide never moves a break.
 
-Fallback chain: a `chapter` strategy that finds no chapters (or none of its
-roles resolves) uses its own `fallback` (a percentage, interval, offsets, phased
+Fallback chain: a `chapter` strategy that finds no intro segment or chapters (or
+none of its roles resolves) uses its own `fallback` (a percentage, interval, offsets, phased
 or none strategy), else one built-in cut at 50%: an item is never left uncut
 for lack of data unless the author chose `none`. A fallback result thinned to
 nothing by the guard rails is not retried; an item that is too short stays
@@ -954,9 +956,10 @@ completely ("rule 3 can never match: rule 1 ...").
 Consumption contract: `cutplan.Planner` adapts a stored set to
 `CutOffsets(item domain.CatalogItem, durationMs int64) []int64` (ordered offsets
 into what airs, empty for none; `durationMs` is the occurrence's effective
-duration after a block's trim). Chapters come from `item.Chapters`, which the
-catalog list queries leave empty: a caller that wants chapter cuts loads them
-first, otherwise the planner takes the no-chapters path.
+duration after a block's trim). Chapters and media segments come from
+`item.Chapters` and `item.Segments`, which the catalog list queries leave empty:
+a caller that wants chapter or segment cuts loads them first, otherwise the
+planner takes the no-data path.
 
 Wiring (`internal/materializer/rule_cuts.go`, installed by `cmd/server`):
 `RuleSetCuts(db)` is the `CutPlanner` backed by the stored sets. Each time the
@@ -966,12 +969,37 @@ planner, so a tenant without sets pays nothing and generates exactly what it
 did before), and the snapshot answers `PlanCuts` per item: `cutplan.PickSet`
 chooses the set for the airing's channel and block, the catalog item's `kind`
 (and its stored `chapters`, only when a rule can use them: a `chapter` strategy,
-`has_chapters` or a snap tolerance) is read once per distinct item per snapshot,
-and `Plan.CutsMs` is returned. An item no set governs is not looked up at all.
+`has_chapters` or a snap tolerance; and its stored `media_segments`, only when a
+rule has the `after_intro` role, `cutplan.UsesSegments`) is read once per
+distinct item per snapshot, and `Plan.CutsMs` is returned. An item no set governs is not looked up at all.
 A failed lookup is logged and the item is not cut; materialization never fails
 on it. Chapters are persisted by the pull sync (`catalog_item.chapters`), so
-chapter strategies work on a synced Jellyfin library; Jellyfin media-segment
-(intro) markers are not read.
+chapter strategies work on a synced Jellyfin library.
+
+`Plan.Source` says what decided the cuts: `rule` or `default` (a non-chapter
+strategy), `segment` (a chapter strategy resolved a cut, at least `after_intro`,
+from an Intro media segment), `chapter` (resolved from the chapters alone),
+`fallback` or `builtin` (a chapter strategy found neither), `none`. The preview
+and the web UI show it per sample ("via the intro segment").
+
+Media segments (migration `0021`, `catalog_item.media_segments`): a JSON array
+of `{type, start_ms, end_ms}` (types `intro`, `outro`, `recap`, `preview`,
+`commercial`), exposed by `GET /catalog-items/{id}`, MCP `get_catalog_item` and
+the push sync input as `segments`. NULL means never looked up, `[]` looked up
+with none. The planner uses the first Intro (by start) that has a positive
+length, starts inside the item and ends before its end; the cut is its end and
+is not snapped to chapters. The pull sync reads them from Jellyfin 10.10+
+(`GET /MediaSegments/{itemId}`, one request per item, no bulk endpoint), bounded
+because of that: only for a tenant with a cut rule that has `after_intro`, only
+movies and episodes, at most 2000 items never looked up per sync plus a rotating
+window of 200 already looked up (so a large library is refreshed over several
+syncs), four requests at a time, a 60 second deadline for the phase, and the
+phase stops at the first sign of a server without the API (401/403/404/405/501
+before any success) or after five failures in a row. Whatever was not looked up
+keeps its stored value; a missing API, a failure or an item without segments
+never fails the sync. A rule set created after the last sync gets its segments
+from the next sync (periodic or manual). The segment calls were exercised
+against a fake server; they have not been run against a real Jellyfin.
 
 Every write to a rule set (REST create/update/delete, MCP `create_cut_rule_set`)
 triggers the materializer like a break template does. It is a normal
@@ -982,12 +1010,10 @@ head.
 
 REST: `POST/GET /cut-rule-sets`, `GET/PUT/DELETE /cut-rule-sets/{id}` (a PUT
 replaces the set) and `POST /cut-rule-sets/preview` (rules plus a sample item:
-kind, `duration_ms`, optional chapters; returns `cuts_ms`, `segments_ms`, the
+kind, `duration_ms`, optional chapters and media `segments`; returns `cuts_ms`, `segments_ms`, the
 matching `rule_index`, `source` and notes, storing nothing); MCP:
 `create_cut_rule_set`, `list_cut_rule_sets`, `preview_cut_plan`; web UI: Cut
 rules (list, rule editor and a live preview for sample items).
-
-Deferred: Jellyfin media-segment (intro) markers.
 
 ### Authoring endpoints (item editing, previews)
 

@@ -439,8 +439,11 @@ actionable checklist.
       `docs/ARCHITECTURE.md` ("Cut points").
       The materializer cuts items by the stored sets (`RuleSetCuts` behind the
       `CutPlanner` seam, chapters read from `catalog_item.chapters`; a rule set
-      write regenerates the guide). Not done: Jellyfin media-segment (intro)
-      markers.
+      write regenerates the guide). The `after_intro` role prefers the end of
+      the item's Jellyfin Intro media segment (migration `0021`, read by the
+      pull sync from Jellyfin 10.10+, bounded lookups) over the chapter
+      heuristic; the plan's source (segment, chapter, fallback) shows in the
+      preview and the web UI.
 
 ## Phase 2 — MCP surface
 

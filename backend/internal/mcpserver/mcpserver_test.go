@@ -301,7 +301,7 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 	doJSON(t, ts, "POST", "/media-sources/"+localSource.ID+"/catalog-sync", token, map[string]any{
 		"items": []map[string]any{
 			{"external_id": "ext-1", "kind": "movie", "title": "Movie One", "duration_ms": 5_400_000,
-				"season_number": 2, "studios": []string{"Acme"}, "cast": []map[string]any{{"name": "Ana", "role": "Hero"}}},
+				"season_number": 2, "studios": []string{"Acme"}, "segments": []map[string]any{{"type": "intro", "start_ms": 5000, "end_ms": 95000}}, "cast": []map[string]any{{"name": "Ana", "role": "Hero"}}},
 			{"external_id": "ext-2", "kind": "movie", "title": "Filler Short", "duration_ms": 60_000},
 			// Accented title/series are deliberate test data for accent-insensitive search.
 			{"external_id": "ext-3", "kind": "episode", "title": "Episódio Final", "series_title": "Minha Série", "duration_ms": 60_000},
@@ -344,6 +344,9 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 	detail := callTool[struct {
 		Item domain.CatalogItem `json:"item"`
 	}](t, ctx, session, "get_catalog_item", map[string]any{"id": movieItemID})
+	if len(detail.Item.Segments) != 1 || detail.Item.Segments[0].EndMs != 95000 {
+		t.Fatalf("get_catalog_item: segments = %+v", detail.Item.Segments)
+	}
 	if len(detail.Item.Cast) != 1 || detail.Item.Cast[0].Role != "Hero" {
 		t.Fatalf("get_catalog_item: cast = %+v", detail.Item.Cast)
 	}
@@ -457,6 +460,17 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 	})
 	if len(preview.CutsMs) != 1 || preview.CutsMs[0] != 1200000 || len(preview.SegmentsMs) != 2 {
 		t.Fatalf("preview_cut_plan: %+v", preview)
+	}
+	segPreview := callTool[struct {
+		CutsMs []int64 `json:"cuts_ms"`
+		Source string  `json:"source"`
+	}](t, ctx, session, "preview_cut_plan", map[string]any{
+		"rules": []map[string]any{{"strategy": map[string]any{"type": "chapter", "roles": []string{"after_intro"}}}},
+		"kind":  "episode", "duration_ms": 2400000,
+		"segments": []map[string]any{{"type": "intro", "start_ms": 0, "end_ms": 240000}},
+	})
+	if len(segPreview.CutsMs) != 1 || segPreview.CutsMs[0] != 240000 || segPreview.Source != "segment" {
+		t.Fatalf("preview_cut_plan with an intro segment: %+v", segPreview)
 	}
 
 	poolsOut := callTool[struct {

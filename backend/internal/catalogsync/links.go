@@ -3,6 +3,7 @@ package catalogsync
 import (
 	"context"
 	"encoding/json"
+	"sort"
 	"strings"
 
 	"github.com/google/uuid"
@@ -60,6 +61,54 @@ type existingLink struct {
 
 func marshalOptionalJSON[T any](v []T) (*string, error) {
 	if len(v) == 0 {
+		return nil, nil
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	s := string(b)
+	return &s, nil
+}
+
+// maxSegments caps the media segments stored per item.
+const maxSegments = 50
+
+// cleanSegments keeps the well-formed segments of an item (known type, start
+// inside the item, end after the start), clipped to the duration and ordered by
+// start, at most maxSegments. nil stays nil ("not looked up"); an input with
+// nothing usable becomes an empty, non-nil slice.
+func cleanSegments(in []domain.CatalogSegment, durationMs int64) []domain.CatalogSegment {
+	if in == nil {
+		return nil
+	}
+	out := []domain.CatalogSegment{}
+	for _, s := range in {
+		s.Type = strings.ToLower(strings.TrimSpace(s.Type))
+		switch s.Type {
+		case domain.SegmentIntro, domain.SegmentOutro, domain.SegmentRecap, domain.SegmentPreview, domain.SegmentCommercial:
+		default:
+			continue
+		}
+		if s.StartMs < 0 || s.EndMs <= s.StartMs || (durationMs > 0 && s.StartMs >= durationMs) {
+			continue
+		}
+		if durationMs > 0 && s.EndMs > durationMs {
+			s.EndMs = durationMs
+		}
+		out = append(out, s)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].StartMs < out[j].StartMs })
+	if len(out) > maxSegments {
+		out = out[:maxSegments]
+	}
+	return out
+}
+
+// marshalSegments encodes an item's media segments: nil is NULL ("not looked
+// up"), an empty non-nil slice is '[]' ("looked up, none").
+func marshalSegments(v []domain.CatalogSegment) (*string, error) {
+	if v == nil {
 		return nil, nil
 	}
 	b, err := json.Marshal(v)

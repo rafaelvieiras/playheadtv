@@ -242,6 +242,7 @@ func (s *Syncer) SyncOne(ctx context.Context, ms domain.MediaSource) (SyncResult
 	series := fetchSeriesInfo(ctx, s.client, *ms.BaseURL, apiKey, episodeSeriesIDs)
 
 	now := time.Now().UnixMilli()
+	segments := s.resolveSegments(ctx, ms, apiKey, remote, now)
 	seen := make(map[string]struct{}, len(remote))
 	upserted := 0
 	for _, ri := range remote {
@@ -250,6 +251,7 @@ func (s *Syncer) SyncOne(ctx context.Context, ms domain.MediaSource) (SyncResult
 			continue // unsupported/malformed item — skip, don't fail the whole sync
 		}
 		seen[item.ExternalID] = struct{}{}
+		item.Segments = segments[item.ExternalID]
 		if err := catalogsync.Upsert(ctx, s.db, ms.TenantID, ms.ID, item, now); err != nil {
 			return SyncResult{}, fmt.Errorf("pullsync: upsert %s: %w", item.ExternalID, err)
 		}

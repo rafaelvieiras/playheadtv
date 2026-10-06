@@ -4,9 +4,8 @@
 // and the same rules always give the same cuts, so a regeneration of the guide
 // never moves a break. docs/ARCHITECTURE.md "Cut points" has the semantics.
 //
-// The package is not wired into the materializer yet. Planner is the adapter
-// the materializer will consume once an epg entry can start at an offset into
-// its item.
+// Planner is the adapter the materializer consumes (see
+// materializer.RuleSetCuts).
 package cutplan
 
 import (
@@ -48,12 +47,14 @@ var DefaultGuards = domain.CutGuards{
 // fallback of its own: one break in the middle.
 var builtinFallback = domain.CutStrategy{Type: domain.CutPercentage, Percentages: []float64{50}}
 
-// Item is what the planner knows about one catalog item. Chapters is optional
-// (nil for an item without chapter metadata) and need not be sorted.
+// Item is what the planner knows about one catalog item. Chapters and
+// Segments are optional (nil for an item without that metadata) and need not
+// be sorted.
 type Item struct {
 	Kind       domain.CatalogItemKind
 	DurationMs int64
 	Chapters   []domain.CatalogChapter
+	Segments   []domain.CatalogSegment
 }
 
 // Source says where a Plan's cuts came from.
@@ -64,8 +65,14 @@ const (
 	SourceRule Source = "rule"
 	// SourceDefault: no rule matched and the set's default strategy decided.
 	SourceDefault Source = "default"
-	// SourceFallback: a chapter strategy had no chapters (or none of its roles
-	// resolved) and its fallback strategy decided.
+	// SourceSegment: a chapter strategy resolved at least one of its cuts from
+	// a media segment (the end of the Intro for the after_intro role).
+	SourceSegment Source = "segment"
+	// SourceChapter: a chapter strategy resolved its cuts from the chapters
+	// alone.
+	SourceChapter Source = "chapter"
+	// SourceFallback: a chapter strategy had no segment or chapters (or none of its
+	// roles resolved) and its fallback strategy decided.
 	SourceFallback Source = "fallback"
 	// SourceBuiltin: as SourceFallback, with no fallback configured: one cut in
 	// the middle.
@@ -100,6 +107,7 @@ func PlanItem(cfg domain.CutConfig, item Item) Plan {
 	}
 	chapters := sortedChapters(item)
 	boundaries := boundariesOf(chapters)
+	intro, hasIntro := introSegmentEnd(item)
 
 	var (
 		strategy  domain.CutStrategy
@@ -120,7 +128,7 @@ func PlanItem(cfg domain.CutConfig, item Item) Plan {
 	plan.Strategy = strategy.Type
 	guards := mergeGuards(DefaultGuards, cfg.Guards, ruleGuard)
 
-	raw, resolved := candidates(strategy, item.DurationMs, chapters, boundaries, snap, &plan)
+	raw, resolved := candidates(strategy, item.DurationMs, chapters, boundaries, intro, hasIntro, snap, &plan)
 	if !resolved {
 		// A chapter strategy without data: fall back, never "no cut" for lack
 		// of chapters.
@@ -131,7 +139,7 @@ func PlanItem(cfg domain.CutConfig, item Item) Plan {
 			plan.Source = SourceFallback
 		}
 		plan.Strategy = fb.Type
-		raw, _ = candidates(fb, item.DurationMs, chapters, boundaries, snap, &plan)
+		raw, _ = candidates(fb, item.DurationMs, chapters, boundaries, intro, hasIntro, snap, &plan)
 	}
 	if plan.Strategy != domain.CutNone && plan.Strategy != domain.CutChapter {
 		raw = snapAll(raw, boundaries, snap)
@@ -145,8 +153,10 @@ func PlanItem(cfg domain.CutConfig, item Item) Plan {
 
 // candidates returns the raw cut offsets of one strategy. resolved is false
 // only for a chapter strategy that found nothing to cut at for lack of
-// chapter data.
-func candidates(s domain.CutStrategy, durationMs int64, chapters []domain.CatalogChapter, boundaries []int64, snapMs int64, plan *Plan) (cuts []int64, resolved bool) {
+// segment or chapter data. intro is the end of the item's Intro segment when
+// hasIntro; a resolved chapter strategy sets plan.Source to SourceSegment or
+// SourceChapter.
+func candidates(s domain.CutStrategy, durationMs int64, chapters []domain.CatalogChapter, boundaries []int64, intro int64, hasIntro bool, snapMs int64, plan *Plan) (cuts []int64, resolved bool) {
 	switch s.Type {
 	case domain.CutNone:
 		return nil, true
@@ -162,19 +172,31 @@ func candidates(s domain.CutStrategy, durationMs int64, chapters []domain.Catalo
 	case domain.CutPhased:
 		return phasedCuts(s.Phases, durationMs), true
 	case domain.CutChapter:
-		if len(boundaries) == 0 {
-			plan.Notes = append(plan.Notes, "the item has no chapters")
+		if len(boundaries) == 0 && !hasIntro {
+			plan.Notes = append(plan.Notes, "the item has no chapters or intro segment")
 			return nil, false
 		}
 		tol := snapMs
 		if tol <= 0 {
 			tol = DefaultChapterToleranceMs
 		}
+		fromSegment := false
 		for _, role := range s.Roles {
+			if role == domain.ChapterRoleAfterIntro && hasIntro {
+				cuts = append(cuts, intro)
+				fromSegment = true
+				continue
+			}
 			if c, ok := roleCut(role, durationMs, chapters, boundaries, tol); ok {
 				cuts = append(cuts, c)
 			} else {
 				plan.Notes = append(plan.Notes, "role "+string(role)+" did not resolve")
+			}
+		}
+		if len(cuts) > 0 {
+			plan.Source = SourceChapter
+			if fromSegment {
+				plan.Source = SourceSegment
 			}
 		}
 		return cuts, len(cuts) > 0
@@ -328,6 +350,9 @@ func snapAll(cuts, boundaries []int64, tol int64) []int64 {
 func roleCut(role domain.ChapterRole, durationMs int64, chapters []domain.CatalogChapter, boundaries []int64, tol int64) (int64, bool) {
 	switch role {
 	case domain.ChapterRoleMiddle:
+		if len(boundaries) == 0 {
+			return 0, false
+		}
 		mid := durationMs / 2
 		if b, ok := nearest(boundaries, mid, tol); ok {
 			return b, true
@@ -337,6 +362,25 @@ func roleCut(role domain.ChapterRole, durationMs int64, chapters []domain.Catalo
 		return introEnd(chapters, durationMs)
 	}
 	return 0, false
+}
+
+// introSegmentEnd returns the end of the item's Intro segment: the first one by
+// start, skipping segments that are empty or start outside the item or end at
+// or past its end (cutting there leaves nothing to cut).
+func introSegmentEnd(item Item) (int64, bool) {
+	best, found := domain.CatalogSegment{}, false
+	for _, s := range item.Segments {
+		if !strings.EqualFold(s.Type, domain.SegmentIntro) {
+			continue
+		}
+		if s.StartMs < 0 || s.EndMs <= s.StartMs || s.StartMs >= item.DurationMs || s.EndMs >= item.DurationMs {
+			continue
+		}
+		if !found || s.StartMs < best.StartMs {
+			best, found = s, true
+		}
+	}
+	return best.EndMs, found
 }
 
 // introNames are the chapter names (lower case, substring match) taken for an

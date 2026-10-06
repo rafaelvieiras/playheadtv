@@ -61,7 +61,7 @@ export function CutRuleSetsPage() {
       <p className="max-w-2xl text-sm text-muted-foreground">
         A cut rule set decides where inside a movie or episode a break goes: an ordered list of rules chosen by the
         item's kind, length and chapters, each cutting every N minutes, at percentages, at fixed times, in phases or at
-        chapters. The first matching rule wins. Rule sets are stored and validated; the guide does not apply them yet.
+        chapters. The first matching rule wins, and the guide cuts items by the rule set of their block or channel.
       </p>
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}

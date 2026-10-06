@@ -16,6 +16,24 @@ type CatalogChapter struct {
 	StartMs int64  `json:"start_ms"`
 }
 
+// Media segment types stored on an item (lower case). The planner reads
+// SegmentIntro.
+const (
+	SegmentIntro      = "intro"
+	SegmentOutro      = "outro"
+	SegmentRecap      = "recap"
+	SegmentPreview    = "preview"
+	SegmentCommercial = "commercial"
+)
+
+// CatalogSegment is one media segment (a marked stretch such as the intro) of
+// an item; both offsets are milliseconds from the start of the item.
+type CatalogSegment struct {
+	Type    string `json:"type"`
+	StartMs int64  `json:"start_ms"`
+	EndMs   int64  `json:"end_ms"`
+}
+
 // CatalogMetadata is the descriptive metadata of a catalog item beyond what
 // scheduling needs. It is embedded in CatalogItem (responses, flattened by
 // both encoding/json and storage's row scanner) and in the sync input types,
@@ -66,4 +84,7 @@ type CatalogMetadata struct {
 	Directors         []CatalogPerson  `json:"directors,omitempty"`
 	Locations         []string         `json:"production_locations,omitempty"`
 	Chapters          []CatalogChapter `json:"chapters,omitempty"`
+	// Segments are the item's media segments (intro, outro, ...); empty when
+	// the source has none or was not asked (migrations/0021).
+	Segments []CatalogSegment `json:"segments,omitempty"`
 }

@@ -103,13 +103,13 @@ func TestPlanItem(t *testing.T) {
 			cfg:  domain.CutConfig{Rules: []domain.CutRule{chapterRule, episodeHalf}},
 			// Middle is 22.5 min: the 22 min chapter start is within tolerance.
 			item: Item{Kind: episode, DurationMs: 45 * min, Chapters: chapters(0, 3, 12, 22, 30, 40)},
-			want: mins(3, 22), src: SourceRule, index: 0,
+			want: mins(3, 22), src: SourceChapter, index: 0,
 		},
 		{
 			name: "movie with chapters: after the intro and at the middle chapter",
 			cfg:  domain.CutConfig{Rules: []domain.CutRule{chapterRule}},
 			item: Item{Kind: movie, DurationMs: 120 * min, Chapters: chapters(0, 6, 20, 41, 58, 75, 100)},
-			want: mins(6, 58), src: SourceRule, index: 0,
+			want: mins(6, 58), src: SourceChapter, index: 0,
 		},
 		{
 			name: "chapters out of order and a named intro",
@@ -117,7 +117,7 @@ func TestPlanItem(t *testing.T) {
 			item: Item{Kind: movie, DurationMs: 100 * min, Chapters: []domain.CatalogChapter{
 				{Name: "Act two", StartMs: 50 * min}, {Name: "Opening credits", StartMs: 0}, {Name: "Act one", StartMs: 8 * min},
 			}},
-			want: mins(8, 50), src: SourceRule, index: 0,
+			want: mins(8, 50), src: SourceChapter, index: 0,
 		},
 		{
 			name: "middle with no boundary in tolerance keeps the middle itself",
@@ -125,7 +125,7 @@ func TestPlanItem(t *testing.T) {
 				Strategy: domain.CutStrategy{Type: domain.CutChapter, Roles: []domain.ChapterRole{domain.ChapterRoleMiddle}},
 			}}},
 			item: Item{Kind: movie, DurationMs: 100 * min, Chapters: chapters(0, 10, 90)},
-			want: mins(50), src: SourceRule, index: 0,
+			want: mins(50), src: SourceChapter, index: 0,
 		},
 		{
 			name: "after_intro needs a short first chapter, else the role is skipped",
@@ -133,7 +133,7 @@ func TestPlanItem(t *testing.T) {
 				Strategy: domain.CutStrategy{Type: domain.CutChapter, Roles: []domain.ChapterRole{domain.ChapterRoleAfterIntro, domain.ChapterRoleMiddle}},
 			}}},
 			item: Item{Kind: movie, DurationMs: 100 * min, Chapters: chapters(0, 30, 52, 80)},
-			want: mins(52), src: SourceRule, index: 0,
+			want: mins(52), src: SourceChapter, index: 0,
 		},
 		{
 			name: "movie without chapters falls back to the rule's percentages",
@@ -198,7 +198,7 @@ func TestPlanItem(t *testing.T) {
 			name: "chapter strategy on a short item is not retried as a fallback",
 			cfg:  domain.CutConfig{Rules: []domain.CutRule{chapterRule}},
 			item: Item{Kind: episode, DurationMs: 5 * min, Chapters: chapters(0, 1, 2)},
-			want: []int64{}, src: SourceRule, index: 0,
+			want: []int64{}, src: SourceChapter, index: 0,
 		},
 		{
 			name: "explicit offsets, those past the end are dropped",

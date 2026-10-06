@@ -22,8 +22,10 @@ const MAX_SAMPLES = 5
 const SOURCE_LABELS: Record<CutPreviewResult['source'], string> = {
   rule: 'rule',
   default: 'the default strategy',
-  fallback: 'the chapter fallback (no chapters found)',
-  builtin: 'the built-in middle cut (no chapters, no fallback)',
+  segment: 'the intro segment',
+  chapter: 'the chapters',
+  fallback: 'the fallback (no intro segment or chapters found)',
+  builtin: 'the built-in middle cut (no intro segment, chapters or fallback)',
   none: 'no rule',
 }
 
@@ -59,8 +61,9 @@ export function CutPreviewPanel({
     <section className="flex flex-col gap-3" data-testid="cut-preview">
       <h2 className="text-base font-medium">Preview</h2>
       <p className="text-sm text-muted-foreground">
-        Where the breaks would fall for a typical item. Type a duration, and the chapter starts (minutes) to try the
-        chapter strategies.
+        Where the breaks would fall for a typical item. Type a duration, the chapter starts (minutes) and where the
+        intro segment ends to try the chapter strategies: the intro segment decides "after the intro" before the
+        chapters do.
       </p>
       {configError && (
         <p className="text-sm text-destructive" data-testid="cut-preview-config-error">
@@ -101,6 +104,18 @@ export function CutPreviewPanel({
               value={s.chapter_minutes}
               onChange={(e) => patch(s.key, { chapter_minutes: e.target.value })}
             />
+            <label className="flex items-center gap-1 text-sm">
+              <Input
+                className="w-20"
+                inputMode="decimal"
+                placeholder="Intro ends"
+                aria-label={`Sample ${i + 1} intro segment end in minutes`}
+                data-testid={`cut-sample-${i}-intro`}
+                value={s.intro_end_minutes}
+                onChange={(e) => patch(s.key, { intro_end_minutes: e.target.value })}
+              />
+              min
+            </label>
             <Button
               type="button"
               variant="ghost"
@@ -157,6 +172,7 @@ function SamplePreview({ index, sample, config }: { index: number; sample: Sampl
   const duration = payload.duration_ms
   const rule = data.rule_index >= 0 ? `rule ${data.rule_index + 1}` : SOURCE_LABELS[data.source]
   const via = data.source === 'rule' ? rule : data.source === 'none' ? SOURCE_LABELS.none : `${rule}, via ${SOURCE_LABELS[data.source]}`
+  const introEnd = (payload.segments ?? []).find((x) => x.type === 'intro')?.end_ms
   return (
     <div className={isFetching ? 'flex flex-col gap-1 opacity-70' : 'flex flex-col gap-1'} data-testid={`cut-sample-${index}-result`}>
       <div className="relative h-6 rounded bg-muted" aria-hidden>
@@ -168,6 +184,13 @@ function SamplePreview({ index, sample, config }: { index: number; sample: Sampl
             title={formatDuration(c)}
           />
         ))}
+        {introEnd !== undefined && introEnd < duration && (
+          <div
+            className="absolute left-0 top-0 h-2 rounded-sm bg-primary/30"
+            style={{ width: `${(introEnd / duration) * 100}%` }}
+            title={`intro segment, ends at ${formatDuration(introEnd)}`}
+          />
+        )}
         {(payload.chapters ?? []).map((c) =>
           c.start_ms > 0 && c.start_ms < duration ? (
             <div

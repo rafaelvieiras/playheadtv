@@ -71,4 +71,5 @@ type CatalogItem struct {
 	// Raw JSON columns, decoded into Locations/Chapters by the detail loader.
 	LocationsJSON *string `json:"-"`
 	ChaptersJSON  *string `json:"-"`
+	SegmentsJSON  *string `json:"-"`
 }

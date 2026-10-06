@@ -16,9 +16,10 @@ import (
 // durationMs is the effective duration of the occurrence (after a block's
 // trim), not necessarily item.DurationMs; offsets are in milliseconds from the
 // start of what airs, strictly ascending. Chapters are read from
-// item.Chapters, which the catalog list queries leave empty: a caller that
-// wants chapter-aware cuts loads the item detail first (without it the planner
-// takes the no-chapters path of the fallback chain, never an error).
+// item.Chapters and media segments from item.Segments, which the catalog list
+// queries leave empty: a caller that wants chapter- or segment-aware cuts loads
+// the item detail first (without them the planner takes the no-data path of the
+// fallback chain, never an error).
 //
 // The method is a pure function of its inputs, so planning the same occurrence
 // in two regenerations gives identical offsets.
@@ -31,7 +32,33 @@ func NewPlanner(set domain.CutRuleSet) Planner { return Planner{Config: set.CutC
 
 // CutOffsets implements the planner contract described on Planner.
 func (p Planner) CutOffsets(item domain.CatalogItem, durationMs int64) []int64 {
-	return p.Plan(Item{Kind: item.Kind, DurationMs: durationMs, Chapters: item.Chapters}).CutsMs
+	return p.Plan(Item{Kind: item.Kind, DurationMs: durationMs, Chapters: item.Chapters, Segments: item.Segments}).CutsMs
+}
+
+// UsesSegments reports whether any rule of cfg can read an item's media
+// segments: a chapter strategy with the after_intro role, as a rule or as the
+// default. A caller that loads segments from storage skips the read otherwise.
+func UsesSegments(cfg domain.CutConfig) bool {
+	afterIntro := func(s *domain.CutStrategy) bool {
+		if s == nil || s.Type != domain.CutChapter {
+			return false
+		}
+		for _, r := range s.Roles {
+			if r == domain.ChapterRoleAfterIntro {
+				return true
+			}
+		}
+		return false
+	}
+	if afterIntro(cfg.Default) {
+		return true
+	}
+	for i := range cfg.Rules {
+		if afterIntro(&cfg.Rules[i].Strategy) {
+			return true
+		}
+	}
+	return false
 }
 
 // Plan is CutOffsets with the explanation (rule, source, notes) kept.

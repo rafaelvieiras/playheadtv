@@ -52,16 +52,20 @@ func Upsert(ctx context.Context, db storage.DB, tenantID, mediaSourceID string, 
 	if err != nil {
 		return err
 	}
+	segments, err := marshalSegments(cleanSegments(item.Segments, item.DurationMs))
+	if err != nil {
+		return err
+	}
 	err = db.Exec(ctx,
 		`INSERT INTO catalog_item (id, tenant_id, media_source_id, external_id, kind, title, series_title, duration_ms, source_modified_at, genres, production_year, synced_at, search_text,
 		   season_number, episode_number, episode_number_end, series_external_id, season_name, original_title, sort_title, premiere_date, date_added,
 		   overview, tagline, content_rating, community_rating, critic_rating, imdb_id, tmdb_id, tvdb_id,
-		   width, height, video_codec, container, bitrate, production_locations, chapters,
+		   width, height, video_codec, container, bitrate, production_locations, chapters, media_segments,
 		   image_primary_tag, image_backdrop_tag, image_thumb_tag, series_image_primary_tag, overview_norm)
 		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 		   ?, ?, ?, ?, ?, ?, ?, ?, ?,
 		   ?, ?, ?, ?, ?, ?, ?, ?,
-		   ?, ?, ?, ?, ?, ?, ?,
+		   ?, ?, ?, ?, ?, ?, ?, ?,
 		   ?, ?, ?, ?, ?)
 		 ON CONFLICT (media_source_id, external_id) DO UPDATE SET
 		   kind = excluded.kind, title = excluded.title, series_title = excluded.series_title,
@@ -77,7 +81,7 @@ func Upsert(ctx context.Context, db storage.DB, tenantID, mediaSourceID string, 
 		   imdb_id = excluded.imdb_id, tmdb_id = excluded.tmdb_id, tvdb_id = excluded.tvdb_id,
 		   width = excluded.width, height = excluded.height, video_codec = excluded.video_codec,
 		   container = excluded.container, bitrate = excluded.bitrate,
-		   production_locations = excluded.production_locations, chapters = excluded.chapters,
+		   production_locations = excluded.production_locations, chapters = excluded.chapters, media_segments = excluded.media_segments,
 		   image_primary_tag = excluded.image_primary_tag, image_backdrop_tag = excluded.image_backdrop_tag,
 		   image_thumb_tag = excluded.image_thumb_tag, series_image_primary_tag = excluded.series_image_primary_tag,
 		   overview_norm = excluded.overview_norm`,
@@ -88,7 +92,7 @@ func Upsert(ctx context.Context, db storage.DB, tenantID, mediaSourceID string, 
 		item.OriginalTitle, item.SortTitle, item.PremiereDate, item.DateAdded,
 		item.Overview, item.Tagline, item.ContentRating, item.CommunityRating, item.CriticRating,
 		item.ImdbID, item.TmdbID, item.TvdbID,
-		item.Width, item.Height, item.VideoCodec, item.Container, item.Bitrate, locations, chapters,
+		item.Width, item.Height, item.VideoCodec, item.Container, item.Bitrate, locations, chapters, segments,
 		item.ImagePrimaryTag, item.ImageBackdropTag, item.ImageThumbTag, item.SeriesImagePrimaryTag,
 		overviewNorm(item.Overview),
 	)

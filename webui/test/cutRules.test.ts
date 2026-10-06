@@ -127,7 +127,7 @@ test('switching a strategy to chapter gives it a percentage fallback', () => {
 test('describeRules summarises each rule and the default', () => {
   assert.deepEqual(describeRules(set()), [
     'movies, at least 2h: every 40m until the last 20m, then every 5m',
-    'episodes or movies, with chapters: chapters: after the intro chapter and middle chapter, else at 33%, 66%',
+    'episodes or movies, with chapters: chapters: after the intro and middle chapter, else at 33%, 66%',
     'episodes: at 50%',
     'otherwise: every 1h',
   ])
@@ -145,6 +145,13 @@ test('sample preview body', () => {
     assert.equal(body.value.duration_ms, 130 * MIN)
     assert.deepEqual(body.value.chapters?.map((c) => c.start_ms), [0, 6 * MIN, 61 * MIN])
   }
+  const withIntro = sampleToPreview(cfg.value, { ...movie, intro_end_minutes: '4' })
+  assert.ok(withIntro.ok)
+  if (withIntro.ok) assert.deepEqual(withIntro.value.segments, [{ type: 'intro', start_ms: 0, end_ms: 4 * MIN }])
+  const noIntro = sampleToPreview(cfg.value, { ...movie, intro_end_minutes: '' })
+  assert.ok(noIntro.ok)
+  if (noIntro.ok) assert.equal(noIntro.value.segments, undefined)
+  assert.equal(sampleToPreview(cfg.value, { ...movie, intro_end_minutes: 'x' }).ok, false)
   assert.equal(sampleToPreview(cfg.value, { ...movie, duration_minutes: '' }).ok, false)
   assert.equal(sampleToPreview(cfg.value, { ...movie, chapter_minutes: '1, b' }).ok, false)
 })

@@ -160,7 +160,8 @@ func TestCatalogSyncPushAcceptsMetadataAndAPIReturnsIt(t *testing.T) {
 		"image_primary_tag":"p","series_image_primary_tag":"sp",
 		"studios":["Acme"],"tags":["cult"],"audio_languages":["eng"],"subtitle_languages":["por"],
 		"cast":[{"name":"Ana","role":"Hero"}],"directors":[{"name":"Dana"}],
-		"production_locations":["Brazil"],"chapters":[{"name":"Intro","start_ms":0}]
+		"production_locations":["Brazil"],"chapters":[{"name":"Intro","start_ms":0}],
+			"segments":[{"type":"Intro","start_ms":1,"end_ms":900},{"type":"junk","start_ms":0,"end_ms":5}]
 	},{"external_id":"m1","kind":"movie","title":"Plain","duration_ms":1000}]}`
 	if rec = doRequest(t, mux, "POST", "/media-sources/"+ms.ID+"/catalog-sync", syncBody); rec.Code != http.StatusOK {
 		t.Fatalf("catalog-sync: %d %s", rec.Code, rec.Body.String())
@@ -179,7 +180,7 @@ func TestCatalogSyncPushAcceptsMetadataAndAPIReturnsIt(t *testing.T) {
 	if studios, _ := ep["studios"].([]any); len(studios) != 1 || studios[0] != "Acme" {
 		t.Errorf("list studios = %v", ep["studios"])
 	}
-	for _, detailOnly := range []string{"cast", "directors", "production_locations", "chapters"} {
+	for _, detailOnly := range []string{"cast", "directors", "production_locations", "chapters", "segments"} {
 		if _, ok := ep[detailOnly]; ok {
 			t.Errorf("list response carries detail-only field %q", detailOnly)
 		}
@@ -189,7 +190,7 @@ func TestCatalogSyncPushAcceptsMetadataAndAPIReturnsIt(t *testing.T) {
 	var item domain.CatalogItem
 	json.Unmarshal(rec.Body.Bytes(), &item)
 	if len(item.Cast) != 1 || item.Cast[0].Role != "Hero" || len(item.Directors) != 1 || item.Directors[0].Name != "Dana" ||
-		len(item.Locations) != 1 || len(item.Chapters) != 1 || len(item.AudioLanguages) != 1 || item.SubtitleLanguages[0] != "por" {
+		len(item.Locations) != 1 || len(item.Chapters) != 1 || len(item.Segments) != 1 || item.Segments[0] != (domain.CatalogSegment{Type: "intro", StartMs: 1, EndMs: 900}) || len(item.AudioLanguages) != 1 || item.SubtitleLanguages[0] != "por" {
 		t.Errorf("detail wrong: %+v", item)
 	}
 

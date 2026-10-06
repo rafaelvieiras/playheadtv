@@ -136,7 +136,7 @@ export function CutRuleSetEditorPage() {
       <PageHeader title={isNew ? 'New cut rule set' : 'Cut rule set'} breadcrumb={breadcrumb} />
       <p className="max-w-2xl text-sm text-muted-foreground">
         Rules decide where inside a movie or episode a break goes. The first rule that matches an item decides its
-        cuts. Rule sets are saved and validated now; the guide does not apply them yet.
+        cuts. The guide cuts items by the rule set of their block or channel.
       </p>
 
       <div className="grid gap-8 lg:grid-cols-[minmax(0,36rem)_minmax(0,1fr)]">

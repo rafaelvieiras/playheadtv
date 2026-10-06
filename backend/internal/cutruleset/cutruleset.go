@@ -174,6 +174,7 @@ type PreviewInput struct {
 	Kind       string                  `json:"kind" jsonschema:"the sample item's kind: movie, episode or other"`
 	DurationMs int64                   `json:"duration_ms" jsonschema:"the sample item's duration in milliseconds"`
 	Chapters   []domain.CatalogChapter `json:"chapters,omitempty" jsonschema:"optional sample chapters: {name, start_ms}"`
+	Segments   []domain.CatalogSegment `json:"segments,omitempty" jsonschema:"optional sample media segments: {type (intro, outro, recap, preview, commercial), start_ms, end_ms}; the end of an intro segment decides the after_intro role before any chapter does"`
 }
 
 // PreviewResult is where the cuts fall for the sample item.
@@ -197,10 +198,13 @@ func Preview(in PreviewInput) (PreviewResult, error) {
 	if len(in.Chapters) > 500 {
 		return PreviewResult{}, &cutplan.ValidationError{Msg: "chapters must hold at most 500 entries"}
 	}
+	if len(in.Segments) > 500 {
+		return PreviewResult{}, &cutplan.ValidationError{Msg: "segments must hold at most 500 entries"}
+	}
 	cfg := Input{Rules: in.Rules, Default: in.Default, Guards: in.Guards}.Config()
 	if err := cutplan.ValidateConfig(cfg); err != nil {
 		return PreviewResult{}, err
 	}
-	plan := cutplan.PlanItem(cfg, cutplan.Item{Kind: domain.CatalogItemKind(in.Kind), DurationMs: in.DurationMs, Chapters: in.Chapters})
+	plan := cutplan.PlanItem(cfg, cutplan.Item{Kind: domain.CatalogItemKind(in.Kind), DurationMs: in.DurationMs, Chapters: in.Chapters, Segments: in.Segments})
 	return PreviewResult{Plan: plan, SegmentsMs: cutplan.Segments(plan.CutsMs, in.DurationMs)}, nil
 }
