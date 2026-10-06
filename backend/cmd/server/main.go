@@ -167,24 +167,9 @@ func run() error {
 			log.Printf("materializer: ignoring invalid PLAYHEADTV_EPG_FREEZE_MARGIN %q", v)
 		}
 	}
-	// PLAYHEADTV_DEBUG_CUT_OFFSETS_MS (comma-separated millisecond offsets,
-	// e.g. "4000,9000") cuts EVERY item at those offsets, with the midroll
-	// break between the segments. A test and development switch standing in
-	// for the cut-point time model; leave it unset in a real deployment.
-	if v := os.Getenv("PLAYHEADTV_DEBUG_CUT_OFFSETS_MS"); v != "" {
-		var offsets []int64
-		for _, part := range strings.Split(v, ",") {
-			if n, err := strconv.ParseInt(strings.TrimSpace(part), 10, 64); err == nil && n > 0 {
-				offsets = append(offsets, n)
-			} else {
-				log.Printf("materializer: ignoring invalid cut offset %q in PLAYHEADTV_DEBUG_CUT_OFFSETS_MS", part)
-			}
-		}
-		if len(offsets) > 0 {
-			mat.SetCutPlanner(materializer.FixedCuts(offsets...))
-			log.Printf("materializer: PLAYHEADTV_DEBUG_CUT_OFFSETS_MS is set: every item is cut at %v ms (debug switch, never for a real deployment)", offsets)
-		}
-	}
+	// Where programs are cut into segments comes from the stored cut rule sets
+	// (docs/ARCHITECTURE.md "Cut points"); without a set nothing is cut.
+	mat.SetCutPlanner(materializer.RuleSetCuts(db))
 	// Run once synchronously at boot so GET /epg has something to serve as
 	// soon as the server comes up, without blocking startup on a broken
 	// schedule forever — a failure here is logged, not fatal.

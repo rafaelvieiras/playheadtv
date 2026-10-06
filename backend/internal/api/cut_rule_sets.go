@@ -4,21 +4,22 @@ import (
 	"net/http"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/cutruleset"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
 // registerCutRuleSets mounts the cut rule set resource: ordered rules that
 // decide where inside an item a break goes (docs/ARCHITECTURE.md "Cut points").
-// Nothing consumes a stored set at generation time yet, so a write does not
-// retrigger the materializer. POST /cut-rule-sets/preview evaluates a rule
+// The materializer cuts items by the stored sets, so every write retriggers it,
+// like a break template does. POST /cut-rule-sets/preview evaluates a rule
 // list for a sample item without storing anything.
-func registerCutRuleSets(mux *http.ServeMux, db storage.DB) {
-	mux.HandleFunc("POST /cut-rule-sets", createCutRuleSet(db))
+func registerCutRuleSets(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer) {
+	mux.HandleFunc("POST /cut-rule-sets", createCutRuleSet(db, mat))
 	mux.HandleFunc("GET /cut-rule-sets", listCutRuleSets(db))
 	mux.HandleFunc("POST /cut-rule-sets/preview", previewCutRuleSet())
 	mux.HandleFunc("GET /cut-rule-sets/{id}", getCutRuleSet(db))
-	mux.HandleFunc("PUT /cut-rule-sets/{id}", updateCutRuleSet(db))
-	mux.HandleFunc("DELETE /cut-rule-sets/{id}", deleteCutRuleSet(db))
+	mux.HandleFunc("PUT /cut-rule-sets/{id}", updateCutRuleSet(db, mat))
+	mux.HandleFunc("DELETE /cut-rule-sets/{id}", deleteCutRuleSet(db, mat))
 }
 
 // writeCutRuleSetError maps a store error to a response: bad input is a 400
@@ -31,7 +32,7 @@ func writeCutRuleSetError(w http.ResponseWriter, err error) {
 	handleDBError(w, err)
 }
 
-func createCutRuleSet(db storage.DB) http.HandlerFunc {
+func createCutRuleSet(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in cutruleset.Input
 		if err := decodeJSON(r, &in); err != nil {
@@ -43,6 +44,7 @@ func createCutRuleSet(db storage.DB) http.HandlerFunc {
 			writeCutRuleSetError(w, err)
 			return
 		}
+		mat.Trigger()
 		writeJSON(w, http.StatusCreated, set)
 	}
 }
@@ -69,7 +71,7 @@ func getCutRuleSet(db storage.DB) http.HandlerFunc {
 	}
 }
 
-func updateCutRuleSet(db storage.DB) http.HandlerFunc {
+func updateCutRuleSet(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var in cutruleset.Input
 		if err := decodeJSON(r, &in); err != nil {
@@ -81,16 +83,18 @@ func updateCutRuleSet(db storage.DB) http.HandlerFunc {
 			writeCutRuleSetError(w, err)
 			return
 		}
+		mat.Trigger()
 		writeJSON(w, http.StatusOK, set)
 	}
 }
 
-func deleteCutRuleSet(db storage.DB) http.HandlerFunc {
+func deleteCutRuleSet(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := cutruleset.Delete(r.Context(), db, DefaultTenantID, r.PathValue("id")); err != nil {
 			handleDBError(w, err)
 			return
 		}
+		mat.Trigger()
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

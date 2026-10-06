@@ -168,14 +168,3 @@ func (s segmenter) split(prog domain.EpgEntry) []domain.EpgEntry {
 func spanEnd(entries []domain.EpgEntry) time.Time {
 	return time.UnixMilli(entries[len(entries)-1].EndAt)
 }
-
-// fixedCuts cuts every item at the same offsets.
-type fixedCuts []int64
-
-func (f fixedCuts) PlanCuts(CutItem) []int64 { return f }
-
-// FixedCuts returns a planner that cuts every item at the given offsets (those
-// outside an item's length are dropped by the normalization). It exists for
-// tests and for the PLAYHEADTV_DEBUG_CUT_OFFSETS_MS switch of the server, the
-// stand-in for a real planner until the cut-point time model replaces it.
-func FixedCuts(offsetsMs ...int64) CutPlanner { return fixedCuts(offsetsMs) }

@@ -309,6 +309,22 @@ class BackendFixture {
     });
   }
 
+  /// A channel-scoped cut rule set that cuts every item at [offsetsMs] (the
+  /// guards are shrunk to 1 ms so a short fixture clip is cut at all), with the
+  /// channel's midroll between the segments.
+  Future<void> createCutOffsetsRule({required String channelId, required List<int> offsetsMs}) async {
+    await _postJson('/cut-rule-sets', {
+      'scope_type': 'channel',
+      'scope_id': channelId,
+      'rules': [
+        {
+          'strategy': {'type': 'offsets', 'offsets_ms': offsetsMs},
+        },
+      ],
+      'guards': {'min_segment_ms': 1, 'min_from_start_ms': 1, 'min_from_end_ms': 1},
+    });
+  }
+
   /// Polls GET /epg until the channel has at least [minEntries] materialized
   /// entries (materialization is asynchronous after a write), so a test boots
   /// the app against a settled guide.

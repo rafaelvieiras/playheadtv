@@ -4,9 +4,8 @@
 // `pumpAndSettle`). Two real app boots in this file on purpose (see AGENTS.md
 // on boot counts).
 //
-// How a split is triggered: the backend runs with
-// PLAYHEADTV_DEBUG_CUT_OFFSETS_MS=10000, the stand-in for the cut-point time
-// model, which cuts every item at 10s. The fixture video is one 24s file served
+// How a split is triggered: each channel gets a cut rule set that cuts every
+// item at 10s. The fixture video is one 24s file served
 // for every item (each entry plays a window of it), so the lineup is:
 //
 //    0-10s   SPLIT MOVIE, segment 1 (file 0-10s)
@@ -49,7 +48,7 @@ void main() {
       backend = BackendFixture();
       video = VideoFixture();
       await video.start(clipSeconds: 24);
-      await backend.start(env: {'PLAYHEADTV_DEBUG_CUT_OFFSETS_MS': '10000'});
+      await backend.start();
       deviceToken = await backend.createDeviceToken();
     });
 
@@ -75,6 +74,7 @@ void main() {
       // A second block a minute later ends the first one's span.
       final next = await backend.createBlockWithItems([ids[0]]);
       await backend.createFillerRule(channelId: channelId, kind: 'midroll', catalogItemIds: [ids[1]]);
+      await backend.createCutOffsetsRule(channelId: channelId, offsetsMs: [10 * second]);
       final start = DateTime.now().toUtc().subtract(startedAgo);
       await backend.createScheduleWithItems(
         channelId: channelId,

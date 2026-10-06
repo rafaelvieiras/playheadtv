@@ -837,10 +837,9 @@ enriched from its item like any entry (`duration_ms` is the item's length).
 
 Materializer (`internal/materializer/cuts.go`):
 
-- `CutPlanner` is the seam: `PlanCuts(CutItem{CatalogItemID, DurationMs}) []int64`
+- `CutPlanner` is the seam: `PlanCuts(CutItem{CatalogItemID, DurationMs, ChannelID, BlockID}) []int64`
   returns the ordered offsets at which a break goes (none = the item plays
-  whole). The default planner never cuts, so nothing changes until one is
-  plugged in (`Materializer.SetCutPlanner`). The result is normalized (sorted,
+  whole). The default planner never cuts (the server installs `RuleSetCuts`) (`Materializer.SetCutPlanner`). The result is normalized (sorted,
   de-duplicated, nothing within `minSegmentMs` (1s) of an end or of another
   cut, at most `maxCutsPerItem` (20)), and a cut whose break resolves to
   nothing (no midroll configured, empty pool) is skipped, so a planner can be
@@ -861,9 +860,8 @@ Materializer (`internal/materializer/cuts.go`):
   extension). Series cursors are rebuilt from the rows with offset 0 only, and a
   count visit counts an episode at its offset-0 row and treats later segments
   like midrolls.
-- Debug trigger until the time model exists: `PLAYHEADTV_DEBUG_CUT_OFFSETS_MS`
-  (comma-separated offsets) installs `FixedCuts`, which cuts every item at those
-  offsets. It is for tests and development only.
+- The real planner is `RuleSetCuts` (see "Cut points"); the seam is also what
+  the tests plug a fixed planner into.
 
 Client playback of a segment: `ChannelEntry.itemOffset` is the entry's
 `item_offset_ms`. Every controller created for the entry seeks to the offset
@@ -892,8 +890,8 @@ A break template airs at a program boundary. Cutting inside an item needs two
 things: a way for an `epg_entry` to start at an offset into its item, and a
 rule for where the cuts fall. This section is the second, the **cut-point time
 model**: `internal/cutplan` (pure: no storage, clock or randomness) plus the
-stored, authored `cut_rule_set`. It is **not wired into the materializer yet**;
-nothing reads a stored set at generation time.
+stored, authored `cut_rule_set`. The materializer reads the stored sets through
+the `CutPlanner` seam (see "Wiring" below).
 
 Rule set: scoped like a `filler_rule` (`channel` or `block`, `scope_id`, `name`,
 `position`; a block's own set beats its channel's, then the lowest `position`,
@@ -957,10 +955,30 @@ Consumption contract: `cutplan.Planner` adapts a stored set to
 `CutOffsets(item domain.CatalogItem, durationMs int64) []int64` (ordered offsets
 into what airs, empty for none; `durationMs` is the occurrence's effective
 duration after a block's trim). Chapters come from `item.Chapters`, which the
-catalog list queries leave empty: a caller that wants chapter cuts loads the
-item detail, otherwise the planner takes the no-chapters path. The materializer
-will pick the set with `PickSet`, call the planner for each item occurrence and
-split it into segments joined by the break template of the boundary kind.
+catalog list queries leave empty: a caller that wants chapter cuts loads them
+first, otherwise the planner takes the no-chapters path.
+
+Wiring (`internal/materializer/rule_cuts.go`, installed by `cmd/server`):
+`RuleSetCuts(db)` is the `CutPlanner` backed by the stored sets. Each time the
+materializer loads a channel's input it asks the planner for a snapshot
+(`BeginPass`): the tenant's sets are read once (one small query, none = no
+planner, so a tenant without sets pays nothing and generates exactly what it
+did before), and the snapshot answers `PlanCuts` per item: `cutplan.PickSet`
+chooses the set for the airing's channel and block, the catalog item's `kind`
+(and its stored `chapters`, only when a rule can use them: a `chapter` strategy,
+`has_chapters` or a snap tolerance) is read once per distinct item per snapshot,
+and `Plan.CutsMs` is returned. An item no set governs is not looked up at all.
+A failed lookup is logged and the item is not cut; materialization never fails
+on it. Chapters are persisted by the pull sync (`catalog_item.chapters`), so
+chapter strategies work on a synced Jellyfin library; Jellyfin media-segment
+(intro) markers are not read.
+
+Every write to a rule set (REST create/update/delete, MCP `create_cut_rule_set`)
+triggers the materializer like a break template does. It is a normal
+regeneration: a timed channel is regenerated whole, while a continuous channel
+keeps the head frozen by the freeze margin (and an item already started or
+split inside it), so a changed set takes effect from the first airing after the
+head.
 
 REST: `POST/GET /cut-rule-sets`, `GET/PUT/DELETE /cut-rule-sets/{id}` (a PUT
 replaces the set) and `POST /cut-rule-sets/preview` (rules plus a sample item:
@@ -969,9 +987,7 @@ matching `rule_index`, `source` and notes, storing nothing); MCP:
 `create_cut_rule_set`, `list_cut_rule_sets`, `preview_cut_plan`; web UI: Cut
 rules (list, rule editor and a live preview for sample items).
 
-Deferred: the materializer wiring and the entry offset (`item_offset_ms`), and
-chapter data for planning (the catalog stores chapters, but the planner is not
-fed them yet and there are no Jellyfin media-segment/intro markers).
+Deferred: Jellyfin media-segment (intro) markers.
 
 ### Authoring endpoints (item editing, previews)
 

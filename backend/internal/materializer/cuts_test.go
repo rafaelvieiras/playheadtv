@@ -272,3 +272,12 @@ func TestCuts_PlannerIsToldWhereTheItemAirs(t *testing.T) {
 		t.Fatalf("asked %+v, want m0 / 60 min / chan1 / rot", first)
 	}
 }
+
+// fixedCuts cuts every item at the same offsets.
+type fixedCuts []int64
+
+func (f fixedCuts) PlanCuts(CutItem) []int64 { return f }
+
+// FixedCuts returns a planner that cuts every item at the given offsets (those
+// outside an item's length are dropped by the normalization).
+func FixedCuts(offsetsMs ...int64) CutPlanner { return fixedCuts(offsetsMs) }

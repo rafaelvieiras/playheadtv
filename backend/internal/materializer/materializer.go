@@ -514,12 +514,22 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		BreakTemplates:  breakTemplates,
 		PoolItems:       poolItems,
 		CatalogDuration: catalogDuration,
-		CutPlanner:      m.cuts,
+		CutPlanner:      m.cutsForPass(ctx, tenantID),
 		DynamicBlockIDs: dynamicBlockIDs,
 		Warnings:        warnings,
 	}
 	in.Warnings = append(in.Warnings, in.fillerRatioWarnings()...)
 	return in, nil
+}
+
+// cutsForPass returns the planner expandChannel uses for one channel load: a
+// planner that keeps per-pass state (RuleSetCuts) gets to take its snapshot
+// here, so rule sets are read once per channel load and never per item.
+func (m *Materializer) cutsForPass(ctx context.Context, tenantID string) CutPlanner {
+	if pp, ok := m.cuts.(passCutPlanner); ok {
+		return pp.BeginPass(ctx, tenantID)
+	}
+	return m.cuts
 }
 
 func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel, tenantID string, now, scanFrom, windowEnd time.Time, cache *catalogDurationCache, state *selectionState) error {

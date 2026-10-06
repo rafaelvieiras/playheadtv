@@ -63,6 +63,14 @@ const (
 // value.
 func newTestDB(t *testing.T) (*storage.SQLite, *http.ServeMux) {
 	t.Helper()
+	db, mux, _ := newTestDBWithMaterializer(t)
+	return db, mux
+}
+
+// newTestDBWithMaterializer is newTestDB that also hands back the materializer
+// the API was registered with, for tests that run or start it.
+func newTestDBWithMaterializer(t *testing.T) (*storage.SQLite, *http.ServeMux, *materializer.Materializer) {
+	t.Helper()
 	ctx := context.Background()
 
 	dbPath := filepath.Join(t.TempDir(), "playheadtv.db")
@@ -114,7 +122,7 @@ func newTestDB(t *testing.T) (*storage.SQLite, *http.ServeMux) {
 
 	outer := http.NewServeMux()
 	outer.Handle("/", RequireAuth(db, inner))
-	return db, outer
+	return db, outer, mat
 }
 
 // doRequest always authenticates as the fixed test session (see

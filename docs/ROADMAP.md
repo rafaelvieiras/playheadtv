@@ -428,9 +428,6 @@ actionable checklist.
       second controller prepared at the resume point while the break plays),
       one merged guide program and OSD subject per split item. Design in
       `docs/ARCHITECTURE.md` ("Items played in segments").
-      Not done: the cut-point time model (interval, percentage, then chapters)
-      that decides where to cut; until it exists only the
-      `PLAYHEADTV_DEBUG_CUT_OFFSETS_MS` debug switch produces segments.
 
 - [x] Cut-point time model (migration `0019`): pure `internal/cutplan` (ordered
       rules chosen by kind, duration range and has-chapters; interval,
@@ -440,9 +437,10 @@ actionable checklist.
       preview endpoint, MCP `create_cut_rule_set`/`list_cut_rule_sets`/
       `preview_cut_plan`, web UI Cut rules with a live preview). Semantics in
       `docs/ARCHITECTURE.md` ("Cut points").
-      Not done: wiring it into the materializer through `cutplan.Planner` (after
-      `item_offset_ms` lands), loading chapters for planning, and Jellyfin
-      media-segment (intro) markers.
+      The materializer cuts items by the stored sets (`RuleSetCuts` behind the
+      `CutPlanner` seam, chapters read from `catalog_item.chapters`; a rule set
+      write regenerates the guide). Not done: Jellyfin media-segment (intro)
+      markers.
 
 ## Phase 2 — MCP surface
 
