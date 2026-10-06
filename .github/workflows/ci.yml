@@ -1,0 +1,79 @@
+name: CI
+
+# Builds and tests every push and pull request. The Flutter GUI integration
+# suites (client/integration_test) are NOT run here: they need a desktop
+# session and real GL; they are run by hand (see AGENTS.md).
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (build, vet, test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Build
+        working-directory: backend
+        run: go build ./...
+      - name: Vet
+        working-directory: backend
+        run: go vet ./...
+      - name: Test
+        working-directory: backend
+        run: go test ./...
+
+  webui:
+    name: Web UI (build, test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+      - name: Install
+        working-directory: webui
+        run: npm ci
+      - name: Build
+        working-directory: webui
+        run: npm run build
+      - name: Test
+        working-directory: webui
+        run: npm test
+
+  client:
+    name: Client (analyze, unit tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: 3.47.5
+          cache: true
+      - name: Dependencies
+        working-directory: client
+        run: flutter pub get
+      - name: Analyze
+        working-directory: client
+        run: flutter analyze
+      - name: Unit tests
+        working-directory: client
+        run: flutter test
+      - name: Launcher and install script tests
+        working-directory: client
+        run: tool/test_launcher.sh
