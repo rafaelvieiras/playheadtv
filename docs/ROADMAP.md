@@ -1141,11 +1141,25 @@ Design: `ARCHITECTURE.md` "Releases and updates"; procedures: `RELEASING.md` and
       when it is outside the range.
 - [ ] Validate the pipelines and the packaged client on real infrastructure
       (checklist in `RELEASING.md`).
-- [ ] Sign releases (checksums only for now).
+- [x] Signed releases: the checksums file carries a detached Ed25519 signature
+      (`CLIENT_SIGNING_KEY` secret), the client pins a list of public keys and
+      refuses an update whose signature is missing or invalid; a build with no
+      key pinned refuses every update. Key rotation in `RELEASING.md`.
+- [ ] Pin the real signing public key in `client/lib/update/pinned_keys.dart`
+      and set the `CLIENT_SIGNING_KEY` secret (the list ships empty, so the
+      client release workflow fails until then).
+- [x] AppImage next to the tar.gz (static runtime, same updater swapping the
+      file, previous kept for rollback).
+- [x] New-version banner by install kind and a one-time plain-text changelog
+      after an update (the GitHub Release body, generated from the commits since
+      the previous client tag).
+- [ ] Validate the AppImage (no libfuse2, video, hardware decoding, update and
+      rollback) and a signed release end to end on real machines (checklist in
+      `RELEASING.md`).
 - [ ] Client builds for other platforms (Windows, Android); only Linux x86_64
       is packaged.
-- [ ] An in-app setting (and a visible "updated to X" notice) for auto-update;
-      today it is the `auto_update` key of the config file.
+- [ ] An in-app setting for auto-update; today it is the `auto_update` key of
+      the config file.
 
 ## Backlog / cleanup
 

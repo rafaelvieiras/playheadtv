@@ -36,20 +36,20 @@ void main() {
     });
 
     test('an AppImage (APPIMAGE exported by the runtime)', () {
-      expect(kind({'APPIMAGE': '/home/u/Apps/Playhead.AppImage'}, '/tmp/.mount_PlayhXYZ/bundle/client'), InstallKind.appImage);
+      expect(kind({'APPIMAGE': '/data/u/Apps/Playhead.AppImage'}, '/tmp/.mount_PlayhXYZ/bundle/client'), InstallKind.appImage);
     });
 
     test('the tar.gz user install, from the launcher root and the binary path', () {
-      const root = '/home/u/.local/share/playheadtv';
+      const root = '/data/u/.local/share/playheadtv';
       expect(kind({'PLAYHEADTV_ROOT': root}, '$root/versions/1.2.3/bundle/client'), InstallKind.tarball);
       expect(kind({'PLAYHEADTV_ROOT': '$root/'}, '$root/versions/1.2.3/bundle/client'), InstallKind.tarball);
     });
 
     test('a launcher root that does not contain the binary is not the tar.gz install', () {
-      expect(kind({'PLAYHEADTV_ROOT': '/home/u/.local/share/playheadtv'}, '/home/u/src/client/build/linux/x64/release/bundle/client'),
+      expect(kind({'PLAYHEADTV_ROOT': '/data/u/.local/share/playheadtv'}, '/data/u/src/client/build/linux/x64/release/bundle/client'),
           InstallKind.unknown);
       // A sibling directory with the same prefix is not inside the root.
-      expect(kind({'PLAYHEADTV_ROOT': '/home/u/pl'}, '/home/u/playheadtv/bundle/client'), InstallKind.unknown);
+      expect(kind({'PLAYHEADTV_ROOT': '/data/u/pl'}, '/data/u/playheadtv/bundle/client'), InstallKind.unknown);
     });
 
     test('a system package or another system-managed path', () {
@@ -59,8 +59,8 @@ void main() {
     });
 
     test('a source build, a manual copy or anything else is unknown', () {
-      expect(kind({}, '/home/u/src/playheadtv/client/build/linux/x64/release/bundle/client'), InstallKind.unknown);
-      expect(kind({'HOME': '/home/u'}, '/home/u/bin/client'), InstallKind.unknown);
+      expect(kind({}, '/data/u/src/playheadtv/client/build/linux/x64/release/bundle/client'), InstallKind.unknown);
+      expect(kind({'HOME': '/data/u'}, '/data/u/bin/client'), InstallKind.unknown);
       expect(kind({'FLATPAK_ID': '', 'APPIMAGE': '', 'PLAYHEADTV_ROOT': ''}, '/somewhere/client'), InstallKind.unknown);
     });
 

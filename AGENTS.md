@@ -575,3 +575,11 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   creation instead) only if a very long schedule hole turns out to matter.
   Doesn't apply to a gap right at channel tune-in — `_startChannel` still
   starts the first item immediately.
+- Updates are authenticated, and the checks have no off switch in a release
+  build: the updater verifies the Ed25519 signature of the release's checksums
+  file against `client/lib/update/pinned_keys.dart` (an empty list refuses every
+  update) before it downloads anything, and anything new the updater fetches must
+  be listed in that signed file. The update banner/changelog
+  (`lib/widgets/update_overlay.dart`) never takes focus and never rebuilds a page,
+  and the release body it shows is untrusted: plain text only, never markup or
+  links.

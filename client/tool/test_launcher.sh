@@ -92,7 +92,7 @@ APPRUN="$HERE/packaging/appimage/AppRun"
 # file" that stands for the file the runtime exports as $APPIMAGE.
 make_appdir() { # make_appdir <name> <updater body or "none">
     local d="$TMP/$1"
-    mkdir -p "$d/appdir/bundle" "$d/home"
+    mkdir -p "$d/appdir/bundle" "$d/h"
     cp "$APPRUN" "$d/appdir/AppRun"
     chmod +x "$d/appdir/AppRun"
     printf '#!/bin/sh\necho "app from-appdir args:$*"\n' >"$d/appdir/bundle/client"
@@ -109,18 +109,18 @@ make_appdir() { # make_appdir <name> <updater body or "none">
 }
 run_apprun() { # run_apprun <dir> [args]: run with an isolated HOME and APPIMAGE set
     local d="$1"; shift
-    env -i PATH="$PATH" HOME="$d/home" APPDIR="$d/appdir" APPIMAGE="$d/Fake.AppImage" "$d/appdir/AppRun" "$@"
+    env -i PATH="$PATH" HOME="$d/h" APPDIR="$d/appdir" APPIMAGE="$d/Fake.AppImage" "$d/appdir/AppRun" "$@"
 }
 
 d=$(make_appdir ar-plain 'echo "playheadtv-updater: upToDate: nothing to do"')
 check "AppRun: starts the app from the AppDir when there is nothing to update" "app from-appdir args:a b" "$(run_apprun "$d" a b)"
-check "AppRun: the update line goes to the log in the state dir" "playheadtv-updater: upToDate: nothing to do" "$(cat "$d/home/.local/state/playheadtv/update.log")"
-check "AppRun: config created from the example, private" "600" "$(stat -c %a "$d/home/.config/playheadtv/config.json")"
+check "AppRun: the update line goes to the log in the state dir" "playheadtv-updater: upToDate: nothing to do" "$(cat "$d/h/.local/state/playheadtv/update.log")"
+check "AppRun: config created from the example, private" "600" "$(stat -c %a "$d/h/.config/playheadtv/config.json")"
 
 d=$(make_appdir ar-args 'echo "$*" >"$HOME/updater-args"; echo "playheadtv-updater: upToDate: x"')
 run_apprun "$d" >/dev/null
 check "AppRun: the updater gets the AppImage path, the running version and the state dir" \
-    "prepare --appimage $d/Fake.AppImage --version 1.0.0 --state-dir $d/home/.local/state/playheadtv" "$(cat "$d/home/updater-args")"
+    "prepare --appimage $d/Fake.AppImage --version 1.0.0 --state-dir $d/h/.local/state/playheadtv" "$(cat "$d/h/updater-args")"
 
 d=$(make_appdir ar-updated 'echo "playheadtv-updater: updated: updated 1.0.0 -> 1.1.0"')
 check "AppRun: after an update it starts the new file, once" "app from-appimage-file reexec=1 args:a" "$(run_apprun "$d" a)"
@@ -130,7 +130,7 @@ check "AppRun: after a rollback it starts the restored file" "app from-appimage-
 
 d=$(make_appdir ar-reexec 'echo "playheadtv-updater: updated: again"')
 check "AppRun: the re-executed instance does not run the updater again" "app from-appdir args:" \
-    "$(env -i PATH="$PATH" HOME="$d/home" APPDIR="$d/appdir" APPIMAGE="$d/Fake.AppImage" PLAYHEADTV_REEXEC=1 "$d/appdir/AppRun")"
+    "$(env -i PATH="$PATH" HOME="$d/h" APPDIR="$d/appdir" APPIMAGE="$d/Fake.AppImage" PLAYHEADTV_REEXEC=1 "$d/appdir/AppRun")"
 
 d=$(make_appdir ar-failing 'echo boom >&2; exit 7')
 check "AppRun: starts when the updater fails" "app from-appdir args:" "$(run_apprun "$d")"
@@ -141,19 +141,19 @@ check "AppRun: starts the AppDir app when the updated file cannot be run" "app f
 
 d=$(make_appdir ar-hanging 'sleep 30')
 start=$(date +%s)
-out=$(env -i PATH="$PATH" HOME="$d/home" APPDIR="$d/appdir" APPIMAGE="$d/Fake.AppImage" PLAYHEADTV_UPDATE_TIMEOUT=1 "$d/appdir/AppRun")
+out=$(env -i PATH="$PATH" HOME="$d/h" APPDIR="$d/appdir" APPIMAGE="$d/Fake.AppImage" PLAYHEADTV_UPDATE_TIMEOUT=1 "$d/appdir/AppRun")
 elapsed=$(( $(date +%s) - start ))
 check "AppRun: starts when the updater hangs" "app from-appdir args:" "$out"
 [ "$elapsed" -lt 15 ] && check "AppRun: the hang was cut by the timeout" ok ok || check "AppRun: the hang was cut by the timeout" ok "took ${elapsed}s"
 
 d=$(make_appdir ar-noappimage 'echo "playheadtv-updater: updated: x" >"$HOME/ran"')
-env -i PATH="$PATH" HOME="$d/home" APPDIR="$d/appdir" "$d/appdir/AppRun" >/dev/null
-check "AppRun: without \$APPIMAGE (extracted AppDir) the updater is not run" "no" "$([ -e "$d/home/ran" ] && echo yes || echo no)"
+env -i PATH="$PATH" HOME="$d/h" APPDIR="$d/appdir" "$d/appdir/AppRun" >/dev/null
+check "AppRun: without \$APPIMAGE (extracted AppDir) the updater is not run" "no" "$([ -e "$d/h/ran" ] && echo yes || echo no)"
 
 d=$(make_appdir ar-config 'true')
-mkdir -p "$d/home/.config/playheadtv" && echo '{"x":1}' >"$d/home/.config/playheadtv/config.json"
+mkdir -p "$d/h/.config/playheadtv" && echo '{"x":1}' >"$d/h/.config/playheadtv/config.json"
 run_apprun "$d" >/dev/null
-check "AppRun: an existing config is kept" '{"x":1}' "$(cat "$d/home/.config/playheadtv/config.json")"
+check "AppRun: an existing config is kept" '{"x":1}' "$(cat "$d/h/.config/playheadtv/config.json")"
 
 # ---- release notes (tool/release_notes.sh) ----
 NOTES="$HERE/tool/release_notes.sh"

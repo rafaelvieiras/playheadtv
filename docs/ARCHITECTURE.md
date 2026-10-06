@@ -1442,8 +1442,9 @@ so a rollback after a migration is a restore of a backup taken before it.
 `.github/workflows/client-release.yml`) builds the Linux x86_64 bundle with
 Flutter, compiles the updater (`client/tool/updater.dart`) to a standalone
 executable and writes `playheadtv-client-X.Y.Z-linux-x64.tar.gz` plus
-`playheadtv-client-X.Y.Z-checksums.txt` (SHA-256, `sha256sum` format). The
-archive holds one directory: `bundle/` (the Flutter bundle, libmdk included,
+`playheadtv-client-X.Y.Z-checksums.txt` (SHA-256, `sha256sum` format); the
+workflow then adds the AppImage (see "AppImage") and signs the checksums file
+(`.sig`, see "Signed releases"). The archive holds one directory: `bundle/` (the Flutter bundle, libmdk included,
 and `playheadtv-updater`), the launcher `playheadtv`, `install.sh`, a desktop
 entry template and `config.example.json`. Only linux/amd64 is built.
 
@@ -1499,34 +1500,154 @@ Flutter), so that
 2. **Check** the releases of the repository over HTTPS: the newest
    non-draft, non-prerelease `client-vX.Y.Z` release that has both assets of
    its own version (the repository also holds backend releases, so
-   `/releases/latest` is not used). Stable is the only channel; any other value
+   `/releases/latest` is not used; a release without a signature is still
+   picked, so that step 3 refuses it visibly instead of it silently not
+   existing). Stable is the only channel; any other value
    of `update_channel` logs and uses stable. `auto_update: false` in the config
    file, or `PLAYHEADTV_AUTO_UPDATE=0`, skips the check.
-3. If the release is newer than `current`, **download** the package and fetch
-   the checksums file (assets must be HTTPS), **verify** the package's SHA-256
-   against its line in the checksums file, **extract** into `staging/` and
-   check the bundle is complete.
+3. If the release is newer than `current`, **authenticate** it (see "Signed
+   releases"): fetch the checksums file and its signature (assets must be HTTPS)
+   and verify the signature, before anything else is downloaded. Then
+   **download** the package, **verify** its SHA-256 against its line in the
+   now-trusted checksums file, **extract** into `staging/` and check the bundle
+   is complete.
 4. **Swap**: move the directory to `versions/X.Y.Z`, write the pending marker,
    repoint `previous`, then repoint `current`, each by creating a temporary
    symlink and `rename(2)`-ing it over the old one (atomic: `current` always
    names a complete version). The launcher then starts the new version.
 
-Failure rules: every failure (offline, a bad answer, a failed download, a
-checksum mismatch or a missing checksum line, a bad package, a timeout of the
-whole step, an error while swapping) leaves the installed version untouched,
-cleans `staging/`, and the launcher starts the installed version. The whole step
-is bounded (120 s in the updater, 150 s by the launcher's `timeout`), so a slow
-link delays a start by at most that and never blocks it.
+The flow is written once, over an update target (`client/lib/update/install_target.dart`):
+`TarballTarget` is the layout above, `AppImageTarget` is "AppImage" below. A
+target says which asset to download, how to put the verified file in place and
+how to take it back; the check, authentication, hash, pending marker, health
+confirmation and rollback bookkeeping are the same code for both.
 
-Known limits: checksums protect against corrupt and truncated downloads and
-against a mismatch between the package and the release, not against a
-compromised release (no signatures yet; the checksums file comes from the same
-release). The release listing is read unauthenticated, so the repository must be
-public and the GitHub API rate limit (per IP) applies. The launcher and
-`install.sh` are not updated by the updater (reinstall to change them). A user
-who quits within the first 15 s after an update is treated as a crash and rolled
-back once. A download that cannot finish within the budget is retried from the
-start at the next launch.
+Failure rules: every failure (offline, a bad answer, a failed download, a
+missing or invalid signature, a checksum mismatch or a missing checksum line, a
+bad package, a timeout of the whole step, an error while swapping) leaves the
+installed version untouched, cleans `staging/`, and the launcher starts the
+installed version. The whole step is bounded (120 s in the updater, 150 s by the
+launcher's `timeout`), so a slow link delays a start by at most that and never
+blocks it.
+
+Known limits: the release listing is read unauthenticated, so the repository
+must be public and the GitHub API rate limit (per IP) applies. A signature
+proves the release was made by the holder of the signing key, not that the
+release is free of bugs. The launcher and `install.sh` are not updated by the
+updater (reinstall to change them). A user who quits within the first 15 s after
+an update is treated as a crash and rolled back once. A download that cannot
+finish within the budget is retried from the start at the next launch.
+
+### Signed releases
+
+A checksum protects against a corrupt download, not a tampered release: whoever
+can edit a release can edit its checksums file too. So the **checksums file is
+signed once** (Ed25519, one detached signature, the `.sig` asset: base64 of the
+64-byte signature). The checksums file lists the SHA-256 of every downloadable
+artifact (the tar.gz and the AppImage), so that one signature covers them all,
+and the per-artifact hash then only has to match the signed list. The signature
+is checked over the exact bytes fetched, before the artifact is downloaded
+(`client/lib/update/signature.dart`, pure Dart via `package:cryptography`, so the
+updater executable needs no native library).
+
+- The client **pins public keys** in one place, `client/lib/update/pinned_keys.dart`
+  (a list: a signature is accepted when any pinned key verifies it, which is how
+  a new key is introduced before the old one is retired, see `RELEASING.md`). The
+  private key exists only as the repository secret `CLIENT_SIGNING_KEY`; the
+  release workflow signs with it, refuses to release when its public half is not
+  pinned, and verifies the signature it just made.
+- A missing, malformed or wrong-key signature, or a checksums file that no
+  longer matches its signature, is a **refusal** (`signatureRejected`): logged,
+  nothing downloaded, the installed version untouched. A missing signature is
+  never a warning.
+- A build that pins **no key** (the list ships empty until the maintainer pins
+  the real one) refuses every update and says so, instead of silently skipping
+  verification. The packaging script asks the compiled updater (`playheadtv-updater
+  keys`) and refuses to package such a build, and the release workflow fails on
+  it. The only escape is an explicit development switch at compile time
+  (`--dart-define=PLAYHEADTV_ALLOW_UNSIGNED_UPDATES=true`, which the scripts only
+  set for `ALLOW_UNSIGNED_DEV=1`); it applies only while no key is pinned, logs a
+  warning on every use, and a build with a pinned key ignores it.
+- Forks that sign their own releases pin their own key (edit the list, or
+  `--dart-define=PLAYHEADTV_UPDATE_PUBLIC_KEYS=<key>[,<key>]`).
+
+### AppImage
+
+`client/tool/package_appimage.sh` builds `playheadtv-client-X.Y.Z-linux-x64.AppImage`
+from the same Flutter bundle, **beside** the tar.gz (which stays the default
+format), and appends its hash to the checksums file, so it is covered by the
+signature. An AppImage is the type2 runtime (an ELF executable) with a squashfs
+image appended; the script builds the squashfs with `mksquashfs` and concatenates
+it behind a **pinned static runtime** (versioned release, SHA-256 verified before
+use), instead of running `appimagetool`, which is itself an AppImage and would
+bring in the host-FUSE requirement the format is meant to avoid. The static
+runtime carries its own FUSE and squashfs support, so no `libfuse2` is needed on
+the host (the kernel's FUSE and a `fusermount3`/`fusermount` helper still are, or
+the file can be run with `--appimage-extract-and-run`).
+
+Inside, `AppRun` plays the part of the launcher: it runs the same updater, with
+`--appimage $APPIMAGE --version <VERSION file> --state-dir <dir>`, then starts
+the app. The state (`state.json`, `update.log`) lives in
+`${XDG_STATE_HOME:-~/.local/state}/playheadtv`; the config is looked up like for
+any run without a launcher (`PLAYHEADTV_CONFIG`, else
+`${XDG_CONFIG_HOME:-~/.config}/playheadtv/config.json`, created from the example
+on first start).
+
+The update replaces the AppImage **file**: the new one is downloaded and verified
+into a staging directory next to it (same filesystem), the current file is
+hard-linked to `<name>.previous` (the rollback copy), and the new file is renamed
+over the AppImage path, atomically. The running process keeps the old inode, so
+nothing breaks mid-session; `AppRun` then starts the file now at `$APPIMAGE`
+(once, guarded by `PLAYHEADTV_REEXEC`, so a swap or a rollback takes effect at
+once). The pending marker, the 15 s health confirmation (the app confirms in the
+AppImage state file) and the rollback (the `.previous` file renamed back, the bad
+version recorded as failed) are the tar.gz logic. Limits: a folder the user
+cannot write to cannot be updated (the update fails early, before downloading),
+and an AppImage whose own `AppRun` or updater cannot start at all has no outside
+launcher to roll it back (the `.previous` file is still there to rename by hand).
+
+### Update notices (banner and changelog)
+
+Two small pieces of UI tell the user about updates. Both are best effort in the
+offline-safe style of the client: an unreachable GitHub, a repository that
+answers 404, a missing or corrupt state file are silent, and a development build
+(`0.0.0-dev`) shows nothing.
+
+- **Install kind** (`install_kind.dart`, a pure function over environment
+  markers and the running binary's path): `tarball` (the launcher's
+  `PLAYHEADTV_ROOT` contains the binary), `appImage` (`APPIMAGE`),
+  `sandbox` (`FLATPAK_ID` or `SNAP`), `systemPackage` (a path under `/usr`,
+  `/opt`, `/snap`), else `unknown` (a source build, a manual copy).
+- **Banner** (`update_banner.dart`, `update_notices.dart`): the release listing
+  the updater already uses feeds it, once per start. For a newer release the
+  message follows the kind: tar.gz or AppImage with auto-update on, "installs
+  automatically the next time Playhead TV starts" (or, when the updater already
+  swapped a version in, "installed, restart"); auto-update off, how to apply it
+  (turn `auto_update` on, or download the new package/AppImage); a system
+  package, a sandbox and an unknown install, the matching generic instruction
+  (the package manager, `flatpak update`, the releases page). A dismissed
+  version is remembered (`SettingsService`) and not shown again until a newer
+  release exists.
+- **Changelog after an update**: when the updater swaps a version in it records
+  the previous and new version and the release body in `state.json`
+  (`last_update`). The running app shows it once (remembered per version) when
+  its version is that one. The body is untrusted text: it is sanitised
+  (control characters dropped, truncated to 4000 characters) and drawn as a
+  plain `Text`, never parsed as markup or turned into links. A rolled back
+  version's record is cleared. The release workflow generates the body
+  (`client/tool/release_notes.sh`: the commits that touched `client/` or
+  `shared/` since the previous `client-v*` tag, then the install text), so it is
+  never empty.
+
+The widget (`widgets/update_overlay.dart`) sits above the Navigator
+(`MaterialApp.builder`), is driven by a `ValueNotifier`, and never rebuilds a
+page. It does not take focus: while visible, an early key handler claims only
+Select (dismiss; for a banner, remember the version), Back (close; a banner
+comes back next start) and, for a changelog that overflows, raw Up/Down to
+scroll; every other key reaches the page below untouched, and playback is never
+interrupted. Unattended, the banner leaves after 25 s (and is not remembered as
+dismissed), the changelog after 90 s (it counts as shown from the moment it
+appears).
 
 ## Status
 

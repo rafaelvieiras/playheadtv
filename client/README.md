@@ -132,7 +132,42 @@ release channel. The app also checks the backend's API version against the range
 supports and tells you when it is outside it. Design:
 [`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) "Releases and updates".
 
-To build the package yourself: `tool/package_linux.sh X.Y.Z` (see
+Releases are signed: the checksums file has a detached Ed25519 signature (the `.sig`
+asset), and the updater verifies it against public keys pinned in the app
+(`lib/update/pinned_keys.dart`) before installing anything. A release with a missing or
+invalid signature is refused and the installed version keeps running; a build with no key
+pinned refuses every update (and `tool/package_linux.sh` refuses to package one, see
+[`docs/RELEASING.md`](../docs/RELEASING.md) "Signing key").
+
+### AppImage
+
+Each release also carries `playheadtv-client-X.Y.Z-linux-x64.AppImage`, beside the tar.gz
+(which stays the default): download it, `chmod +x` it and run it. It needs no `libfuse2`
+(the runtime is static; it still needs the kernel's FUSE with a `fusermount3`/`fusermount`
+helper, or run it with `--appimage-extract-and-run`). The config is looked up like for any
+run without the launcher: `PLAYHEADTV_CONFIG`, else
+`${XDG_CONFIG_HOME:-~/.config}/playheadtv/config.json` (created from the example on first
+start); the update state and `update.log` are in `${XDG_STATE_HOME:-~/.local/state}/playheadtv`.
+The same updater replaces the AppImage file itself (the previous one is kept next to it as
+`<name>.previous` and restored if the new one does not come up healthy), so the folder it
+lives in must be writable by you for updates to apply. The AppImage was launched and its
+update logic is unit-tested, but video playback and hardware decoding from inside the image
+have not been validated on a real machine yet (checklist in `docs/RELEASING.md`).
+
+### Update banner and changelog
+
+When a newer release exists the app shows a small banner over whatever is on screen, worded
+for how it was installed (the tar.gz or AppImage with auto-update on: it installs on the next
+start; auto-update off: how to apply it; a system package, a sandbox such as Flatpak, or a
+build from source: the matching instruction). It never interrupts playback or takes focus:
+**Select** dismisses it (that version is not announced again; a newer one is), **Back**
+closes it (it returns on the next start), and it leaves by itself after a while. After an
+update the app shows the changelog of the new version once (the GitHub Release body, as plain
+text); Up/Down scroll it if it is long, Select or Back close it. An unreachable GitHub or a
+repository without releases shows nothing.
+
+To build the package yourself: `tool/package_linux.sh X.Y.Z`, then
+`tool/package_appimage.sh X.Y.Z` for the AppImage (see
 [`docs/RELEASING.md`](../docs/RELEASING.md)); `tool/test_launcher.sh` tests the
 launcher and installer scripts.
 
