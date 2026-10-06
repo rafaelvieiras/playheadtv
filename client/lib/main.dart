@@ -31,6 +31,7 @@ import 'cache/offline_runtime.dart';
 import 'cache/schedule_cache.dart';
 import 'cache/schedule_sync.dart';
 import 'playhead_api.dart';
+import 'services/screen_awake.dart';
 import 'services/settings_service.dart';
 import 'services/stream_preferences_service.dart';
 import 'services/stream_selection_resolver.dart';
@@ -417,6 +418,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // involved.
   final ValueNotifier<bool> _osdVisibleNotifier = ValueNotifier(false);
   Timer? _osdHideTimer;
+
+  // Keeps the display awake while a channel plays. Toggled from
+  // _startChannel/lifecycle/dispose only, never via setState.
+  final ScreenAwakeController _screenAwake = ScreenAwakeController();
 
   // Focus mode of the OSD (see widgets/osd_overlay.dart): off while the OSD is
   // just displayed (auto-show), on once the user pressed Select and then an
@@ -959,6 +964,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     await controller.setVolume(1);
     await controller.play();
     if (!mounted) return;
+    _screenAwake.playing = true;
     setState(() {
       _controllerA = controller;
       _currentIndex = 0;
@@ -1768,6 +1774,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   /// page risks the GL-texture bug (see AGENTS.md).
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    _screenAwake.lifecycle(state);
     if (state != AppLifecycleState.resumed || !mounted) return;
     final primary = FocusManager.instance.primaryFocus;
     if (primary != null && primary is! FocusScopeNode) return;
@@ -1778,6 +1785,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _screenAwake.dispose();
     _advanceTimer?.cancel();
     _volumeRampTimer?.cancel();
     _osdHideTimer?.cancel();

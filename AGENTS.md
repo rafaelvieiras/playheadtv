@@ -183,6 +183,17 @@ or LLM, and to every artifact in the repo:
   slate) is pure black: the player `Scaffold` sets
   `backgroundColor: playerBackgroundColor` statically (not the dark theme's
   grey scaffold color, and never via `setState`).
+- The display is kept awake while the player plays a channel
+  (`lib/services/screen_awake.dart`: `ScreenAwakeController` policy over the
+  `ScreenAwake` interface, `wakelock_plus` underneath; toggled from
+  `_startChannel`, `didChangeAppLifecycleState` and `dispose`, never
+  `setState`). Released on leaving the player and when the app is hidden; the
+  mosaic's decorative previews never hold it. On Linux it calls the
+  `org.freedesktop.ScreenSaver` D-Bus service (`dbus` package; needs a session
+  bus and a desktop that serves it: GNOME, KDE, Xfce, ...) and falls back to
+  `wakelock_plus`'s portal path; without either it is a silent no-op. Don't
+  swap it for the portal alone: on GNOME/X11 that call is accepted but creates
+  no inhibitor.
 - While a channel loads (boot or switch) the player shows a centered spinner
   instead of a status card; errors keep the plain status card. Each
   `VideoPlayerController` gets mdk's `buffer` property
