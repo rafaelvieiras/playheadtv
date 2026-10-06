@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/api"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/buildinfo"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/crypto"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
@@ -60,6 +61,14 @@ func epgWindowFromEnv(value string) (time.Duration, string) {
 }
 
 func main() {
+	// `server healthcheck` probes the local /healthz (the image has no shell
+	// or curl for a container healthcheck to use).
+	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+		if err := runHealthcheck(envOrDefault("PLAYHEADTV_ADDR", ":9394")); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
@@ -68,6 +77,7 @@ func main() {
 func run() error {
 	dbPath := envOrDefault("PLAYHEADTV_DB_PATH", "./playheadtv.db")
 	addr := envOrDefault("PLAYHEADTV_ADDR", ":9394")
+	log.Printf("playheadtv %s (api %d)", buildinfo.Version, buildinfo.APIVersion)
 
 	db, err := storage.Open(dbPath)
 	if err != nil {
@@ -195,6 +205,7 @@ func run() error {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("GET /version", api.VersionHandler())
 	api.Register(mux, db, mat, sync, encKey)
 	// MCP surface (docs/ROADMAP.md Phase 2): same db/mat/encKey as the REST
 	// API above, mounted at /mcp. It falls into RequireAuth's default

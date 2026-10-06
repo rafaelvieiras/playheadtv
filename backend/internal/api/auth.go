@@ -391,7 +391,7 @@ var deviceOrSessionGET = map[string]bool{
 
 // isOpenPath reports whether the request needs no authentication at all.
 func isOpenPath(r *http.Request) bool {
-	if r.URL.Path == "/healthz" {
+	if r.URL.Path == "/healthz" || r.URL.Path == "/version" {
 		return true
 	}
 	if r.Method == http.MethodPost && r.URL.Path == "/app-users" {

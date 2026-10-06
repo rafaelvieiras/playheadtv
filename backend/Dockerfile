@@ -1,11 +1,19 @@
-FROM node:22-alpine AS webui-build
+FROM --platform=$BUILDPLATFORM node:22-alpine AS webui-build
 WORKDIR /src/webui
 COPY webui/package.json webui/package-lock.json ./
 RUN npm ci
 COPY webui/ .
 RUN npm run build
 
-FROM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+# Cross-compiling on the build platform (instead of emulating the target) keeps
+# the multi-arch build fast: the Go toolchain targets any GOOS/GOARCH natively.
+ARG TARGETOS
+ARG TARGETARCH
+# Release version and source revision baked into the binary (GET /version).
+# Without the build args a local build reports version "dev".
+ARG VERSION=dev
+ARG COMMIT=
 WORKDIR /src/backend
 
 COPY backend/go.mod backend/go.sum ./
@@ -19,7 +27,11 @@ COPY backend/ .
 COPY --from=webui-build /src/backend/internal/webui/dist ./internal/webui/dist
 # CGO disabled: modernc.org/sqlite is pure Go, so the binary is fully static
 # and runs unmodified on the distroless image below.
-RUN CGO_ENABLED=0 go build -o /out/server ./cmd/server
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
+    -ldflags "-s -w \
+      -X github.com/rafaelvieiras/playheadtv/backend/internal/buildinfo.Version=${VERSION} \
+      -X github.com/rafaelvieiras/playheadtv/backend/internal/buildinfo.Commit=${COMMIT}" \
+    -o /out/server ./cmd/server
 
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /out/server /server
