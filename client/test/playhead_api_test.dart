@@ -45,9 +45,17 @@ void main() {
     await probeSocket.close();
     baseUrl = 'http://127.0.0.1:$port';
 
+    // Build first and run the binary: `go run` compiles inside the readiness
+    // window below, which a cold CI runner cannot do in 30s.
+    final binaryPath = '${tempDir.path}/server';
+    final build = await Process.run('go', ['build', '-o', binaryPath, './cmd/server'], workingDirectory: backendDir.path);
+    if (build.exitCode != 0) {
+      fail('go build of the backend failed (exit ${build.exitCode}): ${build.stderr}');
+    }
+
     serverProcess = await Process.start(
-      'go',
-      ['run', './cmd/server'],
+      binaryPath,
+      [],
       workingDirectory: backendDir.path,
       environment: {
         'PLAYHEADTV_DB_PATH': dbPath,
@@ -64,7 +72,7 @@ void main() {
         final resp = await httpClient.get(Uri.parse('$baseUrl/healthz')).timeout(const Duration(seconds: 1));
         if (resp.statusCode == 200) break;
       } catch (_) {
-        // backend still starting (or compiling, on the first run) — try again.
+        // backend still starting — try again.
       }
       if (DateTime.now().isAfter(deadline)) {
         fail('backend did not answer /healthz at $baseUrl in time (30s)');
