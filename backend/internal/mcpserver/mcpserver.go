@@ -73,6 +73,7 @@ func Register(mux *http.ServeMux, db storage.DB, mat *materializer.Materializer,
 	registerCollectionTools(server, db, mat)
 	registerBlockTools(server, db, mat)
 	registerFillerTools(server, db, mat)
+	registerCutRuleTools(server, db)
 	registerScheduleTools(server, db, mat)
 	registerEPGTools(server, db)
 	registerAuthoringTools(server, db, mat)

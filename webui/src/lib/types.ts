@@ -661,6 +661,106 @@ export interface BreakTemplateInput {
   steps: BreakStepInput[]
 }
 
+// Cut rule sets (backend domain.CutRuleSet, docs/ARCHITECTURE.md "Cut points").
+export type CutStrategyType = 'none' | 'interval' | 'percentage' | 'offsets' | 'phased' | 'chapter'
+export type CutChapterRole = 'middle' | 'after_intro'
+export type CutItemKind = 'movie' | 'episode' | 'other'
+
+export interface CutPhase {
+  every_ms: number
+  until_ms?: number
+  until_before_end_ms?: number
+}
+
+// A chapter strategy's fallback: any strategy but 'chapter'.
+export interface CutFallback {
+  type: Exclude<CutStrategyType, 'chapter'>
+  every_ms?: number
+  percentages?: number[]
+  offsets_ms?: number[]
+  phases?: CutPhase[]
+}
+
+export interface CutStrategy {
+  type: CutStrategyType
+  every_ms?: number
+  percentages?: number[]
+  offsets_ms?: number[]
+  phases?: CutPhase[]
+  roles?: CutChapterRole[]
+  fallback?: CutFallback
+}
+
+export interface CutSelector {
+  kinds?: CutItemKind[]
+  min_duration_ms?: number
+  max_duration_ms?: number
+  has_chapters?: boolean
+}
+
+export interface CutGuards {
+  min_segment_ms?: number
+  min_from_start_ms?: number
+  min_from_end_ms?: number
+  max_breaks?: number
+}
+
+export interface CutRule {
+  name?: string
+  match?: CutSelector
+  strategy: CutStrategy
+  snap_tolerance_ms?: number
+  guards?: CutGuards
+}
+
+export interface CutRuleSet {
+  id: string
+  tenant_id: string
+  scope_type: FillerScope
+  scope_id: string
+  name: string
+  position: number
+  created_at: number
+  rules: CutRule[]
+  default?: CutStrategy
+  guards: CutGuards
+}
+
+// Body of POST /cut-rule-sets and PUT /cut-rule-sets/{id}.
+export interface CutRuleSetInput {
+  scope_type: FillerScope
+  scope_id: string
+  name: string
+  position: number
+  rules: CutRule[]
+  default?: CutStrategy
+  guards: CutGuards
+}
+
+export interface CutChapter {
+  name: string
+  start_ms: number
+}
+
+// Body of POST /cut-rule-sets/preview.
+export interface CutPreviewInput {
+  rules: CutRule[]
+  default?: CutStrategy
+  guards: CutGuards
+  kind: CutItemKind
+  duration_ms: number
+  chapters?: CutChapter[]
+}
+
+export interface CutPreviewResult {
+  cuts_ms: number[]
+  segments_ms: number[]
+  rule_index: number
+  source: 'rule' | 'default' | 'fallback' | 'builtin' | 'none'
+  strategy: CutStrategyType
+  notes: string[]
+}
+
 // Mirrors backend/internal/domain.StreamRuleStep. subtitle_language is null
 // for "no subtitle preference at this step" (audio-only match); an empty
 // string means "any subtitle language is fine" once a subtitle IS requested.

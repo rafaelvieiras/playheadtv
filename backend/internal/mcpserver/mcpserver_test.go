@@ -251,6 +251,7 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 		"add_block_item", "list_block_items",
 		"create_filler_pool", "add_filler_pool_item", "create_filler_rule", "list_filler_pools",
 		"create_break_template", "list_break_templates",
+		"create_cut_rule_set", "list_cut_rule_sets", "preview_cut_plan",
 		"create_schedule", "create_schedule_item", "preview_epg",
 	}
 	gotTools := map[string]bool{}
@@ -424,6 +425,38 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 	}](t, ctx, session, "list_break_templates", nil)
 	if len(btList.Templates) != 1 || btList.Templates[0].ID != bt.ID {
 		t.Fatalf("list_break_templates: %+v", btList)
+	}
+
+	cutRules := []map[string]any{{
+		"name":     "episodes",
+		"match":    map[string]any{"kinds": []string{"episode"}},
+		"strategy": map[string]any{"type": "percentage", "percentages": []float64{50}},
+	}}
+	cs := callTool[domain.CutRuleSet](t, ctx, session, "create_cut_rule_set", map[string]any{
+		"scope_type": "channel", "scope_id": ch.ID, "name": "Cuts", "rules": cutRules,
+	})
+	if cs.ID == "" || len(cs.Rules) != 1 || cs.Rules[0].Strategy.Type != domain.CutPercentage {
+		t.Fatalf("create_cut_rule_set: unexpected result %+v", cs)
+	}
+	csList := callTool[struct {
+		RuleSets []domain.CutRuleSet `json:"rule_sets"`
+	}](t, ctx, session, "list_cut_rule_sets", nil)
+	if len(csList.RuleSets) != 1 || csList.RuleSets[0].ID != cs.ID {
+		t.Fatalf("list_cut_rule_sets: %+v", csList)
+	}
+	if msg := callToolExpectError(t, ctx, session, "create_cut_rule_set", map[string]any{
+		"scope_type": "channel", "scope_id": ch.ID, "rules": []map[string]any{{"strategy": map[string]any{"type": "percentage", "percentages": []float64{150}}}},
+	}); !strings.Contains(msg, "below 100") {
+		t.Fatalf("create_cut_rule_set invalid: %q", msg)
+	}
+	preview := callTool[struct {
+		CutsMs     []int64 `json:"cuts_ms"`
+		SegmentsMs []int64 `json:"segments_ms"`
+	}](t, ctx, session, "preview_cut_plan", map[string]any{
+		"rules": cutRules, "kind": "episode", "duration_ms": 2400000,
+	})
+	if len(preview.CutsMs) != 1 || preview.CutsMs[0] != 1200000 || len(preview.SegmentsMs) != 2 {
+		t.Fatalf("preview_cut_plan: %+v", preview)
 	}
 
 	poolsOut := callTool[struct {

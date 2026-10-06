@@ -8,6 +8,7 @@ import {
   Layers,
   ListOrdered,
   Radio,
+  Scissors,
   Server,
   Smartphone,
 } from 'lucide-react'
@@ -26,6 +27,7 @@ const NAV_ITEMS = [
   { to: '/filler-pools', label: 'Filler pools', icon: Radio, end: false },
   { to: '/filler-rules', label: 'Filler rules', icon: ListOrdered, end: false },
   { to: '/break-templates', label: 'Break templates', icon: Clapperboard, end: false },
+  { to: '/cut-rule-sets', label: 'Cut rules', icon: Scissors, end: false },
   { to: '/stream-selector', label: 'Stream selector', icon: Languages, end: false },
   { to: '/media-sources', label: 'Media sources', icon: Server, end: false },
   { to: '/devices', label: 'Devices', icon: Smartphone, end: false },

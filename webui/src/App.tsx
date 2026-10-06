@@ -12,6 +12,8 @@ import { DevicesPage } from '@/pages/DevicesPage'
 import { EpgPage } from '@/pages/EpgPage'
 import { BreakTemplateEditorPage } from '@/pages/BreakTemplateEditorPage'
 import { BreakTemplatesPage } from '@/pages/BreakTemplatesPage'
+import { CutRuleSetEditorPage } from '@/pages/CutRuleSetEditorPage'
+import { CutRuleSetsPage } from '@/pages/CutRuleSetsPage'
 import { FillerPoolEditorPage } from '@/pages/FillerPoolEditorPage'
 import { FillerPoolsPage } from '@/pages/FillerPoolsPage'
 import { FillerRuleEditorPage } from '@/pages/FillerRuleEditorPage'
@@ -47,6 +49,8 @@ export default function App() {
         <Route path="/filler-rules/:id" element={<FillerRuleEditorPage />} />
         <Route path="/break-templates" element={<BreakTemplatesPage />} />
         <Route path="/break-templates/:id" element={<BreakTemplateEditorPage />} />
+        <Route path="/cut-rule-sets" element={<CutRuleSetsPage />} />
+        <Route path="/cut-rule-sets/:id" element={<CutRuleSetEditorPage />} />
         <Route path="/stream-selector" element={<StreamSelectorPage />} />
         <Route path="/media-sources" element={<MediaSourcesPage />} />
         <Route path="/devices" element={<DevicesPage />} />

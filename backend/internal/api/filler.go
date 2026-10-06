@@ -36,6 +36,7 @@ func registerFiller(mux *http.ServeMux, db storage.DB, mat *materializer.Materia
 	mux.HandleFunc("DELETE /filler-rules/{id}", deleteFillerRule(db, mat))
 
 	registerBreakTemplates(mux, db, mat)
+	registerCutRuleSets(mux, db)
 }
 
 // fillerPoolColumns: see blockColumns for collection_name and dynamic.

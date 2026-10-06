@@ -804,6 +804,93 @@ replaces the template and its steps); MCP: `create_break_template`,
 Phase A covers boundaries between programs only: nothing inside an item (no cut
 points, no `item_offset_ms`, no client change).
 
+### Cut points (migration `0019`)
+
+A break template airs at a program boundary. Cutting inside an item needs two
+things: a way for an `epg_entry` to start at an offset into its item, and a
+rule for where the cuts fall. This section is the second, the **cut-point time
+model**: `internal/cutplan` (pure: no storage, clock or randomness) plus the
+stored, authored `cut_rule_set`. It is **not wired into the materializer yet**;
+nothing reads a stored set at generation time.
+
+Rule set: scoped like a `filler_rule` (`channel` or `block`, `scope_id`, `name`,
+`position`; a block's own set beats its channel's, then the lowest `position`,
+see `cutplan.PickSet`). One table, `cut_rule_set`, with the rules as a JSON
+`config` column (`domain.CutConfig`): they have no foreign keys and are always
+read and written whole. The config is an ordered `rules` list, an optional
+`default` strategy and set-wide `guards`.
+
+Rule selection: the first rule whose selector matches the item wins. A selector
+is `kinds` (movie/episode/other, empty = any), a duration range
+`[min_duration_ms, max_duration_ms)` (0 = open) and `has_chapters` (unset = any;
+an item has chapters when it has at least two, i.e. a boundary after 0). No
+matching rule: the set's `default` strategy, or no cut at all when there is none.
+
+Strategies (the `type` of a rule's `strategy`):
+
+- `interval`: every `every_ms` from the start (1 minute to 24 hours);
+- `percentage`: at each of `percentages` (above 0, below 100, ascending) of the
+  duration;
+- `offsets`: at the explicit `offsets_ms`;
+- `phased`: ordered `phases`, each `every_ms` until its end, the last running to
+  the end of the item. A phase cuts at its own start plus multiples of its
+  cadence (so "every 40 min until the last 20 min, then every 5 min" on a
+  150-minute film gives 40, 80, 120, then 135, 140, 145). Bounded phases end
+  with `until_ms` (from the start) or `until_before_end_ms` (from the end), all
+  of the same kind, strictly ordered, so phases cannot overlap and the order
+  never depends on the item's duration;
+- `chapter`: `roles` `after_intro` (the chapter boundary after the first
+  chapter named intro/opening/prologue/cold open/teaser, else after the first
+  chapter when it ends within 10 minutes) and `middle` (the chapter boundary
+  nearest the middle, or the middle itself when none is within the tolerance),
+  snapped within `snap_tolerance_ms` (5 minutes by default);
+- `none`: an explicit "do not cut".
+
+Any rule's `snap_tolerance_ms` also moves the cuts of the non-chapter
+strategies onto the nearest chapter boundary within that distance, once the item
+has chapters.
+
+Guard rails (set-wide `guards`, overridable field by field in a rule's own
+`guards`; 0 takes the default): `min_segment_ms` (3 minutes) between cuts and
+to the edges, `min_from_start_ms` and `min_from_end_ms` (3 minutes), and
+`max_breaks` (10, at most 50; the earliest are kept). Cuts are sorted,
+de-duplicated and thinned in that order, so an item too short for them gets no
+cut. The output is a pure function of the rules, the item's kind and duration
+and its chapters: regenerating the guide never moves a break.
+
+Fallback chain: a `chapter` strategy that finds no chapters (or none of its
+roles resolves) uses its own `fallback` (a percentage, interval, offsets, phased
+or none strategy), else one built-in cut at 50%: an item is never left uncut
+for lack of data unless the author chose `none`. A fallback result thinned to
+nothing by the guard rails is not retried; an item that is too short stays
+uncut.
+
+Validation (400 on write, REST and MCP share `internal/cutruleset`): at most
+20 rules, bounds and ordering of every strategy, stray fields for the type,
+phases (1 to 5, ordered, non-overlapping, same bound kind), a selector whose
+minimum is below its maximum, and a rule that an earlier rule already covers
+completely ("rule 3 can never match: rule 1 ...").
+
+Consumption contract: `cutplan.Planner` adapts a stored set to
+`CutOffsets(item domain.CatalogItem, durationMs int64) []int64` (ordered offsets
+into what airs, empty for none; `durationMs` is the occurrence's effective
+duration after a block's trim). Chapters come from `item.Chapters`, which the
+catalog list queries leave empty: a caller that wants chapter cuts loads the
+item detail, otherwise the planner takes the no-chapters path. The materializer
+will pick the set with `PickSet`, call the planner for each item occurrence and
+split it into segments joined by the break template of the boundary kind.
+
+REST: `POST/GET /cut-rule-sets`, `GET/PUT/DELETE /cut-rule-sets/{id}` (a PUT
+replaces the set) and `POST /cut-rule-sets/preview` (rules plus a sample item:
+kind, `duration_ms`, optional chapters; returns `cuts_ms`, `segments_ms`, the
+matching `rule_index`, `source` and notes, storing nothing); MCP:
+`create_cut_rule_set`, `list_cut_rule_sets`, `preview_cut_plan`; web UI: Cut
+rules (list, rule editor and a live preview for sample items).
+
+Deferred: the materializer wiring and the entry offset (`item_offset_ms`), and
+chapter data for planning (the catalog stores chapters, but the planner is not
+fed them yet and there are no Jellyfin media-segment/intro markers).
+
 ### Authoring endpoints (item editing, previews)
 
 - `PUT /blocks/{id}/items/{item_id}` with `{position?, trim_duration_ms?}`

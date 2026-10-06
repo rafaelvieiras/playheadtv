@@ -424,6 +424,18 @@ actionable checklist.
       Not done: cut points inside an item (`item_offset_ms` on `epg_entry` and
       client playback of a segment, then the cut-point time model and chapters).
 
+- [x] Cut-point time model (migration `0019`): pure `internal/cutplan` (ordered
+      rules chosen by kind, duration range and has-chapters; interval,
+      percentage, explicit offsets, phased cadence and chapter-role strategies;
+      guard rails, deterministic output, fallback chain) and stored
+      `cut_rule_set` scoped to a channel or block (REST `/cut-rule-sets` with a
+      preview endpoint, MCP `create_cut_rule_set`/`list_cut_rule_sets`/
+      `preview_cut_plan`, web UI Cut rules with a live preview). Semantics in
+      `docs/ARCHITECTURE.md` ("Cut points").
+      Not done: wiring it into the materializer through `cutplan.Planner` (after
+      `item_offset_ms` lands), loading chapters for planning, and Jellyfin
+      media-segment (intro) markers.
+
 ## Phase 2 — MCP surface
 
 - [x] MCP server (`github.com/modelcontextprotocol/go-sdk` v1.8.0) in the same
