@@ -76,6 +76,9 @@ type Materializer struct {
 	window  time.Duration
 	freeze  time.Duration
 	trigger chan struct{}
+	// cuts decides where programs are cut into segments (cuts.go); never
+	// cuts by default.
+	cuts CutPlanner
 	// mu serializes Run and ResetChannel: both rewrite epg_entry rows with
 	// multi-statement sequences that must not interleave.
 	mu sync.Mutex
@@ -92,6 +95,13 @@ func New(db storage.DB, window time.Duration) *Materializer {
 		freeze:  DefaultFreezeMargin,
 		trigger: make(chan struct{}, 1),
 	}
+}
+
+// SetCutPlanner plugs in the planner that decides where programs are cut into
+// segments (see CutPlanner); nil restores the default, which never cuts. Call
+// before Start.
+func (m *Materializer) SetCutPlanner(p CutPlanner) {
+	m.cuts = p
 }
 
 // SetFreezeMargin overrides DefaultFreezeMargin; call before Start.
@@ -504,6 +514,7 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		BreakTemplates:  breakTemplates,
 		PoolItems:       poolItems,
 		CatalogDuration: catalogDuration,
+		CutPlanner:      m.cuts,
 		DynamicBlockIDs: dynamicBlockIDs,
 		Warnings:        warnings,
 	}
@@ -590,6 +601,19 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 				keptCutMs = ext.UnixMilli()
 			}
 		}
+		// A kept head that ends between the segments of a split item would
+		// leave a program half aired with its resume point unknown, so it
+		// grows to the end of the item's last segment.
+		if !keptUntil.IsZero() {
+			ext, err := m.extendKeptThroughSplit(ctx, ch.ID, keptUntil)
+			if err != nil {
+				return err
+			}
+			if ext.After(keptUntil) {
+				keptUntil = ext
+				keptCutMs = ext.UnixMilli()
+			}
+		}
 		var rotations []int64
 		if err := m.db.Query(ctx, &rotations,
 			"SELECT rotation_next FROM epg_entry WHERE channel_id = ? AND source_schedule_item_id = ? AND rotation_next IS NOT NULL AND start_at < ? ORDER BY start_at DESC LIMIT 1",
@@ -615,9 +639,10 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 					SourceBlockItemID *string
 					RotationNext      *int64
 					SourceScheduleID  *string
+					ItemOffsetMs      int64
 				}
 				if err := m.db.Query(ctx, &tail,
-					"SELECT kind, start_at, end_at, source_block_item_id, rotation_next, source_schedule_item_id AS source_schedule_id FROM epg_entry WHERE channel_id = ? AND start_at < ? ORDER BY start_at DESC LIMIT ?",
+					"SELECT kind, start_at, end_at, source_block_item_id, rotation_next, source_schedule_item_id AS source_schedule_id, item_offset_ms FROM epg_entry WHERE channel_id = ? AND start_at < ? ORDER BY start_at DESC LIMIT ?",
 					ch.ID, keptCutMs, 4*run.amount.Count+4,
 				); err != nil {
 					return fmt.Errorf("read series visit: %w", err)
@@ -627,6 +652,15 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 					// Midroll breaks between the visit's episodes are
 					// transparent: they only keep the chain adjacent.
 					if row.Kind == string(domain.EpgMidRoll) {
+						if row.EndAt != expectedEnd {
+							break
+						}
+						expectedEnd = row.StartAt
+						continue
+					}
+					// A later segment of an episode is transparent too: only
+					// the segment at offset 0 counts the episode.
+					if row.ItemOffsetMs > 0 {
 						if row.EndAt != expectedEnd {
 							break
 						}
@@ -698,9 +732,9 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 		}
 		for _, e := range toInsert {
 			if err := tx.Exec(ctx,
-				`INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at, rotation_next, source_block_item_id, series_cycle, series_round)
-				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-				e.ID, e.TenantID, e.ChannelID, string(e.Kind), e.CatalogItemID, e.StartAt, e.EndAt, e.SourceScheduleItemID, e.GeneratedAt, e.RotationNext, e.SourceBlockItemID, e.SeriesCycle, e.SeriesRound,
+				`INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at, rotation_next, source_block_item_id, series_cycle, series_round, item_offset_ms, split_group)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+				e.ID, e.TenantID, e.ChannelID, string(e.Kind), e.CatalogItemID, e.StartAt, e.EndAt, e.SourceScheduleItemID, e.GeneratedAt, e.RotationNext, e.SourceBlockItemID, e.SeriesCycle, e.SeriesRound, e.ItemOffsetMs, e.SplitGroup,
 			); err != nil {
 				return fmt.Errorf("insert epg_entry: %w", err)
 			}
@@ -979,7 +1013,7 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 					SeriesRound   *int
 				}
 				if err := m.db.Query(ctx, &rows,
-					"SELECT start_at, catalog_item_id, series_cycle, series_round FROM epg_entry WHERE tenant_id = ? AND channel_id = ? AND source_block_item_id = ? AND start_at >= ? ORDER BY start_at",
+					"SELECT start_at, catalog_item_id, series_cycle, series_round FROM epg_entry WHERE tenant_id = ? AND channel_id = ? AND source_block_item_id = ? AND start_at >= ? AND item_offset_ms = 0 ORDER BY start_at",
 					tenantID, ch.ID, it.ID, originMs,
 				); err != nil {
 					return nil, nil, fmt.Errorf("read series entries: %w", err)
@@ -1059,4 +1093,31 @@ func (m *Materializer) extendKeptThroughBreak(ctx context.Context, in channelInp
 		end = r.EndAt
 	}
 	return time.UnixMilli(end).UTC(), nil
+}
+
+// extendKeptThroughSplit returns where the kept head should end when it stops
+// inside a split item: the end of the last segment of the item whose segments
+// straddle the head's end. It returns keptUntil unchanged otherwise.
+func (m *Materializer) extendKeptThroughSplit(ctx context.Context, channelID string, keptUntil time.Time) (time.Time, error) {
+	var groups []string
+	if err := m.db.Query(ctx, &groups,
+		"SELECT split_group FROM epg_entry WHERE channel_id = ? AND split_group IS NOT NULL AND start_at < ? ORDER BY start_at DESC LIMIT 1",
+		channelID, keptUntil.UnixMilli(),
+	); err != nil {
+		return keptUntil, fmt.Errorf("read split group at kept head end: %w", err)
+	}
+	if len(groups) == 0 {
+		return keptUntil, nil
+	}
+	var ends []int64
+	if err := m.db.Query(ctx, &ends,
+		"SELECT MAX(end_at) FROM epg_entry WHERE channel_id = ? AND split_group = ?",
+		channelID, groups[0],
+	); err != nil {
+		return keptUntil, fmt.Errorf("read split group end: %w", err)
+	}
+	if len(ends) > 0 && ends[0] > keptUntil.UnixMilli() {
+		return time.UnixMilli(ends[0]).UTC(), nil
+	}
+	return keptUntil, nil
 }

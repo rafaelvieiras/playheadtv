@@ -42,6 +42,9 @@ class VideoFixture {
   /// audio tone(s)) via ffmpeg inside a temporary directory, and starts the
   /// HttpServer that serves it. Call once in setUpAll.
   ///
+  /// `clipSeconds` (default 8) is the length of the one file every item is
+  /// served from; only a suite that plays a segment of a longer item needs more.
+  ///
   /// `audioTracks` defaults to 1 (the original, lighter fixture every
   /// existing suite relies on). Pass 2 only from a suite that genuinely
   /// needs to exercise real navigation between multiple audio options (see
@@ -55,7 +58,7 @@ class VideoFixture {
   /// later boot indefinitely — see AGENTS.md's mdk/GL-texture-under-load
   /// gotcha. Suites that don't need multiple tracks should stay on the
   /// default to keep their existing reliability.
-  Future<void> start({int audioTracks = 1}) async {
+  Future<void> start({int audioTracks = 1, int clipSeconds = 8}) async {
     assert(audioTracks == 1 || audioTracks == 2, 'only 1 or 2 audio tracks are supported by this fixture');
     _tempDir = await Directory.systemTemp.createTemp('playheadtv_it_video_');
     final videoFile = File('${_tempDir!.path}/fixture.mp4');
@@ -65,10 +68,10 @@ class VideoFixture {
       result = await Process.run(_ffmpegPath, [
         '-y',
         '-f', 'lavfi',
-        '-i', 'testsrc=duration=8:size=320x240:rate=15',
+        '-i', 'testsrc=duration=$clipSeconds:size=320x240:rate=15',
         '-f', 'lavfi',
-        '-i', 'sine=frequency=440:duration=8',
-        if (audioTracks == 2) ...['-f', 'lavfi', '-i', 'sine=frequency=880:duration=8'],
+        '-i', 'sine=frequency=440:duration=$clipSeconds',
+        if (audioTracks == 2) ...['-f', 'lavfi', '-i', 'sine=frequency=880:duration=$clipSeconds'],
         '-map', '0:v',
         '-map', '1:a',
         if (audioTracks == 2) ...['-map', '2:a'],

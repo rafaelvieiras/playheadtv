@@ -34,7 +34,10 @@ type channelInput struct {
 	BreakTemplates  []domain.BreakTemplate             // every break template scoped to this channel or one of its blocks, steps in order
 	PoolItems       map[string][]domain.FillerPoolItem // filler_pool_id -> ordered by rowid (insertion order)
 	CatalogDuration map[string]int64                   // catalog_item_id -> duration_ms
-	DynamicBlockIDs map[string]bool                    // blockID -> true iff block.criteria is non-NULL
+	// CutPlanner decides where a program is cut into segments (cuts.go); nil
+	// never cuts.
+	CutPlanner      CutPlanner
+	DynamicBlockIDs map[string]bool // blockID -> true iff block.criteria is non-NULL
 	// RepeatBlockIDs holds the manual blocks whose list repeats (list_mode
 	// "repeat"). A manual block missing from it plays its list once; a dynamic
 	// block always loops and is never consulted.
@@ -497,6 +500,11 @@ type seriesVisit struct {
 	// before the visit's first episode.
 	Mid         *midrollSource
 	PrevEpisode bool
+	// Cuts, with Mid, splits an episode into segments with a midroll between
+	// them (see segmenter); nil plays episodes whole. Unit carries its own.
+	Cuts CutPlanner
+	// BlockID is the block the visit's item belongs to, for the planner.
+	BlockID string
 	// Unit, when set, replaces Mid/PrevEpisode: every episode is a unit with
 	// its own preroll and postroll and the midroll between episodes (see
 	// breakLoop). Used by the endless sequences (continuous items, dynamic
@@ -676,10 +684,10 @@ func emitSeries(
 			}
 		}
 		epEnd := cursor.Add(time.Duration(slot.Episode.DurationMs) * time.Millisecond)
-		if strict && epEnd.After(limit) {
-			break
-		}
 		if slot.Skip {
+			if strict && epEnd.After(limit) {
+				break
+			}
 			run.skipped++
 			cursor = epEnd
 			continue
@@ -705,19 +713,28 @@ func emitSeries(
 			SeriesCycle:          &cycle,
 			SeriesRound:          round,
 		}
+		if visit.RotIdx != nil {
+			r := *visit.RotIdx
+			e.RotationNext = &r
+		}
+		// An episode cut into segments (cuts.go) takes the breaks' time too.
+		epEntries := segmenter{planner: visit.Cuts, mid: visit.Mid, channelID: channelID, blockID: visit.BlockID}.split(e)
+		epEnd = spanEnd(epEntries)
+		if strict && epEnd.After(limit) {
+			break
+		}
 		run.commit(startMs, slot)
 		aired++
 		cursor = epEnd
 		prevEpisode = true
 		completed = reached()
-		if visit.RotIdx != nil {
-			r := *visit.RotIdx
-			if completed && visit.RotNext != nil {
-				r = *visit.RotNext
+		if completed && visit.RotIdx != nil && visit.RotNext != nil {
+			r := *visit.RotNext
+			for i := range epEntries {
+				epEntries[i].RotationNext = &r
 			}
-			e.RotationNext = &r
 		}
-		entries = append(entries, e)
+		entries = append(entries, epEntries...)
 		if completed {
 			break
 		}
@@ -980,6 +997,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		}
 		pre, mid, post := in.breakSources(continuous.BlockID, state)
 		br := newBreakLoop(pre, mid, post, stage, in.TenantID, in.ChannelID, generatedAt, &continuous.ID)
+		br.cuts, br.blockID = in.CutPlanner, continuous.BlockID
 		loopEntries, end := fillLoopingBlock(in.BlockItems[continuous.BlockID], in.Series, in.CatalogDuration, start, to, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, continuousKey, resume, br, playOnce(continuous.BlockID), state)
 		entries = append(entries, loopEntries...)
 		// Whole programs no longer fit: the tail covers the leftover
@@ -1078,6 +1096,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			cursorKey := in.ChannelID + "|" + occ.BlockID
 			pre, mid, post := in.breakSources(occ.BlockID, state)
 			br := newBreakLoop(pre, mid, post, stageFresh, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID)
+			br.cuts, br.blockID = in.CutPlanner, occ.BlockID
 			loopEntries, newCursor := fillLoopingBlock(items, in.Series, in.CatalogDuration, cursor, nominalNextStart, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, cursorKey, 0, br, false, state)
 			entries = append(entries, loopEntries...)
 			cursor = newCursor
@@ -1184,7 +1203,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 					if run == nil || run.empty() {
 						continue
 					}
-					seriesEntries, end, completed := emitSeries(run, bi.ID, seriesVisit{Amount: run.amount, Mid: midSrc}, cursor, itemsCutoff, hasNextOccurrence, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID)
+					seriesEntries, end, completed := emitSeries(run, bi.ID, seriesVisit{Amount: run.amount, Mid: midSrc, Cuts: in.CutPlanner, BlockID: occ.BlockID}, cursor, itemsCutoff, hasNextOccurrence, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID)
 					entries = append(entries, seriesEntries...)
 					cursor = end
 					if !completed {
@@ -1202,7 +1221,24 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 				if !fits(dur) {
 					break listLoop
 				}
-				emit(bi.CatalogItemID, dur, domain.EpgProgram)
+				// An item cut into segments (cuts.go) takes the breaks' time
+				// too, so the whole span has to fit.
+				progEntries := segmenter{planner: in.CutPlanner, mid: midSrc, channelID: in.ChannelID, blockID: occ.BlockID}.split(domain.EpgEntry{
+					ID:                   uuid.NewString(),
+					TenantID:             in.TenantID,
+					ChannelID:            in.ChannelID,
+					Kind:                 domain.EpgProgram,
+					CatalogItemID:        bi.CatalogItemID,
+					StartAt:              cursor.UnixMilli(),
+					EndAt:                cursor.Add(time.Duration(dur) * time.Millisecond).UnixMilli(),
+					SourceScheduleItemID: &scheduleItemID,
+					GeneratedAt:          generatedAt,
+				})
+				if !fits(spanEnd(progEntries).Sub(cursor).Milliseconds()) {
+					break listLoop
+				}
+				entries = append(entries, progEntries...)
+				cursor = spanEnd(progEntries)
 				if !midBreak(idx) {
 					break listLoop
 				}

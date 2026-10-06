@@ -421,8 +421,16 @@ actionable checklist.
       `/break-templates`, MCP `create_break_template`/`list_break_templates`, web
       UI step editor). Existing rules are untouched. Design, precedence, limits
       and resume in `docs/ARCHITECTURE.md` ("Break templates").
-      Not done: cut points inside an item (`item_offset_ms` on `epg_entry` and
-      client playback of a segment, then the cut-point time model and chapters).
+- [x] Items played in segments (migration `0020`): `epg_entry.item_offset_ms`
+      and `split_group`, the `CutPlanner` seam (default: never cuts) and the
+      materializer's splitting with a midroll break between segments, client
+      playback of a segment (seek to the offset, transition at the segment end,
+      second controller prepared at the resume point while the break plays),
+      one merged guide program and OSD subject per split item. Design in
+      `docs/ARCHITECTURE.md` ("Items played in segments").
+      Not done: the cut-point time model (interval, percentage, then chapters)
+      that decides where to cut; until it exists only the
+      `PLAYHEADTV_DEBUG_CUT_OFFSETS_MS` debug switch produces segments.
 
 - [x] Cut-point time model (migration `0019`): pure `internal/cutplan` (ordered
       rules chosen by kind, duration range and has-chapters; interval,

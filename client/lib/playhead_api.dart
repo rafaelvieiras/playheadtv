@@ -140,6 +140,17 @@ class EpgEntry {
   final String? imageThumbTag;
   final String? seriesImagePrimaryTag;
 
+  /// Where in the media item this entry starts playing, in milliseconds (0 for
+  /// every entry but the later segments of a split item); it plays for
+  /// [endAt] - [startAt] from there. See [splitGroup].
+  final int itemOffsetMs;
+
+  /// Ties the segments of one airing of a split item together: the same value
+  /// on each of its program entries (the breaks between them carry none). Null
+  /// for an entry that is not a segment. The guide shows the segments as one
+  /// program (lib/epg_guide.dart).
+  final String? splitGroup;
+
   /// Only for a grouped tail (`kind == 'tail'` with clips): the individual
   /// clips, in playing order. [catalogItemId] is then the first clip's.
   final List<EpgClip> clips;
@@ -163,6 +174,8 @@ class EpgEntry {
     this.imageBackdropTag,
     this.imageThumbTag,
     this.seriesImagePrimaryTag,
+    this.itemOffsetMs = 0,
+    this.splitGroup,
     this.clips = const [],
   });
 
@@ -189,6 +202,8 @@ class EpgEntry {
       imageBackdropTag: json['image_backdrop_tag'] as String?,
       imageThumbTag: json['image_thumb_tag'] as String?,
       seriesImagePrimaryTag: json['series_image_primary_tag'] as String?,
+      itemOffsetMs: (json['item_offset_ms'] as int?) ?? 0,
+      splitGroup: json['split_group'] as String?,
       clips: clips,
     );
   }
@@ -214,6 +229,8 @@ class EpgEntry {
         'image_backdrop_tag': imageBackdropTag,
         'image_thumb_tag': imageThumbTag,
         'series_image_primary_tag': seriesImagePrimaryTag,
+        if (itemOffsetMs != 0) 'item_offset_ms': itemOffsetMs,
+        if (splitGroup != null) 'split_group': splitGroup,
         if (isTailGroup) 'clips': [for (final c in clips) c.toJson()],
       };
 
@@ -273,6 +290,8 @@ class EpgEntry {
         imageBackdropTag: imageBackdropTag,
         imageThumbTag: imageThumbTag,
         seriesImagePrimaryTag: seriesImagePrimaryTag,
+        itemOffsetMs: itemOffsetMs,
+        splitGroup: splitGroup,
         clips: clips ?? this.clips,
       );
 
@@ -297,6 +316,8 @@ class EpgEntry {
         imageBackdropTag: imageBackdropTag,
         imageThumbTag: imageThumbTag,
         seriesImagePrimaryTag: seriesImagePrimaryTag,
+        itemOffsetMs: itemOffsetMs,
+        splitGroup: splitGroup == null ? null : '$idPrefix$splitGroup',
         clips: [
           for (final c in clips)
             EpgClip(

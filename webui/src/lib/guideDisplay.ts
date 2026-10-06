@@ -15,6 +15,12 @@
 // counting what it already absorbed), so a real gap next to a filler is never
 // painted over. A fallback is a visible cell of its own and absorbs nothing.
 //
+// The segments of one split item (program entries sharing a `split_group`,
+// with the item's midroll breaks between them) are ONE program: a single cell
+// from the first segment's start to the last segment's end, the later segments
+// and the breaks between them absorbed by it. The cell's entry is the first
+// segment, so title and art come from it.
+//
 // A tail can last hours, so its attribution is capped: the previous program
 // absorbs at most the first `TAIL_ATTRIBUTION_CAP_MS` of a run of tail
 // entries, measured from the start of the run. The rest of the tail is
@@ -33,6 +39,8 @@ interface TimedEntry {
   kind: EpgEntryKind
   start_at: number
   end_at: number
+  // Ties the segments of one airing of a split item together (see above).
+  split_group?: string | null
 }
 
 // One visible cell: the entry plus the span the guide draws for it, which is
@@ -59,9 +67,21 @@ export function buildGuideCells<T extends TimedEntry>(
 ): GuideCell<T>[] {
   const sorted = [...entries].sort((a, b) => a.start_at - b.start_at || a.end_at - b.end_at)
   const cells = new Map<T, GuideCell<T>>()
+  // The cell of each split group met so far: a later segment of the group joins
+  // it instead of getting a cell of its own.
+  const groupCell = new Map<string, GuideCell<T>>()
   for (const e of sorted) {
-    if (!isHiddenGuideKind(e.kind)) {
-      cells.set(e, { entry: e, displayStart: e.start_at, displayEnd: e.end_at, absorbed: [] })
+    if (isHiddenGuideKind(e.kind)) continue
+    const group = e.kind === 'program' ? e.split_group : undefined
+    const existing = group ? groupCell.get(group) : undefined
+    if (existing) {
+      existing.displayEnd = Math.max(existing.displayEnd, e.end_at)
+      existing.absorbed.push(e)
+      cells.set(e, existing)
+    } else {
+      const cell = { entry: e, displayStart: e.start_at, displayEnd: e.end_at, absorbed: [] as T[] }
+      cells.set(e, cell)
+      if (group) groupCell.set(group, cell)
     }
   }
   const done = new Set<T>()
@@ -117,7 +137,14 @@ export function buildGuideCells<T extends TimedEntry>(
   attribute((e) => e.kind === 'preroll', 'previous')
   attribute((e) => e.kind !== 'preroll', 'next')
 
-  return sorted.flatMap((e) => cells.get(e) ?? [])
+  // A merged cell is reached through each of its segments; it is listed once,
+  // at its first. Its absorbed entries (segments and breaks) read in time order.
+  return sorted.flatMap((e) => {
+    const cell = cells.get(e)
+    if (!cell || cell.entry !== e) return []
+    cell.absorbed.sort((a, b) => a.start_at - b.start_at)
+    return [cell]
+  })
 }
 
 // The cells for "show filler": every entry, each drawn at its own real span.

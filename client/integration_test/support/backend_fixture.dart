@@ -330,6 +330,13 @@ class BackendFixture {
     throw StateError('channel $channelId never reached $minEntries epg entries (last: $count)');
   }
 
+  /// GET /epg for one channel, the raw enriched entries (JSON objects) from
+  /// [fromMs] on.
+  Future<List<Map<String, dynamic>>> getEpg(String channelId, {required int fromMs}) async {
+    final data = await _getJson('/epg?channel_id=$channelId&start=$fromMs&end=${fromMs + 7200000}') as List;
+    return data.cast<Map<String, dynamic>>();
+  }
+
   /// POST /channels/{id}/reset-epg: the admin's grid reset of one channel.
   Future<void> resetChannelEpg(String channelId) async {
     await _postJson('/channels/$channelId/reset-epg', {});

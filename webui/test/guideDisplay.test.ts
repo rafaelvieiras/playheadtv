@@ -176,3 +176,59 @@ test('the cap is a parameter', () => {
   const cells = buildGuideCells([e('a', 'program', 0, 100), e('t', 'tail', 100, 1000)], 1000, 60_000)
   assert.deepEqual(spans(cells), [['a', 0, 160]])
 })
+
+// Segments of one split item: program entries sharing a split_group, with the
+// item's midroll breaks between them, are ONE program.
+const seg = (id: string, start: number, end: number, group: string, offsetMs = 0) => ({
+  ...e(id, 'program', start, end),
+  split_group: group,
+  item_offset_ms: offsetMs,
+})
+
+test('segments of one item with a midroll between them are one program', () => {
+  const cells = buildGuideCells([seg('a1', 0, 100, 'g'), e('mid', 'midroll', 100, 110), seg('a2', 110, 200, 'g', 100_000)])
+  assert.deepEqual(spans(cells), [['a1', 0, 200]])
+  assert.deepEqual(cells[0].absorbed.map((x) => x.id), ['mid', 'a2'])
+})
+
+test('three segments, preroll before and postroll after: one program over the whole span', () => {
+  const cells = buildGuideCells([
+    e('pre', 'preroll', 0, 10),
+    seg('a1', 10, 100, 'g'),
+    e('m1', 'midroll', 100, 110),
+    seg('a2', 110, 200, 'g', 90_000),
+    e('m2', 'midroll', 200, 210),
+    seg('a3', 210, 300, 'g', 180_000),
+    e('post', 'postroll', 300, 310),
+    e('b', 'program', 310, 400),
+  ])
+  assert.deepEqual(spans(cells), [['a1', 0, 310], ['b', 310, 400]])
+})
+
+test('the same item twice in a row without a split group stays two programs', () => {
+  const cells = buildGuideCells([e('a', 'program', 0, 100), e('mid', 'midroll', 100, 110), e('b', 'program', 110, 200)])
+  assert.deepEqual(spans(cells), [['a', 0, 110], ['b', 110, 200]])
+})
+
+test('two airings of one item are two programs, each with its own group', () => {
+  const cells = buildGuideCells([
+    seg('a1', 0, 100, 'g1'),
+    e('m', 'midroll', 100, 110),
+    seg('a2', 110, 200, 'g1', 100_000),
+    e('m2', 'midroll', 200, 210),
+    seg('b1', 210, 300, 'g2'),
+    e('m3', 'midroll', 300, 310),
+    seg('b2', 310, 400, 'g2', 100_000),
+  ])
+  assert.deepEqual(spans(cells), [['a1', 0, 210], ['b1', 210, 400]])
+})
+
+test('a window that starts at a later segment shows that segment as a program of its own', () => {
+  const cells = buildGuideCells([e('m', 'midroll', 100, 110), seg('a2', 110, 200, 'g', 100_000)])
+  assert.deepEqual(spans(cells), [['a2', 100, 200]])
+})
+
+test('a tail after a split item is capped from the last segment as for any program', () => {
+  const cells = buildGuideCells([seg('a1', 0, 100, 'g'), e('mid', 'midroll', 100, 110), seg('a2', 110, 200, 'g', 100_000), e('t', 'tail', 200, 9000)], 1000, 60_000)
+  assert.deepEqual(spans(cells), [['a1', 0, 260]])
+})

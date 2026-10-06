@@ -282,4 +282,79 @@ void main() {
       expect(id(rows[r], c), 'live3');
     });
   });
+
+  // Segments of one split item: program entries sharing a splitGroup, with the
+  // item's midroll breaks between them, are ONE program. Mirrors the "segments"
+  // cases of webui/test/guideDisplay.test.ts.
+  group('split items', () {
+    EpgEntry seg(String id, int start, int end, String group, [int offsetMs = 0]) => EpgEntry(
+          id: id,
+          kind: 'program',
+          catalogItemId: 'ci-item',
+          startAt: DateTime.fromMillisecondsSinceEpoch(start * 1000, isUtc: true),
+          endAt: DateTime.fromMillisecondsSinceEpoch(end * 1000, isUtc: true),
+          itemOffsetMs: offsetMs,
+          splitGroup: group,
+        );
+
+    test('segments of one item with a midroll between them are one program', () {
+      final cells = buildGuideCells([seg('a1', 0, 100, 'g'), e('mid', 'midroll', 100, 110), seg('a2', 110, 200, 'g', 100000)]);
+      expect(spans(cells), [['a1', 0, 200]]);
+      expect(cells[0].absorbed.map((x) => x.id), ['mid', 'a2']);
+    });
+
+    test('three segments, preroll before and postroll after: one program over the whole span', () {
+      final cells = buildGuideCells([
+        e('pre', 'preroll', 0, 10),
+        seg('a1', 10, 100, 'g'),
+        e('m1', 'midroll', 100, 110),
+        seg('a2', 110, 200, 'g', 90000),
+        e('m2', 'midroll', 200, 210),
+        seg('a3', 210, 300, 'g', 180000),
+        e('post', 'postroll', 300, 310),
+        e('b', 'program', 310, 400),
+      ]);
+      expect(spans(cells), [['a1', 0, 310], ['b', 310, 400]]);
+    });
+
+    test('the same item twice in a row without a split group stays two programs', () {
+      final cells = buildGuideCells([e('a', 'program', 0, 100), e('mid', 'midroll', 100, 110), e('b', 'program', 110, 200)]);
+      expect(spans(cells), [['a', 0, 110], ['b', 110, 200]]);
+    });
+
+    test('two airings of one item are two programs, each with its own group', () {
+      final cells = buildGuideCells([
+        seg('a1', 0, 100, 'g1'),
+        e('m', 'midroll', 100, 110),
+        seg('a2', 110, 200, 'g1', 100000),
+        e('m2', 'midroll', 200, 210),
+        seg('b1', 210, 300, 'g2'),
+        e('m3', 'midroll', 300, 310),
+        seg('b2', 310, 400, 'g2', 100000),
+      ]);
+      expect(spans(cells), [['a1', 0, 210], ['b1', 210, 400]]);
+    });
+
+    test('a window that starts at a later segment shows that segment as a program of its own', () {
+      final cells = buildGuideCells([e('m', 'midroll', 100, 110), seg('a2', 110, 200, 'g', 100000)]);
+      expect(spans(cells), [['a2', 100, 200]]);
+    });
+
+    test('a tail after a split item is capped from the last segment as for any program', () {
+      final cells = buildGuideCells(
+        [seg('a1', 0, 100, 'g'), e('mid', 'midroll', 100, 110), seg('a2', 110, 200, 'g', 100000), e('t', 'tail', 200, 9000)],
+        tailCap: const Duration(seconds: 60),
+      );
+      expect(spans(cells), [['a1', 0, 260]]);
+    });
+
+    test('the merged cell is live from the first segment to the last, breaks included', () {
+      final cells = buildGuideCells([seg('a1', 0, 100, 'g'), e('mid', 'midroll', 100, 110), seg('a2', 110, 200, 'g', 100000)]);
+      DateTime at(int s) => DateTime.fromMillisecondsSinceEpoch(s * 1000, isUtc: true);
+      expect(cells[0].isLiveAt(at(50)), isTrue);
+      expect(cells[0].isLiveAt(at(105)), isTrue);
+      expect(cells[0].isLiveAt(at(150)), isTrue);
+      expect(cells[0].isLiveAt(at(200)), isFalse);
+    });
+  });
 }

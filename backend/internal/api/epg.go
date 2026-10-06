@@ -18,7 +18,7 @@ func registerEPG(mux *http.ServeMux, db storage.DB, mat *materializer.Materializ
 	mux.HandleFunc("GET /channels/{id}/epg-warnings", channelEPGWarnings(db, mat))
 }
 
-const epgEntryColumns = "id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at"
+const epgEntryColumns = "id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, source_schedule_item_id, generated_at, item_offset_ms, split_group"
 
 // getEPG reads the materialized epg_entry rows and serves them enriched with
 // the catalog metadata a client needs (see epg_view.go), optionally with

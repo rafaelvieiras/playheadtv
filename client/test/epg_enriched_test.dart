@@ -155,4 +155,29 @@ void main() {
     // Unresolved (no source id): nothing to play.
     expect(unitsOfProgram(EpgEntry.fromJson(_plain('x', 0, 1000)), 0), isEmpty);
   });
+
+  test('a segment of a split item: offset and group are parsed, kept by the cache JSON, and become the unit\'s offset', () {
+    final json = {..._enriched('s', 600000, 1200000), 'item_offset_ms': 300000, 'split_group': 'g1'};
+    final seg = EpgEntry.fromJson(json);
+    expect(seg.itemOffsetMs, 300000);
+    expect(seg.splitGroup, 'g1');
+    final stored = EpgEntry.fromJson(jsonDecode(jsonEncode(seg.toJson())) as Map<String, dynamic>);
+    expect(stored.itemOffsetMs, 300000);
+    expect(stored.splitGroup, 'g1');
+    final units = unitsOfProgram(seg, 0);
+    expect(units, hasLength(1));
+    expect(units.single.itemOffset, const Duration(minutes: 5));
+    expect(units.single.clipDuration, const Duration(minutes: 10));
+    // The shifted copy used by the looping fallback keeps the offset and moves the group with the id.
+    final shifted = seg.shifted(const Duration(hours: 1), idPrefix: 'loop-');
+    expect(shifted.itemOffsetMs, 300000);
+    expect(shifted.splitGroup, 'loop-g1');
+    // An ordinary entry has neither, and does not store them.
+    final plain = EpgEntry.fromJson(_enriched('p', 0, 1000));
+    expect(plain.itemOffsetMs, 0);
+    expect(plain.splitGroup, isNull);
+    expect(plain.toJson().containsKey('item_offset_ms'), isFalse);
+    expect(plain.toJson().containsKey('split_group'), isFalse);
+    expect(unitsOfProgram(plain, 0).single.itemOffset, Duration.zero);
+  });
 }

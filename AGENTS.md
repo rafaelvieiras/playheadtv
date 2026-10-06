@@ -511,6 +511,16 @@ keep in mind when touching `client/`:
   before their first instant) or they attribute a tail differently. Tests
   shrink the cap with `AppConfig.overrideForTest(tailAttributionCap:)`; never
   wait real minutes. Details: `docs/ARCHITECTURE.md` "Guide display".
+- A split item plays as segments (`epg_entry.item_offset_ms`, `split_group`;
+  `docs/ARCHITECTURE.md` "Items played in segments"): `ChannelEntry.itemOffset`
+  is where in the file the entry starts, so EVERY seek into an entry (a
+  preload, a tune-in in the middle, a resync after running behind) is
+  `itemOffset + position within the entry` (`_createController`, `_crossfadeTo`),
+  and its transition fires at the entry's own `clipDuration`, never the item's.
+  Never seek "to the elapsed time" alone. The guide merges the segments of one
+  `split_group` into one program in both `buildGuideCells` implementations;
+  keep them and their unit cases in step. Only the later segments of an item
+  have an offset above 0, which is how the series cursors skip them.
 - `ChannelEntry` (`client/lib/main.dart`) carries each item's real,
   materialized `startAt`, and `_crossfadeTo` compares it against wall-clock
   `now` before starting the next item instead of always chaining durations

@@ -15,6 +15,12 @@
 // counting what it already absorbed), so a real gap next to a filler is never
 // painted over. A fallback is a visible cell of its own and absorbs nothing.
 //
+// The segments of one split item (program entries sharing a `splitGroup`, with
+// the item's midroll breaks between them) are ONE program: a single cell from
+// the first segment's start to the last segment's end, the later segments and
+// the breaks between them absorbed by it. The cell's entry is the first
+// segment, so title, art and the OSD's announcement key come from it.
+//
 // A tail can last hours, so its attribution is capped: the previous program
 // absorbs at most the first `tailAttributionCap` of a run of tail entries,
 // measured from the start of the run. The rest of the tail is attributed to no
@@ -101,10 +107,24 @@ List<GuideCell> buildGuideCells(Iterable<EpgEntry> entries, {Duration tolerance 
       final byStart = a.startAt.compareTo(b.startAt);
       return byStart != 0 ? byStart : a.endAt.compareTo(b.endAt);
     });
-  final cells = <EpgEntry, GuideCell>{
-    for (final e in sorted)
-      if (!isHiddenGuideKind(e.kind)) e: GuideCell(e),
-  };
+  final cells = <EpgEntry, GuideCell>{};
+  // The cell of each split group met so far: a later segment of the group
+  // joins it instead of getting a cell of its own.
+  final groupCell = <String, GuideCell>{};
+  for (final e in sorted) {
+    if (isHiddenGuideKind(e.kind)) continue;
+    final group = e.kind == 'program' ? e.splitGroup : null;
+    final existing = group == null ? null : groupCell[group];
+    if (existing == null) {
+      final cell = GuideCell(e);
+      cells[e] = cell;
+      if (group != null) groupCell[group] = cell;
+    } else {
+      if (e.endAt.isAfter(existing.displayEnd)) existing.displayEnd = e.endAt;
+      existing.absorbed.add(e);
+      cells[e] = existing;
+    }
+  }
   final done = <EpgEntry>{};
 
   // Whether the nearest visible entry before each hidden one is a program: a
@@ -162,5 +182,12 @@ List<GuideCell> buildGuideCells(Iterable<EpgEntry> entries, {Duration tolerance 
   attribute((e) => e.kind == 'preroll', next: false);
   attribute((e) => e.kind != 'preroll', next: true);
 
-  return [for (final e in sorted) if (cells[e] != null) cells[e]!];
+  // A merged cell is reached through each of its segments; it is listed once,
+  // at its first.
+  final out = [for (final e in sorted) if (cells[e] != null && identical(cells[e]!.entry, e)) cells[e]!];
+  // The absorbed entries of a merged cell (segments and breaks) read in time order.
+  for (final c in out) {
+    c.absorbed.sort((a, b) => a.startAt.compareTo(b.startAt));
+  }
+  return out;
 }

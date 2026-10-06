@@ -167,6 +167,14 @@ type EpgEntry struct {
 	EndAt                int64        `json:"end_at"`
 	SourceScheduleItemID *string      `json:"source_schedule_item_id"` // nil for fallback entries
 	GeneratedAt          int64        `json:"generated_at"`
+	// ItemOffsetMs is where in the catalog item the entry starts playing; it
+	// plays for EndAt-StartAt from there. Zero (omitted from JSON) for every
+	// entry except the later segments of a split item.
+	ItemOffsetMs int64 `json:"item_offset_ms,omitempty"`
+	// SplitGroup ties the segments of one airing of a split item together: the
+	// same opaque value on each segment (program entries only, never on the
+	// breaks between them). Nil (omitted) for an entry that is not a segment.
+	SplitGroup *string `json:"split_group,omitempty"`
 	// RotationNext is the persisted rotation position of a continuous
 	// schedule item: the block-item index its next program takes. Internal
 	// bookkeeping, never served to clients; nil for every other entry.

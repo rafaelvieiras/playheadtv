@@ -174,7 +174,13 @@ class ChannelEntry {
   final DateTime startAt;
   final int programOrdinal;
   final EpgEntry? program;
-  const ChannelEntry(this.id, this.label, this.clipDuration, this.startAt, {this.programOrdinal = 0, this.program});
+  // Where in the media item this unit starts playing (epg_entry
+  // item_offset_ms: nonzero only for the later segments of a split item).
+  // The unit plays from here for `clipDuration`, so every seek into it (a
+  // preload, a tune-in in the middle, a resync) is relative to this offset.
+  final Duration itemOffset;
+  const ChannelEntry(this.id, this.label, this.clipDuration, this.startAt,
+      {this.programOrdinal = 0, this.program, this.itemOffset = Duration.zero});
 
   // What the OSD shows: the guide program this unit belongs to (a tail's
   // generic title and whole span, not its clip's).
@@ -195,7 +201,7 @@ List<ChannelEntry> unitsOfProgram(EpgEntry program, int ordinal, {DateTime? notB
     if (notBefore != null && !program.endAt.isAfter(notBefore)) return const [];
     return [
       ChannelEntry(ext, program.displayTitle, program.endAt.difference(program.startAt), program.startAt,
-          programOrdinal: ordinal, program: program),
+          programOrdinal: ordinal, program: program, itemOffset: Duration(milliseconds: program.itemOffsetMs)),
     ];
   }
   return [
@@ -870,11 +876,14 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   Future<VideoPlayerController> _createController(ChannelEntry entry, {Duration? seekTo}) async {
     final controller = VideoPlayerController.networkUrl(Uri.parse(streamUrl(entry.id)));
     await serializeGlOp(() => controller.initialize());
-    if (seekTo != null && seekTo > Duration.zero) {
-      // Only the first item of the schedule (the "TV turned on" in the middle
-      // of a program) uses this — preload/crossfade of the following items
-      // always starts from zero.
-      await controller.seekTo(seekTo);
+    // `seekTo` is a position within the entry (the "TV turned on" in the
+    // middle of a program); the entry itself starts at its item offset, so the
+    // later segment of a split item (same file, resumed after the break) is
+    // positioned at its resume point as soon as it is prepared, long before it
+    // is shown. A whole item has offset zero and is only seeked for a tune-in.
+    final position = entry.itemOffset + (seekTo ?? Duration.zero);
+    if (position > Duration.zero) {
+      await controller.seekTo(position);
     }
     // Resolve the stream (audio/subtitle) selection cascade (tiers 2-4 —
     // see services/stream_selection_resolver.dart and AGENTS.md "Client app
@@ -1126,7 +1135,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       // only let the drift accumulate further on every following item.
       var seek = -gap;
       if (seek > nextEntry.clipDuration) seek = nextEntry.clipDuration;
-      await incoming.seekTo(seek);
+      await incoming.seekTo(nextEntry.itemOffset + seek);
       if (generation != _loadGeneration) return;
     }
 

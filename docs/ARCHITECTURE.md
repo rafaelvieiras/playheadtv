@@ -801,8 +801,90 @@ with 3-minute programs, a midroll template of single + 4 min fill + single and a
 REST: `POST/GET /break-templates`, `GET/PUT/DELETE /break-templates/{id}` (a PUT
 replaces the template and its steps); MCP: `create_break_template`,
 `list_break_templates`; web UI: Break templates (list and step editor).
-Phase A covers boundaries between programs only: nothing inside an item (no cut
-points, no `item_offset_ms`, no client change).
+Break templates cover the boundaries between programs; the breaks inside an
+item, between its segments, are the next section.
+
+### Items played in segments (migration `0020`)
+
+One catalog item can be played in segments: cut at some offsets, with the
+midroll break of its block (or channel) between consecutive segments. Where to
+cut is a separate concern (the cut-point time model); this section is the
+mechanism.
+
+Model, in `epg_entry`:
+
+- `item_offset_ms INTEGER NOT NULL DEFAULT 0` (`>= 0`): where in the catalog
+  item the entry starts playing. It plays for `end_at - start_at` from there, so
+  a segment's own span is its duration and may be shorter than the item's.
+  Every entry that is not a later segment has offset 0.
+- `split_group TEXT` (NULL for an entry that is not a segment): the same opaque
+  value on every segment of one airing of an item (the first segment's entry
+  id). The breaks between segments are ordinary `midroll` entries and carry no
+  group; a segment is a `program` entry like any other.
+
+Why an explicit group and not "consecutive entries of the same item separated
+only by hidden breaks": the same item can legitimately air twice in a row (a
+one-item repeating block), and a window or a client cache that starts at a
+later segment would have no way to tell a continuation from a new airing. The
+key makes the tie survive any slicing of the rows. The offset alone is not
+enough either: a later segment has offset greater than 0, but an airing the
+window cut at its start looks the same.
+
+`GET /epg` (raw and enriched, `group_tail` or not) and the MCP `preview_epg`
+add both fields, omitted when they have no value (offset 0, no group), so the
+payload and the `ETag` of a guide without segments are unchanged. A segment is
+enriched from its item like any entry (`duration_ms` is the item's length).
+
+Materializer (`internal/materializer/cuts.go`):
+
+- `CutPlanner` is the seam: `PlanCuts(CutItem{CatalogItemID, DurationMs}) []int64`
+  returns the ordered offsets at which a break goes (none = the item plays
+  whole). The default planner never cuts, so nothing changes until one is
+  plugged in (`Materializer.SetCutPlanner`). The result is normalized (sorted,
+  de-duplicated, nothing within `minSegmentMs` (1s) of an end or of another
+  cut, at most `maxCutsPerItem` (20)), and a cut whose break resolves to
+  nothing (no midroll configured, empty pool) is skipped, so a planner can be
+  naive. It must be deterministic for the same item.
+- `segmenter.split` turns the planned program entry into segments plus breaks:
+  the first segment keeps the entry's id and fields, the others copy them with a
+  fresh id, their own span and offset, and the break between two segments is
+  `pickBreak` of the midroll source (plain rule or break template). Every place
+  that emits a program calls it: the manual block list, the continuous and
+  dynamic loops (inside the unit, between preroll and postroll) and series
+  episodes (both walks).
+- The space the breaks add is taken from the slot like any other break: each
+  caller checks the whole span against its limit (overrun policy, unit-must-fit,
+  strict series fit), and the entry caps count every part.
+- Resume (continuous items): a kept head that ends between the segments of one
+  item cannot say how much of the item has aired, so it grows to the end of the
+  last segment of that item (`extendKeptThroughSplit`, after the break
+  extension). Series cursors are rebuilt from the rows with offset 0 only, and a
+  count visit counts an episode at its offset-0 row and treats later segments
+  like midrolls.
+- Debug trigger until the time model exists: `PLAYHEADTV_DEBUG_CUT_OFFSETS_MS`
+  (comma-separated offsets) installs `FixedCuts`, which cuts every item at those
+  offsets. It is for tests and development only.
+
+Client playback of a segment: `ChannelEntry.itemOffset` is the entry's
+`item_offset_ms`. Every controller created for the entry seeks to the offset
+plus whatever it joins in the middle of (`_createController`: a tune-in inside
+the segment, or a resync after running behind), and the transition timer fires at
+the segment's end (its own `end_at - start_at`), not at the item's. The
+dual-controller design needs no new mechanism: seg1, the break and seg2 are three
+consecutive units, so while the break plays the preload creates a second
+controller on the same file, seeked to the resume point, and the normal
+crossfade brings it in. The outgoing segment keeps playing the film past its cut
+for the length of the 800 ms crossfade (the stream is not trimmed); that is
+accepted rather than worth a stop timer. The offline cache stores both fields (`scheduleCacheSchemaVersion` 2).
+
+Guide and OSD: the guide (`buildGuideCells`, client and web UI, same cases)
+draws the segments of a group as ONE program: a cell from the first segment's
+start to the last one's end, whose entry is the first segment (title, art, the
+OSD's announcement key), with the later segments and the breaks between them
+absorbed. "Live", focus, navigation and the OSD's progress (wall clock over the
+merged span) all work on that cell. A window that holds only a later segment
+shows that segment as a program of its own. Everything else, the tail cap
+included, is unchanged for items without segments.
 
 ### Cut points (migration `0019`)
 

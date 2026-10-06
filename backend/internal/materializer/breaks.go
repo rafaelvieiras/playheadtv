@@ -65,6 +65,11 @@ func stageForKind(kind domain.EpgEntryKind) breakStage {
 type breakLoop struct {
 	pre, mid, post *midrollSource
 
+	// cuts, when set, splits a program into segments with a midroll between
+	// them (see segmenter); nil plays every program whole.
+	cuts    CutPlanner
+	blockID string // the block the loop plays, for the planner (see CutItem)
+
 	// What is still owed before/after the next program.
 	owePre, oweMid, owePost bool
 
@@ -157,8 +162,12 @@ func (b *breakLoop) unit(cursor, limit time.Time, rotBefore int, plan func(start
 	if !planned {
 		return nil, cursor, 0, false
 	}
+	// A program cut into segments (cuts.go) is one unit: its segments and the
+	// breaks between them sit between the preroll and the postroll.
+	progEntries := segmenter{planner: b.cuts, mid: b.mid, channelID: b.channelID, blockID: b.blockID}.split(prog)
+	progEnd := spanEnd(progEntries)
 	post := b.post.pickBreak()
-	end = time.UnixMilli(prog.EndAt).Add(time.Duration(post.total()) * time.Millisecond)
+	end = progEnd.Add(time.Duration(post.total()) * time.Millisecond)
 	if end.After(limit) {
 		return nil, cursor, 0, false
 	}
@@ -166,8 +175,8 @@ func (b *breakLoop) unit(cursor, limit time.Time, rotBefore int, plan func(start
 	entries = append(entries, b.partEntries(domain.EpgMidRoll, mid, cursor, rotBefore)...)
 	entries = append(entries, b.partEntries(domain.EpgPreRoll, pre, cursor.Add(time.Duration(mid.total())*time.Millisecond), rotBefore)...)
 	progIdx = len(entries)
-	entries = append(entries, prog)
-	entries = append(entries, b.partEntries(domain.EpgPostRoll, post, time.UnixMilli(prog.EndAt), rotBefore)...)
+	entries = append(entries, progEntries...)
+	entries = append(entries, b.partEntries(domain.EpgPostRoll, post, progEnd, rotBefore)...)
 	b.owePre, b.oweMid, b.owePost = true, true, false
 	return entries, end, progIdx, true
 }

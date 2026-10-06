@@ -109,4 +109,30 @@ void main() {
     final s = osdSubjectFor([t], t, now: at(10));
     expect(s.channelOnly, isTrue);
   });
+
+  test('a split item is one program: its segments and the break between them share one announcement', () {
+    EpgEntry seg(String id, int start, int end, int offsetMs) => EpgEntry(
+          id: id,
+          kind: 'program',
+          catalogItemId: 'ci-item',
+          title: 'item',
+          startAt: DateTime.fromMillisecondsSinceEpoch(start * 1000, isUtc: true),
+          endAt: DateTime.fromMillisecondsSinceEpoch(end * 1000, isUtc: true),
+          itemOffsetMs: offsetMs,
+          splitGroup: 'g',
+        );
+    final entries = [seg('a1', 0, 600, 0), e('mid', 'midroll', 600, 780), seg('a2', 780, 1500, 600000), e('b', 'program', 1500, 2400)];
+    for (final id in ['a1', 'mid', 'a2']) {
+      final s = osdSubjectFor(entries, entries.firstWhere((x) => x.id == id));
+      expect(s.program.id, 'a1', reason: id);
+      expect(secs(s.start), 0, reason: id);
+      expect(secs(s.end), 1500, reason: id);
+      expect(s.key, 'a1', reason: id);
+      expect(s.next?.id, 'b', reason: id);
+    }
+    // Progress by wall clock over the merged span: halfway through the break
+    // is 690 of 1500 seconds.
+    final s = osdSubjectFor(entries, entries[1]);
+    expect(s.end.difference(s.start), const Duration(minutes: 25));
+  });
 }

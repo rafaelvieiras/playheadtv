@@ -55,6 +55,11 @@ export interface EpgEntry {
   end_at: number
   source_schedule_item_id: string | null
   generated_at: number
+  // Segments of a split item (absent on every other entry): where in the item
+  // the entry starts playing (absent = 0; it plays for end_at - start_at), and
+  // the value tying the segments of one airing together.
+  item_offset_ms?: number
+  split_group?: string
   // Catalog metadata GET /epg adds to every entry (each one optional: absent
   // when the item has no value or the catalog row is gone).
   media_source_id?: string
