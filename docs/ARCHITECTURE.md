@@ -724,6 +724,86 @@ channel fallback considered, a real next timed item required). It expands a
 week of the stored configuration read-only to find it, and is informational:
 the web UI shows it in the channel guide next to the other block warnings.
 
+### Break templates (migration `0018`)
+
+A `preroll`, `midroll` or `postroll` filler rule inserts one pool item at a
+program boundary. A **break template** replaces that single item with an ordered
+list of steps, for example `[single bumper from pool A] -> [fill 4 min from
+pool B] -> [single bumper from pool C]`. The plain rules are the degenerate
+one-step case and are neither migrated nor rewritten: with no template in play
+the expansion is the same code path with one part per break.
+
+Model: two tables, `break_template` (scope `channel`/`block`, `scope_id`,
+`kind` in preroll/midroll/postroll, `name`, `position`) and
+`break_template_step` (`position`, `step_type`, `filler_pool_id`,
+`selection_strategy`, `target_ms`, `max_fit_attempts`). Rows rather than JSON on
+`filler_rule` because a step references a pool (a real foreign key, so a pool in
+use cannot be deleted from under a template, as for rules), the steps are
+edited and ordered individually, and each step id keys its own sequential
+rotation. A step is:
+
+- `single`: one item drawn from the pool by the selection strategy, exactly as a
+  plain rule does (an empty pool or a non-positive duration skips the step);
+- `fill`: whole items of the pool until `target_ms` is filled, through the same
+  `fitPicker` as the tail and fallback fills, so `max_fit_attempts` applies and a
+  skipped candidate keeps its rotation slot. The target is a fixed length chosen
+  by the author, never derived from the slot. What no candidate fits stays
+  unfilled (the break is a little shorter); items are never cut short.
+
+Limits (400 on write, REST and MCP share `internal/breaktemplate`): 1 to 10
+steps, `target_ms` 1 to 3,600,000, `max_fit_attempts` 1 to 20, every pool must
+exist, a name up to 100 characters. A `fill` step emits at most 1000 items per
+break (`maxFillStepParts`).
+
+**Precedence** at a boundary of kind K for a block (`resolveBreak`):
+
+1. the block's own configuration beats the channel's: a block-scoped template or
+   rule of kind K decides, and nothing channel-scoped is consulted;
+2. within one scope level a template beats a plain rule of the same kind;
+3. among several templates (or rules) at one level, the lowest `position` wins.
+
+So a block rule still beats a channel template, and a block template beats both
+a block rule and everything at channel scope. `tail` and `fallback` are not
+boundary kinds and take no template.
+
+Emitted entries keep the hidden kinds (`preroll`, `midroll`, `postroll`); no new
+entry kind exists, so the `epg_entry.kind` constraint, the 30-minute guide
+attribution, `group_tail` and the OSD behave as before. Each part is its own
+entry, back to back; in the continuous and dynamic loops every part carries the
+break's rotation position (the program and all parts of its postroll carry the
+position after it), so a resume reads the last row.
+
+Block length: breaks may lengthen a block; the tail still absorbs the remainder
+to land on the next slot. A unit (`[mid][pre] program [post]`) airs only if all
+of it, template parts included, fits before the limit; a manual block under a
+timed item reserves the whole postroll break before the next occurrence, as it
+does for a single postroll, and a midroll or preroll break that does not fit
+stops the block's content.
+
+Resume (grid stability, continuous items): a kept head can end between two parts
+of one template break, which cannot say which steps are owed. When the last
+kept row is a preroll/midroll/postroll governed by a template, the kept head
+grows to the end of the contiguous run of break rows that follow it
+(`extendKeptThroughBreak`), so the whole break the previous generation laid down
+stays as it was and the generation resumes from a stage that owes whole breaks
+only. Plain single-item breaks never need this. As with any pool, a
+regeneration restarts the in-memory sequential rotations (accepted v1 limit).
+
+Cost and bounds: the `filler-ratio` warning counts a template's worst case (sum
+over steps of the longest pool item for a single step, the target for a fill step
+that some pool item can fit). The 50,000-entry cap of a looping fill counts every
+part, since each is an entry; it is checked per unit, so one unit can overshoot
+by at most 3 breaks x 10 steps x 1000 parts. Measured on a week of one channel
+with 3-minute programs, a midroll template of single + 4 min fill + single and a
+20,000-item pool: about 9,000 entries in 10 ms (sequential), 13 ms (random) and
+120 ms (weighted, which scans the pool per pick).
+
+REST: `POST/GET /break-templates`, `GET/PUT/DELETE /break-templates/{id}` (a PUT
+replaces the template and its steps); MCP: `create_break_template`,
+`list_break_templates`; web UI: Break templates (list and step editor).
+Phase A covers boundaries between programs only: nothing inside an item (no cut
+points, no `item_offset_ms`, no client change).
+
 ### Authoring endpoints (item editing, previews)
 
 - `PUT /blocks/{id}/items/{item_id}` with `{position?, trim_duration_ms?}`

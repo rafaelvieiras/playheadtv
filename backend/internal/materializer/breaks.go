@@ -90,6 +90,18 @@ func newBreakLoop(pre, mid, post *midrollSource, stage breakStage, tenantID, cha
 	return b
 }
 
+// partEntries turns the parts of one break into back-to-back entries of kind
+// starting at start.
+func (b *breakLoop) partEntries(kind domain.EpgEntryKind, parts breakParts, start time.Time, rot int) []domain.EpgEntry {
+	out := make([]domain.EpgEntry, 0, len(parts))
+	at := start
+	for _, p := range parts {
+		out = append(out, b.fillerEntry(kind, p.item, at, p.dur, rot))
+		at = at.Add(time.Duration(p.dur) * time.Millisecond)
+	}
+	return out
+}
+
 func (b *breakLoop) fillerEntry(kind domain.EpgEntryKind, item domain.FillerPoolItem, start time.Time, durMs int64, rot int) domain.EpgEntry {
 	r := rot
 	return domain.EpgEntry{
@@ -113,93 +125,67 @@ func (b *breakLoop) flushPost(cursor, limit time.Time, rot int) (entries []domai
 		return nil, cursor, true
 	}
 	b.owePost = false
-	item, dur, picked := b.post.pick()
-	if !picked {
+	parts := b.post.pickBreak()
+	if len(parts) == 0 {
 		return nil, cursor, true
 	}
-	end = cursor.Add(time.Duration(dur) * time.Millisecond)
+	end = cursor.Add(time.Duration(parts.total()) * time.Millisecond)
 	if end.After(limit) {
 		return nil, cursor, false
 	}
-	return []domain.EpgEntry{b.fillerEntry(domain.EpgPostRoll, item, cursor, dur, rot)}, end, true
+	return b.partEntries(domain.EpgPostRoll, parts, cursor, rot), end, true
 }
 
 // unit airs the owed midroll and preroll, the program and its postroll,
-// starting at cursor, provided the whole unit ends by limit. plan builds the
-// program entry for the start it will really have (after the prefix); it may
-// refuse. rotBefore is the rotation position stored on the prefix fillers.
-// progIdx is the program's index within the returned entries; its postroll, if
-// any, is the next one, and the caller stores the rotation position the pair
-// leaves behind (setRotation).
+// starting at cursor, provided the whole unit ends by limit. Each of the
+// three breaks is a plain rule's single item or a break template's steps (see
+// pickBreak). plan builds the program entry for the start it will really have
+// (after the prefix); it may refuse. rotBefore is the rotation position stored
+// on the prefix fillers. progIdx is the program's index within the returned
+// entries; everything after it is its postroll, and the caller stores the
+// rotation position the program and its postroll leave behind (setRotation).
 func (b *breakLoop) unit(cursor, limit time.Time, rotBefore int, plan func(start time.Time) (domain.EpgEntry, bool)) (entries []domain.EpgEntry, end time.Time, progIdx int, ok bool) {
-	type pick struct {
-		item domain.FillerPoolItem
-		dur  int64
-		ok   bool
-	}
-	var mid, pre pick
+	var mid, pre breakParts
 	if b.oweMid {
-		mid.item, mid.dur, mid.ok = b.mid.pick()
+		mid = b.mid.pickBreak()
 	}
 	if b.owePre {
-		pre.item, pre.dur, pre.ok = b.pre.pick()
+		pre = b.pre.pickBreak()
 	}
-	start := cursor
-	if mid.ok {
-		start = start.Add(time.Duration(mid.dur) * time.Millisecond)
-	}
-	if pre.ok {
-		start = start.Add(time.Duration(pre.dur) * time.Millisecond)
-	}
+	start := cursor.Add(time.Duration(mid.total()+pre.total()) * time.Millisecond)
 	prog, planned := plan(start)
 	if !planned {
 		return nil, cursor, 0, false
 	}
-	post := pick{}
-	post.item, post.dur, post.ok = b.post.pick()
-	end = time.UnixMilli(prog.EndAt)
-	if post.ok {
-		end = end.Add(time.Duration(post.dur) * time.Millisecond)
-	}
+	post := b.post.pickBreak()
+	end = time.UnixMilli(prog.EndAt).Add(time.Duration(post.total()) * time.Millisecond)
 	if end.After(limit) {
 		return nil, cursor, 0, false
 	}
 
-	at := cursor
-	if mid.ok {
-		entries = append(entries, b.fillerEntry(domain.EpgMidRoll, mid.item, at, mid.dur, rotBefore))
-		at = at.Add(time.Duration(mid.dur) * time.Millisecond)
-	}
-	if pre.ok {
-		entries = append(entries, b.fillerEntry(domain.EpgPreRoll, pre.item, at, pre.dur, rotBefore))
-	}
+	entries = append(entries, b.partEntries(domain.EpgMidRoll, mid, cursor, rotBefore)...)
+	entries = append(entries, b.partEntries(domain.EpgPreRoll, pre, cursor.Add(time.Duration(mid.total())*time.Millisecond), rotBefore)...)
 	progIdx = len(entries)
 	entries = append(entries, prog)
-	if post.ok {
-		entries = append(entries, b.fillerEntry(domain.EpgPostRoll, post.item, time.UnixMilli(prog.EndAt), post.dur, rotBefore))
-	}
+	entries = append(entries, b.partEntries(domain.EpgPostRoll, post, time.UnixMilli(prog.EndAt), rotBefore)...)
 	b.owePre, b.oweMid, b.owePost = true, true, false
 	return entries, end, progIdx, true
 }
 
-// setRotation stores rot on the program at progIdx and on its postroll, the
-// rotation position that is current once the program has aired.
+// setRotation stores rot on the program at progIdx and on its postroll (every
+// entry after it), the rotation position that is current once the program has
+// aired.
 func setRotation(entries []domain.EpgEntry, progIdx, rot int) {
-	r := rot
-	entries[progIdx].RotationNext = &r
-	if progIdx+1 < len(entries) {
-		p := rot
-		entries[progIdx+1].RotationNext = &p
+	for i := progIdx; i < len(entries); i++ {
+		r := rot
+		entries[i].RotationNext = &r
 	}
 }
 
-// breakSources resolves the preroll, midroll and postroll sources of a block
-// as the channel and block filler rules define them.
+// breakSources resolves the preroll, midroll and postroll sources of a block:
+// a break template or a filler rule per kind (see resolveBreak).
 func (in channelInput) breakSources(blockID string, state *selectionState) (pre, mid, post *midrollSource) {
-	src := func(kind domain.FillerKind) *midrollSource {
-		return &midrollSource{rule: resolveFillerRule(in.FillerRules, kind, blockID, in.ChannelID), pools: in.PoolItems, durations: in.CatalogDuration, state: state}
-	}
-	return src(domain.FillerPreRoll), src(domain.FillerMidRoll), src(domain.FillerPostRoll)
+	return in.breakSource(domain.FillerPreRoll, blockID, state), in.breakSource(domain.FillerMidRoll, blockID, state), in.breakSource(domain.FillerPostRoll, blockID, state)
 }
 
 // warnLoopCap logs, once per fill, that the guard above stopped it.

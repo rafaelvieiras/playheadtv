@@ -1,5 +1,6 @@
 import {
   CalendarClock,
+  Clapperboard,
   Library,
   Languages,
   LogOut,
@@ -24,6 +25,7 @@ const NAV_ITEMS = [
   { to: '/collections', label: 'Collections', icon: Library, end: false },
   { to: '/filler-pools', label: 'Filler pools', icon: Radio, end: false },
   { to: '/filler-rules', label: 'Filler rules', icon: ListOrdered, end: false },
+  { to: '/break-templates', label: 'Break templates', icon: Clapperboard, end: false },
   { to: '/stream-selector', label: 'Stream selector', icon: Languages, end: false },
   { to: '/media-sources', label: 'Media sources', icon: Server, end: false },
   { to: '/devices', label: 'Devices', icon: Smartphone, end: false },

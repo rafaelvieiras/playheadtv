@@ -31,6 +31,7 @@ type channelInput struct {
 	ScheduleItems   []domain.ScheduleItem
 	BlockItems      map[string][]domain.BlockItem      // blockID -> ordered by position
 	FillerRules     []domain.FillerRule                // every rule scoped to this channel or one of its blocks
+	BreakTemplates  []domain.BreakTemplate             // every break template scoped to this channel or one of its blocks, steps in order
 	PoolItems       map[string][]domain.FillerPoolItem // filler_pool_id -> ordered by rowid (insertion order)
 	CatalogDuration map[string]int64                   // catalog_item_id -> duration_ms
 	DynamicBlockIDs map[string]bool                    // blockID -> true iff block.criteria is non-NULL
@@ -508,18 +509,18 @@ type seriesVisit struct {
 // between catalog items of a manual block and the ones between series
 // episodes, so rule resolution, pool selection and weights have no special
 // case for either. A nil source or a nil rule never breaks.
+//
+// When a break template governs the boundary (tmpl, see resolveBreak) the
+// source airs the template's steps instead of the rule's single item
+// (pickBreak); the rule is then nil.
 type midrollSource struct {
 	rule      *domain.FillerRule
+	tmpl      *domain.BreakTemplate
 	pools     map[string][]domain.FillerPoolItem
 	durations map[string]int64
 	state     *selectionState
-}
 
-func (m *midrollSource) pick() (domain.FillerPoolItem, int64, bool) {
-	if m == nil {
-		return domain.FillerPoolItem{}, 0, false
-	}
-	return pickFiller(m.rule, m.pools, m.durations, m.state)
+	steps []*stepSource // lazily built from tmpl, see pickBreak
 }
 
 // emitSeries expands one visit of a series block item into consecutive
@@ -641,27 +642,32 @@ func emitSeries(
 		// no block item id, so they are never mistaken for episodes when a
 		// later run rebuilds the cursor.
 		if prevEpisode && !slot.Skip {
-			if midItem, midDur, ok := visit.Mid.pick(); ok {
-				midEnd := cursor.Add(time.Duration(midDur) * time.Millisecond)
+			if parts := visit.Mid.pickBreak(); len(parts) > 0 {
+				midEnd := cursor.Add(time.Duration(parts.total()) * time.Millisecond)
 				if strict && midEnd.After(limit) {
 					break
 				}
-				mid := domain.EpgEntry{
-					ID:                   uuid.NewString(),
-					TenantID:             tenantID,
-					ChannelID:            channelID,
-					Kind:                 domain.EpgMidRoll,
-					CatalogItemID:        midItem.CatalogItemID,
-					StartAt:              startMs,
-					EndAt:                midEnd.UnixMilli(),
-					SourceScheduleItemID: sourceScheduleItemID,
-					GeneratedAt:          generatedAt,
+				at := cursor
+				for _, part := range parts {
+					partEnd := at.Add(time.Duration(part.dur) * time.Millisecond)
+					mid := domain.EpgEntry{
+						ID:                   uuid.NewString(),
+						TenantID:             tenantID,
+						ChannelID:            channelID,
+						Kind:                 domain.EpgMidRoll,
+						CatalogItemID:        part.item.CatalogItemID,
+						StartAt:              at.UnixMilli(),
+						EndAt:                partEnd.UnixMilli(),
+						SourceScheduleItemID: sourceScheduleItemID,
+						GeneratedAt:          generatedAt,
+					}
+					if visit.RotIdx != nil {
+						r := *visit.RotIdx
+						mid.RotationNext = &r
+					}
+					entries = append(entries, mid)
+					at = partEnd
 				}
-				if visit.RotIdx != nil {
-					r := *visit.RotIdx
-					mid.RotationNext = &r
-				}
-				entries = append(entries, mid)
 				cursor = midEnd
 				startMs = cursor.UnixMilli()
 				if slot, ok = run.plan(startMs); !ok {
@@ -1007,9 +1013,9 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 
 		scheduleItemID := occ.ScheduleItemID
 		items := in.BlockItems[occ.BlockID]
-		preroll := resolveFillerRule(in.FillerRules, domain.FillerPreRoll, occ.BlockID, in.ChannelID)
-		midroll := resolveFillerRule(in.FillerRules, domain.FillerMidRoll, occ.BlockID, in.ChannelID)
-		postroll := resolveFillerRule(in.FillerRules, domain.FillerPostRoll, occ.BlockID, in.ChannelID)
+		preroll := in.breakSource(domain.FillerPreRoll, occ.BlockID, state)
+		midSrc := in.breakSource(domain.FillerMidRoll, occ.BlockID, state)
+		postroll := in.breakSource(domain.FillerPostRoll, occ.BlockID, state)
 		tailRule := resolveFillerRule(in.FillerRules, domain.FillerTail, occ.BlockID, in.ChannelID)
 
 		// nominalNextStart is the hard boundary this occurrence must never
@@ -1046,12 +1052,15 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			cursor = end
 		}
 
-		insertFiller := func(rule *domain.FillerRule, kind domain.EpgEntryKind) {
-			item, dur, ok := pickFiller(rule, in.PoolItems, in.CatalogDuration, state)
-			if !ok {
-				return
+		// emitBreak airs every part of a break back to back: one entry for a plain
+		// rule, the steps' items for a break template.
+		emitBreak := func(parts breakParts, kind domain.EpgEntryKind) {
+			for _, p := range parts {
+				emit(p.item.CatalogItemID, p.dur, kind)
 			}
-			emit(item.CatalogItemID, dur, kind)
+		}
+		insertFiller := func(src *midrollSource, kind domain.EpgEntryKind) {
+			emitBreak(src.pickBreak(), kind)
 		}
 
 		if in.DynamicBlockIDs[occ.BlockID] {
@@ -1103,14 +1112,12 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		// questions"). Without a next occurrence, there's nothing to
 		// protect: items and postroll play in full, exactly as before this
 		// issue.
-		var postrollItem domain.FillerPoolItem
-		var postrollDur int64
-		var hasPostroll bool
+		var postrollParts breakParts
 		itemsCutoff := nominalNextStart
 		if hasNextOccurrence {
-			postrollItem, postrollDur, hasPostroll = pickFiller(postroll, in.PoolItems, in.CatalogDuration, state)
-			if hasPostroll {
-				itemsCutoff = nominalNextStart.Add(-time.Duration(postrollDur) * time.Millisecond)
+			postrollParts = postroll.pickBreak()
+			if len(postrollParts) > 0 {
+				itemsCutoff = nominalNextStart.Add(-time.Duration(postrollParts.total()) * time.Millisecond)
 			}
 		}
 		repeat := !playOnce(occ.BlockID)
@@ -1121,7 +1128,6 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			return !cursor.Add(time.Duration(dur) * time.Millisecond).After(itemsCutoff)
 		}
 
-		midSrc := &midrollSource{rule: midroll, pools: in.PoolItems, durations: in.CatalogDuration, state: state}
 		// midBreak is the midroll between item idx and the next one of the
 		// block: the same step for a catalog item and for a series visit's
 		// last episode. It reports false when the block must stop (the
@@ -1137,14 +1143,14 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			if idx == len(items)-1 && !repeat {
 				return true
 			}
-			midItem, midDur, ok := midSrc.pick()
-			if !ok {
+			parts := midSrc.pickBreak()
+			if len(parts) == 0 {
 				return true
 			}
-			if !fits(midDur) {
+			if !fits(parts.total()) {
 				return false
 			}
-			emit(midItem.CatalogItemID, midDur, domain.EpgMidRoll)
+			emitBreak(parts, domain.EpgMidRoll)
 			return true
 		}
 
@@ -1210,9 +1216,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		}
 
 		if hasNextOccurrence {
-			if hasPostroll {
-				emit(postrollItem.CatalogItemID, postrollDur, domain.EpgPostRoll)
-			}
+			emitBreak(postrollParts, domain.EpgPostRoll)
 		} else if !repeat || cursor.Before(windowEnd) {
 			// No cutoff was reserved for this one, so pick it fresh — same
 			// as preroll/midroll above. A repeating block that ran up to the

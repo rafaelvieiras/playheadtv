@@ -50,7 +50,10 @@ export function ChannelFillerRules({ channelId }: { channelId: string }) {
 
   return (
     <div className="flex flex-col gap-3" data-testid="channel-filler-rules">
-      <div className="flex justify-end">
+      <div className="flex justify-end gap-2">
+        <Button asChild size="sm" variant="outline">
+          <Link to={`/break-templates/new?scope_type=channel&scope_id=${encodeURIComponent(channelId)}`}>Add break template</Link>
+        </Button>
         <Button asChild size="sm">
           <Link to={`/filler-rules/new?scope_type=channel&scope_id=${encodeURIComponent(channelId)}`}>Add filler rule</Link>
         </Button>

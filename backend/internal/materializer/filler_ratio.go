@@ -46,21 +46,6 @@ func (in channelInput) unfilledSlotWarnings(now time.Time) []Warning {
 	return out
 }
 
-// poolMaxDuration is the longest item of a rule's pool (0 for no rule or no
-// usable item): the worst case one pick can add.
-func (in channelInput) poolMaxDuration(rule *domain.FillerRule) int64 {
-	if rule == nil {
-		return 0
-	}
-	var longest int64
-	for _, it := range in.PoolItems[rule.FillerPoolID] {
-		if d := in.CatalogDuration[it.CatalogItemID]; d > longest {
-			longest = d
-		}
-	}
-	return longest
-}
-
 // shortestProgram is the shortest program a block can air: a catalog item, or
 // an episode of a series, criteria or dynamic walk (0 when unknown).
 func (in channelInput) shortestProgram(blockID string) int64 {
@@ -87,7 +72,8 @@ func (in channelInput) shortestProgram(blockID string) int64 {
 // fillerRatioWarnings flags the blocks that air as an endless sequence (the
 // continuous item's, and dynamic blocks under a timed item) whose configured
 // fillers between two programs, in the worst case (the longest item of each of
-// the preroll, midroll and postroll pools), exceed fillerRatioLimit of their
+// the preroll, midroll and postroll pools; a break template counts the sum of
+// its steps, a fill step at its target), exceed fillerRatioLimit of their
 // shortest program. Nothing is limited; this only reports it.
 func (in channelInput) fillerRatioWarnings() []Warning {
 	var out []Warning
@@ -100,7 +86,7 @@ func (in channelInput) fillerRatioWarnings() []Warning {
 		seen[si.BlockID] = true
 		var filler int64
 		for _, kind := range []domain.FillerKind{domain.FillerPreRoll, domain.FillerMidRoll, domain.FillerPostRoll} {
-			filler += in.poolMaxDuration(resolveFillerRule(in.FillerRules, kind, si.BlockID, in.ChannelID))
+			filler += in.breakSource(kind, si.BlockID, nil).worstCase()
 		}
 		program := in.shortestProgram(si.BlockID)
 		if filler == 0 || program == 0 || float64(filler) <= fillerRatioLimit*float64(program) {

@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/breaktemplate"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
@@ -43,6 +44,20 @@ func registerFillerTools(s *mcp.Server, db storage.DB, mat *materializer.Materia
 			"midroll, postroll, tail, fallback) filler from a pool gets inserted, and how it's picked " +
 			"(selection_strategy). Triggers EPG regeneration. Mirrors POST /filler-rules.",
 	}, createFillerRuleHandler(db, mat))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "create_break_template",
+		Description: "Attach a break template to a channel or block: an ordered list of steps (1 to 10) that " +
+			"replaces the single filler item a preroll, midroll or postroll rule inserts at a program boundary. " +
+			"A step is single (one item from a pool) or fill (whole items from a pool until target_ms is filled), " +
+			"e.g. a bumper, then 4 minutes of commercials, then a bumper. Where it applies it beats a plain " +
+			"filler rule of the same kind at the same scope level. Triggers EPG regeneration. Mirrors POST /break-templates.",
+	}, createBreakTemplateHandler(db, mat))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name:        "list_break_templates",
+		Description: "List every break template for this tenant, with its steps. Mirrors GET /break-templates.",
+	}, listBreakTemplatesHandler(db))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_filler_pools",
@@ -222,5 +237,32 @@ func listFillerPoolsHandler(db storage.DB) mcp.ToolHandlerFor[listFillerPoolsInp
 			return nil, listFillerPoolsOutput{}, err
 		}
 		return nil, listFillerPoolsOutput{Pools: pools}, nil
+	}
+}
+
+func createBreakTemplateHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[breaktemplate.Input, domain.BreakTemplate] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in breaktemplate.Input) (*mcp.CallToolResult, domain.BreakTemplate, error) {
+		t, err := breaktemplate.Create(ctx, db, defaultTenantID, in)
+		if err != nil {
+			return nil, domain.BreakTemplate{}, err
+		}
+		mat.Trigger()
+		return nil, t, nil
+	}
+}
+
+type listBreakTemplatesInput struct{}
+
+type listBreakTemplatesOutput struct {
+	Templates []domain.BreakTemplate `json:"templates"`
+}
+
+func listBreakTemplatesHandler(db storage.DB) mcp.ToolHandlerFor[listBreakTemplatesInput, listBreakTemplatesOutput] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, _ listBreakTemplatesInput) (*mcp.CallToolResult, listBreakTemplatesOutput, error) {
+		templates, err := breaktemplate.List(ctx, db, defaultTenantID)
+		if err != nil {
+			return nil, listBreakTemplatesOutput{}, err
+		}
+		return nil, listBreakTemplatesOutput{Templates: templates}, nil
 	}
 }

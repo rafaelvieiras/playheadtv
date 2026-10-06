@@ -426,9 +426,19 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		return channelInput{}, fmt.Errorf("list filler_rule: %w", err)
 	}
 
+	breakTemplates, err := m.loadBreakTemplates(ctx, tenantID, ch.ID, blockIDs)
+	if err != nil {
+		return channelInput{}, err
+	}
+
 	poolIDs := make(map[string]struct{}, len(fillerRules))
 	for _, fr := range fillerRules {
 		poolIDs[fr.FillerPoolID] = struct{}{}
+	}
+	for _, bt := range breakTemplates {
+		for _, st := range bt.Steps {
+			poolIDs[st.FillerPoolID] = struct{}{}
+		}
 	}
 	poolItems := make(map[string][]domain.FillerPoolItem, len(poolIDs))
 	for poolID := range poolIDs {
@@ -491,6 +501,7 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		ScheduleItems:   scheduleItems,
 		BlockItems:      blockItems,
 		FillerRules:     fillerRules,
+		BreakTemplates:  breakTemplates,
 		PoolItems:       poolItems,
 		CatalogDuration: catalogDuration,
 		DynamicBlockIDs: dynamicBlockIDs,
@@ -563,6 +574,21 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 			keptCutMs = nowMs
 		} else if len(kept) > 0 {
 			keptUntil = time.UnixMilli(contiguousEnd).UTC()
+		}
+		// A kept head that ends inside a break template's run of entries (the
+		// cut falls between two parts of one break) cannot say which steps are
+		// still owed, so the kept head grows to the end of the run: the
+		// entries after it that the previous generation already laid down
+		// stay as they were. Plain single-item breaks never need this.
+		if !keptUntil.IsZero() {
+			ext, err := m.extendKeptThroughBreak(ctx, in, ch.ID, continuousID, continuousBlockID, keptUntil)
+			if err != nil {
+				return err
+			}
+			if ext.After(keptUntil) {
+				keptUntil = ext
+				keptCutMs = ext.UnixMilli()
+			}
 		}
 		var rotations []int64
 		if err := m.db.Query(ctx, &rotations,
@@ -978,4 +1004,59 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 		}
 	}
 	return runs, warnings, nil
+}
+
+// extendKeptThroughBreak returns where the kept head should end when it stops
+// inside a break template's break: the end of the last break entry (preroll,
+// midroll or postroll) of the continuous item in the run that starts at the
+// head's end and is not interrupted by a program or a gap. It returns keptUntil
+// unchanged when the head's last entry is not a break entry governed by a
+// template, or when nothing follows it. The run is bounded: a break is at most
+// MaxBreakSteps steps of maxFillStepParts parts per boundary kind.
+func (m *Materializer) extendKeptThroughBreak(ctx context.Context, in channelInput, channelID, continuousID, blockID string, keptUntil time.Time) (time.Time, error) {
+	var kinds []string
+	if err := m.db.Query(ctx, &kinds,
+		"SELECT kind FROM epg_entry WHERE channel_id = ? AND end_at = ? AND source_schedule_item_id = ? ORDER BY start_at DESC LIMIT 1",
+		channelID, keptUntil.UnixMilli(), continuousID,
+	); err != nil {
+		return keptUntil, fmt.Errorf("read kept head end: %w", err)
+	}
+	if len(kinds) == 0 {
+		return keptUntil, nil
+	}
+	var fk domain.FillerKind
+	switch domain.EpgEntryKind(kinds[0]) {
+	case domain.EpgPreRoll:
+		fk = domain.FillerPreRoll
+	case domain.EpgMidRoll:
+		fk = domain.FillerMidRoll
+	case domain.EpgPostRoll:
+		fk = domain.FillerPostRoll
+	default:
+		return keptUntil, nil
+	}
+	if _, tmpl := resolveBreak(in.FillerRules, in.BreakTemplates, fk, blockID, in.ChannelID); tmpl == nil {
+		return keptUntil, nil
+	}
+	var rows []struct {
+		Kind    string
+		StartAt int64
+		EndAt   int64
+	}
+	limit := 3*domain.MaxBreakSteps*maxFillStepParts + 1
+	if err := m.db.Query(ctx, &rows,
+		"SELECT kind, start_at, end_at FROM epg_entry WHERE channel_id = ? AND source_schedule_item_id = ? AND start_at >= ? ORDER BY start_at LIMIT ?",
+		channelID, continuousID, keptUntil.UnixMilli(), limit,
+	); err != nil {
+		return keptUntil, fmt.Errorf("read break run after kept head: %w", err)
+	}
+	end := keptUntil.UnixMilli()
+	for _, r := range rows {
+		k := domain.EpgEntryKind(r.Kind)
+		if r.StartAt != end || (k != domain.EpgPreRoll && k != domain.EpgMidRoll && k != domain.EpgPostRoll) {
+			break
+		}
+		end = r.EndAt
+	}
+	return time.UnixMilli(end).UTC(), nil
 }

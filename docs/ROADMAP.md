@@ -415,6 +415,15 @@ actionable checklist.
       timed occurrence has no next item, so its tail fills up to the window's
       end (not changed).
 
+- [x] Break templates at program boundaries (migration `0018`): an ordered list
+      of `single` and `fill` (target length) steps replaces the single item of a
+      preroll/midroll/postroll rule, scoped to a channel or a block (REST
+      `/break-templates`, MCP `create_break_template`/`list_break_templates`, web
+      UI step editor). Existing rules are untouched. Design, precedence, limits
+      and resume in `docs/ARCHITECTURE.md` ("Break templates").
+      Not done: cut points inside an item (`item_offset_ms` on `epg_entry` and
+      client playback of a segment, then the cut-point time model and chapters).
+
 ## Phase 2 — MCP surface
 
 - [x] MCP server (`github.com/modelcontextprotocol/go-sdk` v1.8.0) in the same

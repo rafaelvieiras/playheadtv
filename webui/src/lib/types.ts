@@ -608,6 +608,59 @@ export interface FillerRuleInput {
   max_fit_attempts: number
 }
 
+// Boundary kinds a break template attaches to (backend domain.BreakTemplate.Kind).
+export type BreakKind = 'preroll' | 'midroll' | 'postroll'
+
+// Mirrors backend/internal/domain.BreakStepType.
+export type BreakStepType = 'single' | 'fill'
+
+// Mirrors backend/internal/domain.BreakTemplateStep.
+export interface BreakTemplateStep {
+  id: string
+  break_template_id: string
+  position: number
+  step_type: BreakStepType
+  filler_pool_id: string
+  selection_strategy: SelectionStrategy
+  // Fill steps: the length to fill, in milliseconds (0 for a single step).
+  target_ms: number
+  max_fit_attempts: number
+}
+
+// Mirrors backend/internal/domain.BreakTemplate.
+export interface BreakTemplate {
+  id: string
+  tenant_id: string
+  scope_type: FillerScope
+  scope_id: string
+  kind: BreakKind
+  name: string
+  position: number
+  created_at: number
+  steps: BreakTemplateStep[]
+}
+
+// One step as POST/PUT /break-templates take it. target_ms and
+// max_fit_attempts only apply to fill steps and are left out for a single one.
+export interface BreakStepInput {
+  step_type: BreakStepType
+  filler_pool_id: string
+  selection_strategy: SelectionStrategy
+  target_ms?: number
+  max_fit_attempts?: number
+}
+
+// BreakTemplateInput is the body shape for POST /break-templates and
+// PUT /break-templates/{id} (a PUT replaces the whole template).
+export interface BreakTemplateInput {
+  scope_type: FillerScope
+  scope_id: string
+  kind: BreakKind
+  name: string
+  position: number
+  steps: BreakStepInput[]
+}
+
 // Mirrors backend/internal/domain.StreamRuleStep. subtitle_language is null
 // for "no subtitle preference at this step" (audio-only match); an empty
 // string means "any subtitle language is fine" once a subtitle IS requested.

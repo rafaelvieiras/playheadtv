@@ -10,6 +10,8 @@ import { CollectionEditorPage } from '@/pages/CollectionEditorPage'
 import { CollectionsPage } from '@/pages/CollectionsPage'
 import { DevicesPage } from '@/pages/DevicesPage'
 import { EpgPage } from '@/pages/EpgPage'
+import { BreakTemplateEditorPage } from '@/pages/BreakTemplateEditorPage'
+import { BreakTemplatesPage } from '@/pages/BreakTemplatesPage'
 import { FillerPoolEditorPage } from '@/pages/FillerPoolEditorPage'
 import { FillerPoolsPage } from '@/pages/FillerPoolsPage'
 import { FillerRuleEditorPage } from '@/pages/FillerRuleEditorPage'
@@ -43,6 +45,8 @@ export default function App() {
         <Route path="/filler-pools/:id" element={<FillerPoolEditorPage />} />
         <Route path="/filler-rules" element={<FillerRulesPage />} />
         <Route path="/filler-rules/:id" element={<FillerRuleEditorPage />} />
+        <Route path="/break-templates" element={<BreakTemplatesPage />} />
+        <Route path="/break-templates/:id" element={<BreakTemplateEditorPage />} />
         <Route path="/stream-selector" element={<StreamSelectorPage />} />
         <Route path="/media-sources" element={<MediaSourcesPage />} />
         <Route path="/devices" element={<DevicesPage />} />

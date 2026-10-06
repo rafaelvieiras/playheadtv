@@ -250,6 +250,7 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 		"create_channel", "list_channels", "assign_channel_schedule", "register_media_source", "search_catalog", "get_catalog_item",
 		"add_block_item", "list_block_items",
 		"create_filler_pool", "add_filler_pool_item", "create_filler_rule", "list_filler_pools",
+		"create_break_template", "list_break_templates",
 		"create_schedule", "create_schedule_item", "preview_epg",
 	}
 	gotTools := map[string]bool{}
@@ -406,6 +407,23 @@ func TestMCPToolsEndToEnd(t *testing.T) {
 	})
 	if tailRule.MaxFitAttempts != 4 {
 		t.Fatalf("create_filler_rule with attempts: unexpected result %+v", tailRule)
+	}
+
+	bt := callTool[domain.BreakTemplate](t, ctx, session, "create_break_template", map[string]any{
+		"scope_type": "channel", "scope_id": ch.ID, "kind": "midroll", "name": "Break",
+		"steps": []map[string]any{
+			{"step_type": "single", "filler_pool_id": pool.ID, "selection_strategy": "random"},
+			{"step_type": "fill", "filler_pool_id": pool.ID, "selection_strategy": "sequential", "target_ms": 240000, "max_fit_attempts": 3},
+		},
+	})
+	if bt.ID == "" || len(bt.Steps) != 2 || bt.Steps[1].TargetMs != 240000 || bt.Steps[1].MaxFitAttempts != 3 || bt.Steps[0].MaxFitAttempts != 1 {
+		t.Fatalf("create_break_template: unexpected result %+v", bt)
+	}
+	btList := callTool[struct {
+		Templates []domain.BreakTemplate `json:"templates"`
+	}](t, ctx, session, "list_break_templates", nil)
+	if len(btList.Templates) != 1 || btList.Templates[0].ID != bt.ID {
+		t.Fatalf("list_break_templates: %+v", btList)
 	}
 
 	poolsOut := callTool[struct {
