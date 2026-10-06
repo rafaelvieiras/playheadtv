@@ -1,0 +1,56 @@
+# Production deployment of the Playhead TV backend (web UI embedded), meant to
+# be synced from a Git repository by a Compose-aware GitOps manager. Copy this
+# file into your own deployment repository and edit the marked values. See
+# deploy/README.md for the bootstrap, upgrade, rollback and backup procedures.
+#
+# This is NOT the root docker-compose.yml: that one builds from source and
+# seeds a development-only admin. Nothing here is seeded.
+
+services:
+  backend:
+    # Pin an immutable release tag, never `latest` (none is published). A new
+    # release is deployed by changing this tag in your repository.
+    # Replace vX.Y.Z with a published backend release.
+    image: ghcr.io/rafaelvieiras/playheadtv-backend:vX.Y.Z
+    restart: unless-stopped
+    ports:
+      # Loopback only: put a TLS reverse proxy in front for clients and the web
+      # UI. Use "9394:9394" instead only if nothing else terminates TLS.
+      - "127.0.0.1:9394:9394"
+    environment:
+      PLAYHEADTV_DB_PATH: /data/playheadtv.db
+      PLAYHEADTV_ADDR: ":9394"
+      # How far ahead the guide is materialized; clients cache this window and
+      # can play offline for about as long. Go duration, between 1h and 720h.
+      PLAYHEADTV_EPG_WINDOW: 72h
+      # Optional: 32 random bytes, base64 (`openssl rand -base64 32`), supplied by
+      # your manager's secret store (never commit it). Without it the backend
+      # generates a key on first start and keeps it in the data volume as
+      # encryption.key, which then has to be backed up with the database.
+      # PLAYHEADTV_ENCRYPTION_KEY: ${PLAYHEADTV_ENCRYPTION_KEY}
+      #
+      # Deliberately absent: PLAYHEADTV_SEED_ADMIN_EMAIL / _PASSWORD. They exist
+      # for local development only; create the admin as described in
+      # deploy/README.md.
+    volumes:
+      - playheadtv-data:/data
+    healthcheck:
+      # The image has no shell or curl: the server binary probes itself.
+      test: ["CMD", "/server", "healthcheck"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Migrations and backfills run before the server listens and can take a
+      # while on a large catalog; failures in this period do not count.
+      start_period: 120s
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+volumes:
+  playheadtv-data:
+    # A fixed name (not prefixed by the project name) so backup commands do not
+    # depend on how the manager names the project.
+    name: playheadtv-prod-data

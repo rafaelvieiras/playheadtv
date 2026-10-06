@@ -69,8 +69,20 @@ Do not drop the override before checking that it has.
 
 ## Configuration
 
-Configuration is compile-time only, through `--dart-define`. There is no runtime
-setting for these values yet.
+Each value comes from, in order: a `--dart-define` (a developer build), then the
+**config file**, then the default. A packaged install (see
+[Packaged install](#packaged-install-and-auto-update)) sets nothing at compile time
+and is configured entirely by `config.json`, so changing the backend URL or the
+device token never needs a rebuild.
+
+The config file is a flat JSON object. It is looked up at `PLAYHEADTV_CONFIG` (the
+launcher sets it to `<install root>/config.json`), else
+`$XDG_CONFIG_HOME/playheadtv/config.json`, else `~/.config/playheadtv/config.json`.
+Keys: `playhead_base_url`, `playhead_device_token`, `jellyfin_url`,
+`jellyfin_api_key`, `playhead_channel_id`, `working_set_size`,
+`epg_sync_interval_minutes`, `auto_update`, `update_channel` (see
+`packaging/linux/config.example.json`). An absent or invalid file is treated as
+empty.
 
 | Define | Required | Meaning |
 | --- | --- | --- |
@@ -99,6 +111,30 @@ fvm flutter run -d linux \
   --dart-define=PLAYHEADTV_BASE_URL=http://localhost:9394 \
   --dart-define=PLAYHEADTV_DEVICE_TOKEN=<device-token>
 ```
+
+## Packaged install and auto-update
+
+Releases of the client (`client-vX.Y.Z` on GitHub Releases) ship a Linux x86_64
+package, `playheadtv-client-X.Y.Z-linux-x64.tar.gz`, with a SHA-256 checksums file.
+To install: verify it (`sha256sum -c`), extract it, run `./install.sh`, then edit
+`config.json` in the install root (default `~/.local/share/playheadtv`). `install.sh`
+also writes a desktop entry; start the app from the menu or with
+`<install root>/playheadtv`, the launcher, which is also what a kiosk-style session
+should run. Everything lives under that one directory, so no privileges are needed.
+
+On every start the launcher runs a headless updater first: it installs a newer client
+release when there is one (checksum verified, swapped in atomically, the previous
+version kept), with no prompt, and rolls back a version that did not come up healthy.
+It never prevents the installed version from starting: offline, a failed download or
+a bad checksum just start what is installed. Set `"auto_update": false` in
+`config.json` (or `PLAYHEADTV_AUTO_UPDATE=0`) to disable it; `stable` is the only
+release channel. The app also checks the backend's API version against the range it
+supports and tells you when it is outside it. Design:
+[`docs/ARCHITECTURE.md`](../docs/ARCHITECTURE.md) "Releases and updates".
+
+To build the package yourself: `tool/package_linux.sh X.Y.Z` (see
+[`docs/RELEASING.md`](../docs/RELEASING.md)); `tool/test_launcher.sh` tests the
+launcher and installer scripts.
 
 ## Controls
 

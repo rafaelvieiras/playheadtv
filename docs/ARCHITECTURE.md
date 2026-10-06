@@ -1391,6 +1391,143 @@ only gained `window_ms` and the configurable window.
   playback could go on without the backend, and "Clear cache" behind a
   confirmation.
 
+## Releases and updates
+
+The backend and the client are released separately, each from its own tag,
+and talk through a small versioned contract. Operating steps are in
+[`RELEASING.md`](RELEASING.md) and `deploy/README.md`; this section records
+the design.
+
+### Versioning
+
+- **Backend release**: `vX.Y.Z` tags. The version is injected at link time into
+  `internal/buildinfo.Version` (`-ldflags -X`; the Dockerfile takes `VERSION`
+  and `COMMIT` build args) and is `dev` for any build without it.
+- **Client release**: `client-vX.Y.Z` tags, a separate sequence in the same
+  repository. The client knows its own version from
+  `--dart-define=PLAYHEADTV_CLIENT_VERSION` (set by the packaging script);
+  `pubspec.yaml`'s `version` is not used for releases.
+- **API version**: an integer, `buildinfo.APIVersion`, bumped only for a change
+  an older client cannot cope with (a removed or reshaped field or endpoint);
+  additive changes keep it. It is served by the public `GET /version`
+  (`{"version", "api_version", "commit"}`), next to `GET /healthz`.
+- **Compatibility range**: the client declares
+  `minSupportedApiVersion`..`maxSupportedApiVersion`
+  (`client/lib/update/compat.dart`) and reads `GET /version` at start. Outside
+  the range it shows a one-button dialog (Select dismisses it) saying which side
+  to update; it never stops or crashes. A backend that is unreachable or
+  predates `/version` is "unknown" and is never a reason to warn: the offline
+  cache keeps working. Raise the max when a client release was verified against
+  a newer backend API; raise the min when a client drops an old one.
+
+### Backend image
+
+A `vX.Y.Z` tag runs `.github/workflows/backend-release.yml`: build, vet and
+test as a gate, then one multi-arch image (`linux/amd64`, `linux/arm64`) pushed
+to `ghcr.io/<owner>/<repo>-backend` with the tags `vX.Y.Z` and `sha-<commit>`
+(no `latest`: a deployment pins a version), and a GitHub Release. The Dockerfile
+cross-compiles with the build platform's Go toolchain (`GOOS`/`GOARCH` from
+`TARGETOS`/`TARGETARCH`) instead of emulating the target, and the final stage is
+distroless, which is why the server has a `healthcheck` subcommand (probes the
+local `/healthz`) for container healthchecks.
+
+Deployment is a Compose project synced by a GitOps manager (`deploy/`): the
+image tag in the operator's repository is the single source of truth for what
+runs. Migrations run at start, before the server listens, and are forward-only,
+so a rollback after a migration is a restore of a backup taken before it.
+
+### Client package
+
+`client/tool/package_linux.sh` (the script CI runs on a `client-vX.Y.Z` tag,
+`.github/workflows/client-release.yml`) builds the Linux x86_64 bundle with
+Flutter, compiles the updater (`client/tool/updater.dart`) to a standalone
+executable and writes `playheadtv-client-X.Y.Z-linux-x64.tar.gz` plus
+`playheadtv-client-X.Y.Z-checksums.txt` (SHA-256, `sha256sum` format). The
+archive holds one directory: `bundle/` (the Flutter bundle, libmdk included,
+and `playheadtv-updater`), the launcher `playheadtv`, `install.sh`, a desktop
+entry template and `config.example.json`. Only linux/amd64 is built.
+
+Installed layout, under one user-writable root (default
+`~/.local/share/playheadtv`):
+
+```
+<root>/playheadtv          launcher (shared by all versions, not swapped)
+<root>/config.json         settings: backend URL, device token, auto_update, ...
+<root>/state.json          update state: pending marker, rolled-back versions
+<root>/current  -> versions/X.Y.Z
+<root>/previous -> versions/X.Y.Z
+<root>/versions/X.Y.Z/     one extracted package
+<root>/staging/            download and extraction scratch, wiped each run
+```
+
+Settings come from the config file (`PLAYHEADTV_CONFIG`, set by the launcher to
+`<root>/config.json`; otherwise `$XDG_CONFIG_HOME/playheadtv/config.json`).
+`AppConfig` resolves each value as: test override, then a non-empty
+`--dart-define`, then the config file, then the default
+(`client/lib/config/config_file.dart`), so a development build is unchanged.
+
+### Headless auto-update
+
+Where the logic lives, and why. The launcher script only does what must work
+when the new app cannot: run the updater with a timeout and ignore its status,
+fall back to `previous` if `current` is not runnable, then `exec` the app.
+Everything that decides anything (check, compare, download, verify, extract,
+swap, rollback) is Dart in `client/lib/update/`, compiled to a standalone
+executable shipped inside the bundle (`dart compile exe`, no display, no
+Flutter), so that
+
+- it is unit-tested end to end against a fake release server and real
+  `tar.gz` packages, instead of untestable shell;
+- rollback of a version that crashes at launch still works, because the
+  updater is a separate process from the app and runs before it;
+- the app itself only has one job, to confirm it started healthy
+  (`confirmPendingHealthy`, after 15 s of staying up, when started by the
+  launcher). Updating a running Flutter app from inside is deliberately not
+  done: it would need the app to restart itself and would leave nothing to
+  recover a crashing start.
+
+`playheadtv-updater prepare` on every start:
+
+1. **Resolve a pending update.** After a swap, `state.json` holds a pending
+   marker (new version, previous version, time). If it was confirmed, it is
+   cleared and older versions are pruned. If it is still unconfirmed past the
+   15 s window, the update is rolled back (`current` is pointed at the previous
+   version) and that version is recorded as failed and not offered again (a
+   newer release is). Inside the window nothing is done. A marker for a version
+   that is not the installed one is stale and dropped. This runs even when
+   auto-update is disabled.
+2. **Check** the releases of the repository over HTTPS: the newest
+   non-draft, non-prerelease `client-vX.Y.Z` release that has both assets of
+   its own version (the repository also holds backend releases, so
+   `/releases/latest` is not used). Stable is the only channel; any other value
+   of `update_channel` logs and uses stable. `auto_update: false` in the config
+   file, or `PLAYHEADTV_AUTO_UPDATE=0`, skips the check.
+3. If the release is newer than `current`, **download** the package and fetch
+   the checksums file (assets must be HTTPS), **verify** the package's SHA-256
+   against its line in the checksums file, **extract** into `staging/` and
+   check the bundle is complete.
+4. **Swap**: move the directory to `versions/X.Y.Z`, write the pending marker,
+   repoint `previous`, then repoint `current`, each by creating a temporary
+   symlink and `rename(2)`-ing it over the old one (atomic: `current` always
+   names a complete version). The launcher then starts the new version.
+
+Failure rules: every failure (offline, a bad answer, a failed download, a
+checksum mismatch or a missing checksum line, a bad package, a timeout of the
+whole step, an error while swapping) leaves the installed version untouched,
+cleans `staging/`, and the launcher starts the installed version. The whole step
+is bounded (120 s in the updater, 150 s by the launcher's `timeout`), so a slow
+link delays a start by at most that and never blocks it.
+
+Known limits: checksums protect against corrupt and truncated downloads and
+against a mismatch between the package and the release, not against a
+compromised release (no signatures yet; the checksums file comes from the same
+release). The release listing is read unauthenticated, so the repository must be
+public and the GitHub API rate limit (per IP) applies. The launcher and
+`install.sh` are not updated by the updater (reinstall to change them). A user
+who quits within the first 15 s after an update is treated as a crash and rolled
+back once. A download that cannot finish within the budget is retried from the
+start at the next launch.
+
 ## Status
 
 The schema, domain types, SQLite storage layer, REST API, EPG materializer,

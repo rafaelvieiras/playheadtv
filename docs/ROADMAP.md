@@ -1116,6 +1116,37 @@ actionable checklist.
 - [ ] iOS/tvOS — deferred, no official Flutter tvOS support (community fork
       only, no WebView). Revisit later.
 
+## Releases and deployment
+
+Design: `ARCHITECTURE.md` "Releases and updates"; procedures: `RELEASING.md` and
+`deploy/README.md`.
+
+- [x] Backend version and API version: `GET /version` (public), build version
+      injected with ldflags (Dockerfile `VERSION`/`COMMIT` build args), `server
+      healthcheck` subcommand for the distroless image.
+- [x] CI (`.github/workflows/ci.yml`): backend build/vet/test, web UI build and
+      tests, client analyze and unit tests.
+- [x] Backend release workflow: `vX.Y.Z` tag, multi-arch image to GHCR with
+      immutable tags, GitHub Release.
+- [x] Production deployment example (`deploy/`): Compose project, no seeded
+      admin, healthcheck, upgrade, backup and rollback procedure.
+- [x] Client package (`client/tool/package_linux.sh`, Linux x86_64): bundle,
+      launcher, installer, desktop entry, checksums; release workflow on
+      `client-vX.Y.Z`.
+- [x] Client config file (backend URL, device token, ...) read at start.
+- [x] Headless client auto-update with checksum verification, atomic swap,
+      rollback of a version that does not come up healthy, a disable switch and
+      a `stable` channel.
+- [x] Backend compatibility range: the client checks `api_version` and says so
+      when it is outside the range.
+- [ ] Validate the pipelines and the packaged client on real infrastructure
+      (checklist in `RELEASING.md`).
+- [ ] Sign releases (checksums only for now).
+- [ ] Client builds for other platforms (Windows, Android); only Linux x86_64
+      is packaged.
+- [ ] An in-app setting (and a visible "updated to X" notice) for auto-update;
+      today it is the `auto_update` key of the config file.
+
 ## Backlog / cleanup
 
 - [ ] Remove the `fvp` `dependency_overrides` git pin

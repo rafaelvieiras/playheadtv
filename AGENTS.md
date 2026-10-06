@@ -310,6 +310,25 @@ keep in mind when touching `client/`:
   `offline_coldstart_test.dart` (2), `offline_reconcile_test.dart` (2),
   `offline_exhausted_test.dart` (2), `settings_offline_test.dart` (1).
 
+## Releases and updates
+
+Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md`.
+
+- `buildinfo.APIVersion` (backend) and `minSupportedApiVersion`/
+  `maxSupportedApiVersion` (`client/lib/update/compat.dart`) are the
+  compatibility contract; bump the API version only for a change an older client
+  cannot cope with. Never compare release versions for compatibility.
+- The updater (`client/lib/update/`, `client/tool/updater.dart`) is pure Dart
+  (no Flutter imports: it is compiled with `dart compile exe`) and reads the
+  release assets by name (`clientPackageName`/`clientChecksumsName`); the
+  packaging script and the release workflow must keep producing exactly those
+  names. It must never throw to its caller or block the app from starting.
+- The launcher (`client/packaging/linux/playheadtv`) stays minimal and
+  logic-free; decisions belong in the Dart updater. `client/tool/test_launcher.sh`
+  tests it and `install.sh`.
+- Pin third-party GitHub Actions by commit SHA (with the version in a comment).
+  The backend image has no `latest` tag.
+
 ## Operational practices
 
 - **Always commit when you finish a slice of work** (a feature, a fix, a

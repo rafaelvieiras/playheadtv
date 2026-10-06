@@ -68,6 +68,15 @@ curl http://localhost:9394/healthz
 Persists its SQLite file in a named volume (`playheadtv-data`), so data
 survives restarts.
 
+### Production deployment and releases
+
+A production deployment (a Compose project pinned to a published image tag,
+synced by a GitOps manager) is described in [`deploy/`](deploy/README.md). Releases
+are cut from tags: `vX.Y.Z` publishes the backend image to GitHub Container
+Registry, `client-vX.Y.Z` publishes the packaged Linux client, which updates itself
+from those releases. See [`docs/RELEASING.md`](docs/RELEASING.md). The running
+backend reports its version at `GET /version`.
+
 ### Encryption key
 
 Media source credentials (e.g. a Jellyfin API key) are stored encrypted at
