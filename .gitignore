@@ -20,6 +20,7 @@ client/.flutter-plugins-dependencies
 client/.pub-cache/
 client/.pub/
 client/build/
+client/dist/
 client/**/generated_plugin_registrant.dart
 *.g.dart
 *.freezed.dart

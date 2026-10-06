@@ -1,0 +1,8 @@
+{
+  "playhead_base_url": "https://playheadtv.example.com",
+  "playhead_device_token": "",
+  "jellyfin_url": "https://jellyfin.example.com",
+  "jellyfin_api_key": "",
+  "auto_update": true,
+  "update_channel": "stable"
+}

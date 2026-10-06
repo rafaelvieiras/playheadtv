@@ -1,0 +1,49 @@
+#!/bin/sh
+# Playhead TV launcher: the one entry point (desktop entry, kiosk session,
+# autostart). It lives at the install root and is never swapped by an update.
+#
+# Before every start it runs the headless updater (rolls back an update that
+# never came up healthy, installs a newer release if there is one), then starts
+# whatever `current` points at. The updater can never keep the app from
+# starting: it is bounded by a timeout and its status is ignored. If the
+# updater is missing or broken, the installed version just starts.
+#
+# Environment:
+#   PLAYHEADTV_UPDATE_TIMEOUT  seconds the update step may take (default 150)
+#   PLAYHEADTV_AUTO_UPDATE=0   skip the update check (config.json auto_update
+#                              does the same); rollback still happens
+#   PLAYHEADTV_CONFIG          config file (default <root>/config.json)
+
+SELF=$(readlink -f "$0" 2>/dev/null || echo "$0")
+ROOT=$(cd "$(dirname "$SELF")" && pwd -P)
+
+PLAYHEADTV_ROOT="$ROOT"
+PLAYHEADTV_CONFIG="${PLAYHEADTV_CONFIG:-$ROOT/config.json}"
+export PLAYHEADTV_ROOT PLAYHEADTV_CONFIG
+
+LOG="$ROOT/update.log"
+# Keep the log small: drop it once it grows past ~100 KB.
+if [ -f "$LOG" ] && [ "$(wc -c <"$LOG" 2>/dev/null || echo 0)" -gt 100000 ]; then
+    : >"$LOG"
+fi
+
+UPDATER="$ROOT/current/bundle/playheadtv-updater"
+if [ -x "$UPDATER" ]; then
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 "${PLAYHEADTV_UPDATE_TIMEOUT:-150}" "$UPDATER" prepare --root "$ROOT" >>"$LOG" 2>&1
+    else
+        "$UPDATER" prepare --root "$ROOT" >>"$LOG" 2>&1
+    fi
+    # Deliberately ignored: any outcome still starts the app below.
+fi
+
+APP="$ROOT/current/bundle/client"
+if [ ! -x "$APP" ] && [ -x "$ROOT/previous/bundle/client" ]; then
+    echo "playheadtv: current version is not runnable, starting the previous one" >&2
+    APP="$ROOT/previous/bundle/client"
+fi
+if [ ! -x "$APP" ]; then
+    echo "playheadtv: no installed version found under $ROOT" >&2
+    exit 1
+fi
+exec "$APP" "$@"

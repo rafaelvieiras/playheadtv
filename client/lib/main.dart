@@ -30,6 +30,9 @@ import 'package:fvp/fvp.dart' as fvp;
 import 'cache/offline_runtime.dart';
 import 'cache/schedule_cache.dart';
 import 'cache/schedule_sync.dart';
+import 'config/config_file.dart';
+import 'update/app_update.dart';
+import 'update/compat.dart';
 import 'playhead_api.dart';
 import 'services/screen_awake.dart';
 import 'services/settings_service.dart';
@@ -66,33 +69,72 @@ class AppConfig {
   static int? _workingSetSize;
   static Duration? _cacheSyncInterval;
   static String? _cacheDir;
+  // The config file's settings (lib/config/config_file.dart), read once at
+  // boot by loadConfigFile. A packaged install configures itself here; each
+  // getter below falls back to it when neither a test override nor a
+  // --dart-define is set.
+  static Map<String, Object?> _file = const {};
 
-  static String get jellyfinUrl => _jellyfinUrl ?? const String.fromEnvironment('JELLYFIN_URL');
-  static String get jellyfinApiKey => _jellyfinApiKey ?? const String.fromEnvironment('JELLYFIN_API_KEY');
+  /// Reads the config file (PLAYHEADTV_CONFIG, else the XDG config
+  /// directory); called once by main() before runApp. An absent or invalid
+  /// file is an empty config.
+  static void loadConfigFile([Map<String, String>? env]) {
+    _file = readConfigFile(configFileLocation(env ?? Platform.environment));
+  }
+
+  static String get jellyfinUrl => resolveStringSetting(
+      override: _jellyfinUrl, define: const String.fromEnvironment('JELLYFIN_URL'), file: _file, key: 'jellyfin_url');
+  static String get jellyfinApiKey => resolveStringSetting(
+      override: _jellyfinApiKey,
+      define: const String.fromEnvironment('JELLYFIN_API_KEY'),
+      file: _file,
+      key: 'jellyfin_api_key');
   // Playhead TV backend (Go) that materializes the schedule — see docs/ARCHITECTURE.md.
-  static String get playheadBaseUrl => _playheadBaseUrl ?? const String.fromEnvironment('PLAYHEADTV_BASE_URL');
+  static String get playheadBaseUrl => resolveStringSetting(
+      override: _playheadBaseUrl,
+      define: const String.fromEnvironment('PLAYHEADTV_BASE_URL'),
+      file: _file,
+      key: 'playhead_base_url');
   // Optional: device token for the Auth flow. Empty = no Authorization header
   // is sent, which matches a backend running without auth.
-  static String get playheadDeviceToken =>
-      _playheadDeviceToken ?? const String.fromEnvironment('PLAYHEADTV_DEVICE_TOKEN');
+  static String get playheadDeviceToken => resolveStringSetting(
+      override: _playheadDeviceToken,
+      define: const String.fromEnvironment('PLAYHEADTV_DEVICE_TOKEN'),
+      file: _file,
+      key: 'playhead_device_token');
   // Optional: if empty, automatically resolves the channel with the lowest
   // `number` via GET /channels instead of requiring the operator to know an ID
   // up front.
-  static String get playheadChannelIdDefine =>
-      _playheadChannelId ?? const String.fromEnvironment('PLAYHEADTV_CHANNEL_ID');
+  static String get playheadChannelIdDefine => resolveStringSetting(
+      override: _playheadChannelId,
+      define: const String.fromEnvironment('PLAYHEADTV_CHANNEL_ID'),
+      file: _file,
+      key: 'playhead_channel_id');
 
   // How many programs ahead of the one on air the player keeps resolved and
   // ready (the "working set"). Short items (music videos) want a larger
   // number than long ones, hence a setting: `--dart-define=WORKING_SET_SIZE=`.
-  static int get workingSetSize =>
-      _workingSetSize ?? const int.fromEnvironment('WORKING_SET_SIZE', defaultValue: defaultWorkingSetSize);
+  static int get workingSetSize => resolveIntSetting(
+      override: _workingSetSize,
+      defined: const bool.hasEnvironment('WORKING_SET_SIZE'),
+      define: const int.fromEnvironment('WORKING_SET_SIZE'),
+      file: _file,
+      key: 'working_set_size',
+      fallback: defaultWorkingSetSize);
   // How often the background syncer refreshes the offline cache from the
   // backend (`--dart-define=EPG_SYNC_INTERVAL_MINUTES=`). Offline tolerance is
   // the window minus the time since the last refresh, so keep it well below
   // it.
   static Duration get cacheSyncInterval =>
       _cacheSyncInterval ??
-      const Duration(minutes: int.fromEnvironment('EPG_SYNC_INTERVAL_MINUTES', defaultValue: defaultCacheSyncMinutes));
+      Duration(
+          minutes: resolveIntSetting(
+              override: null,
+              defined: const bool.hasEnvironment('EPG_SYNC_INTERVAL_MINUTES'),
+              define: const int.fromEnvironment('EPG_SYNC_INTERVAL_MINUTES'),
+              file: _file,
+              key: 'epg_sync_interval_minutes',
+              fallback: defaultCacheSyncMinutes));
   // Where the offline cache lives, only overridden by integration tests; null
   // (the app) means the platform's application support/cache directories.
   static String? get cacheDirOverride => _cacheDir;
@@ -308,6 +350,7 @@ String jellyfinImageUrl(String itemId, String tag, {int maxWidth = 400}) =>
     '${AppConfig.jellyfinUrl}/Items/$itemId/Images/Primary?tag=$tag&maxWidth=$maxWidth&api_key=${AppConfig.jellyfinApiKey}';
 
 void main() {
+  AppConfig.loadConfigFile();
   // video.decoders: fvp's default decoder order on Linux tries VAAPI before
   // CUDA/VDPAU. On some setups (e.g. NVIDIA without VAAPI configured) that
   // stalls decoding of HEVC videos (audio plays, "initialized" never fires):
@@ -319,6 +362,47 @@ void main() {
     'video.decoders': ['CUDA', 'VAAPI', 'VDPAU', 'FFmpeg'],
   });
   runApp(const PlayheadSpikeApp());
+  // When the launcher started this process right after an update, confirm
+  // the new version once it has stayed up for the healthy window (no-op
+  // otherwise); an unconfirmed update is rolled back by the next start.
+  scheduleHealthConfirmation();
+  unawaited(_warnIfBackendIncompatible());
+}
+
+// The app's navigator, so a message that is not tied to a screen (the backend
+// compatibility notice) can be shown over whatever is on top.
+final GlobalKey<NavigatorState> _appNavigatorKey = GlobalKey<NavigatorState>();
+
+// Reads the backend's API version (GET /version) and, only when it is outside
+// the range this app supports, shows a clear message. A backend that does not
+// answer, or predates /version, is silent: the offline cache keeps playing.
+// The dialog is a single button, focused, so Select (the 6-button baseline)
+// dismisses it.
+Future<void> _warnIfBackendIncompatible() async {
+  final compat = await checkBackendCompat(AppConfig.playheadBaseUrl);
+  final message = compat.message;
+  if (message == null) return;
+  // Wait for the first frame so the navigator exists.
+  for (var i = 0; i < 50 && _appNavigatorKey.currentContext == null; i++) {
+    await Future<void>.delayed(const Duration(milliseconds: 100));
+  }
+  final context = _appNavigatorKey.currentContext;
+  if (context == null || !context.mounted) return;
+  await showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      key: const Key('backend-compat-dialog'),
+      title: const Text('Backend version not supported'),
+      content: Text(message),
+      actions: [
+        TextButton(
+          autofocus: true,
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('OK'),
+        ),
+      ],
+    ),
+  );
 }
 
 // What a channel is doing when the cached schedule has run out while the
@@ -337,6 +421,7 @@ class PlayheadSpikeApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       title: 'Playhead TV',
+      navigatorKey: _appNavigatorKey,
       theme: ThemeData.dark(),
       home: const _InitialRouteResolver(),
     );
