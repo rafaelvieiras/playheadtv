@@ -15,6 +15,10 @@ import 'semver.dart';
 /// same repository, and the two must never be mixed up.
 const clientTagPrefix = 'client-v';
 
+/// The repository ("owner/name") releases are published to; a config file key
+/// `update_repo` or PLAYHEADTV_UPDATE_REPO overrides it (forks, scratch tests).
+const defaultUpdateRepo = String.fromEnvironment('PLAYHEADTV_UPDATE_REPO', defaultValue: 'rafaelvieiras/playheadtv');
+
 /// Platform part of the package file name; the only build published today.
 const clientPlatform = 'linux-x64';
 

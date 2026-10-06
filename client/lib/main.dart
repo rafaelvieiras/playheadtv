@@ -33,6 +33,7 @@ import 'cache/schedule_sync.dart';
 import 'config/config_file.dart';
 import 'update/app_update.dart';
 import 'update/compat.dart';
+import 'widgets/update_overlay.dart';
 import 'playhead_api.dart';
 import 'services/screen_awake.dart';
 import 'services/settings_service.dart';
@@ -422,6 +423,9 @@ class PlayheadSpikeApp extends StatelessWidget {
     return MaterialApp(
       title: 'Playhead TV',
       navigatorKey: _appNavigatorKey,
+      // The update banner / changelog sit above the Navigator: they never
+      // rebuild a page (the Navigator is passed through as a child).
+      builder: (context, child) => UpdateOverlayHost(child: child ?? const SizedBox.shrink()),
       theme: ThemeData.dark(),
       home: const _InitialRouteResolver(),
     );

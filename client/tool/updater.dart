@@ -31,9 +31,6 @@ import 'package:client/update/release_source.dart';
 import 'package:client/update/semver.dart';
 import 'package:client/update/updater.dart';
 
-/// The repository releases are published to.
-const defaultUpdateRepo = String.fromEnvironment('PLAYHEADTV_UPDATE_REPO', defaultValue: 'rafaelvieiras/playheadtv');
-
 String? _option(List<String> args, String name) {
   final i = args.indexOf(name);
   return i >= 0 && i + 1 < args.length ? args[i + 1] : null;

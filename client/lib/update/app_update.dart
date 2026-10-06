@@ -6,6 +6,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'install_layout.dart';
+import 'install_target.dart';
 import 'semver.dart';
 import 'updater.dart';
 
@@ -14,21 +15,35 @@ import 'updater.dart';
 /// "0.0.0-dev" and is never confirmed or updated.
 const appVersion = String.fromEnvironment('PLAYHEADTV_CLIENT_VERSION', defaultValue: '0.0.0-dev');
 
-/// When the launcher started this process ([env] `PLAYHEADTV_ROOT` is the
-/// install root), confirms the pending update of [appVersion] after
+/// Where the update state of the running install lives: `<root>/state.json`
+/// when the launcher started this process (`PLAYHEADTV_ROOT`), the AppImage's
+/// state directory when it runs from an AppImage (`APPIMAGE`), else null (a
+/// source build or a package manager's copy has no update state).
+File? updateStateFile(Map<String, String> env) {
+  final root = env['PLAYHEADTV_ROOT'];
+  if (root != null && root.isNotEmpty) return InstallLayout(Directory(root)).stateFile;
+  final appImage = env['APPIMAGE'];
+  if (appImage != null && appImage.isNotEmpty) {
+    final dir = appImageStateDir(env);
+    if (dir != null) return File('${dir.path}/state.json');
+  }
+  return null;
+}
+
+/// When the launcher (or the AppImage) started this process, confirms the pending update of [appVersion] after
 /// [window] of the process staying up. Returns the timer (tests cancel it) or
-/// null when not started by the launcher. Never throws.
+/// null when not started by the launcher or an AppImage. Never throws.
 Timer? scheduleHealthConfirmation({
   Map<String, String>? env,
   Duration window = defaultHealthyWindow,
   String version = appVersion,
 }) {
-  final root = (env ?? Platform.environment)['PLAYHEADTV_ROOT'];
+  final stateFile = updateStateFile(env ?? Platform.environment);
   final running = SemVer.tryParse(version);
-  if (root == null || root.isEmpty || running == null) return null;
+  if (stateFile == null || running == null) return null;
   return Timer(window, () {
     try {
-      confirmPendingHealthy(InstallLayout(Directory(root)), running);
+      confirmPendingHealthyAt(stateFile, running);
     } on Object {
       // A failed confirmation only means a later start may roll back; it must
       // never disturb playback.

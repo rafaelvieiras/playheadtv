@@ -1,5 +1,8 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../update/semver.dart';
+import '../update/update_notices.dart';
+
 /// The degraded behavior of a channel whose cached schedule ran out.
 enum ExhaustedBehavior {
   /// Replay the last known programming, over and over (the default).
@@ -19,7 +22,9 @@ enum ExhaustedBehavior {
 /// services/stream_selection_resolver.dart's TierOneOverride). Tier 1 is
 /// explicitly client-local only (issue #3's design) — never sent to or
 /// stored by the backend, unlike tiers 2-4 (StreamPreferencesService).
-class SettingsService {
+class SettingsService implements UpdateNoticeStore {
+  static const _dismissedUpdateKey = 'dismissed_update_version';
+  static const _changelogShownKey = 'update_changelog_shown_for';
   static const _lastWatchedKey = 'last_watched_channel_id';
   static const _recentChannelsKey = 'recent_channel_ids';
   static const _maxRecentChannels = 6;
@@ -36,6 +41,21 @@ class SettingsService {
   final SharedPreferences _prefs;
 
   SettingsService(this._prefs);
+
+  /// The newest release whose "new version" banner the user dismissed: the
+  /// banner is not shown again until a newer release appears.
+  @override
+  SemVer? get dismissedVersion => SemVer.tryParse(_prefs.getString(_dismissedUpdateKey) ?? '');
+
+  @override
+  Future<void> setDismissedVersion(SemVer version) => _prefs.setString(_dismissedUpdateKey, version.toString());
+
+  /// The version whose "updated to X" changelog was already shown.
+  @override
+  String? get changelogShownFor => _prefs.getString(_changelogShownKey);
+
+  @override
+  Future<void> setChangelogShownFor(String version) => _prefs.setString(_changelogShownKey, version);
 
   /// What a channel does once the cached schedule has run out (offline for
   /// longer than the window): the client's own choice, never a backend one.
