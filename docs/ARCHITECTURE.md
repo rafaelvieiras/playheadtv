@@ -1420,6 +1420,34 @@ setup needs no one to maximize it and a remote has no way to.
   `start_fullscreen` in the config file, else on. A saved choice always wins over
   that default. The toggle is not widget state of the player page.
 
+### Exit flow
+
+There is no window chrome to rely on (a TV, a remote, a launcher that starts the
+client and takes the screen back when it ends), so leaving is part of the app.
+
+- **Flow.** `Back` (`InputAction.back`, Esc by default) on the mosaic opens a
+  confirmation, "Exit Playhead TV?", with **Cancel** focused. `Back` again or
+  Cancel closes it; Select on **Exit** leaves. The dialog is its own focus scope
+  and needs only Up/Down/Left/Right/Select/Back. The player's `Back` chain is
+  unchanged (close the EPG, hide an armed OSD, then the mosaic): exiting is always
+  one more `Back` from the mosaic, never from the player. The mosaic's
+  no-channels error screen handles `Back` the same way, so it is never a dead end.
+- **Seam.** `AppExit` (`client/lib/services/app_exit.dart`) is the platform side:
+  `exit(0)` on the desktop targets, `SystemNavigator.pop()` on Android (on Android
+  TV the platform's own `Back` handling must be respected; whether the dialog
+  stays there is open until that build exists). `AppExitController` is the policy:
+  it runs the teardown steps in order, each bounded by a timeout and never allowed
+  to stop the exit, then calls `terminate()`, once. Pages never call `exit()`;
+  tests replace the interface (`appExitOverride`) so a suite never kills its own
+  process.
+- **Teardown order.** The mosaic's preview controller (taken out of the tree, then
+  disposed through `serializeGlOp`), the display wake lock (`releaseScreenAwake`),
+  then the syncer and the cache (`OfflineRuntime.reset`), then terminate. The
+  player page is not alive at that point: its own dispose already released its
+  controllers and the lock.
+- **Not done.** No dedicated "quit" `InputAction` (an optional accelerator) and no
+  "don't ask again" option.
+
 ## Releases and updates
 
 The backend and the client are released separately, each from its own tag,

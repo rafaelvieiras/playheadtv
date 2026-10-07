@@ -177,8 +177,11 @@ or LLM, and to every artifact in the repo:
   `back` hides the OSD. Controls with no behavior yet are dimmed and skipped
   by focus. Focus mode ends whenever the OSD hides. `back` (`Esc` by
   default) closes the EPG if open, hides an armed OSD, and otherwise goes to
-  the mosaic. `InputAction.trackSelector` has no default binding anymore
-  (optional accelerator; opens the two-panel picker).
+  the mosaic. On the mosaic `back` opens the "Exit Playhead TV?"
+  dialog (Cancel focused; `AppExitController` tears down, then `AppExit`
+  terminates, never a direct `exit()`): the player never exits directly.
+  `InputAction.trackSelector` has no default binding anymore (optional
+  accelerator; opens the two-panel picker).
 - The client reads `GET /epg?group_tail=1` (enriched entries, a tail as one
   item carrying its clips, see `docs/ARCHITECTURE.md`) and never looks up
   catalog items per entry: titles, source ids and art tags come with the entry

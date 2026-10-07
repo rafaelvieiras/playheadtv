@@ -1119,6 +1119,16 @@ actionable checklist.
       Not done / known: no Windows runner yet, so Windows has no implementation
       of the channel; Android is untested (the setting is a no-op there).
 
+- [x] Client exit flow: Back on the mosaic asks "Exit Playhead TV?" (Cancel
+      focused); Exit tears down (preview controller, wake lock, syncer) and ends
+      the process with exit code 0; the player's Back chain is unchanged. Behind
+      an `AppExit` seam and an `AppExitController` that fixes the teardown order.
+      Design: `docs/ARCHITECTURE.md` "Exit flow". Tests:
+      `client/test/app_exit_test.dart`, `client/integration_test/exit_flow_test.dart`.
+      Not done / known: no optional quit shortcut and no "don't ask again";
+      the Android path (`SystemNavigator.pop`, and whether Android TV keeps the
+      dialog) is untested.
+
 ## Phase 6 — Platforms
 
 - [ ] Android / Android TV client build.
