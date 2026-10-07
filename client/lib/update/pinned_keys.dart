@@ -29,7 +29,7 @@
 import 'signature.dart';
 
 const List<String> pinnedUpdatePublicKeys = <String>[
-  // 'BASE64_OF_RAW_32_BYTE_ED25519_PUBLIC_KEY',
+  'mZaK/G+htQt+7CcdUktIBKrMTVbYsOQnP1F/sEsR310=',
 ];
 
 const _definedKeys = String.fromEnvironment('PLAYHEADTV_UPDATE_PUBLIC_KEYS');
