@@ -1,6 +1,7 @@
 #include "my_application.h"
 
 #include <flutter_linux/flutter_linux.h>
+#include <string.h>
 #ifdef GDK_WINDOWING_X11
 #include <gdk/gdkx.h>
 #endif
@@ -17,6 +18,36 @@ G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
   gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
+}
+
+// `playheadtv/window` method channel: the Dart side asks for full screen on or
+// off (services/app_window.dart). The only native window code the client needs.
+// Called before the first frame, the window is not mapped yet, so GTK records
+// the state and the window first appears already full screen.
+static void window_method_call_cb(FlMethodChannel* channel,
+                                  FlMethodCall* method_call,
+                                  gpointer user_data) {
+  FlView* view = FL_VIEW(user_data);
+  g_autoptr(FlMethodResponse) response = nullptr;
+  if (strcmp(fl_method_call_get_name(method_call), "setFullScreen") == 0) {
+    FlValue* args = fl_method_call_get_args(method_call);
+    GtkWindow* window = GTK_WINDOW(gtk_widget_get_toplevel(GTK_WIDGET(view)));
+    if (args != nullptr && fl_value_get_type(args) == FL_VALUE_TYPE_BOOL &&
+        GTK_IS_WINDOW(window)) {
+      if (fl_value_get_bool(args)) {
+        gtk_window_fullscreen(window);
+      } else {
+        gtk_window_unfullscreen(window);
+      }
+      response = FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr));
+    } else {
+      response = FL_METHOD_RESPONSE(fl_method_error_response_new(
+          "bad-args", "setFullScreen expects a boolean", nullptr));
+    }
+  } else {
+    response = FL_METHOD_RESPONSE(fl_method_not_implemented_response_new());
+  }
+  fl_method_call_respond(method_call, response, nullptr);
 }
 
 // Implements GApplication::activate.
@@ -85,6 +116,15 @@ static void my_application_activate(GApplication* application) {
   fl_view_set_background_color(view, &background_color);
   gtk_widget_show(GTK_WIDGET(view));
   gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(view));
+
+  // Registered before the view is realized (which starts the engine), so the
+  // channel exists by the time Dart's main() runs.
+  g_autoptr(FlStandardMethodCodec) codec = fl_standard_method_codec_new();
+  FlMethodChannel* window_channel = fl_method_channel_new(
+      fl_engine_get_binary_messenger(fl_view_get_engine(view)),
+      "playheadtv/window", FL_METHOD_CODEC(codec));
+  fl_method_channel_set_method_call_handler(window_channel,
+                                            window_method_call_cb, view, nullptr);
 
   // Show the window when Flutter renders.
   // Requires the view to be realized so we can start rendering.

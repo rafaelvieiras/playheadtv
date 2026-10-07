@@ -1391,6 +1391,35 @@ only gained `window_ms` and the configurable window.
   playback could go on without the backend, and "Clear cache" behind a
   confirmation.
 
+## Client window (full screen)
+
+The client opens in full screen by default on desktop, so a TV or console-style
+setup needs no one to maximize it and a remote has no way to.
+
+- **Seam.** `AppWindow` (`client/lib/services/app_window.dart`) is the platform
+  side, `FullScreenController` the policy over it: edge-triggered (a repeated
+  request for the state already applied does nothing) and never throwing, so a
+  window the platform will not resize cannot stop the app. Pages never touch the
+  window; tests replace the interface (`appWindowOverride`) with a fake.
+- **Implementation.** One method channel, `playheadtv/window`, with one method,
+  `setFullScreen(bool)`. The Linux runner (`linux/runner/my_application.cc`) serves
+  it with `gtk_window_fullscreen`/`gtk_window_unfullscreen`; the channel is
+  registered before the view starts the engine, so it exists when Dart's `main()`
+  runs. No Flutter plugin and no extra Dart package were added: a window-management
+  package would bring a plugin per platform (and its own window handling) for what
+  is a single boolean. A Windows runner has to serve the same channel
+ ; there is no `windows/`
+  runner yet. Android and Android TV are always full screen: `supportsFullScreen`
+  is false, the controller does nothing and Settings hides the row.
+- **Startup.** `main()` applies the setting before `runApp`. The runner shows its
+  window on the first Flutter frame, and a GTK window asked for full screen before
+  it is mapped appears already full screen, so there is no visible resize.
+- **Setting.** `SettingsService.startFullScreen`, saved by the Settings row
+  "Start in full screen" (Select flips it, six buttons) and applied at once. With
+  nothing saved, the installation's default decides: `PLAYHEADTV_FULLSCREEN`, else
+  `start_fullscreen` in the config file, else on. A saved choice always wins over
+  that default. The toggle is not widget state of the player page.
+
 ## Releases and updates
 
 The backend and the client are released separately, each from its own tag,

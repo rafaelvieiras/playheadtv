@@ -34,6 +34,7 @@ class SettingsService implements UpdateNoticeStore {
 
   static const _exhaustedBehaviorKey = 'cache_exhausted_behavior';
   static const _cacheWindowLimitKey = 'cache_window_limit_hours';
+  static const _startFullScreenKey = 'start_fullscreen';
 
   /// Choices offered for the cache window limit (hours).
   static const cacheWindowLimitChoicesHours = [6, 12, 24, 48, 72, 168];
@@ -71,6 +72,13 @@ class SettingsService implements UpdateNoticeStore {
   Duration get cacheWindowLimit => Duration(hours: _prefs.getInt(_cacheWindowLimitKey) ?? 48);
 
   Future<void> setCacheWindowLimit(Duration limit) => _prefs.setInt(_cacheWindowLimitKey, limit.inHours);
+
+  /// Whether the client opens in full screen (desktop only). The user's saved
+  /// choice wins; with none saved, [defaultValue] (the installation's
+  /// `PLAYHEADTV_FULLSCREEN` / `start_fullscreen`, itself true when unset).
+  bool startFullScreen(bool defaultValue) => _prefs.getBool(_startFullScreenKey) ?? defaultValue;
+
+  Future<void> setStartFullScreen(bool value) => _prefs.setBool(_startFullScreenKey, value);
 
   static Future<SettingsService> create() async => SettingsService(await SharedPreferences.getInstance());
 
