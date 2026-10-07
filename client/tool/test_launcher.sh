@@ -179,5 +179,17 @@ check "release notes: no client commits says so" \
 out=$(cd "$repo" && "$NOTES" client-v1.0.0)
 check "release notes: the first release lists everything it has" \
     "$(printf 'Changes:\n\n- feat(client): first client work')" "$out"
+# The release workflow prints the notes inside a group redirected to a file and
+# appends text after them: the notes must neither truncate nor overwrite it.
+(
+    cd "$repo" || exit 1
+    {
+        "$NOTES" client-v1.1.0
+        echo
+        echo "after the notes"
+    } >"$TMP/body.txt"
+)
+check "release notes: printed inside a redirected group, kept intact" \
+    "$(printf 'Changes since 1.0.0:\n\n- feat(shared): a contract change\n- fix(client): a client fix\n\nafter the notes')" "$(cat "$TMP/body.txt")"
 
 [ "$FAILS" = 0 ] && echo "all launcher tests passed" || { echo "$FAILS launcher test(s) failed"; exit 1; }

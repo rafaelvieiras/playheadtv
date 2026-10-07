@@ -14,13 +14,13 @@
 set -euo pipefail
 
 REV="${1:?usage: release_notes.sh <rev> [output file]}"
-OUT="${2:-/dev/stdout}"
+OUT="${2:-}"
 
 PREV="$(git describe --tags --abbrev=0 --match 'client-v[0-9]*' "$REV^" 2>/dev/null || true)"
 if [ -n "$PREV" ]; then RANGE="$PREV..$REV"; else RANGE="$REV"; fi
 
 COMMITS="$(git log --no-merges --format='- %s' "$RANGE" -- client shared | head -n 100)"
-{
+TEXT="$(
     if [ -n "$PREV" ]; then
         echo "Changes since ${PREV#client-v}:"
     else
@@ -32,4 +32,7 @@ COMMITS="$(git log --no-merges --format='- %s' "$RANGE" -- client shared | head 
     else
         echo "- No changes to the client since the previous release."
     fi
-} >"$OUT"
+)"
+# Never reopen /dev/stdout: when the caller redirects a group into a file, that
+# would truncate the file the caller is still writing to.
+if [ -n "$OUT" ]; then printf '%s\n' "$TEXT" >"$OUT"; else printf '%s\n' "$TEXT"; fi
