@@ -192,7 +192,7 @@ defaults" button.
 | Next channel / previous channel | Arrow Up / Arrow Down |
 | Jump to channel number | `0`-`9` (commits after ~1.5 s, or immediately at 3 digits) |
 | Select | Enter: shows the OSD; pressed again with the OSD visible, opens the EPG |
-| Back | Esc: closes the EPG, otherwise returns to the mosaic |
+| Back | Esc: closes the EPG, otherwise returns to the mosaic. On the mosaic it asks "Exit Playhead TV?" |
 | Home | Home: returns to the mosaic |
 | Debug overlay | `D` |
 
@@ -201,6 +201,13 @@ Left/Right move through time, Enter on a live program tunes it, and holding Ente
 (over 500 ms) expands the program details. The mosaic uses the raw arrow keys and
 Enter. Arrow Up/Down toggles between the featured video and the surrounding tiles,
 Left/Right walks the tiles. Grid navigation is deliberately not remappable.
+
+**Exiting.** From the mosaic, Back opens "Exit Playhead TV?" with **Cancel** focused:
+Back or Cancel closes it, Left/Right moves between the two buttons and Select on
+**Exit** stops the preview, releases the display wake lock and the cache, then ends
+the process with exit code 0 (so a launcher regains control). From the player, Back
+keeps going to the mosaic: exiting is always one more Back. Only the six baseline
+buttons are needed.
 
 ## Project structure
 
@@ -212,6 +219,7 @@ lib/
   input/input_action.dart       InputAction enum, default key bindings, KeyBindingsService
   pages/                        mosaic home, settings, "Remap controls", "Offline cache"
   services/settings_service.dart   shared_preferences persistence
+  services/app_exit.dart        exit seam (AppExit) and the teardown order before terminating
   services/app_window.dart      window seam (AppWindow) and the full screen policy
   services/perf_stats.dart      FPS/jank, process CPU/memory and video freeze detection
   widgets/epg_overlay.dart      full-screen EPG (an overlay inside the player page)

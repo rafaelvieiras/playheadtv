@@ -76,6 +76,11 @@ class WakelockPlusScreenAwake implements ScreenAwake {
 @visibleForTesting
 ScreenAwake screenAwakeOverride = const WakelockPlusScreenAwake();
 
+/// Releases the display wake lock whatever holds it (the exit flow: leaving the
+/// app must never leave the lock taken). Idempotent: with nothing held it does
+/// nothing.
+Future<void> releaseScreenAwake() => screenAwakeOverride.disable();
+
 /// Policy: the display is held awake only while [playing] (a channel is on
 /// screen and playing) AND the app is in the foreground. Edge-triggered, so
 /// repeated identical inputs never double-enable. Driven from lifecycle/route

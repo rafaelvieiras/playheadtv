@@ -15,6 +15,11 @@
 // edge). Literal (arrowLeft/Right/Up/Down) + Enter, bypassing
 // KeyBindingsService/InputAction — a deliberate decision, a 2D grid is a
 // different context from the linear player (see AGENTS.md).
+//
+// Back (`InputAction.back`, Esc by default) is the one remappable key here: it
+// opens the "Exit Playhead TV?" confirmation, the only way to leave the app.
+// Cancel has the focus; Back or Cancel closes it; Exit tears down (preview
+// controller, display wake lock, syncer) and terminates (services/app_exit.dart).
 import 'dart:async';
 import 'dart:math';
 
@@ -29,6 +34,9 @@ import '../main.dart';
 import '../playhead_api.dart';
 import '../widgets/app_icons.dart';
 import '../widgets/art_image.dart';
+import '../input/input_action.dart';
+import '../services/app_exit.dart';
+import '../services/screen_awake.dart';
 import '../services/settings_service.dart';
 import '../util/gl_serial.dart';
 import 'settings_page.dart';
@@ -53,6 +61,8 @@ class MosaicPage extends StatefulWidget {
 class _MosaicPageState extends State<MosaicPage> {
   late OfflineRuntime _runtime;
   late SettingsService _settings;
+  KeyBindingsService? _keyBindings;
+  bool _exitDialogOpen = false;
 
   bool _loading = true;
   String? _error;
@@ -87,6 +97,7 @@ class _MosaicPageState extends State<MosaicPage> {
   Future<void> _bootstrap() async {
     try {
       final settings = await SettingsService.create();
+      _keyBindings = KeyBindingsService(settings);
       // Channels come from the offline cache, so the home works with the
       // backend down. A first run has nothing cached and waits for the
       // backend; otherwise the startup refresh only gets a moment to bring
@@ -286,10 +297,75 @@ class _MosaicPageState extends State<MosaicPage> {
         .pushReplacement(MaterialPageRoute(builder: (_) => ChannelPlayerPage(initialChannelId: channelId)));
   }
 
+  // "Exit Playhead TV?": Cancel is focused; Back (remappable) or Cancel closes
+  // it, Exit returns true. A focus scope of its own, six buttons only.
+  Future<bool> _askExit() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => Focus(
+        onKeyEvent: (node, event) {
+          if (event is KeyDownEvent && _keyBindings?.resolve(event.logicalKey) == InputAction.back) {
+            Navigator.of(dialogContext).pop(false);
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
+        child: AlertDialog(
+          key: const Key('exit-dialog'),
+          title: const Text('Exit Playhead TV?'),
+          actions: [
+            TextButton(
+              key: const Key('exit-cancel'),
+              autofocus: true,
+              onPressed: () => Navigator.of(dialogContext).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              key: const Key('exit-confirm'),
+              onPressed: () => Navigator.of(dialogContext).pop(true),
+              child: const Text('Exit'),
+            ),
+          ],
+        ),
+      ),
+    );
+    return confirmed == true;
+  }
+
+  Future<void> _confirmExit() async {
+    if (_exitDialogOpen) return;
+    _exitDialogOpen = true;
+    final confirmed = await _askExit();
+    _exitDialogOpen = false;
+    if (confirmed && mounted) await _exitApp();
+  }
+
+  // Teardown, in order: the preview controller (taken off the tree first, then
+  // disposed through the shared GL queue), the display wake lock, the background
+  // syncer and cache. The player page is never alive here (Back reaches the
+  // mosaic only after the player's own dispose released its controllers).
+  Future<void> _exitApp() {
+    return AppExitController(steps: [
+      () async {
+        final preview = _previewController;
+        if (preview == null) return;
+        if (mounted) setState(() => _previewController = null);
+        await WidgetsBinding.instance.endOfFrame;
+        await serializeGlOp(() => preview.dispose());
+      },
+      releaseScreenAwake,
+      () async => OfflineRuntime.reset(),
+    ]).exit();
+  }
+
   void _handleKeyEvent(KeyEvent event) {
     if (event is! KeyDownEvent) return;
-    if (_tiles.isEmpty) return;
     final key = event.logicalKey;
+    if (_keyBindings?.resolve(key) == InputAction.back) {
+      unawaited(_confirmExit());
+      return;
+    }
+    if (_tiles.isEmpty) return;
     if (key == LogicalKeyboardKey.arrowLeft) {
       _moveRing(-1);
     } else if (key == LogicalKeyboardKey.arrowRight) {
@@ -444,11 +520,17 @@ class _MosaicPageState extends State<MosaicPage> {
       );
     }
     if (_error != null) {
-      return Scaffold(
-        key: const Key('mosaic-page'),
-        backgroundColor: Colors.black,
-        body: Center(
-          child: Text(_error!, style: const TextStyle(color: Colors.white, fontSize: 16)),
+      // Nothing to navigate, but Back must still be able to leave the app.
+      return KeyboardListener(
+        focusNode: _pageFocusNode,
+        autofocus: true,
+        onKeyEvent: _handleKeyEvent,
+        child: Scaffold(
+          key: const Key('mosaic-page'),
+          backgroundColor: Colors.black,
+          body: Center(
+            child: Text(_error!, style: const TextStyle(color: Colors.white, fontSize: 16)),
+          ),
         ),
       );
     }
