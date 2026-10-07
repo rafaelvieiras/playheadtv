@@ -1110,6 +1110,15 @@ actionable checklist.
       renewed; the poster cache holds only the primary image of programs and
       channel logos.
 
+- [x] Client starts in full screen on desktop (setting, on by default), via a
+      small window seam (`AppWindow`, `FullScreenController`) and a method
+      channel served by the Linux runner; Settings row, config file key and
+      environment variable. Design: `docs/ARCHITECTURE.md` "Client window (full
+      screen)". Tests: `client/test/app_window_test.dart`,
+      `client/integration_test/fullscreen_test.dart`.
+      Not done / known: no Windows runner yet, so Windows has no implementation
+      of the channel; Android is untested (the setting is a no-op there).
+
 ## Phase 6 — Platforms
 
 - [ ] Android / Android TV client build.

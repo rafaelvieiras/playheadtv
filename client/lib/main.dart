@@ -37,6 +37,7 @@ import 'widgets/update_overlay.dart';
 import 'playhead_api.dart';
 import 'services/screen_awake.dart';
 import 'services/settings_service.dart';
+import 'services/app_window.dart';
 import 'services/stream_preferences_service.dart';
 import 'services/stream_selection_resolver.dart';
 import 'input/input_action.dart';
@@ -70,6 +71,7 @@ class AppConfig {
   static int? _workingSetSize;
   static Duration? _cacheSyncInterval;
   static String? _cacheDir;
+  static bool? _startFullScreen;
   // The config file's settings (lib/config/config_file.dart), read once at
   // boot by loadConfigFile. A packaged install configures itself here; each
   // getter below falls back to it when neither a test override nor a
@@ -136,6 +138,15 @@ class AppConfig {
               file: _file,
               key: 'epg_sync_interval_minutes',
               fallback: defaultCacheSyncMinutes));
+  // What "Start in full screen" is when the user never chose (desktop only):
+  // the PLAYHEADTV_FULLSCREEN environment variable, else `start_fullscreen` in
+  // the config file, else on. The Settings toggle, once used, wins over it.
+  static bool get startFullScreenDefault => resolveBoolSetting(
+      override: _startFullScreen,
+      envValue: Platform.environment['PLAYHEADTV_FULLSCREEN'],
+      file: _file,
+      key: 'start_fullscreen',
+      fallback: true);
   // Where the offline cache lives, only overridden by integration tests; null
   // (the app) means the platform's application support/cache directories.
   static String? get cacheDirOverride => _cacheDir;
@@ -153,6 +164,7 @@ class AppConfig {
     Duration? cacheSyncInterval,
     String? cacheDir,
     Duration? tailAttributionCap,
+    bool? startFullScreen,
   }) {
     // Not part of the app's config: the guide's tail cap, shrunk by tests so a
     // tail goes past it within seconds. Every override resets it.
@@ -168,6 +180,7 @@ class AppConfig {
     _playheadChannelId = playheadChannelId;
     _workingSetSize = workingSetSize;
     _cacheSyncInterval = cacheSyncInterval;
+    _startFullScreen = startFullScreen;
     _cacheDir = cacheDir ?? Directory.systemTemp.createTempSync('playheadtv_cache_').path;
   }
 }
@@ -350,8 +363,19 @@ String streamUrl(String itemId) =>
 String jellyfinImageUrl(String itemId, String tag, {int maxWidth = 400}) =>
     '${AppConfig.jellyfinUrl}/Items/$itemId/Images/Primary?tag=$tag&maxWidth=$maxWidth&api_key=${AppConfig.jellyfinApiKey}';
 
-void main() {
+/// Puts the window in (or out of) full screen per the saved choice, else the
+/// installation's default. Runs before `runApp`, so there is no visible resize:
+/// the runner shows its window on the first Flutter frame. A no-op where the
+/// platform has no resizable window (Android).
+Future<void> applyStartupFullScreen() async {
+  final settings = await SettingsService.create();
+  await FullScreenController.shared.apply(settings.startFullScreen(AppConfig.startFullScreenDefault));
+}
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
   AppConfig.loadConfigFile();
+  await applyStartupFullScreen();
   // video.decoders: fvp's default decoder order on Linux tries VAAPI before
   // CUDA/VDPAU. On some setups (e.g. NVIDIA without VAAPI configured) that
   // stalls decoding of HEVC videos (audio plays, "initialized" never fires):

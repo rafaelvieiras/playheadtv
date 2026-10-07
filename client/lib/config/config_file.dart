@@ -9,6 +9,7 @@
 //     "playhead_channel_id": "",
 //     "working_set_size": 5,
 //     "epg_sync_interval_minutes": 15,
+//     "start_fullscreen": true,
 //     "auto_update": true,
 //     "update_channel": "stable"
 //   }
@@ -86,4 +87,34 @@ int resolveIntSetting({
   if (defined) return define;
   final value = file[key];
   return value is int && value > 0 ? value : fallback;
+}
+
+/// Reads a boolean from text an operator typed (an environment variable):
+/// `1/true/yes/on` and `0/false/no/off`, case-insensitive; anything else
+/// (including empty) is null, "not set".
+bool? parseBoolText(String? text) {
+  switch (text?.trim().toLowerCase()) {
+    case '1' || 'true' || 'yes' || 'on':
+      return true;
+    case '0' || 'false' || 'no' || 'off':
+      return false;
+  }
+  return null;
+}
+
+/// One boolean setting. Precedence: a test override, then the environment
+/// variable [envValue] (see [parseBoolText]), then the config file [key] (a JSON
+/// boolean), then [fallback].
+bool resolveBoolSetting({
+  required bool? override,
+  required String? envValue,
+  required Map<String, Object?> file,
+  required String key,
+  required bool fallback,
+}) {
+  if (override != null) return override;
+  final fromEnv = parseBoolText(envValue);
+  if (fromEnv != null) return fromEnv;
+  final value = file[key];
+  return value is bool ? value : fallback;
 }

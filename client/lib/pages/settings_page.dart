@@ -1,14 +1,17 @@
-// Settings screen: list of settings sections — "Remap controls" (see
-// controls_mapping_page.dart) and "Offline cache" (see offline_cache_page.dart).
+// Settings screen: "Remap controls" (see controls_mapping_page.dart), "Offline
+// cache" (see offline_cache_page.dart) and, on desktop, "Start in full screen".
 //
 // Operable with the six baseline buttons: Up/Down move the focus between the
-// rows, Select opens one and Back (Esc by default) returns to the mosaic.
+// rows, Select opens one (or flips the full screen row) and Back (Esc by
+// default) returns to the mosaic.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../input/input_action.dart';
+import '../main.dart' show AppConfig;
+import '../services/app_window.dart';
 import '../services/settings_service.dart';
 import 'controls_mapping_page.dart';
 import 'offline_cache_page.dart';
@@ -23,13 +26,29 @@ class SettingsPage extends StatefulWidget {
 
 class _SettingsPageState extends State<SettingsPage> {
   KeyBindingsService? _keyBindings;
+  SettingsService? _settings;
 
   @override
   void initState() {
     super.initState();
     unawaited(SettingsService.create().then((settings) {
-      if (mounted) _keyBindings = KeyBindingsService(settings);
+      if (!mounted) return;
+      setState(() {
+        _settings = settings;
+        _keyBindings = KeyBindingsService(settings);
+      });
     }));
+  }
+
+  // Saves the choice and applies it to the window right away.
+  void _toggleFullScreen() {
+    final settings = _settings;
+    if (settings == null) return;
+    final next = !settings.startFullScreen(AppConfig.startFullScreenDefault);
+    unawaited(settings.setStartFullScreen(next).then((_) {
+      if (mounted) setState(() {});
+    }));
+    unawaited(FullScreenController.shared.apply(next));
   }
 
   @override
@@ -64,6 +83,19 @@ class _SettingsPageState extends State<SettingsPage> {
                 Navigator.of(context).push(MaterialPageRoute(builder: (_) => const OfflineCachePage()));
               },
             ),
+            // The window is not the app's to resize on Android (always full
+            // screen): no row there.
+            if (_settings != null && FullScreenController.shared.supported)
+              ListTile(
+                key: const Key('settings-fullscreen-tile'),
+                leading: const Icon(AppIcons.fullScreen),
+                title: const Text('Start in full screen'),
+                subtitle: Text(
+                  _settings!.startFullScreen(AppConfig.startFullScreenDefault) ? 'On' : 'Off',
+                  key: const Key('settings-fullscreen-value'),
+                ),
+                onTap: _toggleFullScreen,
+              ),
           ],
         ),
       ),

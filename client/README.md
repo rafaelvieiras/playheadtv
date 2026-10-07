@@ -33,14 +33,18 @@ transcoding. See the [root README](../README.md) and
 - **Settings**: **Remap controls** to rebind every key, and **Offline cache**: what a
   channel does when the cached schedule has run out (loop the last known programming,
   the default, or hold the local slate), the cache window limit, sync now and clear
-  cache. Both are operable with the six baseline buttons.
+  cache. On desktop, **Start in full screen** (on by default) opens the client in full
+  screen before the first frame and toggling it applies immediately. All of them are
+  operable with the six baseline buttons.
 - **Debug overlay** (`D`): decoder, FPS/jank, CPU/memory, buffer state and detected
   video freezes.
 
 ## Platforms
 
 - **Linux desktop**: the only platform that is built and tested today.
-- **Windows desktop**: planned. There is no `windows/` runner in this directory yet.
+- **Windows desktop**: planned. There is no `windows/` runner in this directory yet;
+  it must serve the same `playheadtv/window` method channel as the Linux runner (see
+  `lib/services/app_window.dart`) for full screen to work there.
 - **Android / Android TV**: planned. Only the default Flutter `android/` scaffold
   exists. It has not been built or tested against this app.
 
@@ -80,7 +84,7 @@ launcher sets it to `<install root>/config.json`), else
 `$XDG_CONFIG_HOME/playheadtv/config.json`, else `~/.config/playheadtv/config.json`.
 Keys: `playhead_base_url`, `playhead_device_token`, `jellyfin_url`,
 `jellyfin_api_key`, `playhead_channel_id`, `working_set_size`,
-`epg_sync_interval_minutes`, `auto_update`, `update_channel` (see
+`epg_sync_interval_minutes`, `start_fullscreen`, `auto_update`, `update_channel` (see
 `packaging/linux/config.example.json`). An absent or invalid file is treated as
 empty.
 
@@ -92,6 +96,12 @@ empty.
 | `PLAYHEADTV_DEVICE_TOKEN` | in practice | Device API token, sent as `Authorization: Bearer <token>`. Create a device in the backend's admin web UI to get one. If empty no header is sent, and a backend with auth on will reject the requests. |
 | `EPG_SYNC_INTERVAL_MINUTES` | no | How often the background syncer refreshes the offline cache (default 15). A failed refresh is retried every 30 seconds until it succeeds. |
 | `PLAYHEADTV_CHANNEL_ID` | no | Channel id to start on, only used when the player is opened without an explicit channel. The normal flow (last watched channel, or a mosaic selection) always supplies one, so this currently has little effect. When no channel matches, the player falls back to the channel with the lowest `number`. |
+
+**Start in full screen** (desktop only; Android is always full screen) is on by default.
+`PLAYHEADTV_FULLSCREEN` (an environment variable: `1/true/yes/on` or `0/false/no/off`)
+or `start_fullscreen` in the config file (a JSON boolean, the variable wins) changes
+that default for an installation, so a packaged launcher can start windowed or full
+screen. The choice made in Settings is saved and wins over that default.
 
 If any of the three required values is empty the player screen shows an `ERROR:`
 message telling you which defines to pass.
@@ -202,6 +212,7 @@ lib/
   input/input_action.dart       InputAction enum, default key bindings, KeyBindingsService
   pages/                        mosaic home, settings, "Remap controls", "Offline cache"
   services/settings_service.dart   shared_preferences persistence
+  services/app_window.dart      window seam (AppWindow) and the full screen policy
   services/perf_stats.dart      FPS/jank, process CPU/memory and video freeze detection
   widgets/epg_overlay.dart      full-screen EPG (an overlay inside the player page)
   widgets/debug_overlay.dart    debug overlay
