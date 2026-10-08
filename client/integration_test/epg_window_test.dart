@@ -12,7 +12,12 @@
 //    keeps rolling while the channel plays, read from the cache;
 //  - against a backend without the new fields (the proxy's legacy mode) the
 //    syncer falls back to per-item lookups, cached per id and bounded, before
-//    the schedule is stored.
+//    the schedule is stored. That test has its OWN backend: the syncer
+//    downloads every channel (no channel filter) and a legacy backend has no
+//    tail groups, so a neighbouring channel with a long tail (tens of
+//    thousands of flat entries over the window) would make the first sync take
+//    longer than the boot's wait for it (startupSyncWait) and the channel
+//    would start late, for reasons unrelated to what the test is about.
 //
 // Three real app boots only, on purpose (see AGENTS.md: many boots per file
 // can stall a later one). Every key sent is one of the six baseline buttons
@@ -63,17 +68,19 @@ void main() {
 
     Future<void> boot(
       WidgetTester tester, {
+      BackendFixture? on,
+      String? token,
       required String channelId,
       required bool legacy,
       required int workingSetSize,
     }) async {
-      proxy = RequestProxy(backendBaseUrl: backend.baseUrl, legacy: legacy);
+      proxy = RequestProxy(backendBaseUrl: (on ?? backend).baseUrl, legacy: legacy);
       await proxy!.start();
       AppConfig.overrideForTest(
         jellyfinUrl: video.baseUrl,
         jellyfinApiKey: 'fake-test-key',
         playheadBaseUrl: proxy!.baseUrl,
-        playheadDeviceToken: deviceToken,
+        playheadDeviceToken: token ?? deviceToken,
         playheadChannelId: channelId,
         workingSetSize: workingSetSize,
       );
@@ -270,6 +277,11 @@ void main() {
     });
 
     testWidgets('against a backend without the new fields the syncer falls back to per-item lookups, cached and bounded', (tester) async {
+      // Own backend, see the header: only this test's channel is downloaded.
+      final backend = BackendFixture();
+      await backend.start();
+      addTearDown(backend.stop);
+      final deviceToken = await backend.createDeviceToken();
       final channelId = await backend.createChannel(number: 33, name: 'Window legacy');
       final ms = await backend.createLocalFolderMediaSource(name: 'Window legacy source');
       final ids = await backend.syncCatalogItems(ms, [
@@ -290,7 +302,7 @@ void main() {
       await backend.createTailRule(channelId: channelId, catalogItemIds: ids.sublist(2));
       await backend.waitForEpgEntries(channelId, 200);
 
-      await boot(tester, channelId: channelId, legacy: true, workingSetSize: 1);
+      await boot(tester, on: backend, token: deviceToken, channelId: channelId, legacy: true, workingSetSize: 1);
       await pumpUntil(tester, () => osdTitle(tester) != null, failMessage: 'never started playing against the legacy backend');
       final p = proxy!;
 

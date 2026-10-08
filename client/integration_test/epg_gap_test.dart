@@ -30,17 +30,22 @@ void main() {
     late VideoFixture video;
 
     const channelNumber = 4;
-    // Item A started 3s before the backend fixtures are created below runs
-    // (same "- 3s" convention as the other suites, guarding against the
-    // small amount of real time that elapses during async setUpAll before
-    // the app actually boots and fetches GET /epg) and is 8s long, so ~5s of
-    // real playback remain once the app boots — just above
+    // Item A started 3s before the schedule is created (same "- 3s" convention
+    // as the other suites, guarding against the small amount of real time that
+    // elapses before the app actually boots and fetches GET /epg) and is 8s
+    // long, so ~5s of real playback remain once the app boots — just above
     // minTransitionInterval (5s) so it isn't floored. Item B starts 8s after
     // item A's nominal content end (16s after item A's own start_at),
     // leaving an un-filled 8s gap for the client to honor.
-    final itemAStart = DateTime.now().toUtc().subtract(const Duration(seconds: 3));
+    //
+    // These instants are taken in setUpAll, right before the schedule is
+    // created, NOT when the group is declared: starting the backend (a Go
+    // build) can take several seconds, longer in a cold or slow environment
+    // such as a container, and the 5s of playback budget would be spent
+    // before the app even boots.
     const itemADurationMs = 8000;
-    final itemBStart = itemAStart.add(const Duration(milliseconds: itemADurationMs)).add(const Duration(seconds: 8));
+    late DateTime itemAStart;
+    late DateTime itemBStart;
 
     setUpAll(() async {
       backend = BackendFixture();
@@ -56,6 +61,8 @@ void main() {
       ]);
       final blockA = await backend.createBlockWithItems([catalogItemIds[0]]);
       final blockB = await backend.createBlockWithItems([catalogItemIds[1]]);
+      itemAStart = DateTime.now().toUtc().subtract(const Duration(seconds: 3));
+      itemBStart = itemAStart.add(const Duration(milliseconds: itemADurationMs)).add(const Duration(seconds: 8));
       await backend.createScheduleWithItems(
         channelId: channelId,
         items: [(blockId: blockA, startAt: itemAStart), (blockId: blockB, startAt: itemBStart)],
