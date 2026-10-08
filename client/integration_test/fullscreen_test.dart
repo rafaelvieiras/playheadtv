@@ -72,8 +72,9 @@ void main() {
       await applyStartupFullScreen();
       await tester.pumpWidget(const PlayheadSpikeApp());
       await pumpUntil(tester, () => find.byKey(const Key('mosaic-tile-settings')).evaluate().isNotEmpty, failMessage: 'no Settings tile in the mosaic');
-      await press(tester, LogicalKeyboardKey.arrowDown);
-      await press(tester, LogicalKeyboardKey.arrowRight);
+      // Up goes from the featured video to the Settings tile (spatial
+      // navigation), Select opens it.
+      await press(tester, LogicalKeyboardKey.arrowUp);
       await press(tester, LogicalKeyboardKey.enter);
       await pumpUntil(tester, () => find.byKey(const Key('settings-page')).evaluate().isNotEmpty, failMessage: 'Settings did not open');
       await pumpUntil(tester, () => find.byKey(const Key('settings-fullscreen-tile')).evaluate().isNotEmpty, failMessage: 'no full screen row');
