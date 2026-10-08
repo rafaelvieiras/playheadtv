@@ -77,6 +77,12 @@ actionable checklist.
       single-user per the "no real multi-tenant" note above). Login/lookup
       failures are indistinguishable (generic "invalid email or password" /
       "unauthorized").
+- [x] Password recovery: `server reset-password` mints a single-use token
+      (hash + expiry in `password_reset`), `POST /password-resets/consume` and
+      the web UI page `/admin/reset-password` set the new password and end the
+      user's sessions (device tokens kept). `docs/ARCHITECTURE.md` "Password
+      recovery"; runbook in `deploy/README.md`. Not done: a signed-in
+      `PUT /me/password`.
 - [x] Encrypt `media_source.credential_cipher` at rest: AES-256-GCM,
       `backend/internal/crypto` (pure stdlib, nonce prefixed to the
       ciphertext). Key resolution order: `PLAYHEADTV_ENCRYPTION_KEY` (base64,

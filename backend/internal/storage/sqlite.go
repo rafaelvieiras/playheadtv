@@ -27,6 +27,9 @@ func Open(path string) (*SQLite, error) {
 	db.SetMaxOpenConns(1)
 
 	for _, pragma := range []string{
+		// A second process on the same file (`server reset-password` run
+		// beside a live server) waits for the lock instead of failing at once.
+		"PRAGMA busy_timeout = 5000",
 		"PRAGMA foreign_keys = ON",
 		"PRAGMA journal_mode = WAL",
 	} {

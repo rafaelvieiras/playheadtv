@@ -116,9 +116,10 @@ var RouteTools = map[string]string{
 // each with the reason. Keep it short: a route belongs here only when a tool
 // would be meaningless or unsafe, never because it was not written yet.
 var NoMCPCounterpart = map[string]string{
-	"POST /app-users":              "bootstraps the tenant's one user with a password; an MCP caller is already an authenticated session, and minting credentials is not authoring",
-	"POST /sessions":               "logs in; the MCP transport authenticates with the session token this returns, so a tool for it would be circular",
-	"DELETE /sessions":             "logs the calling session out; ending the transport's own credential from inside it is not an authoring operation",
-	"GET /me":                      "returns the session's own user (e-mail); there is nothing to author, and the identity is already implied by the session",
-	"GET /stream-preferences/meta": "the playback client's cheap staleness poll over the preference rows; the preference tools already read the data itself",
+	"POST /app-users":               "bootstraps the tenant's one user with a password; an MCP caller is already an authenticated session, and minting credentials is not authoring",
+	"POST /sessions":                "logs in; the MCP transport authenticates with the session token this returns, so a tool for it would be circular",
+	"DELETE /sessions":              "logs the calling session out; ending the transport's own credential from inside it is not an authoring operation",
+	"POST /password-resets/consume": "unauthenticated by design, credentialed by a single-use token that an operator mints at the server console; MCP requires an authenticated session, and a password reset must not be drivable by an agent",
+	"GET /me":                       "returns the session's own user (e-mail); there is nothing to author, and the identity is already implied by the session",
+	"GET /stream-preferences/meta":  "the playback client's cheap staleness poll over the preference rows; the preference tools already read the data itself",
 }

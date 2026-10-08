@@ -93,11 +93,56 @@ Conventions:
   token is returned once, by `create_device`.
 - **Parity is enforced**: `mcpserver.RouteTools` maps each REST route to its
   tool and `NoMCPCounterpart` lists the routes deliberately without one
-  (login/logout, bootstrapping the user, `GET /me`, the preference staleness
-  poll), each with a reason. `TestEveryRESTRouteHasAnMCPTool` takes the route
+  (login/logout, bootstrapping the user, the password reset consume route,
+  `GET /me`, the preference staleness poll), each with a reason. `TestEveryRESTRouteHasAnMCPTool` takes the route
   list from `api.Routes()` (recorded from the same code that registers the
   routes) and fails on a route in neither list, so a new web UI capability
   cannot ship without its tool.
+
+## Password recovery
+
+There is one `app_user` per tenant and no e-mail, so a forgotten password is
+recovered by whoever controls the server, in two halves.
+
+1. **`server reset-password [--email <address>] [--ttl <duration>]`** (same
+   binary as `server healthcheck`; in a container,
+   `docker exec <container> /server reset-password`, no shell needed in the
+   distroless image). It stores a random single-use token and prints it once,
+   with the page that accepts it. The token lives in the `password_reset` table
+   as a SHA-256 hash plus an expiry, one row per user: running the command
+   again replaces the pending token. `--ttl` defaults to 15 minutes and is
+   bounded to 1 minute - 1 hour. `--email` is optional while exactly one user
+   exists and required afterwards. The command never prints or stores a
+   password and never writes the token to a log; the token goes to stdout only.
+2. **`POST /password-resets/consume`** with `{token, new_password}`
+   (unauthenticated, like login; the token is the credential). It applies the
+   same minimum length as `POST /app-users`, compares the presented token's
+   hash with every pending hash in constant time (`crypto/subtle`), then in one
+   transaction sets the new bcrypt hash, deletes **every session** of the user
+   and deletes the token. Device tokens are kept (they are the playback
+   clients' credentials) and the response says so. An unknown, expired, used or
+   burned token all answer the same `400`. Abuse limits: at most 10 attempts
+   per client address and 5 per token value per 15 minutes (`429`, in memory;
+   the address is the connection peer, forwarding headers are not trusted), and
+   5 wrong tokens burn the pending one (run the command again). The route has
+   no MCP counterpart on purpose (`NoMCPCounterpart`).
+
+The web UI page `/admin/reset-password` takes the token from the URL fragment
+(`#token=...`, which a browser never sends to a server, so no access log or
+proxy sees it), from a query string, or from a field, plus the new password
+twice. It removes the token from the address bar on load, the admin responses
+carry `Referrer-Policy: no-referrer`, and it links to sign-in afterwards.
+
+**How the command reaches SQLite.** It opens its own short-lived connection to
+the file named by `PLAYHEADTV_DB_PATH`, not an admin channel of the running
+server. The database is in WAL mode, so a second process can write beside the
+server; `storage.Open` sets `busy_timeout` (5 s) so either side waits for the
+other's short write instead of failing. The server's pool stays at one
+connection (`SetMaxOpenConns(1)`). This needs no extra listener or credential
+(having the data directory is the authority), works with the server running or
+stopped, and works from outside the container. The command never creates a
+database (a missing file is an error) and applies migrations only when the
+`password_reset` table is absent, as the server would at its next boot.
 
 ## Media sources
 
