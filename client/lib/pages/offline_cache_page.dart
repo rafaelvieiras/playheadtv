@@ -21,11 +21,12 @@ import '../cache/offline_runtime.dart';
 import '../cache/schedule_sync.dart';
 import '../input/input_action.dart';
 import '../services/settings_service.dart';
+import '../ui/ui_scale.dart';
 
 String exhaustedBehaviorLabel(ExhaustedBehavior b) => switch (b) {
-      ExhaustedBehavior.loopLast => 'Loop the last known programming',
-      ExhaustedBehavior.slate => 'Hold the slate',
-    };
+  ExhaustedBehavior.loopLast => 'Loop the last known programming',
+  ExhaustedBehavior.slate => 'Hold the slate',
+};
 
 String hoursLabel(Duration d) => '${d.inHours} hours';
 
@@ -75,10 +76,14 @@ class _OfflineCachePageState extends State<OfflineCachePage> {
 
   void _cycleExhausted() {
     final settings = _runtime!.settings;
-    final next = settings.exhaustedBehavior == ExhaustedBehavior.loopLast ? ExhaustedBehavior.slate : ExhaustedBehavior.loopLast;
-    unawaited(settings.setExhaustedBehavior(next).then((_) {
-      if (mounted) setState(() {});
-    }));
+    final next = settings.exhaustedBehavior == ExhaustedBehavior.loopLast
+        ? ExhaustedBehavior.slate
+        : ExhaustedBehavior.loopLast;
+    unawaited(
+      settings.setExhaustedBehavior(next).then((_) {
+        if (mounted) setState(() {});
+      }),
+    );
   }
 
   void _cycleWindow() {
@@ -87,32 +92,38 @@ class _OfflineCachePageState extends State<OfflineCachePage> {
     final current = runtime.settings.cacheWindowLimit.inHours;
     final at = choices.indexOf(current);
     final next = Duration(hours: choices[(at + 1) % choices.length]);
-    unawaited(runtime.settings.setCacheWindowLimit(next).then((_) async {
-      await runtime.applyWindowLimit(next);
-      if (mounted) setState(() {});
-    }));
+    unawaited(
+      runtime.settings.setCacheWindowLimit(next).then((_) async {
+        await runtime.applyWindowLimit(next);
+        if (mounted) setState(() {});
+      }),
+    );
   }
 
   Future<void> _confirmClear() async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (context) => AlertDialog(
-        key: const Key('offline-clear-dialog'),
-        title: const Text('Clear the offline cache?'),
-        content: const Text('The saved schedule and images are deleted and downloaded again when the backend is reachable.'),
-        actions: [
-          TextButton(
-            key: const Key('offline-clear-cancel'),
-            autofocus: true,
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Cancel'),
+      builder: (context) => UiScaled(
+        child: AlertDialog(
+          key: const Key('offline-clear-dialog'),
+          title: const Text('Clear the offline cache?'),
+          content: const Text(
+            'The saved schedule and images are deleted and downloaded again when the backend is reachable.',
           ),
-          TextButton(
-            key: const Key('offline-clear-confirm'),
-            onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('Clear'),
-          ),
-        ],
+          actions: [
+            TextButton(
+              key: const Key('offline-clear-cancel'),
+              autofocus: true,
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              key: const Key('offline-clear-confirm'),
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('Clear'),
+            ),
+          ],
+        ),
       ),
     );
     if (confirmed == true) {
@@ -147,10 +158,15 @@ class _OfflineCachePageState extends State<OfflineCachePage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => UiScaled(child: _buildPage(context));
+
+  Widget _buildPage(BuildContext context) {
     final runtime = _runtime;
     if (runtime == null) {
-      return const Scaffold(key: Key('offline-cache-page'), body: Center(child: CircularProgressIndicator()));
+      return const Scaffold(
+        key: Key('offline-cache-page'),
+        body: Center(child: CircularProgressIndicator()),
+      );
     }
     final settings = runtime.settings;
     final window = runtime.cache.window;
@@ -167,14 +183,17 @@ class _OfflineCachePageState extends State<OfflineCachePage> {
       },
       child: Scaffold(
         key: const Key('offline-cache-page'),
-        appBar: AppBar(title: const Text('Offline cache')),
+        appBar: AppBar(title: const Text('Offline cache'), toolbarHeight: context.ui(kToolbarHeight)),
         body: ListView(
           children: [
             ListTile(
               key: const Key('offline-exhausted-tile'),
               autofocus: true,
               title: const Text('When the schedule runs out'),
-              subtitle: Text(exhaustedBehaviorLabel(settings.exhaustedBehavior), key: const Key('offline-exhausted-value')),
+              subtitle: Text(
+                exhaustedBehaviorLabel(settings.exhaustedBehavior),
+                key: const Key('offline-exhausted-value'),
+              ),
               onTap: _cycleExhausted,
             ),
             ListTile(

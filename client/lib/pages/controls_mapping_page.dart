@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 
 import '../input/input_action.dart';
 import '../services/settings_service.dart';
+import '../ui/ui_scale.dart';
 
 class _ActionGroup {
   final String title;
@@ -35,24 +36,14 @@ const _groups = [
     InputAction.digit8,
     InputAction.digit9,
   ]),
-  _ActionGroup('Playback', [
-    InputAction.select,
-    InputAction.back,
-    InputAction.trackSelector,
-  ]),
-  _ActionGroup('General', [
-    InputAction.home,
-    InputAction.debugOverlay,
-  ]),
+  _ActionGroup('Playback', [InputAction.select, InputAction.back, InputAction.trackSelector]),
+  _ActionGroup('General', [InputAction.home, InputAction.debugOverlay]),
   // Path 2 accelerators (see AGENTS.md's "6-button baseline" / accelerator
   // exception, and input/input_action.dart): neither has a default binding —
   // they only exist here, unbound, until the user picks one. The
   // 6-button-only equivalent (the track selector overlay, InputAction.
   // trackSelector above) always works with zero remapping.
-  _ActionGroup('Shortcuts (optional)', [
-    InputAction.cycleAudioTrack,
-    InputAction.cycleSubtitleTrack,
-  ]),
+  _ActionGroup('Shortcuts (optional)', [InputAction.cycleAudioTrack, InputAction.cycleSubtitleTrack]),
 ];
 
 String _actionLabel(InputAction action) {
@@ -173,7 +164,9 @@ class _ControlsMappingPageState extends State<ControlsMappingPage> {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => UiScaled(child: _buildPage(context));
+
+  Widget _buildPage(BuildContext context) {
     if (_settings == null || _keyBindings == null) {
       return const Scaffold(
         key: Key('controls-mapping-page'),
@@ -191,6 +184,7 @@ class _ControlsMappingPageState extends State<ControlsMappingPage> {
         key: const Key('controls-mapping-page'),
         appBar: AppBar(
           title: const Text('Remap controls'),
+          toolbarHeight: context.ui(kToolbarHeight),
           actions: [
             TextButton(
               key: const Key('restore-defaults-button'),
@@ -204,10 +198,7 @@ class _ControlsMappingPageState extends State<ControlsMappingPage> {
             for (final group in _groups) ...[
               Padding(
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-                child: Text(
-                  group.title,
-                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
-                ),
+                child: Text(group.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
               ),
               for (final action in group.actions) _buildActionTile(action),
             ],

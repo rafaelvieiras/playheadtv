@@ -352,6 +352,7 @@ const slateAssetPath = 'assets/slate/gap_slate.mp4';
 // _controllerA/_controllerB, just repositioned/resized into a corner (see
 // _videoThumbnailRect and the long comment about the fvp/libmdk GL texture bug
 // above _osdVisibleNotifier).
+// Pixels at 1080p; `_videoThumbnailRect` applies the UI scale.
 const epgThumbnailMargin = 24.0;
 const epgThumbnailWidth = 320.0;
 const epgThumbnailHeight = 180.0;
@@ -1976,12 +1977,17 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // reserve the "hole" in the darkened background (see
   // EpgOverlay.videoThumbnailRect) and never draw anything on top of the
   // thumbnail. Single source of truth, so the two places never go out of sync.
-  Rect _videoThumbnailRect(Size screenSize) => Rect.fromLTWH(
-        screenSize.width - epgThumbnailMargin - epgThumbnailWidth,
-        epgThumbnailMargin,
-        epgThumbnailWidth,
-        epgThumbnailHeight,
-      );
+  Rect _videoThumbnailRect(Size screenSize) {
+    // The same factor the EPG overlay reads from UiScale (the host resolves it
+    // the same way); computed here so the page does not subscribe to it.
+    final k = resolveUiScale(screenSize, override: UiScaleOverride.notifier.value);
+    return Rect.fromLTWH(
+      screenSize.width - (epgThumbnailMargin + epgThumbnailWidth) * k,
+      epgThumbnailMargin * k,
+      epgThumbnailWidth * k,
+      epgThumbnailHeight * k,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {

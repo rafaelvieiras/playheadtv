@@ -46,6 +46,7 @@ import '../epg_guide.dart';
 import '../cache/schedule_cache.dart';
 import '../main.dart' show jellyfinImageUrl;
 import '../playhead_api.dart';
+import '../ui/ui_scale.dart';
 import 'app_icons.dart';
 import 'art_image.dart';
 
@@ -64,9 +65,12 @@ const _nowTickInterval = Duration(seconds: 10);
 const _scrollAnimation = Duration(milliseconds: 150);
 const _longPressThreshold = Duration(milliseconds: 500);
 
-const _channelColumnWidth = 160.0;
-const _rowHeight = 64.0;
-const _headerHeight = 32.0;
+// Sizes are pixels at 1080p; `EpgOverlayState._u` multiplies them by the shared
+// UiScale (lib/ui/ui_scale.dart). The time axis is not part of this: the 3h
+// span is fitted to the available width in pixels-per-minute, as before.
+const _channelColumnWidth = 220.0;
+const _rowHeight = 84.0;
+const _headerHeight = 44.0;
 const _cellMarginH = 2.0;
 
 class EpgOverlay extends StatefulWidget {
@@ -77,6 +81,9 @@ class EpgOverlay extends StatefulWidget {
   final void Function(String channelId) onSelectLiveChannel;
   final VoidCallback onClose;
 
+  /// The wall clock; tests substitute a fixed one (the golden tests).
+  final DateTime Function() clock;
+
   const EpgOverlay({
     required Key key,
     required this.channels,
@@ -85,6 +92,7 @@ class EpgOverlay extends StatefulWidget {
     required this.videoThumbnailRect,
     required this.onSelectLiveChannel,
     required this.onClose,
+    this.clock = DateTime.now,
   }) : super(key: key);
 
   @override
@@ -131,12 +139,31 @@ class EpgOverlayState extends State<EpgOverlay> {
 
   final ScrollController _verticalController = ScrollController();
 
+  // The shared UI scale, refreshed in didChangeDependencies. A plain field so
+  // that callbacks outside build can use it; only this widget subscribes, never
+  // the player page below it.
+  double _scale = 1.0;
+  double _u(double px) => px * _scale;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = UiScale.of(context);
+    if (next != _scale) {
+      _scale = next;
+      // Rows changed height: keep the focused one in view after the rebuild.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _ensureRowVisible(animate: false);
+      });
+    }
+  }
+
   @override
   void initState() {
     super.initState();
-    _now = DateTime.now();
+    _now = widget.clock();
     _nowTimer = Timer.periodic(_nowTickInterval, (_) {
-      if (mounted) setState(() => _now = DateTime.now());
+      if (mounted) setState(() => _now = widget.clock());
     });
     unawaited(_load());
     _cacheSub = widget.cache.changes.listen((_) => _refreshFromCache());
@@ -154,7 +181,13 @@ class EpgOverlayState extends State<EpgOverlay> {
   // Start of the 30-minute slot (in local time) containing `t`, as UTC.
   DateTime _floorToTick(DateTime t) {
     final local = t.toLocal();
-    final floored = DateTime(local.year, local.month, local.day, local.hour, local.minute - local.minute % _tickInterval.inMinutes);
+    final floored = DateTime(
+      local.year,
+      local.month,
+      local.day,
+      local.hour,
+      local.minute - local.minute % _tickInterval.inMinutes,
+    );
     return floored.toUtc();
   }
 
@@ -169,9 +202,9 @@ class EpgOverlayState extends State<EpgOverlay> {
   // is attributed to the same program as in the OSD; the cells that end before
   // the window are not part of the grid.
   List<GuideCell> _cellsOf(List<EpgEntry> raw) => [
-        for (final c in buildGuideCells(raw))
-          if (c.displayEnd.isAfter(_windowStart)) c,
-      ];
+    for (final c in buildGuideCells(raw))
+      if (c.displayEnd.isAfter(_windowStart)) c,
+  ];
 
   void _rebuildCells() {
     _entriesByChannel = [for (final raw in _rawByChannel) _cellsOf(raw)];
@@ -202,7 +235,7 @@ class EpgOverlayState extends State<EpgOverlay> {
   }
 
   Future<void> _load() async {
-    final now = DateTime.now().toUtc();
+    final now = widget.clock().toUtc();
     final start = _floorToTick(now.subtract(_tickInterval));
     final end = now.add(_initialWindowAhead);
     _windowStart = start;
@@ -230,7 +263,7 @@ class EpgOverlayState extends State<EpgOverlay> {
         _anchor = now;
         _hOffsetMinutes = 0;
         _loading = false;
-        _now = DateTime.now();
+        _now = widget.clock();
         _followFocusHorizontally();
       });
       WidgetsBinding.instance.addPostFrameCallback((_) => _ensureRowVisible(animate: false));
@@ -275,7 +308,9 @@ class EpgOverlayState extends State<EpgOverlay> {
   }
 
   void _maybeExtendAhead() {
-    final visibleRight = _windowStart.add(Duration(milliseconds: ((_hOffsetMinutes + _visibleSpan.inMinutes) * 60000).round()));
+    final visibleRight = _windowStart.add(
+      Duration(milliseconds: ((_hOffsetMinutes + _visibleSpan.inMinutes) * 60000).round()),
+    );
     if (_windowEnd.difference(visibleRight) < _extendMargin) unawaited(_extendWindow());
   }
 
@@ -308,8 +343,8 @@ class EpgOverlayState extends State<EpgOverlay> {
 
   void _ensureRowVisible({bool animate = true}) {
     if (!_verticalController.hasClients || _rowsViewportHeight <= 0) return;
-    final top = _focusedRow * _rowHeight;
-    final bottom = top + _rowHeight;
+    final top = _focusedRow * _u(_rowHeight);
+    final bottom = top + _u(_rowHeight);
     final offset = _verticalController.offset;
     double? target;
     if (top < offset) {
@@ -333,7 +368,7 @@ class EpgOverlayState extends State<EpgOverlay> {
     if (_loading || _error != null || _entriesByChannel.isEmpty) return;
     final newRow = _focusedRow + delta;
     if (newRow < 0 || newRow >= _entriesByChannel.length) return;
-    final now = DateTime.now().toUtc();
+    final now = widget.clock().toUtc();
     final focused = _focusedEntry;
     final target = guideVerticalTarget(
       _entriesByChannel[newRow],
@@ -378,10 +413,12 @@ class EpgOverlayState extends State<EpgOverlay> {
   }
 
   void _extendThenRetry(int delta, int row, int previousLength) {
-    unawaited(_extendWindow().then((grew) {
-      if (!grew || !mounted || row != _focusedRow) return;
-      if (_entriesByChannel[row].length > previousLength) moveColumn(delta);
-    }));
+    unawaited(
+      _extendWindow().then((grew) {
+        if (!grew || !mounted || row != _focusedRow) return;
+        if (_entriesByChannel[row].length > previousLength) moveColumn(delta);
+      }),
+    );
   }
 
   // Called by the parent when `select` (Enter) is pressed or released WHILE
@@ -415,39 +452,40 @@ class EpgOverlayState extends State<EpgOverlay> {
   void _activateFocused() {
     final entry = _focusedEntry;
     if (entry == null) return;
-    if (!_isLive(entry, DateTime.now().toUtc())) return;
+    if (!_isLive(entry, widget.clock().toUtc())) return;
     widget.onSelectLiveChannel(widget.channels[_focusedRow].id);
   }
 
-  Widget _darkBand({Widget? child}) => Container(
-        color: Colors.black.withValues(alpha: 0.9),
-        child: child,
-      );
+  Widget _darkBand({Widget? child}) => Container(color: Colors.black.withValues(alpha: 0.9), child: child);
 
   Widget _buildCell(int rowIndex, int col, GuideCell cell, double hMin, double ppm) {
     final entry = cell.entry;
     final channelObj = widget.channels[rowIndex];
     final startMin = _minutesFrom(cell.displayStart).clamp(0.0, double.infinity);
     final endMin = _minutesFrom(cell.displayEnd);
-    final left = (startMin - hMin) * ppm + _cellMarginH;
-    final width = ((endMin - startMin) * ppm - 2 * _cellMarginH).clamp(4.0, double.infinity);
+    final margin = _u(_cellMarginH);
+    final left = (startMin - hMin) * ppm + margin;
+    final width = ((endMin - startMin) * ppm - 2 * margin).clamp(4.0, double.infinity);
     final focused = rowIndex == _focusedRow && col == _focusedCol;
     final title = entry.displayTitle;
     final nowUtc = _now.toUtc();
     final live = _isLive(cell, nowUtc);
-    final progress = live ? nowUtc.difference(cell.displayStart).inMilliseconds / cell.displayEnd.difference(cell.displayStart).inMilliseconds : 0.0;
+    final progress = live
+        ? nowUtc.difference(cell.displayStart).inMilliseconds /
+              cell.displayEnd.difference(cell.displayStart).inMilliseconds
+        : 0.0;
 
     return Positioned(
       left: left,
-      top: 4,
+      top: _u(4),
       width: width,
-      height: _rowHeight - 8,
+      height: _u(_rowHeight) - _u(8),
       child: Container(
         key: Key('epg-cell-${channelObj.id}-${entry.id}'),
         decoration: BoxDecoration(
           color: Colors.grey.shade900,
-          border: Border.all(color: focused ? Colors.white : Colors.white24, width: focused ? 3 : 1),
-          borderRadius: BorderRadius.circular(4),
+          border: Border.all(color: focused ? Colors.white : Colors.white24, width: focused ? _u(3) : 1),
+          borderRadius: BorderRadius.circular(_u(4)),
         ),
         clipBehavior: Clip.antiAlias,
         child: Stack(
@@ -463,14 +501,14 @@ class EpgOverlayState extends State<EpgOverlay> {
                 ),
               ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              padding: EdgeInsets.symmetric(horizontal: _u(8), vertical: _u(4)),
               child: Align(
                 alignment: Alignment.centerLeft,
                 child: Text(
                   title,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white, fontSize: 12),
+                  style: TextStyle(color: Colors.white, fontSize: _u(16)),
                 ),
               ),
             ),
@@ -493,19 +531,26 @@ class EpgOverlayState extends State<EpgOverlay> {
     }
     return Container(
       key: Key('epg-row-${channelObj.id}'),
-      height: _rowHeight,
+      height: _u(_rowHeight),
       color: focusedRow ? Colors.white.withValues(alpha: 0.08) : null,
       child: Row(
         children: [
           SizedBox(
-            width: _channelColumnWidth,
+            width: _u(_channelColumnWidth),
             child: Padding(
-              padding: const EdgeInsets.only(right: 8),
+              padding: EdgeInsets.only(right: _u(8)),
               child: Row(
                 children: [
                   SizedBox(
-                    width: 24,
-                    child: playing ? Icon(AppIcons.play, key: Key('epg-playing-${channelObj.id}'), color: Colors.white, size: 18) : null,
+                    width: _u(32),
+                    child: playing
+                        ? Icon(
+                            AppIcons.play,
+                            key: Key('epg-playing-${channelObj.id}'),
+                            color: Colors.white,
+                            size: _u(24),
+                          )
+                        : null,
                   ),
                   Expanded(
                     child: Text(
@@ -514,7 +559,7 @@ class EpgOverlayState extends State<EpgOverlay> {
                       overflow: TextOverflow.ellipsis,
                       style: TextStyle(
                         color: focusedRow || playing ? Colors.white : Colors.white70,
-                        fontSize: 14,
+                        fontSize: _u(18),
                         fontWeight: FontWeight.bold,
                       ),
                     ),
@@ -523,7 +568,9 @@ class EpgOverlayState extends State<EpgOverlay> {
               ),
             ),
           ),
-          Expanded(child: ClipRect(child: Stack(children: cells))),
+          Expanded(
+            child: ClipRect(child: Stack(children: cells)),
+          ),
         ],
       ),
     );
@@ -552,35 +599,44 @@ class EpgOverlayState extends State<EpgOverlay> {
     for (var i = firstTick; i <= lastTick; i++) {
       final tickTime = _windowStart.add(Duration(minutes: i * tickStep));
       final x = (i * tickStep - hMin) * ppm;
-      ticks.add(Positioned(
-        left: x,
-        top: 0,
-        bottom: 0,
-        child: Container(
-          key: Key('epg-tick-${tickTime.millisecondsSinceEpoch}'),
-          padding: const EdgeInsets.only(left: 6),
-          decoration: const BoxDecoration(border: Border(left: BorderSide(color: Colors.white24))),
-          alignment: Alignment.centerLeft,
-          child: Text(_fmtHHmm(tickTime), style: const TextStyle(color: Colors.white70, fontSize: 13)),
+      ticks.add(
+        Positioned(
+          left: x,
+          top: 0,
+          bottom: 0,
+          child: Container(
+            key: Key('epg-tick-${tickTime.millisecondsSinceEpoch}'),
+            padding: EdgeInsets.only(left: _u(6)),
+            decoration: const BoxDecoration(
+              border: Border(left: BorderSide(color: Colors.white24)),
+            ),
+            alignment: Alignment.centerLeft,
+            child: Text(
+              _fmtHHmm(tickTime),
+              style: TextStyle(color: Colors.white70, fontSize: _u(16)),
+            ),
+          ),
         ),
-      ));
+      );
     }
     return SizedBox(
       key: const Key('epg-time-header'),
-      height: _headerHeight,
+      height: _u(_headerHeight),
       child: Row(
         children: [
           SizedBox(
-            width: _channelColumnWidth,
+            width: _u(_channelColumnWidth),
             child: Text(
               key: const Key('epg-date-label'),
               '${_fmtDate(visibleLeft)}  ${_fmtHHmm(_now)}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.bold),
+              style: TextStyle(color: Colors.white, fontSize: _u(16), fontWeight: FontWeight.bold),
             ),
           ),
-          Expanded(child: ClipRect(child: Stack(children: ticks))),
+          Expanded(
+            child: ClipRect(child: Stack(children: ticks)),
+          ),
         ],
       ),
     );
@@ -617,24 +673,33 @@ class EpgOverlayState extends State<EpgOverlay> {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(title, style: TextStyle(color: Colors.white, fontSize: expanded ? 28 : 18, fontWeight: FontWeight.bold)),
-        SizedBox(height: expanded ? 10 : 4),
+        Text(
+          title,
+          style: TextStyle(color: Colors.white, fontSize: _u(expanded ? 38 : 26), fontWeight: FontWeight.bold),
+        ),
+        SizedBox(height: _u(expanded ? 12 : 6)),
         Text(
           expanded ? channelName : '$channelName · $timeRange · $durationText',
-          style: TextStyle(color: Colors.white70, fontSize: expanded ? 20 : 14),
+          style: TextStyle(color: Colors.white70, fontSize: _u(expanded ? 26 : 19)),
         ),
         if (expanded) ...[
-          const SizedBox(height: 6),
-          Text(timeRange, style: const TextStyle(color: Colors.white54, fontSize: 18)),
-          const SizedBox(height: 6),
-          Text(durationText, style: const TextStyle(color: Colors.white54, fontSize: 18)),
+          SizedBox(height: _u(8)),
+          Text(
+            timeRange,
+            style: TextStyle(color: Colors.white54, fontSize: _u(24)),
+          ),
+          SizedBox(height: _u(8)),
+          Text(
+            durationText,
+            style: TextStyle(color: Colors.white54, fontSize: _u(24)),
+          ),
         ],
       ],
     );
     return Container(
       key: Key(expanded ? 'epg-details-panel-expanded' : 'epg-details-panel'),
       width: double.infinity,
-      padding: expanded ? const EdgeInsets.all(24) : const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding: expanded ? EdgeInsets.all(_u(32)) : EdgeInsets.symmetric(horizontal: _u(24), vertical: _u(16)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
@@ -647,10 +712,10 @@ class EpgOverlayState extends State<EpgOverlay> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Padding(
-                  padding: const EdgeInsets.only(right: 20),
+                  padding: EdgeInsets.only(right: _u(28)),
                   child: SizedBox(
-                    width: 120,
-                    height: 180,
+                    width: _u(160),
+                    height: _u(240),
                     child: ArtImage(
                       jellyfinImageUrl(art.itemId, art.tag),
                       imageKey: Key('epg-details-art-${entry.id}'),
@@ -666,14 +731,14 @@ class EpgOverlayState extends State<EpgOverlay> {
             details,
           // The slot is always reserved so the panel keeps its height; only
           // the bar itself comes and goes.
-          SizedBox(height: expanded ? 12 : 8),
+          SizedBox(height: _u(expanded ? 16 : 10)),
           SizedBox(
-            height: 4,
+            height: _u(6),
             child: live
                 ? LinearProgressIndicator(
                     key: const Key('epg-details-progress'),
                     value: progress.clamp(0.0, 1.0),
-                    minHeight: 4,
+                    minHeight: _u(6),
                     color: Colors.white,
                     backgroundColor: Colors.white24,
                   )
@@ -686,10 +751,11 @@ class EpgOverlayState extends State<EpgOverlay> {
 
   Widget _buildGrid() {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
+      padding: EdgeInsets.symmetric(horizontal: _u(16)),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final viewportWidth = (constraints.maxWidth - _channelColumnWidth).clamp(1.0, double.infinity);
+          final channelColumn = _u(_channelColumnWidth);
+          final viewportWidth = (constraints.maxWidth - channelColumn).clamp(1.0, double.infinity);
           final ppm = viewportWidth / _visibleSpan.inMinutes;
           return TweenAnimationBuilder<double>(
             tween: Tween<double>(end: _hOffsetMinutes),
@@ -697,8 +763,8 @@ class EpgOverlayState extends State<EpgOverlay> {
             curve: Curves.easeOut,
             builder: (context, hMin, _) {
               final nowMin = _minutesFrom(_now.toUtc());
-              final nowX = _channelColumnWidth + (nowMin - hMin) * ppm;
-              final nowVisible = nowX >= _channelColumnWidth && nowX <= _channelColumnWidth + viewportWidth;
+              final nowX = channelColumn + (nowMin - hMin) * ppm;
+              final nowVisible = nowX >= channelColumn && nowX <= channelColumn + viewportWidth;
               return Column(
                 children: [
                   _buildTimeHeader(hMin, ppm),
@@ -712,17 +778,19 @@ class EpgOverlayState extends State<EpgOverlay> {
                             ListView.builder(
                               key: const Key('epg-rows'),
                               controller: _verticalController,
-                              itemExtent: _rowHeight,
+                              itemExtent: _u(_rowHeight),
                               itemCount: widget.channels.length,
                               itemBuilder: (context, rowIndex) => _buildChannelRow(rowIndex, hMin, ppm),
                             ),
                             if (nowVisible)
                               Positioned(
-                                left: nowX - 1,
+                                left: nowX - _u(1),
                                 top: 0,
                                 bottom: 0,
-                                width: 2,
-                                child: IgnorePointer(child: Container(key: const Key('epg-now-marker'), color: Colors.redAccent)),
+                                width: _u(2),
+                                child: IgnorePointer(
+                                  child: Container(key: const Key('epg-now-marker'), color: Colors.redAccent),
+                                ),
                               ),
                           ],
                         );
@@ -744,7 +812,10 @@ class EpgOverlayState extends State<EpgOverlay> {
     }
     if (_error != null) {
       return Center(
-        child: Text(_error!, style: const TextStyle(color: Colors.white, fontSize: 14)),
+        child: Text(
+          _error!,
+          style: TextStyle(color: Colors.white, fontSize: _u(18)),
+        ),
       );
     }
     return Column(
@@ -767,7 +838,13 @@ class EpgOverlayState extends State<EpgOverlay> {
         Positioned(left: 0, right: 0, top: 0, height: rect.top, child: _darkBand()),
         // Band below the thumbnail — covers the rest of the screen downward,
         // this is where the whole grid + details panel lives.
-        Positioned(left: 0, right: 0, top: rect.bottom, bottom: 0, child: _darkBand(child: _buildBody())),
+        Positioned(
+          left: 0,
+          right: 0,
+          top: rect.bottom,
+          bottom: 0,
+          child: _darkBand(child: _buildBody()),
+        ),
         // Band to the left of the thumbnail (only its height).
         Positioned(left: 0, top: rect.top, width: rect.left, height: rect.height, child: _darkBand()),
         // Band to the right of the thumbnail (only its height).

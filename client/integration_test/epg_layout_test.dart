@@ -3,6 +3,7 @@
 // epg_overlay_test.dart (read it first). At most 2 real app boots in this file
 // (see AGENTS.md, "Several real PlayheadSpikeApp boots ...").
 import 'package:client/main.dart';
+import 'package:client/ui/ui_scale.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -146,7 +147,8 @@ void main() {
       final rows = find.byKey(const Key('epg-rows'));
       final cellRect = tester.getRect(find.byWidgetPredicate((w) => w.key is ValueKey<String> && (w.key as ValueKey<String>).value.startsWith('epg-cell-${channelIds[1]}-')).first);
       final rowsRect = tester.getRect(rows);
-      final expectedWidth = (rowsRect.width - 160) / 6;
+      final channelColumn = 220 * UiScale.of(tester.element(rows));
+      final expectedWidth = (rowsRect.width - channelColumn) / 6;
       expect((cellRect.width - expectedWidth).abs(), lessThan(expectedWidth * 0.2));
 
       // Reach the last channel using only Down: the list has to scroll.
@@ -183,10 +185,11 @@ void main() {
       // The focused cell is scrolled into view.
       await tester.pump(const Duration(milliseconds: 400));
       final rowsRect = tester.getRect(find.byKey(const Key('epg-rows')));
-      final cell = find.byWidgetPredicate((w) => w.key is ValueKey<String> && (w.key as ValueKey<String>).value.startsWith('epg-cell-${channelIds[1]}-') && ((w as Container).decoration as BoxDecoration).border!.top.width == 3);
+      final channelColumn = 220 * UiScale.of(tester.element(find.byKey(const Key('epg-rows'))));
+      final cell = find.byWidgetPredicate((w) => w.key is ValueKey<String> && (w.key as ValueKey<String>).value.startsWith('epg-cell-${channelIds[1]}-') && ((w as Container).decoration as BoxDecoration).border!.top.color == Colors.white);
       expect(cell, findsOneWidget);
       final rect = tester.getRect(cell);
-      expect(rect.left, greaterThanOrEqualTo(rowsRect.left + 160 - 1));
+      expect(rect.left, greaterThanOrEqualTo(rowsRect.left + channelColumn - 1));
       expect(rect.right, lessThanOrEqualTo(rowsRect.right + 1));
     });
   });

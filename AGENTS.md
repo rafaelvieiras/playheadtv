@@ -133,8 +133,11 @@ or LLM, and to every artifact in the repo:
   to the origin, empty slots are skipped). Text, icons, paddings and focus rings
   are written as pixels at 1080p and scaled with the app-wide `UiScale`
   (`lib/ui/ui_scale.dart`, `context.ui(px)`, Settings override); a new screen
-  uses it instead of fixed sizes. Never drive it through `setState` on the player
-  page.
+  uses it instead of fixed sizes (the EPG, track picker and update banner too;
+  the EPG's thumbnail rect is scaled with the same factor). A fixed Settings
+  choice is capped by `maxFitUiScale` so it cannot overflow the OSD; keep
+  `uiScaleFitHeight`/`uiScaleFitWidth` in step if the OSD grows. Never drive it
+  through `setState` on the player page.
 - **6-button baseline**: every user-facing flow in the client (not the web
   UI, which is desktop/mouse admin tooling by nature) must be fully
   operable with exactly six inputs — Up, Down, Left, Right, Select, Back —

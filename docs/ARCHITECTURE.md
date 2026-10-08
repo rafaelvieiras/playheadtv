@@ -1466,9 +1466,17 @@ client and takes the screen back when it ends), so leaving is part of the app.
   Navigator, is the shortest window side over 1080 (clamped 0.6 to 3), or a fixed
   step chosen in Settings ("Interface size"). Sizes are written as pixels at 1080p
   and read with `context.ui(px)`; stock Material pages and dialogs use
-  `UiScaled`. Applied so far to the mosaic, the OSD, Settings and the exit and
-  backend-compatibility dialogs; the EPG overlay, the track picker, the update
-  banner and the Remap controls / Offline cache pages still use fixed sizes.
+  `UiScaled`. Applied to every client screen: the mosaic, the OSD, the EPG
+  overlay (rows, channel column, header and details panel; the 3h span still
+  fills the width, so only the pixels-per-minute follow the width), the track
+  picker, the update banner and changelog, Settings, Remap controls, Offline
+  cache and the dialogs. The EPG's corner video thumbnail is scaled too
+  (`_videoThumbnailRect`, computed from the same factor without subscribing the
+  player page to it).
+  A fixed Settings choice is capped by what fits the window
+  (`maxFitUiScale`: the OSD needs `uiScaleFitHeight`/`uiScaleFitWidth` design
+  pixels), so a large choice on a small window cannot overflow it; the
+  automatic factor needs no cap.
 
 ## Releases and updates
 
