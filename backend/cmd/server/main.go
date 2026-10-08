@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"log"
 	"net/http"
@@ -66,6 +67,15 @@ func main() {
 	if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
 		if err := runHealthcheck(envOrDefault("PLAYHEADTV_ADDR", ":9394")); err != nil {
 			log.Fatal(err)
+		}
+		return
+	}
+	// `server reset-password` mints a single-use password reset token (see
+	// resetpassword.go); it works beside a running server.
+	if len(os.Args) > 1 && os.Args[1] == "reset-password" {
+		if err := runResetPassword(os.Args[2:], envOrDefault("PLAYHEADTV_DB_PATH", "./playheadtv.db"), os.Stdout, os.Stderr); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
 		}
 		return
 	}
@@ -223,7 +233,9 @@ func run() error {
 	// static shell (including the login screen) loads before any session
 	// exists; the API calls the SPA makes still go through RequireAuth as
 	// usual.
-	mux.Handle("/admin/", http.StripPrefix("/admin/", spaFileServer(webuiDist)))
+	// no-referrer keeps a reset token carried in the page URL from leaking to
+	// anything the page loads or links to.
+	mux.Handle("/admin/", noReferrer(http.StripPrefix("/admin/", spaFileServer(webuiDist))))
 
 	srv := &http.Server{Addr: addr, Handler: api.RequireAuth(db, mux)}
 
@@ -280,5 +292,13 @@ func spaFileServer(fsys fs.FS) http.Handler {
 			r.URL.Path = "/"
 		}
 		fileServer.ServeHTTP(w, r)
+	})
+}
+
+// noReferrer sets Referrer-Policy: no-referrer on every response of next.
+func noReferrer(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Referrer-Policy", "no-referrer")
+		next.ServeHTTP(w, r)
 	})
 }

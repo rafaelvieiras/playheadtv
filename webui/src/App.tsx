@@ -19,6 +19,7 @@ import { FillerPoolsPage } from '@/pages/FillerPoolsPage'
 import { FillerRuleEditorPage } from '@/pages/FillerRuleEditorPage'
 import { FillerRulesPage } from '@/pages/FillerRulesPage'
 import { LoginPage } from '@/pages/LoginPage'
+import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 import { MediaSourcesPage } from '@/pages/MediaSourcesPage'
 import { StreamSelectorPage } from '@/pages/StreamSelectorPage'
 
@@ -26,6 +27,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/reset-password" element={<ResetPasswordPage />} />
       <Route
         element={
           <RequireAuth>

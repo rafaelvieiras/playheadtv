@@ -87,6 +87,7 @@ func registerAuth(mux Router, db storage.DB) {
 	mux.HandleFunc("POST /sessions", login(db))
 	mux.HandleFunc("DELETE /sessions", logout(db))
 	mux.HandleFunc("GET /me", getMe(db))
+	mux.HandleFunc("POST /password-resets/consume", consumePasswordReset(db))
 	mux.HandleFunc("POST /devices", createDevice(db))
 	mux.HandleFunc("GET /devices", listDevices(db))
 	mux.HandleFunc("DELETE /devices/{id}", deleteDevice(db))
@@ -100,8 +101,8 @@ type appUserRequest struct {
 // bootstrapAppUser creates the tenant's one and only app_user. There's no
 // invite/registration flow yet (no auth roadmap item covers multi-user), so
 // this only ever succeeds once per tenant — after that, credentials are
-// managed out of band (direct DB access) until a real user-management slice
-// exists.
+// recovered with `server reset-password` (password_reset.go) until a real
+// user-management slice exists.
 func bootstrapAppUser(db storage.DB) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req appUserRequest
@@ -398,6 +399,10 @@ func isOpenPath(r *http.Request) bool {
 		return true
 	}
 	if r.Method == http.MethodPost && r.URL.Path == "/sessions" {
+		return true
+	}
+	// The token in the body is the credential (see password_reset.go).
+	if r.Method == http.MethodPost && r.URL.Path == "/password-resets/consume" {
 		return true
 	}
 	// The admin SPA's static shell (HTML/JS/CSS) has to be public — the

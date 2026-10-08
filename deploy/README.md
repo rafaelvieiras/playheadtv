@@ -68,8 +68,30 @@ curl -sS -X POST http://127.0.0.1:9394/app-users \
 
 Use your own address and password (not these placeholders; the reply echoes the
 user without the password). Then open `https://<your host>/admin/` and sign in.
-There is no password reset flow yet: credentials are changed by direct database
-access.
+If the password is lost, see "Recovering a lost admin password" below.
+
+### Recovering a lost admin password
+
+Run the reset command on the server, inside the running container (the image has
+no shell; the command is part of the server binary):
+
+```sh
+docker exec <container> /server reset-password
+```
+
+It prints a single-use token (valid 15 minutes; `--ttl 30m` changes that, up to
+1 hour) and the page that accepts it. Open
+`https://<your host>/admin/reset-password#token=<token>` (or open the page and
+paste the token), choose the new password twice and sign in. Notes:
+
+- It works while the server is running; it talks to the same database file
+  through `PLAYHEADTV_DB_PATH` (set in the image).
+- `--email <address>` selects the user; it is only needed with several users.
+- Running it again replaces the pending token. Five wrong attempts also burn it.
+- Resetting ends every web UI and MCP session. Paired playback clients keep
+  working: device tokens are not touched.
+- Anyone who can run commands in the container can do this, which is why no
+  other credential is needed.
 
 ### Pairing a client
 
