@@ -64,10 +64,9 @@ void main() {
       await pumpUntil(tester, () => find.byKey(const Key('mosaic-page')).evaluate().isNotEmpty, failMessage: 'no mosaic on boot');
       await pumpUntil(tester, () => find.byKey(const Key('mosaic-tile-settings')).evaluate().isNotEmpty, failMessage: 'no Settings tile in the mosaic');
 
-      // Mosaic: Down leaves the featured video for the frame (first tile =
-      // the other channel), Right moves to the Settings tile, Select opens it.
-      await press(tester, LogicalKeyboardKey.arrowDown);
-      await press(tester, LogicalKeyboardKey.arrowRight);
+      // Mosaic: Up goes from the featured video to the nearest frame tile
+      // above it, the Settings tile; Select opens it.
+      await press(tester, LogicalKeyboardKey.arrowUp);
       await press(tester, LogicalKeyboardKey.enter);
       await pumpUntil(tester, () => find.byKey(const Key('settings-page')).evaluate().isNotEmpty, failMessage: 'Select on the Settings tile did not open Settings');
 

@@ -34,6 +34,8 @@ import 'config/config_file.dart';
 import 'update/app_update.dart';
 import 'update/compat.dart';
 import 'widgets/update_overlay.dart';
+import 'mosaic_layout.dart' show defaultMosaicSafeMargin;
+import 'ui/ui_scale.dart';
 import 'playhead_api.dart';
 import 'services/screen_awake.dart';
 import 'services/settings_service.dart';
@@ -72,6 +74,7 @@ class AppConfig {
   static Duration? _cacheSyncInterval;
   static String? _cacheDir;
   static bool? _startFullScreen;
+  static double? _mosaicSafeMargin;
   // The config file's settings (lib/config/config_file.dart), read once at
   // boot by loadConfigFile. A packaged install configures itself here; each
   // getter below falls back to it when neither a test override nor a
@@ -147,6 +150,15 @@ class AppConfig {
       file: _file,
       key: 'start_fullscreen',
       fallback: true);
+  // Share of the screen the mosaic leaves free on every side for display
+  // overscan: `mosaic_safe_margin_percent` in the config file (0 to 10), else
+  // 2%.
+  static double get mosaicSafeMargin {
+    if (_mosaicSafeMargin != null) return _mosaicSafeMargin!;
+    final v = _file['mosaic_safe_margin_percent'];
+    return v is num && v >= 0 && v <= 10 ? v / 100 : defaultMosaicSafeMargin;
+  }
+
   // Where the offline cache lives, only overridden by integration tests; null
   // (the app) means the platform's application support/cache directories.
   static String? get cacheDirOverride => _cacheDir;
@@ -165,6 +177,7 @@ class AppConfig {
     String? cacheDir,
     Duration? tailAttributionCap,
     bool? startFullScreen,
+    double? mosaicSafeMargin,
   }) {
     // Not part of the app's config: the guide's tail cap, shrunk by tests so a
     // tail goes past it within seconds. Every override resets it.
@@ -181,6 +194,7 @@ class AppConfig {
     _workingSetSize = workingSetSize;
     _cacheSyncInterval = cacheSyncInterval;
     _startFullScreen = startFullScreen;
+    _mosaicSafeMargin = mosaicSafeMargin;
     _cacheDir = cacheDir ?? Directory.systemTemp.createTempSync('playheadtv_cache_').path;
   }
 }
@@ -415,17 +429,19 @@ Future<void> _warnIfBackendIncompatible() async {
   if (context == null || !context.mounted) return;
   await showDialog<void>(
     context: context,
-    builder: (ctx) => AlertDialog(
-      key: const Key('backend-compat-dialog'),
-      title: const Text('Backend version not supported'),
-      content: Text(message),
-      actions: [
-        TextButton(
-          autofocus: true,
-          onPressed: () => Navigator.of(ctx).pop(),
-          child: const Text('OK'),
-        ),
-      ],
+    builder: (ctx) => UiScaled(
+      child: AlertDialog(
+        key: const Key('backend-compat-dialog'),
+        title: const Text('Backend version not supported'),
+        content: Text(message),
+        actions: [
+          TextButton(
+            autofocus: true,
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
     ),
   );
 }
@@ -449,7 +465,8 @@ class PlayheadSpikeApp extends StatelessWidget {
       navigatorKey: _appNavigatorKey,
       // The update banner / changelog sit above the Navigator: they never
       // rebuild a page (the Navigator is passed through as a child).
-      builder: (context, child) => UpdateOverlayHost(child: child ?? const SizedBox.shrink()),
+      builder: (context, child) =>
+          UiScaleHost(child: UpdateOverlayHost(child: child ?? const SizedBox.shrink())),
       theme: ThemeData.dark(),
       home: const _InitialRouteResolver(),
     );

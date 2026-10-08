@@ -21,4 +21,5 @@ abstract final class AppIcons {
   static const IconData controls = Symbols.sports_esports;
   static const IconData offlineCache = Symbols.cloud_sync;
   static const IconData fullScreen = Symbols.fullscreen;
+  static const IconData interfaceSize = Symbols.format_size;
 }

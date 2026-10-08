@@ -1448,6 +1448,28 @@ client and takes the screen back when it ends), so leaving is part of the app.
 - **Not done.** No dedicated "quit" `InputAction` (an optional accelerator) and no
   "don't ask again" option.
 
+### Mosaic geometry, navigation and UI scale
+
+- **Frame.** `computeMosaicLayout` (`lib/mosaic_layout.dart`) sizes the 4x4 frame
+  of 16:9 cells from the LayoutBuilder constraints: it fills the height minus a
+  small safe margin (2% per side by default, `mosaic_safe_margin_percent` in the
+  config file), centred, and falls back to fitting the width when the window is
+  too narrow. Only layout boxes change on a resize; the preview controller and its
+  texture are not recreated.
+- **Navigation.** `mosaicNavigate` (`lib/mosaic_nav.dart`) is a pure function over
+  the grid: each arrow goes to the nearest occupied tile that way (gap along the
+  axis, then offset across it), the featured 2x2 block being one target. With
+  nothing that way, a frame tile still enters the block when the block's centre
+  lies that way, else the focus stays. The opposite arrow of the last move
+  returns to its origin. The raw arrows stay outside `InputAction`.
+- **UI scale.** `UiScale` (`lib/ui/ui_scale.dart`), provided once above the
+  Navigator, is the shortest window side over 1080 (clamped 0.6 to 3), or a fixed
+  step chosen in Settings ("Interface size"). Sizes are written as pixels at 1080p
+  and read with `context.ui(px)`; stock Material pages and dialogs use
+  `UiScaled`. Applied so far to the mosaic, the OSD, Settings and the exit and
+  backend-compatibility dialogs; the EPG overlay, the track picker, the update
+  banner and the Remap controls / Offline cache pages still use fixed sizes.
+
 ## Releases and updates
 
 The backend and the client are released separately, each from its own tag,

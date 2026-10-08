@@ -169,9 +169,9 @@ void main() {
         failMessage: 'featured tile (channel 2) did not appear in the mosaic',
       );
 
-      // Move down from the featured tile (row 0) to the only surrounding tile
-      // (channel 7, row 1) and activate with Enter.
-      await pressKey(tester, LogicalKeyboardKey.arrowDown);
+      // Move left from the featured tile to the frame's first cell (channel 7,
+      // top-left corner; Settings sits next to it) and activate with Enter.
+      await pressKey(tester, LogicalKeyboardKey.arrowLeft);
       await tester.pump();
       await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();

@@ -1128,6 +1128,14 @@ actionable checklist.
       Not done / known: no optional quit shortcut and no "don't ask again";
       the Android path (`SystemNavigator.pop`, and whether Android TV keeps the
       dialog) is untested.
+- [x] Client mosaic fills the screen vertically, navigates spatially, and the UI
+      scales with the screen (mosaic, OSD, Settings, exit dialog).
+      Design: `docs/ARCHITECTURE.md` "Mosaic geometry, navigation and UI scale".
+      Tests: `client/test/mosaic_layout_test.dart`, `mosaic_nav_test.dart`,
+      `ui_scale_test.dart`, `ui_scale_golden_test.dart` (goldens in
+      `client/test/goldens/`), `client/integration_test/mosaic_nav_scale_test.dart`.
+      Not done / known: the EPG overlay, track picker, update banner and the
+      Remap controls / Offline cache pages are not scaled yet.
 
 ## Phase 6 — Platforms
 

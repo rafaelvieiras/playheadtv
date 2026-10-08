@@ -26,6 +26,7 @@ import 'package:video_player/video_player.dart';
 import 'package:fvp/fvp.dart'; // getMediaInfo() on VideoPlayerController
 
 import '../osd_subject.dart';
+import '../ui/ui_scale.dart';
 import 'app_icons.dart';
 import 'art_image.dart';
 
@@ -68,6 +69,9 @@ class ChannelOsd extends StatefulWidget {
   final List<OsdChannelShortcut> recentChannels;
   final void Function(String channelId) onSelectChannel;
 
+  /// The wall clock; tests pass a fixed one.
+  final DateTime Function() now;
+
   const ChannelOsd({
     required Key key,
     required this.channelNumber,
@@ -85,6 +89,7 @@ class ChannelOsd extends StatefulWidget {
     required this.onOpenAudio,
     required this.recentChannels,
     required this.onSelectChannel,
+    this.now = DateTime.now,
   }) : super(key: key);
 
   @override
@@ -92,6 +97,10 @@ class ChannelOsd extends StatefulWidget {
 }
 
 class ChannelOsdState extends State<ChannelOsd> {
+  // Pixels at 1080p scaled to this screen (the app-wide UiScale). Reading it
+  // subscribes only this widget, never the player page.
+  double _u(double px) => context.ui(px);
+
   Timer? _tickTimer;
   String? _focused;
 
@@ -206,13 +215,13 @@ class ChannelOsdState extends State<ChannelOsd> {
   }
 
   Widget _chip(String text) => Container(
-        margin: const EdgeInsets.only(left: 8),
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+        margin: EdgeInsets.only(left: _u(8)),
+        padding: EdgeInsets.symmetric(horizontal: _u(6), vertical: _u(1)),
         decoration: BoxDecoration(
           color: Colors.white24,
-          borderRadius: BorderRadius.circular(3),
+          borderRadius: BorderRadius.circular(_u(3)),
         ),
-        child: Text(text, style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.bold)),
+        child: Text(text, style: TextStyle(color: Colors.white, fontSize: _u(11), fontWeight: FontWeight.bold)),
       );
 
   Widget _button(Key key, IconData icon, {String? label, bool enabled = true, bool focused = false}) {
@@ -220,19 +229,19 @@ class ChannelOsdState extends State<ChannelOsd> {
       opacity: enabled ? 1 : 0.3,
       child: Container(
         key: key,
-        padding: EdgeInsets.symmetric(horizontal: label == null ? 10 : 12, vertical: 8),
+        padding: EdgeInsets.symmetric(horizontal: _u(label == null ? 10 : 12), vertical: _u(8)),
         decoration: BoxDecoration(
           color: focused ? Colors.white24 : Colors.transparent,
-          border: Border.all(color: focused ? Colors.white : Colors.transparent, width: 2),
-          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: focused ? Colors.white : Colors.transparent, width: _u(2)),
+          borderRadius: BorderRadius.circular(_u(8)),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: Colors.white, size: 28),
+            Icon(icon, color: Colors.white, size: _u(28)),
             if (label != null) ...[
-              const SizedBox(width: 8),
-              Text(label, style: const TextStyle(color: Colors.white, fontSize: 16)),
+              SizedBox(width: _u(8)),
+              Text(label, style: TextStyle(color: Colors.white, fontSize: _u(16))),
             ],
           ],
         ),
@@ -242,38 +251,38 @@ class ChannelOsdState extends State<ChannelOsd> {
 
   Widget _channelCard(OsdChannelShortcut c, {required bool focused}) {
     final url = c.artUrl;
-    Widget fallback() => const Icon(AppIcons.channels, color: Colors.white, size: 20);
+    Widget fallback() => Icon(AppIcons.channels, color: Colors.white, size: _u(20));
     return Container(
       key: Key('osd-recent-${c.id}'),
-      width: 170,
-      margin: const EdgeInsets.only(right: 12),
-      padding: const EdgeInsets.all(8),
+      width: _u(170),
+      margin: EdgeInsets.only(right: _u(12)),
+      padding: EdgeInsets.all(_u(8)),
       decoration: BoxDecoration(
         color: focused ? Colors.white24 : Colors.white10,
-        border: Border.all(color: focused ? Colors.white : Colors.transparent, width: 2),
-        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: focused ? Colors.white : Colors.transparent, width: _u(2)),
+        borderRadius: BorderRadius.circular(_u(8)),
       ),
       child: Row(
         children: [
           Container(
-            width: 36,
-            height: 36,
+            width: _u(36),
+            height: _u(36),
             decoration: const BoxDecoration(color: Colors.white12, shape: BoxShape.circle),
             clipBehavior: Clip.antiAlias,
             alignment: Alignment.center,
             child: url == null ? fallback() : ArtImage(url, fallback: (_) => fallback()),
           ),
-          const SizedBox(width: 8),
+          SizedBox(width: _u(8)),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('${c.number}', style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+                Text('${c.number}', style: TextStyle(color: Colors.white, fontSize: _u(14), fontWeight: FontWeight.bold)),
                 Text(
                   c.name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white70, fontSize: 12),
+                  style: TextStyle(color: Colors.white70, fontSize: _u(12)),
                 ),
               ],
             ),
@@ -284,12 +293,12 @@ class ChannelOsdState extends State<ChannelOsd> {
   }
 
   Widget _logo() {
-    Widget fallback() => const Icon(AppIcons.channels, color: Colors.white, size: 32);
+    Widget fallback() => Icon(AppIcons.channels, color: Colors.white, size: _u(32));
     final url = widget.channelArtUrl;
     return Container(
       key: const Key('osd-channel-logo'),
-      width: 64,
-      height: 64,
+      width: _u(64),
+      height: _u(64),
       decoration: const BoxDecoration(color: Colors.white12, shape: BoxShape.circle),
       clipBehavior: Clip.antiAlias,
       alignment: Alignment.center,
@@ -313,7 +322,7 @@ class ChannelOsdState extends State<ChannelOsd> {
       duration = Duration.zero;
     } else if (progressByClock) {
       duration = endAt.difference(startAt);
-      final elapsed = DateTime.now().toUtc().difference(startAt);
+      final elapsed = widget.now().toUtc().difference(startAt);
       position = elapsed.isNegative ? Duration.zero : (elapsed > duration ? duration : elapsed);
     } else {
       position = widget.controller?.value.position ?? Duration.zero;
@@ -328,21 +337,21 @@ class ChannelOsdState extends State<ChannelOsd> {
       key: const Key('channel-osd'),
       children: [
         Positioned(
-          top: 24,
-          right: 32,
+          top: _u(24),
+          right: _u(32),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
-                _hhmm(DateTime.now()),
+                _hhmm(widget.now()),
                 key: const Key('osd-clock'),
-                style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w500),
+                style: TextStyle(color: Colors.white, fontSize: _u(28), fontWeight: FontWeight.w500),
               ),
               if (!channelOnly)
                 Text(
                   'Ends ${_hhmm(endAt)}',
                   key: const Key('osd-ends-at'),
-                  style: const TextStyle(color: Colors.white70, fontSize: 14),
+                  style: TextStyle(color: Colors.white70, fontSize: _u(14)),
                 ),
             ],
           ),
@@ -352,7 +361,7 @@ class ChannelOsdState extends State<ChannelOsd> {
           right: 0,
           bottom: 0,
           child: Container(
-            padding: const EdgeInsets.fromLTRB(32, 48, 32, 20),
+            padding: EdgeInsets.fromLTRB(_u(32), _u(48), _u(32), _u(20)),
             decoration: const BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
@@ -367,7 +376,7 @@ class ChannelOsdState extends State<ChannelOsd> {
                 Row(
                   children: [
                     _logo(),
-                    const SizedBox(width: 16),
+                    SizedBox(width: _u(16)),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -377,31 +386,31 @@ class ChannelOsdState extends State<ChannelOsd> {
                             key: const Key('osd-item-title'),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.bold),
+                            style: TextStyle(color: Colors.white, fontSize: _u(26), fontWeight: FontWeight.bold),
                           ),
-                          const SizedBox(height: 4),
+                          SizedBox(height: _u(4)),
                           Row(
                             children: [
                               Text(
                                 '${widget.channelNumber}',
                                 key: const Key('osd-channel-number'),
-                                style: const TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.bold),
+                                style: TextStyle(color: Colors.white, fontSize: _u(15), fontWeight: FontWeight.bold),
                               ),
-                              const Text(' · ', style: TextStyle(color: Colors.white70, fontSize: 15)),
+                              Text(' · ', style: TextStyle(color: Colors.white70, fontSize: _u(15))),
                               Flexible(
                                 child: Text(
                                   widget.channelName.toUpperCase(),
                                   key: const Key('osd-channel-name'),
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(color: Colors.white70, fontSize: 15, letterSpacing: 0.5),
+                                  style: TextStyle(color: Colors.white70, fontSize: _u(15), letterSpacing: 0.5),
                                 ),
                               ),
                               if (!channelOnly)
                               Text(
                                 ' · ${_hhmm(startAt)}–${_hhmm(endAt)}',
                                 key: const Key('osd-program-times'),
-                                style: const TextStyle(color: Colors.white70, fontSize: 15),
+                                style: TextStyle(color: Colors.white70, fontSize: _u(15)),
                               ),
                               for (final c in _chips()) _chip(c),
                             ],
@@ -411,7 +420,7 @@ class ChannelOsdState extends State<ChannelOsd> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 8),
+                SizedBox(height: _u(8)),
                 // Transport controls: laid out now, wired by the follow-up
                 // (seek / skip / back to live) — dimmed and never focused.
                 Row(
@@ -423,31 +432,31 @@ class ChannelOsdState extends State<ChannelOsd> {
                     _button(const Key('osd-btn-next'), AppIcons.skipNext, enabled: false),
                   ],
                 ),
-                const SizedBox(height: 4),
+                SizedBox(height: _u(4)),
                 Row(
                   children: [
                     Expanded(
                       child: ClipRRect(
-                        borderRadius: BorderRadius.circular(4),
+                        borderRadius: BorderRadius.circular(_u(4)),
                         child: LinearProgressIndicator(
                           key: const Key('osd-progress'),
                           value: progress,
-                          minHeight: 6,
+                          minHeight: _u(6),
                           backgroundColor: Colors.white24,
                           valueColor: const AlwaysStoppedAnimation<Color>(Colors.lightBlueAccent),
                         ),
                       ),
                     ),
                     if (!channelOnly) ...[
-                      const SizedBox(width: 12),
+                      SizedBox(width: _u(12)),
                       Text(
                         '${_fmtDuration(position)} / ${_fmtDuration(duration)}',
-                        style: const TextStyle(color: Colors.white70, fontSize: 13),
+                        style: TextStyle(color: Colors.white70, fontSize: _u(13)),
                       ),
                     ],
                   ],
                 ),
-                const SizedBox(height: 8),
+                SizedBox(height: _u(8)),
                 Row(
                   children: [
                     if (has(_captions))
@@ -455,26 +464,26 @@ class ChannelOsdState extends State<ChannelOsd> {
                     if (has(_audio))
                       _button(const Key('osd-btn-audio'), AppIcons.audioTrack, focused: _focused == _audio),
                     if (nextItemLabel != null) ...[
-                      const SizedBox(width: 16),
+                      SizedBox(width: _u(16)),
                       Flexible(
                         child: Text(
                           'Up next: $nextItemLabel',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(color: Colors.white60, fontSize: 13, fontStyle: FontStyle.italic),
+                          style: TextStyle(color: Colors.white60, fontSize: _u(13), fontStyle: FontStyle.italic),
                         ),
                       ),
                     ],
                   ],
                 ),
                 if (widget.recentChannels.isNotEmpty) ...[
-                  const SizedBox(height: 12),
-                  const Text(
+                  SizedBox(height: _u(12)),
+                  Text(
                     'Channels',
-                    key: Key('osd-channels-title'),
-                    style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                    key: const Key('osd-channels-title'),
+                    style: TextStyle(color: Colors.white, fontSize: _u(16), fontWeight: FontWeight.bold),
                   ),
-                  const SizedBox(height: 8),
+                  SizedBox(height: _u(8)),
                   SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: Row(
