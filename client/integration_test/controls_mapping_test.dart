@@ -139,7 +139,9 @@ void main() {
       await tester.pumpWidget(const PlayheadSpikeApp());
       await pumpUntil(
         tester,
-        () => find.byKey(const Key('mosaic-page')).evaluate().isNotEmpty,
+        // The tiles load after the page itself: Up before the Settings tile
+        // exists has nothing to move to.
+        () => find.byKey(const Key('mosaic-page')).evaluate().isNotEmpty && find.byKey(const Key('mosaic-tile-settings')).evaluate().isNotEmpty,
         failMessage: 'mosaic did not appear on boot with no history',
       );
 
@@ -258,7 +260,9 @@ void main() {
       await tester.pumpWidget(const PlayheadSpikeApp());
       await pumpUntil(
         tester,
-        () => find.byKey(const Key('mosaic-page')).evaluate().isNotEmpty,
+        // The tiles load after the page itself: Up before the Settings tile
+        // exists has nothing to move to.
+        () => find.byKey(const Key('mosaic-page')).evaluate().isNotEmpty && find.byKey(const Key('mosaic-tile-settings')).evaluate().isNotEmpty,
         failMessage: 'mosaic did not appear on boot with no history',
       );
 
