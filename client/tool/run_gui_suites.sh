@@ -24,8 +24,10 @@
 # run is not disturbed by edits in progress), in a container with its own
 # Xvfb 1920x1080x24, D-Bus, window manager, HOME and cache directory. Limits per
 # container: 2 CPUs, 4 GB RAM, 1 GB /dev/shm (override: GUI_CPUS, GUI_MEMORY,
-# GUI_SHM). Cache volumes (pub, Go build/modules): playheadtv-gui-pub and
-# playheadtv-gui-go; remove with --prune.
+# GUI_SHM). Cache volumes (pub, Go build/modules, Mesa shader cache):
+# playheadtv-gui-pub, playheadtv-gui-go and playheadtv-gui-mesa; remove with
+# --prune. The shader cache must stay warm: libmdk crashes on a cold one (see
+# entry.sh), so the first run per image primes it with one throwaway suite run.
 #
 # Result labels: PASS; FLAKY (failed with a known environmental signature,
 # passed on the single retry: reported, never hidden); FAIL (an assertion
@@ -41,7 +43,7 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 IMAGE=playheadtv-gui:local
 J=2; TMO=900; RECORD=0; RETRY=1; WORKTREE=0; SHARD=""; OUTROOT="$ROOT/client/build/gui-runs"
-PUBVOL=playheadtv-gui-pub; GOVOL=playheadtv-gui-go
+PUBVOL=playheadtv-gui-pub; GOVOL=playheadtv-gui-go; MESAVOL=playheadtv-gui-mesa
 # Failures that are environmental (the app died or never started, teardown race),
 # never an assertion failure.
 FLAKE_RE='Unable to start the app|Error waiting for a debug connection|did not complete|Test process is no longer needed|stalled'
@@ -57,7 +59,7 @@ while [ $# -gt 0 ]; do
     --worktree) WORKTREE=1; shift;;
     --shard) SHARD=$2; shift 2;;
     --no-retry) RETRY=0; shift;;
-    --prune) docker volume rm "$PUBVOL" "$GOVOL"; exit $?;;
+    --prune) docker volume rm "$PUBVOL" "$GOVOL" "$MESAVOL"; exit $?;;
     -h|--help) sed -n '2,/^set -u/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0;;
     --) shift; break;;
     -*) echo "unknown option $1" >&2; exit 2;;
@@ -100,7 +102,7 @@ PREFIX=playheadtv-gui-$$
 cleanup() { docker ps -aq --filter "name=^$PREFIX-" | xargs -r docker rm -f >/dev/null 2>&1; rm -rf "$SNAP"; }
 trap cleanup EXIT
 trap 'exit 130' INT TERM
-docker volume create "$PUBVOL" >/dev/null; docker volume create "$GOVOL" >/dev/null
+for v in "$PUBVOL" "$GOVOL" "$MESAVOL"; do docker volume create "$v" >/dev/null; done
 
 attempt() { # suite name n -> exit code; writes <out>/rc as "rc seconds"
   local suite=$1 name=$2 n=$3 out="$RUN/$2/attempt-$3" cname="$PREFIX-$2-$3"
@@ -108,7 +110,7 @@ attempt() { # suite name n -> exit code; writes <out>/rc as "rc seconds"
   local t0e t0=$SECONDS; t0e=$(date +%s)
   timeout --signal=TERM "$TMO" docker run --rm --init --name "$cname" \
     --cpus "${GUI_CPUS:-2}" --memory "${GUI_MEMORY:-4g}" --shm-size "${GUI_SHM:-1g}" \
-    -v "$SNAP":/src:ro -v "$out":/out -v "$PUBVOL":/cache/pub -v "$GOVOL":/cache/go \
+    -v "$SNAP":/src:ro -v "$out":/out -v "$PUBVOL":/cache/pub -v "$GOVOL":/cache/go -v "$MESAVOL":/cache/mesa \
     -e RECORD=$RECORD -e OUT=/out -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
     "$IMAGE" "$suite" >"$out/container.log" 2>&1
   local rc=$?
@@ -140,6 +142,19 @@ job() { # suite -> one summary line
     printf '%s\tFAIL\t%ss\t\n' "$name" "$dur"
   fi
 }
+
+prime() { # warm the Mesa shader cache once per image (see entry.sh)
+  local id marker; id=$(docker image inspect -f '{{.Id}}' "$IMAGE" | cut -d: -f2 | cut -c1-12)
+  marker=.primed-$id
+  docker run --rm -v "$MESAVOL":/m --entrypoint test "$IMAGE" -f "/m/$marker" && return
+  echo "priming the shader cache (once per image)"
+  # A cold run may itself crash (that is the problem being worked around), but it
+  # leaves the cache warmer; repeat until a run passes.
+  local n
+  for n in 1 2 3; do attempt integration_test/channel_navigation_test.dart _prime "$n" && break; done
+  docker run --rm -v "$MESAVOL":/m --entrypoint touch "$IMAGE" "/m/$marker"
+}
+prime
 
 : >"$RUN/summary.tsv"; start=$SECONDS
 echo "image $IMAGE, ${#suites[@]} suite(s), -j $J, timeout ${TMO}s, artifacts in $RUN"

@@ -319,7 +319,12 @@ keep in mind when touching `client/`:
   `CUDA_VISIBLE_DEVICES=-1`: on hosts with a proprietary NVIDIA driver, mdk
   probes the `CUDA` decoder first and segfaults on the raster thread under Xvfb,
   which shows up only as "did not complete" / "Test process is no longer
-  needed".
+  needed". A second, software-GL cause of the same symptom: libmdk's
+  `VideoShader::update` reads freed memory on the raster thread when Mesa's
+  shader disk cache is cold, so the second app boot of a process dies at its
+  first channel switch. Run with a warm, persistent `MESA_SHADER_CACHE_DIR` (a
+  throwaway `$HOME` has none; `run_gui_suites.sh` keeps one in a volume and primes
+  it) and never turn the cache off.
   `client/tool/run_gui_suites.sh [-j N] [suite ...]` runs suites headless, one
   container each, with all of that preconfigured and no shared OS focus (so the
   focus-stealing problem above does not apply); see `docs/ARCHITECTURE.md`
