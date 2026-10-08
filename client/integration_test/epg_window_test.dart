@@ -255,13 +255,21 @@ void main() {
       expect(p.exact('/epg').first.query.containsKey('end'), isFalse);
 
       var worstLead = 0;
+      final samples = <String>[];
       await pumpUntil(
         tester,
         () {
           final k = currentProgram();
           if (k == null) return false;
-          final lead = channel.last.programOrdinal - k;
+          // Ordinals count from the first program the client knows, which is
+          // the one on air when it tuned in: on a loaded machine that is no
+          // longer ROLL 0, so the lead is measured from the on-air unit, not
+          // from the number in its title.
+          final onAir = channel.where((u) => u.label == 'ROLL $k');
+          if (onAir.isEmpty) return false;
+          final lead = channel.last.programOrdinal - onAir.first.programOrdinal;
           if (lead > worstLead) worstLead = lead;
+          samples.add('ROLL $k lead $lead');
           expect(lead, lessThanOrEqualTo(1), reason: 'never more than the on-air program + N=1 in the working set');
           return k >= 4;
         },
@@ -271,7 +279,7 @@ void main() {
 
       // The working set rolled with the working set size, entirely from the
       // cache: playing on never asked the backend for the schedule again.
-      expect(worstLead, 1);
+      expect(worstLead, 1, reason: samples.join('\n'));
       expect(p.exact('/epg'), hasLength(1), reason: describe(p));
       expect(p.to('/catalog-items'), isEmpty, reason: describe(p));
     });
