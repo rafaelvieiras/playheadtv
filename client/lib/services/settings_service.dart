@@ -35,6 +35,7 @@ class SettingsService implements UpdateNoticeStore {
   static const _exhaustedBehaviorKey = 'cache_exhausted_behavior';
   static const _cacheWindowLimitKey = 'cache_window_limit_hours';
   static const _startFullScreenKey = 'start_fullscreen';
+  static const _uiScaleKey = 'ui_scale_override';
 
   /// Choices offered for the cache window limit (hours).
   static const cacheWindowLimitChoicesHours = [6, 12, 24, 48, 72, 168];
@@ -79,6 +80,16 @@ class SettingsService implements UpdateNoticeStore {
   bool startFullScreen(bool defaultValue) => _prefs.getBool(_startFullScreenKey) ?? defaultValue;
 
   Future<void> setStartFullScreen(bool value) => _prefs.setBool(_startFullScreenKey, value);
+
+  /// The user's fixed interface size (a factor, see ui/ui_scale.dart), or null
+  /// for Automatic.
+  double? get uiScaleOverride {
+    final v = _prefs.getDouble(_uiScaleKey);
+    return v != null && v > 0 ? v : null;
+  }
+
+  Future<void> setUiScaleOverride(double? value) =>
+      value == null ? _prefs.remove(_uiScaleKey) : _prefs.setDouble(_uiScaleKey, value);
 
   static Future<SettingsService> create() async => SettingsService(await SharedPreferences.getInstance());
 

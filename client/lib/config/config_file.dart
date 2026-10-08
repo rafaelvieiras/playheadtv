@@ -10,6 +10,7 @@
 //     "working_set_size": 5,
 //     "epg_sync_interval_minutes": 15,
 //     "start_fullscreen": true,
+//     "mosaic_safe_margin_percent": 2,
 //     "auto_update": true,
 //     "update_channel": "stable"
 //   }

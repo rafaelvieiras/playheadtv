@@ -5,16 +5,15 @@
 // (here decorative: its own VideoPlayerController, without the player's
 // crossfade/preload engine).
 //
-// Layout: a FRAME of up to 12 tiles (`_ringSlots`) surrounds the featured
-// video, which occupies the central 2x2 block — 4 tiles on top, 4 on the
-// bottom (the corners count in those 4), 2 on each side (left/right, not
-// counting the corners). Navigation: `arrowUp`/`arrowDown` toggles focus
-// between the center (video) and the frame (it always enters the frame at the
-// first cell); `arrowLeft`/`arrowRight`, with focus already in the frame, walk
-// along the `_ringSlots` sequence (clockwise, without wrapping around the
-// edge). Literal (arrowLeft/Right/Up/Down) + Enter, bypassing
-// KeyBindingsService/InputAction — a deliberate decision, a 2D grid is a
-// different context from the linear player (see AGENTS.md).
+// Layout: a FRAME of up to 12 tiles (`mosaicRingSlots`) surrounds the featured
+// video, which occupies the central 2x2 block of a 4x4 grid. The frame fills
+// the screen vertically (mosaic_layout.dart) and everything in it scales with
+// it and with the app-wide UiScale (widgets/mosaic_frame.dart). Navigation is
+// spatial (mosaic_nav.dart): each arrow goes to the nearest occupied tile in
+// that direction, the featured block being one target. Literal
+// (arrowLeft/Right/Up/Down) + Enter, bypassing KeyBindingsService/InputAction —
+// a deliberate decision, a 2D grid is a different context from the linear
+// player (see AGENTS.md).
 //
 // Back (`InputAction.back`, Esc by default) is the one remappable key here: it
 // opens the "Exit Playhead TV?" confirmation, the only way to leave the app.
@@ -32,8 +31,10 @@ import '../cache/offline_runtime.dart';
 import '../cache/schedule_sync.dart';
 import '../main.dart';
 import '../playhead_api.dart';
-import '../widgets/app_icons.dart';
-import '../widgets/art_image.dart';
+import '../ui/ui_scale.dart';
+import '../mosaic_nav.dart';
+import '../widgets/exit_dialog.dart';
+import '../widgets/mosaic_frame.dart';
 import '../input/input_action.dart';
 import '../services/app_exit.dart';
 import '../services/screen_awake.dart';
@@ -72,17 +73,9 @@ class _MosaicPageState extends State<MosaicPage> {
   List<_MosaicTile> _tiles = [];
   List<FocusNode> _focusNodes = [];
   int _focusedIndex = 0;
-
-  // (row, column) positions of the frame, in a 4x4 logical grid whose central
-  // 2x2 block (rows 1-2, columns 1-2) is the featured video. Order: clockwise
-  // from the top-left corner — it is also the fill order (`_tiles.skip(1)`)
-  // and the arrowLeft/Right navigation order.
-  static const List<({int row, int col})> _ringSlots = [
-    (row: 0, col: 0), (row: 0, col: 1), (row: 0, col: 2), (row: 0, col: 3), // top
-    (row: 1, col: 3), (row: 2, col: 3), // right side
-    (row: 3, col: 3), (row: 3, col: 2), (row: 3, col: 1), (row: 3, col: 0), // bottom
-    (row: 2, col: 0), (row: 1, col: 0), // left side
-  ];
+  // The previous arrow move (where it came from and which way), so the exact
+  // opposite arrow returns to the origin (mosaic_nav.dart, `returnTo`).
+  ({int from, MosaicDirection direction})? _lastMove;
 
   VideoPlayerController? _previewController;
 
@@ -137,7 +130,7 @@ class _MosaicPageState extends State<MosaicPage> {
   // Resolves the featured channel (the most recently watched, or the one with
   // the lowest `number` — same fallback `_bootstrapChannels` already uses in
   // the player) and up to 11 surrounding tiles (the whole frame,
-  // `_ringSlots.length`): first the rest of the recent history, then random
+  // `mosaicRingSlots.length`): first the rest of the recent history, then random
   // channels not yet shown, never repeating a channel.
   void _resolveTiles() {
     final byId = {for (final c in _allChannels) c.id: c};
@@ -154,10 +147,10 @@ class _MosaicPageState extends State<MosaicPage> {
       recentRest = recentIds;
     }
 
-    // The frame has `_ringSlots.length` cells; one of them is always the fixed
+    // The frame has `mosaicRingSlots.length` cells; one of them is always the fixed
     // Settings tile, so at most `_ringSlots.length - 1` surrounding channels
     // fit.
-    final maxSurrounding = _ringSlots.length - 1;
+    final maxSurrounding = mosaicRingSlots.length - 1;
     final shown = <String>{featured.id};
     final surrounding = <PlayheadChannel>[];
     for (final id in recentRest) {
@@ -236,26 +229,19 @@ class _MosaicPageState extends State<MosaicPage> {
     }
   }
 
-  // Moves within the frame (clockwise/counterclockwise following the order of
-  // `_ringSlots`); no effect if the current focus is the center (video).
-  void _moveRing(int delta) {
-    if (_focusedIndex == 0) return;
-    final ringLen = _tiles.length - 1;
-    final next = _focusedIndex - 1 + delta;
-    if (next < 0 || next >= ringLen) return; // stops at the edge, no wrap-around
-    _focusIndex(next + 1);
-  }
-
-  // Toggles between the center (video) and the frame: from the center, it
-  // always enters at the first cell of the frame; from any cell of the frame,
-  // it always goes back to the center — there's no per-cell "above"/"below"
-  // position.
-  void _toggleCenterRing() {
-    if (_focusedIndex == 0) {
-      if (_tiles.length > 1) _focusIndex(1);
-    } else {
-      _focusIndex(0);
-    }
+  // Spatial move (see mosaic_nav.dart); the focus stays when nothing lies that
+  // way.
+  void _move(MosaicDirection direction) {
+    final last = _lastMove;
+    final target = mosaicNavigate(
+      tileCount: _tiles.length,
+      focused: _focusedIndex,
+      direction: direction,
+      returnTo: last != null && last.direction == direction.opposite ? last.from : null,
+    );
+    if (target == _focusedIndex) return;
+    _lastMove = (from: _focusedIndex, direction: direction);
+    _focusIndex(target);
   }
 
   void _focusIndex(int idx) {
@@ -302,31 +288,8 @@ class _MosaicPageState extends State<MosaicPage> {
   Future<bool> _askExit() async {
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => Focus(
-        onKeyEvent: (node, event) {
-          if (event is KeyDownEvent && _keyBindings?.resolve(event.logicalKey) == InputAction.back) {
-            Navigator.of(dialogContext).pop(false);
-            return KeyEventResult.handled;
-          }
-          return KeyEventResult.ignored;
-        },
-        child: AlertDialog(
-          key: const Key('exit-dialog'),
-          title: const Text('Exit Playhead TV?'),
-          actions: [
-            TextButton(
-              key: const Key('exit-cancel'),
-              autofocus: true,
-              onPressed: () => Navigator.of(dialogContext).pop(false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              key: const Key('exit-confirm'),
-              onPressed: () => Navigator.of(dialogContext).pop(true),
-              child: const Text('Exit'),
-            ),
-          ],
-        ),
+      builder: (dialogContext) => ExitDialog(
+        isBack: (key) => _keyBindings?.resolve(key) == InputAction.back,
       ),
     );
     return confirmed == true;
@@ -367,11 +330,13 @@ class _MosaicPageState extends State<MosaicPage> {
     }
     if (_tiles.isEmpty) return;
     if (key == LogicalKeyboardKey.arrowLeft) {
-      _moveRing(-1);
+      _move(MosaicDirection.left);
     } else if (key == LogicalKeyboardKey.arrowRight) {
-      _moveRing(1);
-    } else if (key == LogicalKeyboardKey.arrowUp || key == LogicalKeyboardKey.arrowDown) {
-      _toggleCenterRing();
+      _move(MosaicDirection.right);
+    } else if (key == LogicalKeyboardKey.arrowUp) {
+      _move(MosaicDirection.up);
+    } else if (key == LogicalKeyboardKey.arrowDown) {
+      _move(MosaicDirection.down);
     } else if (key == LogicalKeyboardKey.enter) {
       unawaited(_activateFocused());
     }
@@ -388,126 +353,28 @@ class _MosaicPageState extends State<MosaicPage> {
     super.dispose();
   }
 
-  Widget _channelFallback(PlayheadChannel c) => Container(
-        color: Colors.grey.shade900,
-        alignment: Alignment.center,
-        child: Text(
-          '${c.number}\n${c.name}',
-          textAlign: TextAlign.center,
-          style: const TextStyle(color: Colors.white, fontSize: 18),
-        ),
-      );
-
-  Widget _buildFeaturedTile() {
-    final channelData = _tiles[0].channel!;
-    final focused = _focusedIndex == 0;
-    return Focus(
-      focusNode: _focusNodes[0],
-      child: Container(
-        key: Key('mosaic-tile-${channelData.id}'),
-        width: double.infinity,
-        height: double.infinity,
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          border: Border.all(color: focused ? Colors.white : Colors.white24, width: focused ? 4 : 2),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            // Positioned.fill (not the bare widget): a Stack child without
-            // Positioned breaks the fvp/libmdk GL texture composition on some
-            // GPU/driver combinations (seen with NVIDIA's proprietary driver)
-            // — same bug/root cause documented in main.dart on the EPG's
-            // ValueListenableBuilder, isolated by reverse bisection. It
-            // reproduced here too: the featured preview stayed black even
-            // though the audio played normally, until this change.
-            Positioned.fill(
-              child: _previewController != null && _previewController!.value.isInitialized
-                  ? FittedBox(
-                      fit: BoxFit.cover,
-                      child: SizedBox(
-                        width: _previewController!.value.size.width,
-                        height: _previewController!.value.size.height,
-                        child: VideoPlayer(_previewController!),
-                      ),
-                    )
-                  : channelData.guideArtUrl != null
-                      ? ArtImage(
-                          channelData.guideArtUrl!,
-                          fallback: (context) => _channelFallback(channelData),
-                        )
-                      : _channelFallback(channelData),
-            ),
-            Positioned(
-              left: 12,
-              bottom: 12,
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                color: Colors.black54,
-                child: Text(
-                  '${channelData.number} — ${channelData.name}',
-                  style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+  MosaicTileSpec _specFor(_MosaicTile tile) {
+    if (tile.isSettings) return const MosaicTileSpec.settings();
+    final c = tile.channel!;
+    return MosaicTileSpec.channel(
+        key: Key('mosaic-tile-${c.id}'), number: c.number, name: c.name, artUrl: c.guideArtUrl);
   }
 
-  Widget _buildSmallTile(int idx) {
-    final tile = _tiles[idx];
-    final focused = _focusedIndex == idx;
-    final borderColor = focused ? Colors.white : Colors.white24;
-    final borderWidth = focused ? 4.0 : 2.0;
-
-    if (tile.isSettings) {
-      return Focus(
-        focusNode: _focusNodes[idx],
-        child: Container(
-          key: const Key('mosaic-tile-settings'),
-          width: double.infinity,
-          height: double.infinity,
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: Colors.grey.shade900,
-            border: Border.all(color: borderColor, width: borderWidth),
-            borderRadius: BorderRadius.circular(8),
-          ),
-          child: const Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(AppIcons.settings, color: Colors.white, size: 28),
-              SizedBox(height: 4),
-              Text('Settings', style: TextStyle(color: Colors.white, fontSize: 12)),
-            ],
-          ),
+  // The featured tile's picture: the preview video once it is playing, else
+  // the channel's art or a placeholder.
+  Widget _featuredBackground() {
+    final controller = _previewController;
+    if (controller != null && controller.value.isInitialized) {
+      return FittedBox(
+        fit: BoxFit.cover,
+        child: SizedBox(
+          width: controller.value.size.width,
+          height: controller.value.size.height,
+          child: VideoPlayer(controller),
         ),
       );
     }
-
-    final channelData = tile.channel!;
-    return Focus(
-      focusNode: _focusNodes[idx],
-      child: Container(
-        key: Key('mosaic-tile-${channelData.id}'),
-        width: double.infinity,
-        height: double.infinity,
-        clipBehavior: Clip.antiAlias,
-        decoration: BoxDecoration(
-          border: Border.all(color: borderColor, width: borderWidth),
-          borderRadius: BorderRadius.circular(8),
-        ),
-        child: channelData.guideArtUrl != null
-            ? ArtImage(
-                channelData.guideArtUrl!,
-                fallback: (context) => _channelFallback(channelData),
-              )
-            : _channelFallback(channelData),
-      ),
-    );
+    return MosaicTileArt(spec: _specFor(_tiles[0]));
   }
 
   @override
@@ -529,7 +396,8 @@ class _MosaicPageState extends State<MosaicPage> {
           key: const Key('mosaic-page'),
           backgroundColor: Colors.black,
           body: Center(
-            child: Text(_error!, style: const TextStyle(color: Colors.white, fontSize: 16)),
+            child: Builder(
+                builder: (context) => Text(_error!, style: TextStyle(color: Colors.white, fontSize: context.ui(20)))),
           ),
         ),
       );
@@ -541,49 +409,13 @@ class _MosaicPageState extends State<MosaicPage> {
       child: Scaffold(
         key: const Key('mosaic-page'),
         backgroundColor: Colors.black,
-        body: SafeArea(
-          child: Center(child: _buildFrame()),
+        body: MosaicFrameView(
+          tiles: [for (final t in _tiles) _specFor(t)],
+          focusNodes: _focusNodes,
+          focusedIndex: _focusedIndex,
+          featuredBackground: _featuredBackground(),
+          safeMargin: AppConfig.mosaicSafeMargin,
         ),
-      ),
-    );
-  }
-
-  // Frame: 4x4 logical grid, cells of `_cellWidth`x`_cellHeight`, with the
-  // featured video occupying the central 2x2 block (rows/columns 1-2) and up
-  // to `_ringSlots.length` tiles filling the rest, in the order of `_tiles`
-  // (skipping the featured one) mapped 1:1 to `_ringSlots`.
-  static const _cellWidth = 160.0;
-  static const _cellHeight = 90.0;
-  static const _gap = 8.0;
-
-  Widget _buildFrame() {
-    const totalWidth = _cellWidth * 4 + _gap * 3;
-    const totalHeight = _cellHeight * 4 + _gap * 3;
-    double left(int col) => col * (_cellWidth + _gap);
-    double top(int row) => row * (_cellHeight + _gap);
-
-    final ringTiles = _tiles.skip(1).toList();
-    return SizedBox(
-      width: totalWidth,
-      height: totalHeight,
-      child: Stack(
-        children: [
-          for (var i = 0; i < ringTiles.length && i < _ringSlots.length; i++)
-            Positioned(
-              left: left(_ringSlots[i].col),
-              top: top(_ringSlots[i].row),
-              width: _cellWidth,
-              height: _cellHeight,
-              child: _buildSmallTile(i + 1),
-            ),
-          Positioned(
-            left: left(1),
-            top: top(1),
-            width: _cellWidth * 2 + _gap,
-            height: _cellHeight * 2 + _gap,
-            child: _buildFeaturedTile(),
-          ),
-        ],
       ),
     );
   }

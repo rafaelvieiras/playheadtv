@@ -128,6 +128,13 @@ or LLM, and to every artifact in the repo:
   up/down-as-channel-switch semantics (`channelNext`/`channelPrevious`, which
   must never drive a menu: Up always moves visually up) and isn't something a
   user would sensibly remap.
+- The mosaic frame fills the screen height (`lib/mosaic_layout.dart`) and its
+  focus moves spatially (`lib/mosaic_nav.dart`, pure: the opposite arrow returns
+  to the origin, empty slots are skipped). Text, icons, paddings and focus rings
+  are written as pixels at 1080p and scaled with the app-wide `UiScale`
+  (`lib/ui/ui_scale.dart`, `context.ui(px)`, Settings override); a new screen
+  uses it instead of fixed sizes. Never drive it through `setState` on the player
+  page.
 - **6-button baseline**: every user-facing flow in the client (not the web
   UI, which is desktop/mouse admin tooling by nature) must be fully
   operable with exactly six inputs — Up, Down, Left, Right, Select, Back —

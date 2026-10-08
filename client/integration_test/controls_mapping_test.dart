@@ -144,13 +144,11 @@ void main() {
       );
 
       // MosaicPage has no tap — only arrow/Enter navigation (see
-      // mosaic_page.dart). Logical grid with this fixture (2 channels): row 0
-      // = [featured], row 1 = [channel 6, Settings]. Go down from the featured
-      // row to channel 6 (col 0), go right to the Settings tile (col 1) and
-      // activate with Enter.
-      await pressKey(tester, LogicalKeyboardKey.arrowDown);
-      await tester.pump();
-      await pressKey(tester, LogicalKeyboardKey.arrowRight);
+      // mosaic_page.dart). Grid with this fixture (2 channels): the featured
+      // block in the centre, channel 6 and Settings in the top row (columns 0
+      // and 1). Up from the featured block reaches the nearest tile above it,
+      // the Settings tile; activate with Enter.
+      await pressKey(tester, LogicalKeyboardKey.arrowUp);
       await tester.pump();
       await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
@@ -211,16 +209,15 @@ void main() {
 
       // Featured tile = channel 2 (lowest number, no history). The MosaicPage
       // is the same instance as before (only push/pop, never recreated) — the
-      // focus is still on the Settings tile (row 1, col 1) from when we
-      // navigated there; go up (row 0, the only tile: featured) and activate
-      // with Enter.
+      // focus is still on the Settings tile (top row) from when we navigated
+      // there; go down onto the featured block and activate with Enter.
       final featuredTileKey = Key('mosaic-tile-${channelIds[2]}');
       await pumpUntil(
         tester,
         () => find.byKey(featuredTileKey).evaluate().isNotEmpty,
         failMessage: 'featured tile (channel 2) did not appear in the mosaic',
       );
-      await pressKey(tester, LogicalKeyboardKey.arrowUp);
+      await pressKey(tester, LogicalKeyboardKey.arrowDown);
       await tester.pump();
       await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
@@ -265,9 +262,7 @@ void main() {
         failMessage: 'mosaic did not appear on boot with no history',
       );
 
-      await pressKey(tester, LogicalKeyboardKey.arrowDown);
-      await tester.pump();
-      await pressKey(tester, LogicalKeyboardKey.arrowRight);
+      await pressKey(tester, LogicalKeyboardKey.arrowUp);
       await tester.pump();
       await pressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
