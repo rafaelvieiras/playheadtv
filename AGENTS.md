@@ -314,6 +314,12 @@ keep in mind when touching `client/`:
   `_ChannelPlayerPageState`, no `setState`; `focus_lifecycle_test.dart`).
   GUI suites still need a desktop where nothing else takes focus while they
   run, and only one `flutter_tester` at a time.
+  Without a desktop, run a suite under `xvfb-run -a -s "-screen 0 1920x1080x24"`
+  (the default 640x480x8 screen makes the app fail to start) with
+  `CUDA_VISIBLE_DEVICES=-1`: on hosts with a proprietary NVIDIA driver, mdk
+  probes the `CUDA` decoder first and segfaults on the raster thread under Xvfb,
+  which shows up only as "did not complete" / "Test process is no longer
+  needed".
 - Fixtures: a manual block defaults to list_mode `repeat` and loops its items
   to the end of the window, so a fixture block with a short item list fills the
   whole window with repeats (hundreds of entries). Create fixture blocks with
