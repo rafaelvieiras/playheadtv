@@ -219,13 +219,13 @@ void main() {
       expect(osdChannelNumberText(tester), '3');
     });
 
-    // The channel whose row holds the focused (3px white border) EPG cell.
+    // The channel whose row holds the focused (white border) EPG cell.
     String? focusedEpgChannelNumber(WidgetTester tester) {
       for (final entry in channelIds.entries) {
         final prefix = 'epg-cell-${entry.value}-';
         for (final element in find.byWidgetPredicate((w) => w.key is ValueKey<String> && (w.key as ValueKey<String>).value.startsWith(prefix)).evaluate()) {
           final decoration = (element.widget as Container).decoration as BoxDecoration;
-          if ((decoration.border as Border).top.width == 3) return '${entry.key}';
+          if ((decoration.border as Border).top.color == Colors.white) return '${entry.key}';
         }
       }
       return null;

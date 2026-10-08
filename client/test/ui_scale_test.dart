@@ -36,15 +36,41 @@ void main() {
       expect(resolveUiScale(const Size(3840, 2160)), 2.0);
     });
 
-    test('a fixed override replaces the automatic factor, unclamped', () {
+    test('a fixed override replaces the automatic factor when it fits', () {
       expect(resolveUiScale(const Size(3840, 2160), override: 1.0), 1.0);
-      expect(resolveUiScale(const Size(800, 600), override: 2.0), 2.0);
+      expect(resolveUiScale(const Size(1920, 1080), override: 2.0), 2.0);
+      expect(resolveUiScale(const Size(1280, 720), override: 1.5), 1.5);
+    });
+
+    test('a fixed override is capped by what fits the window', () {
+      // 720p: the OSD needs 440 design px of height, so 2.0 cannot be honoured.
+      expect(resolveUiScale(const Size(1280, 720), override: 2.0), closeTo(720 / uiScaleFitHeight, 1e-9));
+      // A narrow window is capped by its width.
+      expect(resolveUiScale(const Size(800, 2000), override: 2.0), closeTo(800 / uiScaleFitWidth, 1e-9));
+      // Never below the floor, and a smaller choice is left alone.
+      expect(resolveUiScale(const Size(200, 100), override: 2.0), uiScaleMin);
+      expect(resolveUiScale(const Size(800, 600), override: 0.75), 0.75);
     });
 
     test('ignores a non-positive or non-finite override', () {
       expect(resolveUiScale(const Size(1920, 1080), override: 0), 1.0);
       expect(resolveUiScale(const Size(1920, 1080), override: -1), 1.0);
       expect(resolveUiScale(const Size(1920, 1080), override: double.nan), 1.0);
+    });
+  });
+
+  group('maxFitUiScale', () {
+    test('every fixed step but the largest fits 1080p, and every step fits 4K', () {
+      expect(maxFitUiScale(const Size(1920, 1080)), greaterThanOrEqualTo(2.0));
+      for (final step in uiScaleSteps) {
+        expect(resolveUiScale(const Size(3840, 2160), override: step), step);
+      }
+    });
+
+    test('is clamped and tolerates a degenerate size', () {
+      expect(maxFitUiScale(const Size(10, 10)), uiScaleMin);
+      expect(maxFitUiScale(const Size(100000, 100000)), uiScaleMax);
+      expect(maxFitUiScale(Size.zero), uiScaleMax);
     });
   });
 

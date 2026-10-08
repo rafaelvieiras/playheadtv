@@ -23,6 +23,8 @@
 // kept for the optional `trackSelector` accelerator.
 import 'package:flutter/material.dart';
 
+import '../ui/ui_scale.dart';
+
 /// One selectable entry in a panel. `index` is the position in the SAME list
 /// `getMediaInfo()` returned it from (`info.audio[index]`/
 /// `info.subtitle[index]`) — the same indices `setAudioTracks`/
@@ -108,8 +110,7 @@ class TrackSelectorOverlayState extends State<TrackSelectorOverlay> {
     if (widget.singlePanel) return;
     if (widget.audioOptions.isEmpty || widget.subtitleOptions.isEmpty) return;
     setState(() {
-      _activePanel =
-          _activePanel == TrackSelectorPanel.audio ? TrackSelectorPanel.subtitle : TrackSelectorPanel.audio;
+      _activePanel = _activePanel == TrackSelectorPanel.audio ? TrackSelectorPanel.subtitle : TrackSelectorPanel.audio;
     });
   }
 
@@ -118,6 +119,9 @@ class TrackSelectorOverlayState extends State<TrackSelectorOverlay> {
     if (options.isEmpty || _focusedIndex >= options.length) return;
     widget.onSelect(_activePanel, options[_focusedIndex]);
   }
+
+  // Pixels at 1080p scaled to this screen (the shared UiScale).
+  double _u(double px) => context.ui(px);
 
   Widget _buildPanel(String title, TrackSelectorPanel panel, List<TrackOption> options, int focusedIndex) {
     final isActive = _activePanel == panel;
@@ -131,29 +135,35 @@ class TrackSelectorOverlayState extends State<TrackSelectorOverlay> {
             style: TextStyle(
               color: isActive ? Colors.white : Colors.white54,
               fontWeight: FontWeight.bold,
-              fontSize: 14,
+              fontSize: _u(20),
             ),
           ),
-          const SizedBox(height: 8),
+          SizedBox(height: _u(10)),
           if (options.isEmpty)
-            const Text('(none available)', style: TextStyle(color: Colors.white38, fontSize: 13))
+            Text(
+              '(none available)',
+              style: TextStyle(color: Colors.white38, fontSize: _u(18)),
+            )
           else
             for (var i = 0; i < options.length; i++)
               Container(
                 key: Key('track-option-${panel.name}-${options[i].index}'),
                 width: double.infinity,
-                margin: const EdgeInsets.symmetric(vertical: 2),
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                margin: EdgeInsets.symmetric(vertical: _u(3)),
+                padding: EdgeInsets.symmetric(horizontal: _u(14), vertical: _u(9)),
                 decoration: BoxDecoration(
                   color: (isActive && i == focusedIndex) ? Colors.white24 : Colors.transparent,
-                  border: Border.all(color: (isActive && i == focusedIndex) ? Colors.white : Colors.white12),
-                  borderRadius: BorderRadius.circular(4),
+                  border: Border.all(
+                    color: (isActive && i == focusedIndex) ? Colors.white : Colors.white12,
+                    width: _u(1.5),
+                  ),
+                  borderRadius: BorderRadius.circular(_u(6)),
                 ),
                 child: Text(
                   options[i].label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(color: Colors.white, fontSize: 13),
+                  style: TextStyle(color: Colors.white, fontSize: _u(18)),
                 ),
               ),
         ],
@@ -169,12 +179,12 @@ class TrackSelectorOverlayState extends State<TrackSelectorOverlay> {
         Positioned.fill(child: Container(color: Colors.black.withValues(alpha: 0.75))),
         Center(
           child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 520, maxHeight: 420),
+            constraints: BoxConstraints(maxWidth: _u(720), maxHeight: _u(560)),
             child: Container(
-              padding: const EdgeInsets.all(20),
+              padding: EdgeInsets.all(_u(28)),
               decoration: BoxDecoration(
                 color: Colors.grey.shade900,
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(_u(16)),
                 border: Border.all(color: Colors.white24),
               ),
               child: Column(
@@ -185,15 +195,15 @@ class TrackSelectorOverlayState extends State<TrackSelectorOverlay> {
                     widget.singlePanel
                         ? (widget.initialPanel == TrackSelectorPanel.audio ? 'Audio' : 'Subtitles')
                         : 'Track selector',
-                    style: const TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
+                    style: TextStyle(color: Colors.white, fontSize: _u(26), fontWeight: FontWeight.bold),
                   ),
-                  const SizedBox(height: 16),
+                  SizedBox(height: _u(20)),
                   Row(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       if (!widget.singlePanel || widget.initialPanel == TrackSelectorPanel.audio)
                         _buildPanel('Audio', TrackSelectorPanel.audio, widget.audioOptions, _focusedAudio),
-                      if (!widget.singlePanel) const SizedBox(width: 24),
+                      if (!widget.singlePanel) SizedBox(width: _u(32)),
                       if (!widget.singlePanel || widget.initialPanel == TrackSelectorPanel.subtitle)
                         _buildPanel('Subtitle', TrackSelectorPanel.subtitle, widget.subtitleOptions, _focusedSubtitle),
                     ],

@@ -22,6 +22,7 @@ import 'package:flutter/services.dart';
 
 import '../input/input_action.dart';
 import '../services/settings_service.dart';
+import '../ui/ui_scale.dart';
 import '../update/update_notices.dart';
 
 /// Where the app gets its update-notice environment. Production uses the real
@@ -98,19 +99,21 @@ class _UpdateOverlayHostState extends State<UpdateOverlayHost> {
         return KeyEventResult.ignored;
       }
       if (event is! KeyUpEvent) {
-        final delta = key == LogicalKeyboardKey.arrowDown ? 80.0 : -80.0;
+        final step = 80.0 * (mounted ? UiScale.of(context) : 1.0);
+        final delta = key == LogicalKeyboardKey.arrowDown ? step : -step;
         final target = (_scroll.offset + delta).clamp(0.0, _scroll.position.maxScrollExtent);
         _scroll.animateTo(target, duration: const Duration(milliseconds: 80), curve: Curves.easeOut);
       }
       return KeyEventResult.handled;
     }
 
-    final action = _bindings?.resolve(key) ??
+    final action =
+        _bindings?.resolve(key) ??
         (key == defaultKeyBindings[InputAction.select]
             ? InputAction.select
             : key == defaultKeyBindings[InputAction.back]
-                ? InputAction.back
-                : null);
+            ? InputAction.back
+            : null);
     if (action != InputAction.select && action != InputAction.back) return KeyEventResult.ignored;
     if (event is KeyDownEvent) {
       if (action == InputAction.select) {
@@ -143,41 +146,50 @@ class _UpdateOverlayHostState extends State<UpdateOverlayHost> {
         children: [
           child!,
           if (overlay != null)
-            overlay.kind == UpdateOverlayKind.banner ? _banner(overlay) : _changelog(context, overlay),
+            overlay.kind == UpdateOverlayKind.banner ? _banner(context, overlay) : _changelog(context, overlay),
         ],
       ),
     );
   }
 
   static const _panelColor = Color(0xEB14141C);
-  static const _hintStyle = TextStyle(fontSize: 13, color: Colors.white60);
+  // Sizes are pixels at 1080p scaled by the shared UiScale (the host sits below
+  // UiScaleHost, so `context.ui` is available; it subscribes only the builder).
+  TextStyle _hintStyle(BuildContext context) => TextStyle(fontSize: context.ui(18), color: Colors.white60);
 
-  Widget _banner(UpdateOverlay overlay) {
+  Widget _banner(BuildContext context, UpdateOverlay overlay) {
     return Positioned(
-      top: 24,
-      left: 24,
-      right: 24,
+      top: context.ui(24),
+      left: context.ui(24),
+      right: context.ui(24),
       child: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 820),
+          constraints: BoxConstraints(maxWidth: context.ui(1100)),
           child: Material(
             key: const Key('update-banner'),
             color: _panelColor,
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(context.ui(16)),
             child: Padding(
-              padding: const EdgeInsets.all(16),
+              padding: EdgeInsets.all(context.ui(22)),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(overlay.title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 6),
-                  Text(overlay.body, key: const Key('update-banner-message'), style: const TextStyle(fontSize: 15)),
-                  const SizedBox(height: 10),
-                  const Text(
+                  Text(
+                    overlay.title,
+                    style: TextStyle(fontSize: context.ui(26), fontWeight: FontWeight.w600),
+                  ),
+                  SizedBox(height: context.ui(8)),
+                  Text(
+                    overlay.body,
+                    key: const Key('update-banner-message'),
+                    style: TextStyle(fontSize: context.ui(21)),
+                  ),
+                  SizedBox(height: context.ui(14)),
+                  Text(
                     'Select: do not show this version again    Back: close',
                     key: Key('update-banner-hint'),
-                    style: _hintStyle,
+                    style: _hintStyle(context),
                   ),
                 ],
               ),
@@ -193,35 +205,41 @@ class _UpdateOverlayHostState extends State<UpdateOverlayHost> {
     return Positioned.fill(
       child: Center(
         child: ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: 760, maxHeight: height * 0.75),
+          constraints: BoxConstraints(maxWidth: context.ui(1000), maxHeight: height * 0.75),
           child: Material(
             key: const Key('update-changelog'),
             color: _panelColor,
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(context.ui(16)),
             child: Padding(
-              padding: const EdgeInsets.all(20),
+              padding: EdgeInsets.all(context.ui(28)),
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(overlay.title,
-                      key: const Key('update-changelog-title'),
-                      style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600)),
-                  const SizedBox(height: 12),
+                  Text(
+                    overlay.title,
+                    key: const Key('update-changelog-title'),
+                    style: TextStyle(fontSize: context.ui(28), fontWeight: FontWeight.w600),
+                  ),
+                  SizedBox(height: context.ui(16)),
                   Flexible(
                     child: SingleChildScrollView(
                       controller: _scroll,
                       // Plain text, exactly as published: no markup, no links.
-                      child: Text(overlay.body, key: const Key('update-changelog-text'), style: const TextStyle(fontSize: 15)),
+                      child: Text(
+                        overlay.body,
+                        key: const Key('update-changelog-text'),
+                        style: TextStyle(fontSize: context.ui(21)),
+                      ),
                     ),
                   ),
-                  const SizedBox(height: 12),
+                  SizedBox(height: context.ui(16)),
                   ValueListenableBuilder<bool>(
                     valueListenable: _scrollable,
                     builder: (_, scrollable, _) => Text(
                       scrollable ? 'Up/Down: scroll    Select or Back: close' : 'Select or Back: close',
                       key: const Key('update-changelog-hint'),
-                      style: _hintStyle,
+                      style: _hintStyle(context),
                     ),
                   ),
                 ],

@@ -10,6 +10,7 @@
 // never a page that merely sits below, so the player's video surfaces are not
 // touched (see the GL-texture gotcha in AGENTS.md).
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -33,10 +34,31 @@ double autoUiScale(Size size) {
   return (side / uiScaleReferenceSide).clamp(uiScaleMin, uiScaleMax).toDouble();
 }
 
+/// What the widest fixed layout (the OSD) needs, in pixels at 1080p: its bottom
+/// panel with every row plus the clock above it needs this much height, and its
+/// controls row plus a channel card this much width. A fixed choice is capped so
+/// that the layout still fits the window; the automatic factor needs no cap
+/// (shortest side over 1080 always fits).
+const double uiScaleFitHeight = 440;
+const double uiScaleFitWidth = 640;
+
+/// The largest factor at which the OSD still fits a window of [size], never
+/// below [uiScaleMin].
+double maxFitUiScale(Size size) {
+  if (!size.width.isFinite || !size.height.isFinite || size.width <= 0 || size.height <= 0) {
+    return uiScaleMax;
+  }
+  final fit = math.min(size.height / uiScaleFitHeight, size.width / uiScaleFitWidth);
+  return fit.clamp(uiScaleMin, uiScaleMax).toDouble();
+}
+
 /// The factor in force: the user's fixed [override] when it is a positive
-/// number, otherwise the automatic one for [size].
+/// number, capped by what fits [size] (`maxFitUiScale`), otherwise the
+/// automatic one for [size].
 double resolveUiScale(Size size, {double? override}) {
-  if (override != null && override.isFinite && override > 0) return override;
+  if (override != null && override.isFinite && override > 0) {
+    return math.min(override, maxFitUiScale(size));
+  }
   return autoUiScale(size);
 }
 
@@ -131,7 +153,10 @@ class UiScaled extends StatelessWidget {
     final factor = UiScale.of(context);
     return MediaQuery(
       data: MediaQuery.of(context).copyWith(textScaler: TextScaler.linear(factor)),
-      child: IconTheme.merge(data: IconThemeData(size: 24 * factor), child: child),
+      child: IconTheme.merge(
+        data: IconThemeData(size: 24 * factor),
+        child: child,
+      ),
     );
   }
 }
