@@ -1499,6 +1499,16 @@ and CI needs no display.
   (2 CPUs, 4 GB, 1 GB shm) and removed on timeout. The pub and Go caches live in
   the named volumes `playheadtv-gui-pub` and `playheadtv-gui-go`
   (`run_gui_suites.sh --prune` removes them).
+- The Mesa shader cache is a third named volume (`playheadtv-gui-mesa`,
+  `MESA_SHADER_CACHE_DIR`) and must stay warm. libmdk reads a stale shader on
+  its raster thread (`VideoShader::update`, called from `renderVideo`; the
+  pointer it reads is freed memory), a race that a cold llvmpipe shader cache
+  widens: with an empty cache the second app boot of a process segfaults at its
+  first channel switch, almost every time, and with a warm one it does not. A
+  fresh `$HOME` reproduces it on a plain host under `xvfb-run` as well, so it
+  is not container specific; the Mesa version does not matter. The runner primes
+  the volume once per image with a throwaway suite run. Never disable the shader
+  cache for these runs.
 - A failing suite is retried once only when its log matches an environmental
   signature (the app died or never started) and holds no assertion failure. The
   summary labels PASS, FLAKY (passed on the retry), FAIL and TIMEOUT; artifacts
@@ -1512,8 +1522,9 @@ and CI needs no display.
   focus, audio output, the `org.freedesktop.ScreenSaver` service or the
   launcher/AppImage packaging, and software decode changes frame timing.
   libmdk's raster thread can still crash under software GL (`did not complete`
-  in the log, a `libmdk` segfault in the kernel log); keep parallelism modest
-  and keep a manual desktop pass.
+  in the log, a `libmdk` segfault in the kernel log) when the shader cache is
+  cold or the machine is overloaded; keep parallelism modest and keep a manual
+  desktop pass.
 
 ## Releases and updates
 

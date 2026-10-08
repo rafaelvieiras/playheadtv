@@ -34,9 +34,15 @@ tar -C "$SRC" -cf - backend client | tar -C "$WORK/repo" -xf -
 # with a proprietary NVIDIA driver; software GL keeps the run host independent.
 export CUDA_VISIBLE_DEVICES=-1 LIBVA_DRIVER_NAME=dummy \
        LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe LP_NUM_THREADS="${LP_NUM_THREADS:-2}"
+# libmdk has a race on its raster thread (a stale shader read in
+# VideoShader::update) that a COLD Mesa shader cache turns into a segfault at the
+# first channel switch of a later app boot: the slow first compile widens the
+# window. A warm cache keeps it shut, so the cache lives in a volume shared by
+# all containers (run_gui_suites.sh primes it once). Never disable it.
+export MESA_SHADER_CACHE_DIR=${MESA_SHADER_CACHE_DIR:-/cache/mesa}
 export PUB_CACHE=${PUB_CACHE:-/cache/pub} GOCACHE=${GOCACHE:-/cache/go/build} \
        GOMODCACHE=${GOMODCACHE:-/cache/go/mod}
-mkdir -p "$PUB_CACHE" "$GOCACHE" "$GOMODCACHE"
+mkdir -p "$PUB_CACHE" "$GOCACHE" "$GOMODCACHE" "$MESA_SHADER_CACHE_DIR"
 
 export DISPLAY=:99
 Xvfb :99 -screen 0 "$SCREEN" -nolisten tcp >"$OUT/xvfb.log" 2>&1 &
