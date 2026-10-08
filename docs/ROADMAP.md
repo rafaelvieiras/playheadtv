@@ -1194,9 +1194,9 @@ Design: `ARCHITECTURE.md` "Releases and updates"; procedures: `RELEASING.md` and
 - [ ] GUI integration suites headless in containers
       (`client/tool/run_gui_suites.sh`, `client/test/docker/`,
       `.github/workflows/gui-suites.yml`; `docs/ARCHITECTURE.md` "Headless GUI
-      suites in containers"). Open: make every suite pass reliably in the
-      container (libmdk raster-thread crash under software GL on some suites),
-      then make the workflow blocking.
+      suites in containers"). Open: a real run of the workflow on GitHub, the
+      remaining consistent failures (`fullscreen_test`, an intermittent
+      `epg_window_test`), then make the workflow blocking.
 - [ ] Remove the `fvp` `dependency_overrides` git pin
       (`client/pubspec.yaml`) once `wang-bin/fvp#390`/`#391` ship as an
       official pub.dev release.
