@@ -1478,6 +1478,43 @@ client and takes the screen back when it ends), so leaving is part of the app.
   pixels), so a large choice on a small window cannot overflow it; the
   automatic factor needs no cap.
 
+## Headless GUI suites in containers
+
+The GUI integration suites (`client/integration_test/`) need a desktop session and
+are disturbed by anything that takes OS focus. `client/tool/run_gui_suites.sh`
+runs each suite in its own container instead, so a contributor needs only Docker
+and CI needs no display.
+
+- One container per suite, `-j N` in parallel. The image
+  (`client/test/docker/Dockerfile`: Ubuntu 24.04, pinned Flutter and Go, Mesa
+  llvmpipe, ffmpeg, Xvfb, openbox, D-Bus) is built on first use; the Flutter
+  version must match `.github/workflows/`, the Go version is read from
+  `backend/go.mod`. `client/test/docker/entry.sh` gives each container a private
+  HOME/XDG, an Xvfb of 1920x1080x24, a private D-Bus session and a window
+  manager, and sets `CUDA_VISIBLE_DEVICES=-1`, `LIBVA_DRIVER_NAME=dummy`,
+  `LIBGL_ALWAYS_SOFTWARE=1` and `LP_NUM_THREADS=2`. No audio device by default
+  (a PulseAudio null sink made the suites less stable; `WITH_AUDIO=1` opts in).
+- Each run uses a snapshot (`git archive HEAD`, or `--worktree`) copied inside
+  the container, never the live checkout. Containers are named, limited
+  (2 CPUs, 4 GB, 1 GB shm) and removed on timeout. The pub and Go caches live in
+  the named volumes `playheadtv-gui-pub` and `playheadtv-gui-go`
+  (`run_gui_suites.sh --prune` removes them).
+- A failing suite is retried once only when its log matches an environmental
+  signature (the app died or never started) and holds no assertion failure. The
+  summary labels PASS, FLAKY (passed on the retry), FAIL and TIMEOUT; artifacts
+  per suite and attempt are the log, the JSON results, the backend log, an
+  optional screen recording (`-r`) and the host kernel's segfault lines when
+  readable.
+- `.github/workflows/gui-suites.yml` shards the suites across a matrix. It is
+  informational (`continue-on-error`) and separate from the regular CI.
+- Limits: Docker does not validate real GPU rendering or the texture path,
+  hardware decoders, input devices and remotes, window-manager fullscreen and
+  focus, audio output, the `org.freedesktop.ScreenSaver` service or the
+  launcher/AppImage packaging, and software decode changes frame timing.
+  libmdk's raster thread can still crash under software GL (`did not complete`
+  in the log, a `libmdk` segfault in the kernel log); keep parallelism modest
+  and keep a manual desktop pass.
+
 ## Releases and updates
 
 The backend and the client are released separately, each from its own tag,
