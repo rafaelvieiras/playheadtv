@@ -320,6 +320,10 @@ keep in mind when touching `client/`:
   probes the `CUDA` decoder first and segfaults on the raster thread under Xvfb,
   which shows up only as "did not complete" / "Test process is no longer
   needed".
+  `client/tool/run_gui_suites.sh [-j N] [suite ...]` runs suites headless, one
+  container each, with all of that preconfigured and no shared OS focus (so the
+  focus-stealing problem above does not apply); see `docs/ARCHITECTURE.md`
+  "Headless GUI suites in containers". It does not replace a manual desktop pass.
 - Fixtures: a manual block defaults to list_mode `repeat` and loops its items
   to the end of the window, so a fixture block with a short item list fills the
   whole window with repeats (hundreds of entries). Create fixture blocks with

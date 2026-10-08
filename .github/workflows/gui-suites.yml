@@ -1,0 +1,62 @@
+name: GUI suites
+
+# Runs the Flutter GUI integration suites (client/integration_test) headless in
+# containers, sharded across a matrix (client/tool/run_gui_suites.sh,
+# docs/ARCHITECTURE.md "Headless GUI suites in containers"). Informational for
+# now: a failing shard never fails the workflow (continue-on-error), and a suite
+# that passed only on its retry is reported as FLAKY in the job summary. The
+# regular CI workflow does not depend on this one.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'client/**'
+      - 'backend/**'
+      - '.github/workflows/gui-suites.yml'
+  pull_request:
+    paths:
+      - 'client/**'
+      - 'backend/**'
+      - '.github/workflows/gui-suites.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gui-suites-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gui:
+    name: Shard ${{ matrix.shard }}/4
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    continue-on-error: true # non-blocking until the suites prove stable here
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run the suites
+        run: client/tool/run_gui_suites.sh -j 2 --shard ${{ matrix.shard }}/4 -o "$RUNNER_TEMP/gui-runs"
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "### GUI suites, shard ${{ matrix.shard }}/4"
+            echo '```'
+            cat "$RUNNER_TEMP"/gui-runs/*/summary.tsv 2>/dev/null || true
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gui-suites-shard-${{ matrix.shard }}
+          path: ${{ runner.temp }}/gui-runs
+          retention-days: 7
