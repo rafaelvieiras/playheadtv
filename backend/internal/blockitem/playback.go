@@ -125,3 +125,13 @@ func RestartBlockCursor(ctx context.Context, db storage.DB, tenantID, blockID st
 	}
 	return db.Exec(ctx, "DELETE FROM epg_entry WHERE tenant_id = ? AND source_block_item_id = ? AND end_at > ?", tenantID, blockID, nowMs)
 }
+
+// IncludesSpecials reports whether the block lets season 0 episodes in (its
+// include_specials option); a missing block reads as the default, off.
+func IncludesSpecials(ctx context.Context, db storage.DB, tenantID, blockID string) (bool, error) {
+	var v []bool
+	if err := db.Query(ctx, &v, "SELECT include_specials FROM block WHERE tenant_id = ? AND id = ?", tenantID, blockID); err != nil {
+		return false, err
+	}
+	return len(v) > 0 && v[0], nil
+}

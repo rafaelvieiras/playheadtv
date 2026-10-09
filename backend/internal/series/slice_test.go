@@ -183,3 +183,39 @@ func TestSliceSeedFor(t *testing.T) {
 		t.Errorf("sampling slice got no seed")
 	}
 }
+
+func TestNamesSeasonZero(t *testing.T) {
+	for name, tc := range map[string]struct {
+		slice *domain.SeriesSlice
+		want  bool
+	}{
+		"nil":                {nil, false},
+		"empty":              {&domain.SeriesSlice{}, false},
+		"seasons with 0":     {&domain.SeriesSlice{Seasons: []int{0, 2}}, true},
+		"seasons without 0":  {&domain.SeriesSlice{Seasons: []int{1, 2}}, false},
+		"season_to 0":        {&domain.SeriesSlice{SeasonTo: ip(0)}, true},
+		"season_from 0":      {&domain.SeriesSlice{SeasonFrom: ip(0), SeasonTo: ip(2)}, true},
+		"range covering 0":   {&domain.SeriesSlice{SeasonTo: ip(3)}, false},
+		"range from 1":       {&domain.SeriesSlice{SeasonFrom: ip(1), SeasonTo: ip(3)}, false},
+		"only exclude flags": {&domain.SeriesSlice{ExcludeSpecials: true, First: ip(3)}, false},
+	} {
+		if got := NamesSeasonZero(tc.slice); got != tc.want {
+			t.Errorf("%s: NamesSeasonZero = %v, want %v", name, got, tc.want)
+		}
+	}
+}
+
+func TestDropSpecials(t *testing.T) {
+	in := library() // has s00e01 and an episode with no season number
+	if got := ids(DropSpecials(in, nil)); strings.Contains(got, "s00e01") || !strings.Contains(got, "nonum") || len(strings.Fields(got)) != len(in)-1 {
+		t.Errorf("default: %q", got)
+	}
+	// An explicit selection of season 0 wins over the default.
+	if got := ids(DropSpecials(in, &domain.SeriesSlice{Seasons: []int{0}})); !strings.Contains(got, "s00e01") {
+		t.Errorf("seasons [0]: %q", got)
+	}
+	// The input is not modified.
+	if len(in) != len(library()) {
+		t.Errorf("input changed")
+	}
+}

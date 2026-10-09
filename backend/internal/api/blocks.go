@@ -45,7 +45,7 @@ func registerBlocks(mux Router, db storage.DB, mat *materializer.Materializer) {
 const blockColumns = "id, tenant_id, name, description, collection_id, " +
 	"(SELECT c.name FROM collection c WHERE c.tenant_id = block.tenant_id AND c.id = block.collection_id) AS collection_name, " +
 	"(collection_id IS NOT NULL OR criteria IS NOT NULL) AS dynamic, " +
-	"playback_order, list_mode, interleave_spec, playback_seed, created_at, updated_at"
+	"playback_order, list_mode, include_specials, interleave_spec, playback_seed, created_at, updated_at"
 
 // blockItemColumns reads the typed block_item: a series item has a NULL
 // catalog_item_id, read back as the empty string.
@@ -71,6 +71,10 @@ type blockRequest struct {
 	// over when it ends, until the next timed item or, for a continuous item,
 	// indefinitely) or once. On a PUT, omitting it keeps the stored mode.
 	ListMode string `json:"list_mode"`
+	// IncludeSpecials lets season 0 episodes of a series into everything
+	// season-based the block selects (dynamic matches, criteria items, series
+	// items). Off by default; on a PUT, omitting it keeps the stored value.
+	IncludeSpecials *bool `json:"include_specials"`
 }
 
 func fetchBlock(db storage.DB, r *http.Request, id string) (domain.Block, error) {
@@ -115,23 +119,24 @@ func createBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 		}
 		now := time.Now().UnixMilli()
 		b := domain.Block{
-			ID:             uuid.NewString(),
-			TenantID:       DefaultTenantID,
-			Name:           req.Name,
-			Description:    req.Description,
-			CollectionID:   collection,
-			Dynamic:        collection != nil,
-			PlaybackOrder:  playback.Order,
-			InterleaveSpec: playback.InterleaveSpec,
-			PlaybackSeed:   playback.Seed,
-			ListMode:       listMode,
-			CreatedAt:      now,
-			UpdatedAt:      now,
+			ID:              uuid.NewString(),
+			TenantID:        DefaultTenantID,
+			Name:            req.Name,
+			Description:     req.Description,
+			CollectionID:    collection,
+			Dynamic:         collection != nil,
+			PlaybackOrder:   playback.Order,
+			InterleaveSpec:  playback.InterleaveSpec,
+			PlaybackSeed:    playback.Seed,
+			ListMode:        listMode,
+			IncludeSpecials: req.IncludeSpecials != nil && *req.IncludeSpecials,
+			CreatedAt:       now,
+			UpdatedAt:       now,
 		}
 		b.FillInterleave()
 		err = db.Exec(r.Context(),
-			"INSERT INTO block (id, tenant_id, name, description, collection_id, playback_order, list_mode, interleave_spec, playback_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			b.ID, b.TenantID, b.Name, b.Description, b.CollectionID, b.PlaybackOrder, listMode, b.InterleaveSpec, b.PlaybackSeed, b.CreatedAt, b.UpdatedAt,
+			"INSERT INTO block (id, tenant_id, name, description, collection_id, playback_order, list_mode, include_specials, interleave_spec, playback_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			b.ID, b.TenantID, b.Name, b.Description, b.CollectionID, b.PlaybackOrder, listMode, b.IncludeSpecials, b.InterleaveSpec, b.PlaybackSeed, b.CreatedAt, b.UpdatedAt,
 		)
 		if err != nil {
 			handleDBError(w, err)
@@ -222,12 +227,16 @@ func updateBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		includeSpecials := prev.IncludeSpecials
+		if req.IncludeSpecials != nil {
+			includeSpecials = *req.IncludeSpecials
+		}
 		err = db.Exec(r.Context(),
 			// The deprecated criteria snapshot is kept while the block references a
 			// collection (the way back from the migration) and cleared when the
 			// block reverts to manual, so it cannot read as a legacy dynamic row.
-			"UPDATE block SET name = ?, description = ?, collection_id = ?, criteria = CASE WHEN ? IS NULL THEN NULL ELSE criteria END, playback_order = ?, list_mode = ?, interleave_spec = ?, playback_seed = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
-			req.Name, req.Description, collection, collection, playback.Order, listMode, playback.InterleaveSpec, playback.Seed, time.Now().UnixMilli(), DefaultTenantID, id,
+			"UPDATE block SET name = ?, description = ?, collection_id = ?, criteria = CASE WHEN ? IS NULL THEN NULL ELSE criteria END, playback_order = ?, list_mode = ?, include_specials = ?, interleave_spec = ?, playback_seed = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+			req.Name, req.Description, collection, collection, playback.Order, listMode, includeSpecials, playback.InterleaveSpec, playback.Seed, time.Now().UnixMilli(), DefaultTenantID, id,
 		)
 		if err != nil {
 			handleDBError(w, err)
@@ -242,6 +251,11 @@ func updateBlock(db storage.DB, mat *materializer.Materializer) http.HandlerFunc
 			}
 		}
 		if listMode != prev.ListMode && collection == nil {
+			mat.Trigger()
+		}
+		// Changing the option moves the set of episodes the block selects the
+		// way a catalog change does: cursors are kept, the guide regenerates.
+		if includeSpecials != prev.IncludeSpecials {
 			mat.Trigger()
 		}
 		if restart {

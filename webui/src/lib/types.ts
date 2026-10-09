@@ -197,6 +197,9 @@ export interface Block {
   // Manual blocks only (absent on a dynamic block): what happens when the item
   // list ends, 'repeat' (the default) or 'once'.
   list_mode?: ListMode
+  // Whether the episodes of season 0 (specials) of a series can air from this
+  // block; off by default.
+  include_specials: boolean
   created_at: number
   updated_at: number
 }
@@ -212,6 +215,8 @@ export interface BlockInput {
   interleave?: Interleave
   // Manual blocks only. Omitted on a PUT keeps the stored mode.
   list_mode?: ListMode
+  // Omitted on a PUT keeps the stored value; omitted on a POST means off.
+  include_specials?: boolean
 }
 
 // Mirrors backend/internal/domain.Block.ListMode.

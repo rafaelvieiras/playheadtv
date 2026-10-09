@@ -52,7 +52,7 @@ func TestMCPSeriesSlice(t *testing.T) {
 	if p.EpisodeCount != 3 || p.TotalDurationMs != 180_000 || p.SeriesEpisodeCount != 9 {
 		t.Fatalf("preview = %+v", p)
 	}
-	if whole := callTool[preview](t, ctx, session, "preview_series_slice", map[string]any{"media_source_id": source.ID, "series_title": "Sliceable"}); whole.EpisodeCount != 9 {
+	if whole := callTool[preview](t, ctx, session, "preview_series_slice", map[string]any{"media_source_id": source.ID, "series_title": "Sliceable"}); whole.EpisodeCount != 8 {
 		t.Errorf("preview without slice = %+v", whole)
 	}
 	if msg := callToolExpectError(t, ctx, session, "preview_series_slice", map[string]any{
@@ -92,7 +92,7 @@ func TestMCPSeriesSlice(t *testing.T) {
 	cleared := callTool[domain.BlockItem](t, ctx, session, "update_block_item", map[string]any{
 		"block_id": block.ID, "item_id": item.ID, "slice": map[string]any{},
 	})
-	if cleared.Series.EpisodeCount != 9 || cleared.Series.Slice != nil {
+	if cleared.Series.EpisodeCount != 8 || cleared.Series.Slice != nil {
 		t.Fatalf("clearing the slice = %+v", cleared.Series)
 	}
 	callToolExpectError(t, ctx, session, "update_block_item", map[string]any{

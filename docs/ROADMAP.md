@@ -315,6 +315,11 @@ actionable checklist.
       panel on a series item. See `docs/ARCHITECTURE.md` "Series block
       items". Not yet: choosing a slice while adding a series (it is set on
       the item after adding), a manual "re-roll" of a random sample.
+- [x] Season 0 (specials) is left out of a block's selections by default; a
+      block option `include_specials` (REST, web UI block editor, MCP) lets it
+      in. See `docs/ARCHITECTURE.md` "Season 0 (specials) of a block". Not yet:
+      the block editor's dynamic preview and the collection preview still count
+      season 0.
 - [ ] Issue #4 (Deco) expanded, not implemented yet: dead-air fallback needs
       to support real programming (a low-priority "base" schedule, with its
       own filler chain) resuming in the gaps a channel's pinned schedule

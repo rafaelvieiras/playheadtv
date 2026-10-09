@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { CriteriaAmountControl, CriteriaOrderSelect } from '@/components/CriteriaItemControls'
 import { CriteriaReviewNotice } from '@/components/CriteriaReviewNotice'
 import { type BlockPlaybackDraft } from '@/components/BlockPlaybackFields'
+import { BlockIncludeSpecialsField } from '@/components/BlockIncludeSpecialsField'
 import { BlockListModeField } from '@/components/BlockListModeField'
 import { ListModeReviewNotice } from '@/components/ListModeReviewNotice'
 import { CollectionPicker } from '@/components/CollectionPicker'
@@ -125,6 +126,8 @@ function BlockDetailsForm({ block }: { block: Block }) {
   const [playback, setPlayback] = useState(initialPlayback)
   const initialListMode: ListMode = block.list_mode ?? 'repeat'
   const [listMode, setListMode] = useState<ListMode>(initialListMode)
+  const initialIncludeSpecials = block.include_specials ?? false
+  const [includeSpecials, setIncludeSpecials] = useState(initialIncludeSpecials)
   const [error, setError] = useState<string | null>(null)
   const isDynamic = block.dynamic
   const unreviewed = draft.keepLegacy && draft.collection === null
@@ -135,7 +138,8 @@ function BlockDetailsForm({ block }: { block: Block }) {
     draft.collection !== initial.collection ||
     draft.keepLegacy !== initial.keepLegacy ||
     (isDynamic && JSON.stringify(playback) !== JSON.stringify(initialPlayback)) ||
-    (!isDynamic && listMode !== initialListMode)
+    (!isDynamic && listMode !== initialListMode) ||
+    includeSpecials !== initialIncludeSpecials
 
   const saveMutation = useMutation({
     mutationFn: () =>
@@ -147,6 +151,7 @@ function BlockDetailsForm({ block }: { block: Block }) {
         // Only a changed mode is sent: writing it settles the migration review
         // of a block, which a mere rename must not do.
         ...(!isDynamic && listMode !== initialListMode ? { list_mode: listMode } : {}),
+        ...(includeSpecials !== initialIncludeSpecials ? { include_specials: includeSpecials } : {}),
       } satisfies BlockInput),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['blocks'] })
@@ -179,6 +184,7 @@ function BlockDetailsForm({ block }: { block: Block }) {
     setDraft(initial)
     setPlayback(initialPlayback)
     setListMode(initialListMode)
+    setIncludeSpecials(initialIncludeSpecials)
     setError(null)
   }
 
@@ -202,6 +208,7 @@ function BlockDetailsForm({ block }: { block: Block }) {
           />
         </Field>
         {!isDynamic && <BlockListModeField value={listMode} onChange={setListMode} idPrefix="block-editor" />}
+        <BlockIncludeSpecialsField value={includeSpecials} onChange={setIncludeSpecials} idPrefix="block-editor" />
         {isDynamic && !unreviewed && (
           <DynamicCollectionFields
             value={draft.collection}
@@ -692,6 +699,7 @@ function BlockItemsSection({ block }: { block: Block }) {
                           <SeriesSliceControl
                             key={`${item.id}-${sliceKey(item.series.slice)}`}
                             series={item.series}
+                            includeSpecials={block.include_specials ?? false}
                             disabled={busy}
                             onSave={(slice) => setSlice(item, slice)}
                           />

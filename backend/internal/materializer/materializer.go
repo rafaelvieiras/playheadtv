@@ -361,6 +361,8 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 	dynamicWalks := make(map[string]dynamicWalk)
 	// repeatBlockIDs holds the manual blocks set to repeat their list.
 	repeatBlockIDs := make(map[string]bool, len(blockIDs))
+	// includeSpecials holds the blocks that let season 0 episodes in.
+	includeSpecials := make(map[string]bool, len(blockIDs))
 	if len(blockIDs) > 0 {
 		ids := make([]string, 0, len(blockIDs))
 		for id := range blockIDs {
@@ -396,8 +398,30 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		for _, id := range repeating {
 			repeatBlockIDs[id] = true
 		}
+		var withSpecials []string
+		specialsQuery := fmt.Sprintf("SELECT id FROM block WHERE tenant_id = ? AND include_specials = 1 AND id IN (%s)", placeholders)
+		if err := m.db.Query(ctx, &withSpecials, specialsQuery, args...); err != nil {
+			return channelInput{}, fmt.Errorf("list blocks including specials: %w", err)
+		}
+		for _, id := range withSpecials {
+			includeSpecials[id] = true
+		}
 		for _, d := range dyn {
 			dynamicBlockIDs[d.ID] = true
+			// A dynamic block that plays its matches by title walks the
+			// block_item rows resolved from its collection; the season 0
+			// episodes among them are left out unless the block includes
+			// specials. (The interleaved walk loads its matches itself.)
+			if d.PlaybackOrder != domain.OrderInterleaved && !includeSpecials[d.ID] {
+				var drop []string
+				if err := m.db.Query(ctx, &drop,
+					"SELECT bi.id FROM block_item bi JOIN catalog_item ci ON ci.id = bi.catalog_item_id WHERE bi.block_id = ? AND NOT "+series.NotSpecialSQL,
+					d.ID,
+				); err != nil {
+					return channelInput{}, fmt.Errorf("list specials of block %s: %w", d.ID, err)
+				}
+				blockItems[d.ID] = withoutItems(blockItems[d.ID], drop)
+			}
 			if d.PlaybackOrder != domain.OrderInterleaved {
 				continue
 			}
@@ -495,7 +519,7 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		}
 	}
 
-	runs, warnings, err := m.loadSeriesRuns(ctx, ch, tenantID, blockItems, dynamicWalks, now, scanFrom, preview)
+	runs, warnings, err := m.loadSeriesRuns(ctx, ch, tenantID, blockItems, dynamicWalks, includeSpecials, now, scanFrom, preview)
 	if err != nil {
 		return channelInput{}, err
 	}
@@ -924,6 +948,24 @@ func (m *Materializer) Warnings(ctx context.Context, tenantID string, ch domain.
 	return warnings, nil
 }
 
+// withoutItems returns items minus the ones whose id is in drop.
+func withoutItems(items []domain.BlockItem, drop []string) []domain.BlockItem {
+	if len(drop) == 0 {
+		return items
+	}
+	gone := make(map[string]bool, len(drop))
+	for _, id := range drop {
+		gone[id] = true
+	}
+	out := make([]domain.BlockItem, 0, len(items))
+	for _, it := range items {
+		if !gone[it.ID] {
+			out = append(out, it)
+		}
+	}
+	return out
+}
+
 // dynamicWalk is the interleaved walk of a dynamic block: the query it
 // matches and the spec the walk is built from.
 type dynamicWalk struct {
@@ -939,7 +981,7 @@ type dynamicWalk struct {
 // the reset it simulates). dynamic holds the walked stand-in item of each
 // interleaved dynamic block (keyed by block id, which is also the id its
 // entries record), whose origin comes from block_cursor instead.
-func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, tenantID string, blockItems map[string][]domain.BlockItem, dynamic map[string]dynamicWalk, now, scanFrom time.Time, preview bool) (map[string]*seriesRun, []Warning, error) {
+func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, tenantID string, blockItems map[string][]domain.BlockItem, dynamic map[string]dynamicWalk, includeSpecials map[string]bool, now, scanFrom time.Time, preview bool) (map[string]*seriesRun, []Warning, error) {
 	runs := make(map[string]*seriesRun)
 	var warnings []Warning
 	// skip records an item that cannot be walked: it is logged as an error and
@@ -966,7 +1008,7 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 			if isDynamic {
 				var err error
 				spec = dw.Spec
-				if episodes, err = blockitem.Episodes(ctx, m.db, tenantID, dw.Criteria); err != nil {
+				if episodes, err = blockitem.Episodes(ctx, m.db, tenantID, dw.Criteria, includeSpecials[blockID]); err != nil {
 					skip(WarningCriteriaError, it.ID, "", "the dynamic block's query failed to evaluate", err)
 					continue
 				}
@@ -979,7 +1021,7 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 					continue
 				}
 				spec = criteriaWalkSpec(cs)
-				if episodes, err = blockitem.Episodes(ctx, m.db, tenantID, cs); err != nil {
+				if episodes, err = blockitem.Episodes(ctx, m.db, tenantID, cs, includeSpecials[blockID]); err != nil {
 					skip(WarningCriteriaError, blockID, it.ID, "the criteria item's query failed to evaluate", err)
 					continue
 				}
@@ -989,7 +1031,7 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 					skip(WarningSeriesError, blockID, it.ID, "the series item's spec is invalid", err)
 					continue
 				}
-				if episodes, err = series.Episodes(ctx, m.db, tenantID, spec); err != nil {
+				if episodes, err = series.Episodes(ctx, m.db, tenantID, spec, includeSpecials[blockID]); err != nil {
 					return nil, nil, fmt.Errorf("list episodes of block_item %s: %w", it.ID, err)
 				}
 			}

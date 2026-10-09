@@ -456,10 +456,11 @@ edges):
   sliced set exactly as on a whole series. An item without a slice airs the
   whole series, as before. Operators (all optional; none set means no slice):
   `seasons` (list) and/or `season_from`..`season_to` (a union), `exclude_specials`
-  (drops season 0; specials stay included unless this is set), `episode_from`..
+  (drops season 0; superseded by the block's `include_specials`, see "Season 0
+  (specials)" below, and still accepted), `episode_from`..
   `episode_to`, `skip_first`, `skip_last`, `first` or `last` (never both),
   `sample`. They apply in that order, each to what the previous left: season
-  filter, specials, episode range, skip, first/last, sample. Season and episode
+  filter, episode range, skip, first/last, sample. Season and episode
   ranges are inclusive and go by real number, so gaps in the library's numbering
   are simply absent; a multi-episode file (`episode_number_end`) is in an episode
   range when any of its numbers is. `skip_*`, `first`, `last` and `sample` count
@@ -473,7 +474,7 @@ edges):
   and criteria items have no slice (they query `season_number`/`episode_number`).
   Validation (400): negative numbers, a non-positive count, a reversed range,
   `first` with `last`, `exclude_specials` with season 0 listed (or a range
-  ending at 0 alone), and a slice that currently matches no episode. An empty
+  ending at 0 alone; a slice-internal contradiction, unrelated to the block option), and a slice that currently matches no episode. An empty
   slice object is no slice. `PUT /blocks/{id}/items/{item_id}` with `slice`
   replaces it (`{}` clears it); a changed slice restarts the item's cursor like
   a playback order change. `POST /series/slice-preview` (and MCP
@@ -634,6 +635,50 @@ in a window plays out in full exactly as before (the next `Run()` picks up
 the continuation). A dynamic (looping) block never had this problem to begin
 with — `fillLoopingBlock` already stops exactly at the boundary by
 construction (a program unit that does not fit whole before it is not aired).
+
+### Season 0 (specials) of a block (migration `0023`)
+
+`block.include_specials` (REST/MCP `include_specials`, default `false`) decides
+whether the episodes of season 0 of a series can air from the block. Off, they
+are left out of everything season-based the block selects: a dynamic block's
+matches (title and interleaved orders), its criteria items and its series items.
+Only an episode of a series with `season_number = 0` is concerned: movies, items
+without a series (even an episode with season 0 and no series title) and
+episodes with no season number are never affected. A manual block's plain
+catalog items are explicit picks and are not filtered.
+
+- **Where it is applied.** The materializer owns the filter: `loadSeriesRuns`
+  passes the option to `series.Episodes` / `blockitem.Episodes` (series items,
+  criteria items, interleaved dynamic walks), and `loadChannelInput` drops the
+  special `block_item` rows of a dynamic block played by title (those rows hold
+  the block's resolved membership, which still lists the specials, as does
+  `GET /blocks/{id}/items`). The filter runs before a series slice, so `first 5`
+  counts the remaining episodes.
+- **Existing blocks.** The migration column default turns the option off for
+  every existing block: their specials leave the guide at the next
+  regeneration. Past entries already on air are not rewritten.
+- **Cursors.** Changing the option keeps every cursor (`series_cursor`,
+  `block_cursor`), like a catalog change does: the set of episodes grows or
+  shrinks and the walk continues from its persisted position; an episode
+  that left the set is simply not found any more. (A slice change, by contrast,
+  restarts the item's cursor.) The write triggers a regeneration. On
+  `PUT /blocks/{id}` an omitted `include_specials` keeps the stored value.
+- **`exclude_specials`.** The series slice flag is superseded by the block
+  option (specials are out by default). It is still accepted and still drops
+  season 0 when the block includes specials; the two never conflict.
+- **Open question: an explicit season 0.** A slice that names season 0
+  (`seasons` containing 0, a `season_from` of 0, or a `season_to` of 0 with no
+  higher start) is honored even when the block does not include specials: the
+  explicit selection wins over the default (`series.NamesSeasonZero`). A range
+  that only happens to cover 0 (`season_to: 3` alone) does not name it, so
+  season 0 stays out. This is the implemented choice, flagged for the maintainer
+  to confirm; the alternative is to make the block option an absolute gate.
+- **Counts.** Block item views (`series.episode_count`, criteria
+  `match_count`) and `POST /series/slice-preview` (optional `include_specials`,
+  default off) report what the block would air. The query previews
+  (`POST /catalog-items/preview-criteria`, `GET /collections/{id}/preview`, which
+  the dynamic block editor shows) describe a query, not a block, and still count
+  season 0.
 
 ### Manual block list mode (migration `0015`)
 

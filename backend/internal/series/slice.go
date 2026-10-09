@@ -150,6 +150,43 @@ func cmpNum(a, b *int64) int {
 	return 0
 }
 
+// NamesSeasonZero reports whether the slice explicitly selects season 0: it
+// lists 0 in seasons, or its season range starts at or ends at 0. A range that
+// only happens to cover 0 (season_to 3 with no season_from) does not name it.
+func NamesSeasonZero(sl *domain.SeriesSlice) bool {
+	if sl == nil {
+		return false
+	}
+	for _, n := range sl.Seasons {
+		if n == 0 {
+			return true
+		}
+	}
+	if sl.SeasonFrom != nil && *sl.SeasonFrom == 0 && (sl.SeasonTo == nil || *sl.SeasonTo >= 0) {
+		return true
+	}
+	return sl.SeasonTo != nil && *sl.SeasonTo == 0 && (sl.SeasonFrom == nil || *sl.SeasonFrom <= 0)
+}
+
+// DropSpecials removes the season 0 episodes of a series from eps, the default
+// of a block that does not include specials. Episodes with no season number
+// stay. An explicit season selection that names season 0 wins over the default
+// (the episodes are returned unchanged), see NamesSeasonZero. eps must be the
+// episodes of one series (or a selection of series episodes).
+func DropSpecials(eps []Episode, sl *domain.SeriesSlice) []Episode {
+	if NamesSeasonZero(sl) {
+		return eps
+	}
+	out := make([]Episode, 0, len(eps))
+	for _, e := range eps {
+		if e.SeasonNumber != nil && *e.SeasonNumber == 0 {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
 // ApplySlice returns the episodes that remain after the slice, in the series'
 // original order. A nil slice returns eps unchanged. See domain.SeriesSlice
 // for the order of application. seed drives the random sample.

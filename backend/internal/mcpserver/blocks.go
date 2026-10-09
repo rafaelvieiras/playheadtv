@@ -20,7 +20,7 @@ import (
 const blockColumns = "id, tenant_id, name, description, collection_id, " +
 	"(SELECT c.name FROM collection c WHERE c.tenant_id = block.tenant_id AND c.id = block.collection_id) AS collection_name, " +
 	"(collection_id IS NOT NULL OR criteria IS NOT NULL) AS dynamic, " +
-	"playback_order, list_mode, interleave_spec, playback_seed, created_at, updated_at"
+	"playback_order, list_mode, include_specials, interleave_spec, playback_seed, created_at, updated_at"
 const blockItemColumns = "id, block_id, position, item_type, COALESCE(catalog_item_id, '') AS catalog_item_id, trim_duration_ms, spec"
 
 func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Materializer) {
@@ -36,14 +36,17 @@ func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Material
 			"(default), release_date, random or shuffle sequences the series within a round). Items without a series " +
 			"count as one-item series. A manual block's list_mode is repeat (the default: when the list ends it starts again from the " +
 			"first item, until the next timed item or, for a continuous item, indefinitely) or once (the list airs once); " +
-			"not valid for a dynamic block. Mirrors POST /blocks.",
+			"not valid for a dynamic block. include_specials (default false) lets the season 0 episodes of a series into " +
+			"everything season-based the block selects (a dynamic block's matches, criteria items, series items); off, they never air, " +
+			"unless a series item's slice names season 0 explicitly. Movies, items without a series and episodes with no " +
+			"season number are never affected. Mirrors POST /blocks.",
 	}, createBlockHandler(db, mat))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "update_block",
 		Description: "Replace a block's name, description, collection and playback settings (a full replace like PUT: omitting " +
-			"collection_id makes the block manual, omitting playback_order means title; omitting list_mode keeps the stored one). See create_block for the fields. " +
-			"Changing the interleaved order or its per_round or series_order restarts the block's cursor. " +
+			"collection_id makes the block manual, omitting playback_order means title; omitting list_mode or include_specials keeps the stored one). See create_block for the fields. " +
+			"Changing the interleaved order or its per_round or series_order restarts the block's cursor; changing include_specials does not (the guide regenerates from the cursor). " +
 			"Mirrors PUT /blocks/{id}.",
 	}, updateBlockHandler(db, mat))
 
@@ -73,7 +76,7 @@ func registerBlockTools(s *mcp.Server, db storage.DB, mat *materializer.Material
 		Name: "preview_series_slice",
 		Description: "Count the episodes (and total duration) a series would expand to under a slice, plus the whole series count, " +
 			"without storing anything. The slice narrows a series block item to part of its episodes; operators apply in this order: " +
-			"seasons (list) and/or season_from..season_to (a union), exclude_specials (drops season 0; without it specials stay), " +
+			"seasons (list) and/or season_from..season_to (a union), exclude_specials (drops season 0; redundant unless the block includes specials, and a slice that names season 0 wins over the block default), " +
 			"episode_from..episode_to (inclusive, by real episode number; a multi-episode file is in when any of its numbers is), " +
 			"skip_first, skip_last, first or last (not both), sample (N random episodes, reproducible, kept in original order). " +
 			"Seasons and episode ranges go by number; skip/first/last/sample count files by position in the original order (season, " +
@@ -116,12 +119,13 @@ func (i *blockInterleaveInput) domain() *domain.InterleaveInput {
 }
 
 type createBlockInput struct {
-	Name          string                `json:"name" jsonschema:"block display name"`
-	Description   *string               `json:"description,omitempty" jsonschema:"optional free-text description"`
-	CollectionID  string                `json:"collection_id,omitempty" jsonschema:"makes the block dynamic: the id of a collection (see create_collection); omit for a manual block"`
-	PlaybackOrder string                `json:"playback_order,omitempty" jsonschema:"dynamic blocks only: title (default, every match by title, looped) or interleaved (round-robin across series)"`
-	Interleave    *blockInterleaveInput `json:"interleave,omitempty" jsonschema:"parameters of the interleaved order; only with playback_order interleaved"`
-	ListMode      string                `json:"list_mode,omitempty" jsonschema:"manual blocks only: repeat (default; the list starts over when it ends, until the next timed item or indefinitely for a continuous item) or once; on update, omitting it keeps the stored mode"`
+	Name            string                `json:"name" jsonschema:"block display name"`
+	Description     *string               `json:"description,omitempty" jsonschema:"optional free-text description"`
+	CollectionID    string                `json:"collection_id,omitempty" jsonschema:"makes the block dynamic: the id of a collection (see create_collection); omit for a manual block"`
+	PlaybackOrder   string                `json:"playback_order,omitempty" jsonschema:"dynamic blocks only: title (default, every match by title, looped) or interleaved (round-robin across series)"`
+	Interleave      *blockInterleaveInput `json:"interleave,omitempty" jsonschema:"parameters of the interleaved order; only with playback_order interleaved"`
+	ListMode        string                `json:"list_mode,omitempty" jsonschema:"manual blocks only: repeat (default; the list starts over when it ends, until the next timed item or indefinitely for a continuous item) or once; on update, omitting it keeps the stored mode"`
+	IncludeSpecials *bool                 `json:"include_specials,omitempty" jsonschema:"let season 0 (specials) episodes of a series into what the block selects (dynamic matches, criteria items, series items); default false; on update, omitting it keeps the stored value"`
 }
 
 // blockCollection validates the optional collection_id of a block write (nil:
@@ -172,8 +176,8 @@ func createBlockHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolH
 		}
 		b.FillInterleave()
 		err = db.Exec(ctx,
-			"INSERT INTO block (id, tenant_id, name, description, collection_id, playback_order, list_mode, interleave_spec, playback_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-			b.ID, b.TenantID, b.Name, b.Description, b.CollectionID, b.PlaybackOrder, listMode, b.InterleaveSpec, b.PlaybackSeed, b.CreatedAt, b.UpdatedAt,
+			"INSERT INTO block (id, tenant_id, name, description, collection_id, playback_order, list_mode, include_specials, interleave_spec, playback_seed, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+			b.ID, b.TenantID, b.Name, b.Description, b.CollectionID, b.PlaybackOrder, listMode, in.IncludeSpecials != nil && *in.IncludeSpecials, b.InterleaveSpec, b.PlaybackSeed, b.CreatedAt, b.UpdatedAt,
 		)
 		if err != nil {
 			return nil, domain.Block{}, err
@@ -220,9 +224,13 @@ func updateBlockHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolH
 		if err != nil {
 			return nil, domain.Block{}, err
 		}
+		includeSpecials := prev.IncludeSpecials
+		if in.IncludeSpecials != nil {
+			includeSpecials = *in.IncludeSpecials
+		}
 		if err := db.Exec(ctx,
-			"UPDATE block SET name = ?, description = ?, collection_id = ?, criteria = CASE WHEN ? IS NULL THEN NULL ELSE criteria END, playback_order = ?, list_mode = ?, interleave_spec = ?, playback_seed = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
-			in.Name, in.Description, collection, collection, playback.Order, listMode, playback.InterleaveSpec, playback.Seed, nowMillis(), defaultTenantID, in.BlockID,
+			"UPDATE block SET name = ?, description = ?, collection_id = ?, criteria = CASE WHEN ? IS NULL THEN NULL ELSE criteria END, playback_order = ?, list_mode = ?, include_specials = ?, interleave_spec = ?, playback_seed = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+			in.Name, in.Description, collection, collection, playback.Order, listMode, includeSpecials, playback.InterleaveSpec, playback.Seed, nowMillis(), defaultTenantID, in.BlockID,
 		); err != nil {
 			return nil, domain.Block{}, err
 		}
@@ -267,7 +275,7 @@ type blockSeriesSliceInput struct {
 	Seasons         []int `json:"seasons,omitempty" jsonschema:"only these season numbers (0 is specials); combined with season_from/season_to as a union"`
 	SeasonFrom      *int  `json:"season_from,omitempty" jsonschema:"first season of an inclusive season range"`
 	SeasonTo        *int  `json:"season_to,omitempty" jsonschema:"last season of an inclusive season range"`
-	ExcludeSpecials bool  `json:"exclude_specials,omitempty" jsonschema:"drop season 0; without it specials stay in the series"`
+	ExcludeSpecials bool  `json:"exclude_specials,omitempty" jsonschema:"drop season 0 (redundant unless the block includes specials: by default season 0 is out)"`
 	EpisodeFrom     *int  `json:"episode_from,omitempty" jsonschema:"first episode number of an inclusive range, by real number"`
 	EpisodeTo       *int  `json:"episode_to,omitempty" jsonschema:"last episode number of an inclusive range, by real number"`
 	SkipFirst       *int  `json:"skip_first,omitempty" jsonschema:"skip the first N episodes (by position)"`
@@ -291,6 +299,7 @@ type previewSeriesSliceInput struct {
 	SeriesExternalID string                 `json:"series_external_id,omitempty" jsonschema:"the series' id in its media source (preferred)"`
 	SeriesTitle      string                 `json:"series_title,omitempty" jsonschema:"series title, used when there is no series_external_id"`
 	Slice            *blockSeriesSliceInput `json:"slice,omitempty" jsonschema:"the slice to try; omit for the whole series"`
+	IncludeSpecials  bool                   `json:"include_specials,omitempty" jsonschema:"count as a block that includes season 0 would; default false (season 0 is counted out unless the slice names it)"`
 }
 
 func previewSeriesSliceHandler(db storage.DB) mcp.ToolHandlerFor[previewSeriesSliceInput, series.Preview] {
@@ -302,7 +311,7 @@ func previewSeriesSliceHandler(db storage.DB) mcp.ToolHandlerFor[previewSeriesSl
 			return nil, series.Preview{}, errors.New("series_external_id or series_title is required")
 		}
 		id := domain.SeriesSpec{MediaSourceID: in.MediaSourceID, SeriesExternalID: in.SeriesExternalID, SeriesTitle: in.SeriesTitle}
-		out, err := series.PreviewSlice(ctx, db, defaultTenantID, id, in.Slice.domain())
+		out, err := series.PreviewSlice(ctx, db, defaultTenantID, id, in.Slice.domain(), in.IncludeSpecials)
 		return nil, out, err
 	}
 }

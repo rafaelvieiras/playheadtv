@@ -31,7 +31,7 @@ func CheckSpec(ctx context.Context, db storage.DB, tenantID string, s domain.Ser
 		return InvalidError("no episodes of that series in the catalog")
 	}
 	if s.Slice != nil {
-		n, _, err := Stats(ctx, db, tenantID, s)
+		n, _, err := Stats(ctx, db, tenantID, s, true)
 		if err != nil {
 			return err
 		}
@@ -78,8 +78,10 @@ type Preview struct {
 
 // PreviewSlice counts the episodes the series would expand to under slice,
 // without storing anything. It validates the slice like a write does but
-// does not insist on a non-empty result (a zero count is the answer).
-func PreviewSlice(ctx context.Context, db storage.DB, tenantID string, id domain.SeriesSpec, in *domain.SeriesSlice) (Preview, error) {
+// does not insist on a non-empty result (a zero count is the answer). Season 0
+// is counted out unless includeSpecials (the block's option) or the slice names
+// it.
+func PreviewSlice(ctx context.Context, db storage.DB, tenantID string, id domain.SeriesSpec, in *domain.SeriesSlice, includeSpecials bool) (Preview, error) {
 	slice, err := NormalizeSlice(in)
 	if err != nil {
 		return Preview{}, err
@@ -89,7 +91,11 @@ func PreviewSlice(ctx context.Context, db storage.DB, tenantID string, id domain
 		return Preview{}, err
 	}
 	// The count does not depend on the seed: any fixed one will do.
-	sliced := ApplySlice(eps, slice, 1)
+	scheduled := eps
+	if !includeSpecials {
+		scheduled = DropSpecials(eps, slice)
+	}
+	sliced := ApplySlice(scheduled, slice, 1)
 	p := Preview{EpisodeCount: len(sliced), SeriesEpisodeCount: len(eps)}
 	for _, e := range sliced {
 		p.TotalDurationMs += e.DurationMs

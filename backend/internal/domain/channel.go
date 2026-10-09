@@ -57,6 +57,11 @@ type Block struct {
 	// which always loops by its own rules; FillInterleave empties it there so
 	// it is not served.
 	ListMode string `json:"list_mode,omitempty"`
+	// IncludeSpecials lets the episodes of season 0 of a series into what the
+	// block selects (dynamic matches, criteria items, series items). Off by
+	// default; see series.DropSpecials for what it does and does not touch. A series
+	// slice that explicitly names season 0 wins over the default.
+	IncludeSpecials bool `json:"include_specials"`
 	// InterleaveSpec is the stored JSON of Interleave, set iff PlaybackOrder is
 	// OrderInterleaved; PlaybackSeed makes its shuffle/random series order
 	// reproducible. Both internal: clients read Interleave.
@@ -282,7 +287,9 @@ type SeriesSlice struct {
 	Seasons    []int `json:"seasons,omitempty"`
 	SeasonFrom *int  `json:"season_from,omitempty"`
 	SeasonTo   *int  `json:"season_to,omitempty"`
-	// ExcludeSpecials drops season 0. Without it specials stay in the series.
+	// ExcludeSpecials drops season 0. Superseded by Block.IncludeSpecials
+	// (specials are out unless the block lets them in); still accepted, and
+	// still honored when the block includes specials.
 	ExcludeSpecials bool `json:"exclude_specials,omitempty"`
 	EpisodeFrom     *int `json:"episode_from,omitempty"`
 	EpisodeTo       *int `json:"episode_to,omitempty"`
