@@ -248,25 +248,30 @@ func ResolveSpec(ctx context.Context, db storage.DB, tenantID string, spec domai
 }
 
 // schedulable restricts a query to what can be put on air: a positive duration.
-// spec carries its effective query (see ResolveSpec).
-func schedulable(spec domain.CriteriaSpec, tenantID string) (string, []any, error) {
+// spec carries its effective query (see ResolveSpec). Season 0 episodes of a
+// series are left out unless includeSpecials (the owning block's option).
+func schedulable(spec domain.CriteriaSpec, tenantID string, includeSpecials bool) (string, []any, error) {
 	q, err := catalogsync.ParseQuery(spec.Query)
 	if err != nil {
 		return "", nil, err
 	}
 	where, args := q.Where(tenantID)
-	return where + " AND duration_ms > 0", args, nil
+	where += " AND duration_ms > 0"
+	if !includeSpecials {
+		where += " AND " + series.NotSpecialSQL
+	}
+	return where, args, nil
 }
 
 // Episodes loads the catalog items the item's query currently matches (items
 // with a non-positive duration left out), in no particular order, in the shape
 // the materializer walks series episodes in.
-func Episodes(ctx context.Context, db storage.DB, tenantID string, spec domain.CriteriaSpec) ([]series.Episode, error) {
+func Episodes(ctx context.Context, db storage.DB, tenantID string, spec domain.CriteriaSpec, includeSpecials bool) ([]series.Episode, error) {
 	spec, err := ResolveSpec(ctx, db, tenantID, spec)
 	if err != nil {
 		return nil, err
 	}
-	where, args, err := schedulable(spec, tenantID)
+	where, args, err := schedulable(spec, tenantID, includeSpecials)
 	if err != nil {
 		return nil, err
 	}
@@ -313,17 +318,17 @@ func Episodes(ctx context.Context, db storage.DB, tenantID string, spec domain.C
 }
 
 // Stats counts the schedulable items the query matches and their total duration.
-func Stats(ctx context.Context, db storage.DB, tenantID string, spec domain.CriteriaSpec) (int, int64, error) {
+func Stats(ctx context.Context, db storage.DB, tenantID string, spec domain.CriteriaSpec, includeSpecials bool) (int, int64, error) {
 	spec, err := ResolveSpec(ctx, db, tenantID, spec)
 	if err != nil {
 		return 0, 0, err
 	}
-	return statsOf(ctx, db, tenantID, spec)
+	return statsOf(ctx, db, tenantID, spec, includeSpecials)
 }
 
 // statsOf is Stats for a spec whose effective query is already resolved.
-func statsOf(ctx context.Context, db storage.DB, tenantID string, spec domain.CriteriaSpec) (int, int64, error) {
-	where, args, err := schedulable(spec, tenantID)
+func statsOf(ctx context.Context, db storage.DB, tenantID string, spec domain.CriteriaSpec, includeSpecials bool) (int, int64, error) {
+	where, args, err := schedulable(spec, tenantID, includeSpecials)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -340,11 +345,27 @@ func statsOf(ctx context.Context, db storage.DB, tenantID string, spec domain.Cr
 }
 
 // Decorate fills the series and criteria views of items (counts and durations
-// are read live from the catalog). An item whose spec cannot be decoded is
+// are read live from the catalog, as the owning block's include_specials option
+// would schedule them). An item whose spec cannot be decoded is
 // left without a view; one whose collection is gone is shown without counts.
 func Decorate(ctx context.Context, db storage.DB, tenantID string, items []domain.BlockItem) error {
-	if err := series.Decorate(ctx, db, tenantID, items); err != nil {
-		return err
+	specials := map[string]bool{}
+	includeFor := func(blockID string) (bool, error) {
+		if v, ok := specials[blockID]; ok {
+			return v, nil
+		}
+		v, err := IncludesSpecials(ctx, db, tenantID, blockID)
+		specials[blockID] = v
+		return v, err
+	}
+	for i := range items {
+		include, err := includeFor(items[i].BlockID)
+		if err != nil {
+			return err
+		}
+		if err := series.Decorate(ctx, db, tenantID, items[i:i+1], include); err != nil {
+			return err
+		}
 	}
 	names := map[string]*string{}
 	for i := range items {
@@ -354,6 +375,10 @@ func Decorate(ctx context.Context, db storage.DB, tenantID string, items []domai
 		spec, err := ParseCriteriaSpec(items[i].Spec)
 		if err != nil {
 			continue
+		}
+		includeSpecials, err := includeFor(items[i].BlockID)
+		if err != nil {
+			return err
 		}
 		view := &domain.CriteriaItemView{
 			PlaybackOrder: spec.PlaybackOrder,
@@ -385,7 +410,7 @@ func Decorate(ctx context.Context, db storage.DB, tenantID string, items []domai
 		// database error still fails it.
 		if err == nil {
 			if _, perr := catalogsync.ParseQuery(eff.Query); perr == nil {
-				if view.MatchCount, view.TotalDurationMs, err = statsOf(ctx, db, tenantID, eff); err != nil {
+				if view.MatchCount, view.TotalDurationMs, err = statsOf(ctx, db, tenantID, eff, includeSpecials); err != nil {
 					return err
 				}
 			}

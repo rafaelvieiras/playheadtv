@@ -144,14 +144,25 @@ func episodeWhere(s domain.SeriesSpec) (string, []any) {
 	return clause + "series_title = ?", []any{s.MediaSourceID, s.SeriesTitle}
 }
 
+// NotSpecialSQL is the catalog_item condition that leaves out the season 0
+// episodes of a series (what a block that does not include specials selects).
+// Movies, items without a series and episodes with no season number satisfy it.
+const NotSpecialSQL = "(kind != 'episode' OR series_title IS NULL OR series_title = '' OR season_number IS NULL OR season_number != 0)"
+
 // Episodes loads the episodes the series item expands to: the series' episodes
 // narrowed by the spec's slice, if any. Without a slice they come in no
 // particular order; with one, in the series' original order. Items with a
-// non-positive duration are left out (they cannot be scheduled).
-func Episodes(ctx context.Context, db storage.DB, tenantID string, s domain.SeriesSpec) ([]Episode, error) {
+// non-positive duration are left out (they cannot be scheduled). Season 0 is
+// left out unless includeSpecials is set (the owning block's option) or the
+// slice names season 0 (see DropSpecials); it goes before the slice, so
+// positions such as "first 5" count the remaining episodes.
+func Episodes(ctx context.Context, db storage.DB, tenantID string, s domain.SeriesSpec, includeSpecials bool) ([]Episode, error) {
 	eps, err := AllEpisodes(ctx, db, tenantID, s)
 	if err != nil {
 		return nil, err
+	}
+	if !includeSpecials {
+		eps = DropSpecials(eps, s.Slice)
 	}
 	return ApplySlice(eps, s.Slice, s.SliceSeed), nil
 }
@@ -183,10 +194,11 @@ func AllEpisodes(ctx context.Context, db storage.DB, tenantID string, s domain.S
 }
 
 // Stats counts the schedulable episodes the series item expands to (after its
-// slice) and their total duration.
-func Stats(ctx context.Context, db storage.DB, tenantID string, s domain.SeriesSpec) (int, int64, error) {
+// slice, and without season 0 unless includeSpecials or the slice names it)
+// and their total duration.
+func Stats(ctx context.Context, db storage.DB, tenantID string, s domain.SeriesSpec, includeSpecials bool) (int, int64, error) {
 	if s.Slice != nil {
-		eps, err := Episodes(ctx, db, tenantID, s)
+		eps, err := Episodes(ctx, db, tenantID, s, includeSpecials)
 		if err != nil {
 			return 0, 0, err
 		}
@@ -197,6 +209,9 @@ func Stats(ctx context.Context, db storage.DB, tenantID string, s domain.SeriesS
 		return len(eps), total, nil
 	}
 	where, args := episodeWhere(s)
+	if !includeSpecials {
+		where += " AND (season_number IS NULL OR season_number != 0)"
+	}
 	var rows []struct {
 		EpisodeCount    int
 		TotalDurationMs int64
@@ -211,9 +226,10 @@ func Stats(ctx context.Context, db storage.DB, tenantID string, s domain.SeriesS
 }
 
 // Decorate fills Series on every series item of items (episode count and total
-// duration are read live from the catalog). A series item whose spec cannot be
-// decoded is left without a view.
-func Decorate(ctx context.Context, db storage.DB, tenantID string, items []domain.BlockItem) error {
+// duration are read live from the catalog, as the owning block's
+// includeSpecials option would schedule them). A series item whose spec cannot
+// be decoded is left without a view.
+func Decorate(ctx context.Context, db storage.DB, tenantID string, items []domain.BlockItem, includeSpecials bool) error {
 	for i := range items {
 		if !items[i].IsSeries() {
 			continue
@@ -222,7 +238,7 @@ func Decorate(ctx context.Context, db storage.DB, tenantID string, items []domai
 		if err != nil {
 			continue
 		}
-		count, total, err := Stats(ctx, db, tenantID, spec)
+		count, total, err := Stats(ctx, db, tenantID, spec, includeSpecials)
 		if err != nil {
 			return err
 		}

@@ -61,6 +61,9 @@ type seriesSlicePreviewRequest struct {
 	SeriesExternalID string              `json:"series_external_id"`
 	SeriesTitle      string              `json:"series_title"`
 	Slice            *domain.SeriesSlice `json:"slice"`
+	// IncludeSpecials previews as a block that includes season 0 would (the
+	// default, off, counts season 0 out unless the slice names it).
+	IncludeSpecials bool `json:"include_specials"`
 }
 
 // previewSeriesSlice counts the episodes (and their total duration) a series
@@ -84,7 +87,7 @@ func previewSeriesSlice(db storage.DB) http.HandlerFunc {
 			return
 		}
 		id := domain.SeriesSpec{MediaSourceID: req.MediaSourceID, SeriesExternalID: req.SeriesExternalID, SeriesTitle: req.SeriesTitle}
-		out, err := series.PreviewSlice(r.Context(), db, DefaultTenantID, id, req.Slice)
+		out, err := series.PreviewSlice(r.Context(), db, DefaultTenantID, id, req.Slice, req.IncludeSpecials)
 		if err != nil {
 			if series.IsInvalid(err) {
 				writeError(w, http.StatusBadRequest, err.Error())

@@ -161,7 +161,8 @@ func TestSliceEndToEnd_ASliceThatMatchesNothingIsSkipped(t *testing.T) {
 func TestSliceEndToEnd_ItemWithoutSliceIsUnchanged(t *testing.T) {
 	f := slicedChannel(t, domain.OrderOriginal, `{"mode":"slot_end"}`, `null`, 0, false)
 	got := runSliced(t, f, 4*time.Hour)
-	want := []string{"sp1", "a1", "a2", "a3", "b1", "b2", "b4", "b56"}
+	// Season 0 (sp1) is out: the block does not include specials by default.
+	want := []string{"a1", "a2", "a3", "b1", "b2", "b4", "b56", "a1"}
 	if !equalStrings(got, want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

@@ -18,6 +18,7 @@ import { DynamicCollectionFields, validateCollectionChoice } from '@/components/
 import type { BlockPlaybackDraft } from '@/components/BlockPlaybackFields'
 import { blockPlaybackPayload, DEFAULT_INTERLEAVE, validateInterleave } from '@/lib/interleave'
 import { api } from '@/lib/http'
+import { BlockIncludeSpecialsField } from '@/components/BlockIncludeSpecialsField'
 import { BlockListModeField } from '@/components/BlockListModeField'
 import type { Block, BlockInput, ListMode } from '@/lib/types'
 
@@ -42,11 +43,13 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
   const [form, setForm] = useState<BlockInput>(emptyForm)
   const [playback, setPlayback] = useState<BlockPlaybackDraft>(emptyPlayback)
   const [listMode, setListMode] = useState<ListMode>('repeat')
+  const [includeSpecials, setIncludeSpecials] = useState(false)
   const [error, setError] = useState<string | undefined>(undefined)
 
   useEffect(() => {
     if (open) {
       setListMode('repeat')
+      setIncludeSpecials(false)
       setForm(emptyForm)
       setPlayback(emptyPlayback)
       setError(undefined)
@@ -56,6 +59,7 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
   const mutation = useMutation({
     mutationFn: () => api.post<Block>('/blocks', {
         ...form,
+        include_specials: includeSpecials,
         ...(form.collection_id ? blockPlaybackPayload(playback.order, playback.interleave) : { list_mode: listMode }),
       }),
     onSuccess: (created) => {
@@ -118,6 +122,8 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
             />
 
             {!form.collection_id && <BlockListModeField value={listMode} onChange={setListMode} idPrefix="block" />}
+
+            <BlockIncludeSpecialsField value={includeSpecials} onChange={setIncludeSpecials} idPrefix="block" />
 
             {error && <p className="text-sm text-destructive">{error}</p>}
           </FieldGroup>

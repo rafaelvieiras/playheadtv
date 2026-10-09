@@ -17,10 +17,13 @@ import type { SeriesItemView, SeriesSlice, SeriesSlicePreview } from '@/lib/type
 // after a save so the form follows the stored slice.
 export function SeriesSliceControl({
   series,
+  includeSpecials,
   disabled,
   onSave,
 }: {
   series: SeriesItemView
+  // The block's include_specials option: the count is the one the block airs.
+  includeSpecials: boolean
   disabled?: boolean
   onSave: (slice: SeriesSlice) => void
 }) {
@@ -34,7 +37,7 @@ export function SeriesSliceControl({
   }, [parsed.slice])
 
   const preview = useQuery({
-    queryKey: ['series-slice-preview', series.media_source_id, series.series_external_id, series.series_title, debounced],
+    queryKey: ['series-slice-preview', series.media_source_id, series.series_external_id, series.series_title, includeSpecials, debounced],
     enabled: debounced !== undefined,
     retry: false,
     queryFn: () =>
@@ -43,6 +46,7 @@ export function SeriesSliceControl({
         series_external_id: series.series_external_id,
         series_title: series.series_title,
         slice: debounced,
+        include_specials: includeSpecials,
       }),
   })
 
@@ -117,8 +121,8 @@ export function SeriesSliceControl({
       </div>
       <p className="text-xs text-muted-foreground">
         Season and episode ranges are inclusive and go by real numbers. Skip, first, last and sample count files by position in the
-        series' original order, and a multi-episode file counts once. They apply in the order shown above; specials stay unless
-        excluded.
+        series' original order, and a multi-episode file counts once. They apply in the order shown above. Season 0 is left out
+        unless the block includes specials or the slice names season 0 (a season list with 0, or a range starting or ending at 0).
       </p>
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-sm" data-testid="slice-count" aria-live="polite">

@@ -56,8 +56,8 @@ func TestSeriesSliceCreateReadAndValidation(t *testing.T) {
 		t.Fatalf("list = %+v", list)
 	}
 
-	// No slice or an empty one is a whole series (specials included: 11).
-	if _, it, _ := post(`{}`); it.Series == nil || it.Series.Slice != nil || it.Series.EpisodeCount != 11 {
+	// No slice or an empty one is a whole series (season 0 left out by the block default: 10 of 11).
+	if _, it, _ := post(`{}`); it.Series == nil || it.Series.Slice != nil || it.Series.EpisodeCount != 10 {
 		t.Errorf("empty slice view = %+v", it.Series)
 	}
 	// A sample stores a seed, never served, and the count is fixed.
@@ -190,8 +190,8 @@ func TestSeriesSlicePreview(t *testing.T) {
 	if code != 200 || out["episode_count"] != 4 || out["series_episode_count"] != 11 || out["total_duration_ms"] != 4*1800000 {
 		t.Fatalf("preview = %d %v", code, out)
 	}
-	// No slice: the whole series. A slice matching nothing is an answer, not an error.
-	if code, out := preview(fmt.Sprintf(`{"media_source_id":%q,"series_external_id":"ser-a"}`, ms)); code != 200 || out["episode_count"] != 11 {
+	// No slice: the whole series, season 0 out by default. A slice matching nothing is an answer, not an error.
+	if code, out := preview(fmt.Sprintf(`{"media_source_id":%q,"series_external_id":"ser-a"}`, ms)); code != 200 || out["episode_count"] != 10 {
 		t.Errorf("no slice = %d %v", code, out)
 	}
 	if code, out := preview(fmt.Sprintf(`{"media_source_id":%q,"series_title":"Show","slice":{"seasons":[5]}}`, ms)); code != 200 || out["episode_count"] != 0 || out["series_episode_count"] != 11 {
