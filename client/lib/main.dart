@@ -48,6 +48,7 @@ import 'util/gl_serial.dart';
 import 'epg_guide.dart' as guide show defaultTailAttributionCap, tailAttributionCap;
 import 'epg_guide.dart' show guideContextLookback, isHiddenGuideKind;
 import 'osd_subject.dart';
+import 'preload_lead.dart';
 import 'widgets/epg_overlay.dart';
 import 'widgets/osd_overlay.dart';
 import 'widgets/debug_overlay.dart';
@@ -75,6 +76,8 @@ class AppConfig {
   static String? _cacheDir;
   static bool? _startFullScreen;
   static double? _mosaicSafeMargin;
+  static Duration? _preloadLead;
+  static Duration? _preloadRetryBase;
   // The config file's settings (lib/config/config_file.dart), read once at
   // boot by loadConfigFile. A packaged install configures itself here; each
   // getter below falls back to it when neither a test override nor a
@@ -159,6 +162,19 @@ class AppConfig {
     return v is num && v >= 0 && v <= 10 ? v / 100 : defaultMosaicSafeMargin;
   }
 
+  // The preload lead when the user never chose one in Settings:
+  // `preload_lead_seconds` in the config file, else 20 seconds.
+  static int get preloadLeadDefaultSeconds => sanitizePreloadLeadSeconds(_file['preload_lead_seconds']);
+
+  // The configured preload lead (before the adaptive growth): a test override
+  // (not clamped, so a test can shrink it), else the user's Settings choice,
+  // else the installation default.
+  static Duration configuredPreloadLead(SettingsService settings) =>
+      _preloadLead ?? Duration(seconds: settings.preloadLeadSeconds ?? preloadLeadDefaultSeconds);
+
+  // Base of the preload retry back-off, shrunk by tests.
+  static Duration get preloadRetryBase => _preloadRetryBase ?? defaultPreloadRetryBase;
+
   // Where the offline cache lives, only overridden by integration tests; null
   // (the app) means the platform's application support/cache directories.
   static String? get cacheDirOverride => _cacheDir;
@@ -178,6 +194,8 @@ class AppConfig {
     Duration? tailAttributionCap,
     bool? startFullScreen,
     double? mosaicSafeMargin,
+    Duration? preloadLead,
+    Duration? preloadRetryBase,
   }) {
     // Not part of the app's config: the guide's tail cap, shrunk by tests so a
     // tail goes past it within seconds. Every override resets it.
@@ -195,6 +213,8 @@ class AppConfig {
     _cacheSyncInterval = cacheSyncInterval;
     _startFullScreen = startFullScreen;
     _mosaicSafeMargin = mosaicSafeMargin;
+    _preloadLead = preloadLead;
+    _preloadRetryBase = preloadRetryBase;
     _cacheDir = cacheDir ?? Directory.systemTemp.createTempSync('playheadtv_cache_').path;
   }
 }
@@ -323,7 +343,6 @@ List<ChannelEntry> unitsOfProgram(EpgEntry program, int ordinal, {DateTime? notB
 List<ChannelEntry> channel = <ChannelEntry>[];
 
 const crossfadeDuration = Duration(milliseconds: 800);
-const preloadLead = Duration(seconds: 2);
 
 // Last-resort floor under _scheduleTransitions' `effective` duration. The
 // GET /epg filters in _loadAndPlayChannel/_doFetchNextEpgSlice (and
@@ -647,6 +666,20 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // as the second crossfade picks it back up.
   VideoPlayerController? _gapHoldPending;
 
+  // The preload of the next unit (see _preloadNext). `_preloadReadyIndex` is
+  // the channel index whose controller sits in the inactive slot, ready to be
+  // crossfaded into; `_preloadFuture` is the attempt loop in flight for
+  // `_preloadTargetIndex` of generation `_preloadGeneration`. Plain fields on
+  // purpose, never setState: nothing the build reads. `_preloadTracker`
+  // measures how long preloads take and grows the lead (preload_lead.dart); it
+  // outlives channel switches, a slow library is slow on every channel.
+  Timer? _preloadTimer;
+  Future<void>? _preloadFuture;
+  int? _preloadTargetIndex;
+  int _preloadGeneration = -1;
+  int? _preloadReadyIndex;
+  final PreloadLeadTracker _preloadTracker = PreloadLeadTracker();
+
   late OfflineRuntime _runtime;
   ScheduleCache get _cache => _runtime.cache;
   List<PlayheadChannel> _channels = [];
@@ -787,6 +820,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
     final generation = ++_loadGeneration;
     _advanceTimer?.cancel();
+    _resetPreload();
     _volumeRampTimer?.cancel();
     _osdHideTimer?.cancel();
     _osdHideTimer = null;
@@ -1135,37 +1169,115 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     final entry = channel[index];
     var effective = remaining ?? entry.clipDuration;
     if (effective < minTransitionInterval) effective = minTransitionInterval;
-    final preloadAt = effective - preloadLead;
-    Timer(preloadAt.isNegative ? Duration.zero : preloadAt, () => _preloadNext(index + 1, generation));
+    // The lead is the configured one, grown by what recent preloads measured
+    // (preload_lead.dart). An item shorter than it preloads right after it
+    // starts.
+    final lead = _preloadTracker.effective(AppConfig.configuredPreloadLead(_settings));
+    _preloadTimer?.cancel();
+    _preloadTimer = Timer(preloadDelay(remaining: effective, lead: lead), () => _preloadNext(index + 1, generation));
 
     _advanceTimer?.cancel();
     _advanceTimer = Timer(effective, () => _crossfadeTo(index + 1, generation));
   }
 
+  // Forgets the preload bookkeeping of the channel being left. A controller an
+  // attempt is still creating is disposed by the attempt itself (it checks the
+  // generation when it resolves); one already parked in a slot is disposed by
+  // the caller's teardown of both slots.
+  void _resetPreload() {
+    _preloadTimer?.cancel();
+    _preloadTimer = null;
+    _preloadFuture = null;
+    _preloadTargetIndex = null;
+    _preloadReadyIndex = null;
+    _preloadGeneration = -1;
+  }
+
+  // Starts preparing `nextIndex` unless that is already done or in flight (one
+  // preload at a time per channel). Never throws: a failed attempt is retried.
   Future<void> _preloadNext(int nextIndex, int generation) async {
     if (!mounted || generation != _loadGeneration) return;
     if (nextIndex >= channel.length) return;
-    final nextEntry = channel[nextIndex];
-    setState(() => _status = 'preload: ${nextEntry.label}');
+    if (_preloadGeneration == generation) {
+      if (_preloadReadyIndex == nextIndex) return;
+      if (_preloadFuture != null && _preloadTargetIndex == nextIndex) return;
+    }
+    _preloadGeneration = generation;
+    _preloadTargetIndex = nextIndex;
+    _preloadReadyIndex = null;
+    final attempts = _runPreload(nextIndex, generation);
+    _preloadFuture = attempts;
+    await attempts;
+  }
 
-    final controller = await _createController(nextEntry);
-    await controller.setVolume(0);
-    if (!mounted || generation != _loadGeneration) {
-      unawaited(serializeGlOp(() => controller.dispose()));
+  // Attempts to create the controller for `nextIndex` until one succeeds or
+  // the channel changes: a failure waits preloadRetryDelay and tries again,
+  // reporting an error after preloadAttemptsBeforeError failures but never
+  // giving up (the channel must not stay stopped on a late source). Every
+  // attempt's duration feeds the adaptive lead.
+  Future<void> _runPreload(int nextIndex, int generation) async {
+    var failures = 0;
+    while (mounted && generation == _loadGeneration) {
+      final nextEntry = channel[nextIndex];
+      setState(() => _status = 'preload: ${nextEntry.label}');
+      final clock = Stopwatch()..start();
+      VideoPlayerController? controller;
+      try {
+        controller = await _createController(nextEntry);
+        await controller.setVolume(0);
+      } catch (e) {
+        clock.stop();
+        _preloadTracker.record(clock.elapsed);
+        final broken = controller;
+        if (broken != null) unawaited(serializeGlOp(() => broken.dispose()));
+        failures++;
+        if (!mounted || generation != _loadGeneration) return;
+        if (failures >= preloadAttemptsBeforeError) {
+          setState(() => _status = 'ERROR: preload of ${nextEntry.label} failed, retrying… ($e)');
+        }
+        await Future<void>.delayed(preloadRetryDelay(failures, AppConfig.preloadRetryBase));
+        continue;
+      }
+      clock.stop();
+      _preloadTracker.record(clock.elapsed);
+      if (!mounted || generation != _loadGeneration) {
+        unawaited(serializeGlOp(() => controller!.dispose()));
+        return;
+      }
+      // Captured before setState so the old controller's dispose (fire-and
+      // forget) is routed through serializeGlOp instead of racing this
+      // function's own already-created controller.
+      final replaced = _aIsActive ? _controllerB : _controllerA;
+      setState(() {
+        if (_aIsActive) {
+          _controllerB = controller;
+        } else {
+          _controllerA = controller;
+        }
+      });
+      if (replaced != null) unawaited(serializeGlOp(() => replaced.dispose()));
+      _preloadReadyIndex = nextIndex;
       return;
     }
-    // Captured before setState so the old controller's dispose (fire-and
-    // forget) is routed through serializeGlOp instead of racing this
-    // function's own already-created controller.
-    final replaced = _aIsActive ? _controllerB : _controllerA;
-    setState(() {
-      if (_aIsActive) {
-        _controllerB = controller;
+  }
+
+  // Waits until the preload of `nextIndex` is ready, starting it when nothing
+  // did (a preload timer that never fired, a unit that only appeared late).
+  // The item on air (or the gap slate) stays as it is meanwhile. False when the
+  // channel changed while waiting.
+  Future<bool> _awaitPreload(int nextIndex, int generation) async {
+    while (mounted && generation == _loadGeneration) {
+      if (_preloadGeneration == generation && _preloadReadyIndex == nextIndex) return true;
+      final inFlight = _preloadGeneration == generation && _preloadTargetIndex == nextIndex ? _preloadFuture : null;
+      if (inFlight != null) {
+        await inFlight;
       } else {
-        _controllerA = controller;
+        await _preloadNext(nextIndex, generation);
+        // Nothing started (the unit vanished): do not spin.
+        if (_preloadFuture == null) return false;
       }
-    });
-    if (replaced != null) unawaited(serializeGlOp(() => replaced.dispose()));
+    }
+    return false;
   }
 
   Future<void> _crossfadeTo(int nextIndex, int generation) async {
@@ -1244,11 +1356,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     }
     final nextEntry = channel[nextIndex];
     final outgoing = _aIsActive ? _controllerA : _controllerB;
-    final incoming = _aIsActive ? _controllerB : _controllerA;
-    if (incoming == null) {
-      setState(() => _status = 'ERROR: preload of ${nextEntry.label} did not finish in time');
-      return;
+    // Not ready yet (a slow source, a failed first attempt): keep what is on
+    // air and wait for it; the retry loop in _runPreload does not give up.
+    if (_preloadGeneration != generation || _preloadReadyIndex != nextIndex) {
+      if (!await _awaitPreload(nextIndex, generation)) return;
     }
+    final incoming = _aIsActive ? _controllerB : _controllerA;
+    if (incoming == null) return;
+    _preloadReadyIndex = null;
+    _preloadFuture = null;
+    _preloadTargetIndex = null;
 
     // Honor the EPG clock (issue #9) instead of always playing back to back:
     // compare the next item's real, materialized startAt with wall-clock now.
@@ -1352,7 +1469,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // Interior EPG gap (issue #9): `outgoing` (the item that just finished)
   // crossfades into a looping local slate instead of straight into `pending`
   // (the real next item, already preloaded by the normal preload timer —
-  // which fires a fixed `preloadLead` before the CURRENT item ends,
+  // which fires the preload lead before the CURRENT item ends,
   // independent of the next one's real startAt, so it's always ready here
   // even though it won't be shown yet). Once `gap` elapses, a second
   // crossfade brings `pending` on screen and resumes the normal
@@ -1432,6 +1549,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     if (generation != _loadGeneration) return;
     if (index >= channel.length) return;
     final entry = channel[index];
+    _resetPreload();
     final controller = await _createController(entry);
     if (generation != _loadGeneration) {
       unawaited(serializeGlOp(() => controller.dispose()));
@@ -1936,6 +2054,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _trackPickerOpenNotifier.dispose();
     _gapRetryTimer?.cancel();
     _gapHoldTimer?.cancel();
+    _preloadTimer?.cancel();
     _channelInputCommitTimer?.cancel();
     unawaited(_cacheSub?.cancel());
     if (_streamPrefsReady) _streamPrefs.dispose();

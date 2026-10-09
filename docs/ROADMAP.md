@@ -1239,3 +1239,8 @@ Design: `ARCHITECTURE.md` "Releases and updates"; procedures: `RELEASING.md` and
       artifact below) already isolates the OSD from the video render tree
       as its own widget/State — a reasonable structural starting point for
       this, but the actual template/plugin mechanism is still unstarted.
+- [x] Client preload lead: configurable (default 20 s, Settings and config
+      file), adapts to measured preload times, retries a failed or late preload
+      instead of stopping (`docs/ARCHITECTURE.md` "Client preload lead").
+      Not exercised against a real slow library, only the delaying fixture
+      server.

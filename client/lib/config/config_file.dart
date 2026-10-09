@@ -8,6 +8,7 @@
 //     "jellyfin_api_key": "<key>",
 //     "playhead_channel_id": "",
 //     "working_set_size": 5,
+//     "preload_lead_seconds": 20,
 //     "epg_sync_interval_minutes": 15,
 //     "start_fullscreen": true,
 //     "mosaic_safe_margin_percent": 2,

@@ -12,6 +12,7 @@ import 'package:flutter/services.dart';
 import '../input/input_action.dart';
 import '../main.dart' show AppConfig;
 import '../services/app_window.dart';
+import '../preload_lead.dart';
 import '../services/settings_service.dart';
 import '../ui/ui_scale.dart';
 import 'controls_mapping_page.dart';
@@ -61,6 +62,16 @@ class _SettingsPageState extends State<SettingsPage> {
       if (mounted) setState(() {});
     }));
     UiScaleOverride.notifier.value = next;
+  }
+
+  // Select steps through the preload lead choices (seconds) and saves.
+  void _cyclePreloadLead() {
+    final settings = _settings;
+    if (settings == null) return;
+    final current = settings.preloadLeadSeconds ?? AppConfig.preloadLeadDefaultSeconds;
+    unawaited(settings.setPreloadLeadSeconds(nextPreloadLeadChoice(current)).then((_) {
+      if (mounted) setState(() {});
+    }));
   }
 
   @override
@@ -122,6 +133,17 @@ class _SettingsPageState extends State<SettingsPage> {
                   key: const Key('settings-ui-scale-value'),
                 ),
                 onTap: _cycleUiScale,
+              ),
+            if (_settings != null)
+              ListTile(
+                key: const Key('settings-preload-lead-tile'),
+                leading: const Icon(AppIcons.preloadLead),
+                title: const Text('Preload lead'),
+                subtitle: Text(
+                  preloadLeadLabel(_settings!.preloadLeadSeconds ?? AppConfig.preloadLeadDefaultSeconds),
+                  key: const Key('settings-preload-lead-value'),
+                ),
+                onTap: _cyclePreloadLead,
               ),
           ],
         ),

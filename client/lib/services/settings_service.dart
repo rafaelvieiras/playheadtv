@@ -1,5 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../preload_lead.dart';
 import '../update/semver.dart';
 import '../update/update_notices.dart';
 
@@ -36,6 +37,7 @@ class SettingsService implements UpdateNoticeStore {
   static const _cacheWindowLimitKey = 'cache_window_limit_hours';
   static const _startFullScreenKey = 'start_fullscreen';
   static const _uiScaleKey = 'ui_scale_override';
+  static const _preloadLeadKey = 'preload_lead_seconds';
 
   /// Choices offered for the cache window limit (hours).
   static const cacheWindowLimitChoicesHours = [6, 12, 24, 48, 72, 168];
@@ -90,6 +92,15 @@ class SettingsService implements UpdateNoticeStore {
 
   Future<void> setUiScaleOverride(double? value) =>
       value == null ? _prefs.remove(_uiScaleKey) : _prefs.setDouble(_uiScaleKey, value);
+
+  /// The user's saved preload lead in seconds (see preload_lead.dart), or null
+  /// when never chosen (the installation default applies).
+  int? get preloadLeadSeconds {
+    final v = _prefs.getInt(_preloadLeadKey);
+    return v == null ? null : sanitizePreloadLeadSeconds(v);
+  }
+
+  Future<void> setPreloadLeadSeconds(int seconds) => _prefs.setInt(_preloadLeadKey, seconds);
 
   static Future<SettingsService> create() async => SettingsService(await SharedPreferences.getInstance());
 
