@@ -1481,6 +1481,28 @@ only gained `window_ms` and the configurable window.
   playback could go on without the backend, and "Clear cache" behind a
   confirmation.
 
+## Client preload lead
+
+The client prepares the next unit (creates and initializes its controller) a
+"lead" before the current one ends. The configured lead is 20 s by default,
+5 to 60 s (`preload_lead_seconds` in the config file, or Settings -> Preload
+lead, which steps through fixed choices with Select). `lib/preload_lead.dart`
+holds the pure policy:
+
+- **Adaptive.** `PreloadLeadTracker` keeps the duration of the last four preload
+  attempts (create + initialize, failures included). The effective lead is
+  `max(configured, 2 x slowest + 2 s)`, capped at 90 s (or the configured value
+  when larger), so a slow library gets more time without tuning and the lead
+  decays back as fast preloads replace the slow samples.
+- **Short items.** An item shorter than the lead preloads right after it starts;
+  the `minTransitionInterval` floor still applies to its length.
+- **No dead stop.** A failed attempt is retried after 1, 2, 4, 8 s, then every
+  16 s, and the status shows an error only after four failures, without ever
+  giving up. When the transition arrives before the preload is ready, the
+  current item (or the gap slate) stays on screen and the crossfade happens as
+  soon as the preload is ready. One preload runs at a time per channel; a
+  channel switch drops any attempt in flight and disposes its controller.
+
 ## Client window (full screen)
 
 The client opens in full screen by default on desktop, so a TV or console-style

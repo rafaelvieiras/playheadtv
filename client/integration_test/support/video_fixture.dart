@@ -27,6 +27,27 @@ class VideoFixture {
     return (fromEnv != null && fromEnv.isNotEmpty) ? fromEnv : 'ffmpeg';
   }
 
+  /// Paths of the video requests received so far, in order.
+  final List<String> videoRequests = [];
+
+  final Map<String, Duration> _openDelays = {};
+  final Map<String, int> _failuresLeft = {};
+
+  /// Makes every video request whose path contains [idPart] wait [delay]
+  /// before it is answered: a source that is slow to open (a network- or
+  /// cloud-backed library, a cold cache). A zero delay removes it.
+  void slowOpen(String idPart, Duration delay) {
+    if (delay == Duration.zero) {
+      _openDelays.remove(idPart);
+    } else {
+      _openDelays[idPart] = delay;
+    }
+  }
+
+  /// Answers the next [times] video requests whose path contains [idPart]
+  /// with a 503, then serves normally again: a preload that fails and recovers.
+  void failNext(String idPart, int times) => _failuresLeft[idPart] = times;
+
   Directory? _tempDir;
   List<int>? _videoBytes;
   HttpServer? _server;
@@ -118,6 +139,20 @@ class VideoFixture {
       request.response.statusCode = HttpStatus.notFound;
       await request.response.close();
       return;
+    }
+
+    final path = request.uri.path;
+    videoRequests.add(path);
+    for (final e in _openDelays.entries) {
+      if (path.contains(e.key)) await Future<void>.delayed(e.value);
+    }
+    for (final e in _failuresLeft.entries) {
+      if (e.value > 0 && path.contains(e.key)) {
+        _failuresLeft[e.key] = e.value - 1;
+        request.response.statusCode = HttpStatus.serviceUnavailable;
+        await request.response.close();
+        return;
+      }
     }
 
     final total = bytes.length;
