@@ -1240,7 +1240,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       }
       clock.stop();
       _preloadTracker.record(clock.elapsed);
-      if (!mounted || generation != _loadGeneration) {
+      // Also dropped when the bookkeeping was reset while this attempt was in
+      // flight (the player restarted the channel from another item): a late
+      // controller must never reach a slot of a channel that moved on.
+      if (!mounted || generation != _loadGeneration || _preloadGeneration != generation || _preloadTargetIndex != nextIndex) {
         unawaited(serializeGlOp(() => controller!.dispose()));
         return;
       }
@@ -1355,7 +1358,6 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       return;
     }
     final nextEntry = channel[nextIndex];
-    final outgoing = _aIsActive ? _controllerA : _controllerB;
     // Not ready yet (a slow source, a failed first attempt): keep what is on
     // air and wait for it; the retry loop in _runPreload does not give up.
     if (_preloadGeneration != generation || _preloadReadyIndex != nextIndex) {
@@ -1363,6 +1365,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     }
     final incoming = _aIsActive ? _controllerB : _controllerA;
     if (incoming == null) return;
+    // Whatever is on air now (the wait above can be long): this is what fades out.
+    final outgoing = _aIsActive ? _controllerA : _controllerB;
     _preloadReadyIndex = null;
     _preloadFuture = null;
     _preloadTargetIndex = null;
@@ -1370,6 +1374,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // Honor the EPG clock (issue #9) instead of always playing back to back:
     // compare the next item's real, materialized startAt with wall-clock now.
     final gap = nextEntry.startAt.difference(DateTime.now().toUtc());
+    var seeked = Duration.zero;
     if (gap > epgSyncTolerance) {
       // Interior schedule gap — hold on the slate instead of starting
       // `incoming` early and running ahead of the EPG clock for the rest of
@@ -1385,10 +1390,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       if (seek > nextEntry.clipDuration) seek = nextEntry.clipDuration;
       await incoming.seekTo(nextEntry.itemOffset + seek);
       if (generation != _loadGeneration) return;
+      seeked = seek;
     }
 
     setState(() => _status = 'CROSSFADE -> ${nextEntry.label}');
-    await _rampCrossfade(outgoing: outgoing, incoming: incoming, generation: generation);
+    final onAir = await _rampCrossfade(outgoing: outgoing, incoming: incoming, generation: generation);
     if (generation != _loadGeneration) return;
     if (!mounted) return;
     final previousKey = _osdSubjectAt(_currentIndex)?.key;
@@ -1399,7 +1405,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // The OSD announces programs: a filler of the same program, or one more
     // 10-second clip inside a tail, is not an announcement.
     if (_osdSubjectAt(nextIndex)?.key != previousKey) _showOsd();
-    _scheduleTransitions(nextIndex, generation: generation);
+    // The item has been playing since the crossfade began: what is left of it is
+    // its entry minus where it joined and minus the ramp, so the next transition
+    // falls on the entry's end instead of drifting by the ramp every time.
+    _scheduleTransitions(nextIndex, remaining: nextEntry.clipDuration - seeked - onAir, generation: generation);
     unawaited(_maybeExtendGrid(nextIndex, generation));
   }
 
@@ -1413,18 +1422,21 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // Doesn't touch _currentIndex/_status/scheduling: what "arriving" means
   // differs between a real item and the gap slate, so the caller handles
   // that itself once this completes.
-  Future<void> _rampCrossfade({
+  Future<Duration> _rampCrossfade({
     required VideoPlayerController? outgoing,
     required VideoPlayerController incoming,
     required int generation,
   }) async {
     await incoming.play();
+    // The incoming item is on air from here: the caller times its end from this
+    // instant, not from the end of the ramp.
+    final onAir = Stopwatch()..start();
     const steps = 30;
     final stepDuration = crossfadeDuration ~/ steps;
     final completer = Completer<void>();
     _volumeRampTimer?.cancel();
     var step = 0;
-    _volumeRampTimer = Timer.periodic(stepDuration, (t) async {
+    _volumeRampTimer = Timer.periodic(stepDuration, (t) {
       if (generation != _loadGeneration) {
         t.cancel();
         if (!completer.isCompleted) completer.complete();
@@ -1441,22 +1453,51 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
           _opacityA = progress;
         }
       });
-      await outgoing?.setVolume(1 - progress);
-      await incoming.setVolume(progress);
+      // Neither call waits for the other (or for the previous step): a platform
+      // call that is slow on one controller must not hold back the other's
+      // volume, nor the end of the ramp. Calls on one controller stay in order.
+      final out = outgoing;
+      if (out != null) unawaited(_bestEffort(() => out.setVolume(1 - progress)));
+      unawaited(_bestEffort(() => incoming.setVolume(progress)));
       if (step >= steps) {
         t.cancel();
-        await outgoing?.pause();
-        if (outgoing != null) await serializeGlOp(() => outgoing.dispose());
-        if (_aIsActive) {
-          _controllerA = null;
-        } else {
-          _controllerB = null;
-        }
-        _aIsActive = !_aIsActive;
-        if (!completer.isCompleted) completer.complete();
+        unawaited(_finishRamp(outgoing, incoming, generation).whenComplete(() {
+          if (!completer.isCompleted) completer.complete();
+        }));
       }
     });
-    return completer.future;
+    await completer.future;
+    return onAir.elapsed;
+  }
+
+  // Runs a platform call on a controller that may be stalled or already gone;
+  // never throws and never waits for more than a couple of seconds.
+  Future<void> _bestEffort(Future<void> Function() call) async {
+    try {
+      await call().timeout(const Duration(seconds: 2));
+    } catch (_) {}
+  }
+
+  // The end of a crossfade: the outgoing item is silenced and stopped for good,
+  // the incoming one is at full volume, the slots are swapped and the outgoing
+  // controller is disposed (through the shared GL queue, not awaited: the next
+  // controller's initialize is queued behind it). Whatever a platform call
+  // does, the swap happens: the ramp must always complete.
+  Future<void> _finishRamp(VideoPlayerController? outgoing, VideoPlayerController incoming, int generation) async {
+    if (outgoing != null) {
+      await _bestEffort(() => outgoing.setVolume(0));
+      await _bestEffort(() => outgoing.pause());
+    }
+    await _bestEffort(() => incoming.setVolume(1));
+    // A channel switch meanwhile already took both slots and disposes them.
+    if (generation != _loadGeneration) return;
+    if (outgoing != null) unawaited(serializeGlOp(() => outgoing.dispose()));
+    if (_aIsActive) {
+      _controllerA = null;
+    } else {
+      _controllerB = null;
+    }
+    _aIsActive = !_aIsActive;
   }
 
   Future<VideoPlayerController> _createSlateController() async {
@@ -1527,7 +1568,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         }
         _status = 'CROSSFADE -> ${nextEntry.label}';
       });
-      await _rampCrossfade(outgoing: slateOutgoing, incoming: pending, generation: generation);
+      final onAir = await _rampCrossfade(outgoing: slateOutgoing, incoming: pending, generation: generation);
       if (generation != _loadGeneration) return;
       if (!mounted) return;
       final previousKey = _osdSubjectAt(_currentIndex)?.key;
@@ -1536,7 +1577,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         _status = 'playing: ${nextEntry.label}';
       });
       if (_osdSubjectAt(nextIndex)?.key != previousKey) _showOsd();
-      _scheduleTransitions(nextIndex, generation: generation);
+      _scheduleTransitions(nextIndex, remaining: nextEntry.clipDuration - onAir, generation: generation);
       unawaited(_maybeExtendGrid(nextIndex, generation));
     });
   }
