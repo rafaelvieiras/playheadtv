@@ -332,6 +332,8 @@ void main() {
             focusMode: ValueNotifier<bool>(false),
             onOpenSubtitles: () {},
             onOpenAudio: () {},
+            onToggleDimmer: () {},
+            onOpenDimmerLevel: () {},
             recentChannels: const [
               OsdChannelShortcut(id: 'a', number: 2, name: 'News'),
               OsdChannelShortcut(id: 'b', number: 9, name: 'Sports'),

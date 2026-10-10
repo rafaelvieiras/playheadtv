@@ -1481,6 +1481,29 @@ only gained `window_ms` and the configurable window.
   playback could go on without the backend, and "Clear cache" behind a
   confirmation.
 
+## Client dimmer
+
+A software dimmer lowers the picture's brightness: `DimmerOverlay`
+(`client/lib/widgets/dimmer_overlay.dart`) is a black layer of adjustable
+opacity, the last child of the player page's `Stack`, so it covers the video,
+the OSD, the EPG and the pickers alike. It ignores pointers and never takes
+focus. It is driven by `Dimmer.active`/`Dimmer.level` (`lib/dimmer.dart`)
+through a `ListenableBuilder`, never `setState` on the page (GL-texture rules).
+The mosaic has no layer.
+
+- **Level.** 10 to 80% in steps of 10, 50 by default (`dim_level_percent` in the
+  config file, else the user's saved level from Settings -> Dim level or the
+  dialog). The level is persisted; the on/off toggle is not, it starts off on
+  every launch (a dimmed picture at boot reads as a fault).
+- **OSD.** A dimmer button sits next to the audio and subtitle buttons. In OSD
+  focus mode Select toggles the dim. While dimmed, a level chip appears beside
+  the button: Select on it opens the level dialog, the six-button path from the
+  OSD. Holding Select on the button (or a long press with a pointer) opens the
+  same dialog: an accelerator only.
+- **Dialog.** Left/Down lower, Right/Up raise, Select saves, Back cancels
+  (restoring the previous state). The dim shows live behind it; saving leaves
+  the dimmer on. Settings -> Dim level opens the same dialog.
+
 ## Client preload lead
 
 The client prepares the next unit (creates and initializes its controller) a

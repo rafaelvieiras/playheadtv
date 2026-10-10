@@ -23,4 +23,5 @@ abstract final class AppIcons {
   static const IconData fullScreen = Symbols.fullscreen;
   static const IconData interfaceSize = Symbols.format_size;
   static const IconData preloadLead = Symbols.hourglass_top;
+  static const IconData dimmer = Symbols.brightness_medium;
 }
