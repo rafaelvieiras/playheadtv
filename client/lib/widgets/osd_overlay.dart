@@ -25,6 +25,7 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'package:fvp/fvp.dart'; // getMediaInfo() on VideoPlayerController
 
+import '../dimmer.dart';
 import '../osd_subject.dart';
 import '../ui/ui_scale.dart';
 import 'app_icons.dart';
@@ -43,6 +44,10 @@ class OsdChannelShortcut {
 // recent channel (`channel:<id>`).
 const _captions = 'captions';
 const _audio = 'audio';
+// The dimmer toggle, and (only while dimmed) its level chip: Select on the
+// chip opens the level dialog, the 6-button way to it from the OSD.
+const _dimmer = 'dimmer';
+const _dimmerLevel = 'dimmer-level';
 const _channelPrefix = 'channel:';
 
 class ChannelOsd extends StatefulWidget {
@@ -66,6 +71,8 @@ class ChannelOsd extends StatefulWidget {
   final ValueListenable<bool> focusMode;
   final VoidCallback onOpenSubtitles;
   final VoidCallback onOpenAudio;
+  final VoidCallback onToggleDimmer;
+  final VoidCallback onOpenDimmerLevel;
   final List<OsdChannelShortcut> recentChannels;
   final void Function(String channelId) onSelectChannel;
 
@@ -87,6 +94,8 @@ class ChannelOsd extends StatefulWidget {
     required this.focusMode,
     required this.onOpenSubtitles,
     required this.onOpenAudio,
+    required this.onToggleDimmer,
+    required this.onOpenDimmerLevel,
     required this.recentChannels,
     required this.onSelectChannel,
     this.now = DateTime.now,
@@ -111,6 +120,13 @@ class ChannelOsdState extends State<ChannelOsd> {
       if (mounted) setState(() {});
     });
     widget.focusMode.addListener(_onFocusModeChanged);
+    Dimmer.active.addListener(_onDimmerChanged);
+    Dimmer.level.addListener(_onDimmerChanged);
+  }
+
+  // Repaints the dimmer button/chip. Only this widget rebuilds, never the page.
+  void _onDimmerChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -125,6 +141,8 @@ class ChannelOsdState extends State<ChannelOsd> {
   @override
   void dispose() {
     widget.focusMode.removeListener(_onFocusModeChanged);
+    Dimmer.active.removeListener(_onDimmerChanged);
+    Dimmer.level.removeListener(_onDimmerChanged);
     _tickTimer?.cancel();
     super.dispose();
   }
@@ -142,7 +160,7 @@ class ChannelOsdState extends State<ChannelOsd> {
     final hasSubtitles = (info?.subtitle ?? const []).isNotEmpty;
     final hasAudioChoice = (info?.audio ?? const []).length > 1;
     return [
-      [if (hasSubtitles) _captions, if (hasAudioChoice) _audio],
+      [if (hasSubtitles) _captions, if (hasAudioChoice) _audio, _dimmer, if (Dimmer.active.value) _dimmerLevel],
       [for (final c in widget.recentChannels) '$_channelPrefix${c.id}'],
     ].where((r) => r.isNotEmpty).toList();
   }
@@ -164,10 +182,18 @@ class ChannelOsdState extends State<ChannelOsd> {
     setState(() => _focused = rows[row][col]);
   }
 
+  /// Whether the dimmer toggle holds the focus (its Select also has a hold
+  /// gesture, handled by the parent).
+  bool get dimmerFocused => widget.focusMode.value && _focused == _dimmer;
+
   /// Relayed by the parent on Select while in focus mode.
   void activateFocused() {
     final focused = _focused;
-    if (focused == _captions) {
+    if (focused == _dimmer) {
+      widget.onToggleDimmer();
+    } else if (focused == _dimmerLevel) {
+      if (Dimmer.active.value) widget.onOpenDimmerLevel();
+    } else if (focused == _captions) {
       widget.onOpenSubtitles();
     } else if (focused == _audio) {
       widget.onOpenAudio();
@@ -463,6 +489,20 @@ class ChannelOsdState extends State<ChannelOsd> {
                       _button(const Key('osd-btn-captions'), AppIcons.captions, focused: _focused == _captions),
                     if (has(_audio))
                       _button(const Key('osd-btn-audio'), AppIcons.audioTrack, focused: _focused == _audio),
+                    // Tap toggles, a long press opens the level dialog (mouse
+                    // and touch accelerators; keys go through focus mode).
+                    GestureDetector(
+                      onTap: widget.onToggleDimmer,
+                      onLongPress: widget.onOpenDimmerLevel,
+                      child: _button(const Key('osd-btn-dimmer'), AppIcons.dimmer, focused: _focused == _dimmer),
+                    ),
+                    if (Dimmer.active.value)
+                      _button(
+                        const Key('osd-btn-dimmer-level'),
+                        AppIcons.dimmer,
+                        label: dimLevelLabel(Dimmer.level.value),
+                        focused: _focused == _dimmerLevel,
+                      ),
                     if (nextItemLabel != null) ...[
                       SizedBox(width: _u(16)),
                       Flexible(

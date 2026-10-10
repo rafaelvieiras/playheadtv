@@ -12,12 +12,14 @@ import 'package:flutter/services.dart';
 import '../input/input_action.dart';
 import '../main.dart' show AppConfig;
 import '../services/app_window.dart';
+import '../dimmer.dart';
 import '../preload_lead.dart';
 import '../services/settings_service.dart';
 import '../ui/ui_scale.dart';
 import 'controls_mapping_page.dart';
 import 'offline_cache_page.dart';
 import '../widgets/app_icons.dart';
+import '../widgets/dimmer_level_dialog.dart';
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -72,6 +74,22 @@ class _SettingsPageState extends State<SettingsPage> {
     unawaited(settings.setPreloadLeadSeconds(nextPreloadLeadChoice(current)).then((_) {
       if (mounted) setState(() {});
     }));
+  }
+
+  // Opens the dim level dialog (six buttons) and saves the confirmed level.
+  Future<void> _editDimLevel() async {
+    final settings = _settings;
+    final keyBindings = _keyBindings;
+    if (settings == null || keyBindings == null) return;
+    final chosen = await showDimmerLevelDialog(
+      context,
+      initial: AppConfig.configuredDimLevel(settings),
+      resolve: keyBindings.resolve,
+    );
+    if (chosen == null) return;
+    await settings.setDimLevelPercent(chosen);
+    Dimmer.level.value = chosen;
+    if (mounted) setState(() {});
   }
 
   @override
@@ -144,6 +162,17 @@ class _SettingsPageState extends State<SettingsPage> {
                   key: const Key('settings-preload-lead-value'),
                 ),
                 onTap: _cyclePreloadLead,
+              ),
+            if (_settings != null)
+              ListTile(
+                key: const Key('settings-dim-level-tile'),
+                leading: const Icon(AppIcons.dimmer),
+                title: const Text('Dim level'),
+                subtitle: Text(
+                  dimLevelLabel(AppConfig.configuredDimLevel(_settings!)),
+                  key: const Key('settings-dim-level-value'),
+                ),
+                onTap: _editDimLevel,
               ),
           ],
         ),

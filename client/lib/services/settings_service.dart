@@ -1,5 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../dimmer.dart';
 import '../preload_lead.dart';
 import '../update/semver.dart';
 import '../update/update_notices.dart';
@@ -38,6 +39,7 @@ class SettingsService implements UpdateNoticeStore {
   static const _startFullScreenKey = 'start_fullscreen';
   static const _uiScaleKey = 'ui_scale_override';
   static const _preloadLeadKey = 'preload_lead_seconds';
+  static const _dimLevelKey = 'dim_level_percent';
 
   /// Choices offered for the cache window limit (hours).
   static const cacheWindowLimitChoicesHours = [6, 12, 24, 48, 72, 168];
@@ -101,6 +103,15 @@ class SettingsService implements UpdateNoticeStore {
   }
 
   Future<void> setPreloadLeadSeconds(int seconds) => _prefs.setInt(_preloadLeadKey, seconds);
+
+  /// The user's saved dim level in percent (see dimmer.dart), or null when never
+  /// chosen (the installation default applies).
+  int? get dimLevelPercent {
+    final v = _prefs.getInt(_dimLevelKey);
+    return v == null ? null : sanitizeDimLevelPercent(v);
+  }
+
+  Future<void> setDimLevelPercent(int percent) => _prefs.setInt(_dimLevelKey, sanitizeDimLevelPercent(percent));
 
   static Future<SettingsService> create() async => SettingsService(await SharedPreferences.getInstance());
 

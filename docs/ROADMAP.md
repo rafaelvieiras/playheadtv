@@ -1244,3 +1244,7 @@ Design: `ARCHITECTURE.md` "Releases and updates"; procedures: `RELEASING.md` and
       instead of stopping (`docs/ARCHITECTURE.md` "Client preload lead").
       Not exercised against a real slow library, only the delaying fixture
       server.
+- [x] Client software dimmer: OSD button (Select toggles a black layer above
+      the player page), global level 10-80% (default 50, Settings and
+      `dim_level_percent`), level dialog reachable with six buttons
+      (`docs/ARCHITECTURE.md` "Client dimmer"). Not checked on a real display.

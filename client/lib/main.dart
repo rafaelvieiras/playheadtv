@@ -49,10 +49,13 @@ import 'epg_guide.dart' as guide show defaultTailAttributionCap, tailAttribution
 import 'epg_guide.dart' show guideContextLookback, isHiddenGuideKind;
 import 'osd_subject.dart';
 import 'preload_lead.dart';
+import 'dimmer.dart';
 import 'widgets/epg_overlay.dart';
 import 'widgets/osd_overlay.dart';
 import 'widgets/debug_overlay.dart';
 import 'widgets/track_selector_overlay.dart';
+import 'widgets/dimmer_overlay.dart';
+import 'widgets/dimmer_level_dialog.dart';
 
 // AppConfig: in production, every field below is just the --dart-define of the
 // same name (a compile-time constant). The integration tests
@@ -167,6 +170,14 @@ class AppConfig {
   // `preload_lead_seconds` in the config file, else 20 seconds.
   static int get preloadLeadDefaultSeconds => sanitizePreloadLeadSeconds(_file['preload_lead_seconds']);
 
+  // The dim level when the user never chose one in Settings:
+  // `dim_level_percent` in the config file (10 to 80, steps of 10), else 50.
+  static int get dimLevelDefaultPercent => sanitizeDimLevelPercent(_file['dim_level_percent']);
+
+  // The dim level in force: the user's Settings choice, else the installation
+  // default.
+  static int configuredDimLevel(SettingsService settings) => settings.dimLevelPercent ?? dimLevelDefaultPercent;
+
   // The configured preload lead (before the adaptive growth): a test override
   // (not clamped, so a test can shrink it), else the user's Settings choice,
   // else the installation default.
@@ -210,6 +221,7 @@ class AppConfig {
     // syncer and shared runtime. Without an explicit directory each override
     // gets a fresh one, so a test never inherits another's cache.
     OfflineRuntime.reset();
+    Dimmer.reset();
     _jellyfinUrl = jellyfinUrl;
     _jellyfinApiKey = jellyfinApiKey;
     _playheadBaseUrl = playheadBaseUrl;
@@ -773,6 +785,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     try {
       _settings = await SettingsService.create();
       _keyBindings = KeyBindingsService(_settings);
+      Dimmer.level.value = AppConfig.configuredDimLevel(_settings);
       _runtime = await OfflineRuntime.ensure();
       _streamPrefs = await StreamPreferencesService.create(_runtime.api);
       _streamPrefsReady = true;
@@ -2068,6 +2081,65 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _trackPickerOpenNotifier.value = true;
   }
 
+  // Dimmer (issue #85): the black layer is `DimmerOverlay`, the last child of
+  // the page's Stack, driven by `Dimmer.active`/`Dimmer.level` (never
+  // setState). Select on the focused OSD button toggles it on release; holding
+  // Select for `dimmerHoldDuration` opens the level dialog instead (an
+  // accelerator: the level chip beside the button, shown while dimmed, opens
+  // the same dialog with a plain Select).
+  Timer? _dimHoldTimer;
+  bool _dimSelectDown = false;
+  bool _dimDialogOpen = false;
+
+  void _toggleDimmer() {
+    Dimmer.active.value = !Dimmer.active.value;
+    _showOsd();
+  }
+
+  // Select key event on the focused OSD dimmer button (down starts the hold
+  // countdown; releasing before it fires toggles).
+  void _onDimmerSelect(KeyEvent event) {
+    if (event is KeyDownEvent) {
+      _dimSelectDown = true;
+      _dimHoldTimer?.cancel();
+      _dimHoldTimer = Timer(dimmerHoldDuration, () {
+        _dimSelectDown = false;
+        if (mounted) unawaited(_openDimmerLevel());
+      });
+    } else if (event is KeyUpEvent && _dimSelectDown) {
+      _dimSelectDown = false;
+      _dimHoldTimer?.cancel();
+      _toggleDimmer();
+    }
+  }
+
+  // The global dim level dialog. The dim shows live behind it; Back restores
+  // the previous state, Select saves the level and leaves the dimmer on.
+  Future<void> _openDimmerLevel() async {
+    if (_dimDialogOpen || !mounted) return;
+    _dimDialogOpen = true;
+    _osdHideTimer?.cancel();
+    _osdVisibleNotifier.value = false;
+    final wasActive = Dimmer.active.value;
+    final wasLevel = Dimmer.level.value;
+    Dimmer.active.value = true;
+    final chosen = await showDimmerLevelDialog(
+      context,
+      initial: wasLevel,
+      resolve: _keyBindings.resolve,
+      onChanged: (v) => Dimmer.level.value = v,
+    );
+    _dimDialogOpen = false;
+    if (chosen == null) {
+      Dimmer.level.value = wasLevel;
+      Dimmer.active.value = wasActive;
+    } else {
+      Dimmer.level.value = chosen;
+      await _settings.setDimLevelPercent(chosen);
+    }
+    if (mounted) _focusNode.requestFocus();
+  }
+
   // Most recently watched channels other than the current one, for the OSD's
   // "Channels" section (SettingsService keeps the MRU list).
   List<OsdChannelShortcut> _recentChannelShortcuts() {
@@ -2144,6 +2216,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _advanceTimer?.cancel();
     _volumeRampTimer?.cancel();
     _osdHideTimer?.cancel();
+    _dimHoldTimer?.cancel();
     _osdVisibleNotifier.dispose();
     _osdFocusNotifier.dispose();
     _epgOpenNotifier.dispose();
@@ -2296,6 +2369,15 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
           return;
         }
 
+        // Select on the OSD's focused dimmer button (or its release): see
+        // _onDimmerSelect.
+        if (action == InputAction.select &&
+            (event is KeyUpEvent
+                ? _dimSelectDown
+                : _osdVisibleNotifier.value && _osdFocusNotifier.value && (_osdKey.currentState?.dimmerFocused ?? false))) {
+          _onDimmerSelect(event);
+          return;
+        }
         if (event is! KeyDownEvent) return;
         final digit = action?.digitValue;
         if (digit != null) {
@@ -2515,6 +2597,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                     focusMode: _osdFocusNotifier,
                     onOpenSubtitles: () => _openTrackPicker(TrackSelectorPanel.subtitle, singlePanel: true),
                     onOpenAudio: () => _openTrackPicker(TrackSelectorPanel.audio, singlePanel: true),
+                    onToggleDimmer: _toggleDimmer,
+                    onOpenDimmerLevel: () => unawaited(_openDimmerLevel()),
                     recentChannels: _recentChannelShortcuts(),
                     onSelectChannel: (channelId) {
                       _osdHideTimer?.cancel();
@@ -2677,6 +2761,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                 );
               },
             ),
+            // Dimmer: above everything, including the EPG and the pickers.
+            const DimmerOverlay(),
           ],
         ),
       ),

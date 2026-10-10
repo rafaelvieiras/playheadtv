@@ -170,6 +170,12 @@ or LLM, and to every artifact in the repo:
     buttons, with zero remapping — unless it's a declared accelerator per
     the exception above, in which case verify the *non-accelerator*
     equivalent path is the one actually exercised in testing.
+- The dimmer (`lib/dimmer.dart`, `lib/widgets/dimmer_overlay.dart`) is a black
+  layer, the last child of the player's `Stack`, driven by `Dimmer.active`/
+  `Dimmer.level` notifiers (never `setState`). In OSD focus mode Select on its
+  button toggles; while dimmed a level chip beside it opens the level dialog
+  with Select. Holding Select is only an accelerator to that dialog. The level
+  is persisted, the toggle is not (`docs/ARCHITECTURE.md` "Client dimmer").
 - The OSD never describes a filler: for a hidden-kind entry on air it shows the
   program the guide attributes it to, over that program's displayed span
   (`lib/osd_subject.dart`, same `buildGuideCells` rule as the EPG).

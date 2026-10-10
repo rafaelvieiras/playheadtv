@@ -84,7 +84,7 @@ launcher sets it to `<install root>/config.json`), else
 `$XDG_CONFIG_HOME/playheadtv/config.json`, else `~/.config/playheadtv/config.json`.
 Keys: `playhead_base_url`, `playhead_device_token`, `jellyfin_url`,
 `jellyfin_api_key`, `playhead_channel_id`, `working_set_size`,
-`preload_lead_seconds`, `epg_sync_interval_minutes`, `start_fullscreen`, `auto_update`, `update_channel` (see
+`preload_lead_seconds`, `dim_level_percent`, `epg_sync_interval_minutes`, `start_fullscreen`, `auto_update`, `update_channel` (see
 `packaging/linux/config.example.json`). An absent or invalid file is treated as
 empty.
 
