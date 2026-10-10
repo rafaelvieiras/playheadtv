@@ -574,6 +574,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   double _opacityA = 1;
   double _opacityB = 0;
   int _currentIndex = -1;
+  // The controller that is the picture of `channel[_headIndex]` (set together
+  // with `_currentIndex` whenever an item takes over). `_picturePlayhead` reads
+  // where the viewer really is in the schedule from it.
+  VideoPlayerController? _headController;
+  int _headIndex = -1;
   String _status = 'starting…';
   Timer? _advanceTimer;
   Timer? _volumeRampTimer;
@@ -1208,6 +1213,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     setState(() {
       _controllerA = controller;
       _currentIndex = 0;
+      _headController = controller;
+      _headIndex = 0;
       _status = 'playing: ${entry.label}';
     });
     _showOsd();
@@ -1466,6 +1473,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     final previousKey = _osdSubjectAt(_currentIndex)?.key;
     setState(() {
       _currentIndex = nextIndex;
+      _headController = incoming;
+      _headIndex = nextIndex;
       _status = 'playing: ${nextEntry.label}';
     });
     // The OSD announces programs: a filler of the same program, or one more
@@ -1640,6 +1649,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       final previousKey = _osdSubjectAt(_currentIndex)?.key;
       setState(() {
         _currentIndex = nextIndex;
+        _headController = pending;
+        _headIndex = nextIndex;
         _status = 'playing: ${nextEntry.label}';
       });
       if (_osdSubjectAt(nextIndex)?.key != previousKey) _showOsd();
@@ -1676,6 +1687,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _opacityA = 1;
       _opacityB = 0;
       _currentIndex = index;
+      _headController = controller;
+      _headIndex = index;
       _status = 'playing: ${entry.label}';
     });
     _showOsd();
@@ -1940,6 +1953,23 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       }
       unawaited(_reconcileWithCache());
     });
+  }
+
+  // The schedule instant the picture is at: the on-air unit's start plus how
+  // far its controller has played (net of the file offset of a split item).
+  // The wall clock can be ahead of it (a transition that started late within
+  // `epgSyncTolerance`, a seek or buffer fill after the resync), and the OSD
+  // must read 0:00 where the viewer sees a program begin. Null while it cannot
+  // be told (no unit on air yet, the gap slate, a controller not initialized),
+  // and the OSD falls back to the wall clock.
+  DateTime? _picturePlayhead() {
+    final head = _headController;
+    final active = _aIsActive ? _controllerA : _controllerB;
+    if (head == null || !identical(head, active) || _headIndex != _currentIndex) return null;
+    if (_currentIndex < 0 || _currentIndex >= channel.length) return null;
+    final value = head.value;
+    if (!value.isInitialized) return null;
+    return picturePlayheadAt(channel[_currentIndex].startAt, channel[_currentIndex].itemOffset, channel[_currentIndex].clipDuration, value.position);
   }
 
   // What the OSD describes for unit `index` of `channel`: the guide program
@@ -2593,6 +2623,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                     endAt: osd?.end ?? channel[_currentIndex].programEndAt,
                     progressByClock: osd != null,
                     resolveSubject: () => _osdSubjectAt(_currentIndex),
+                    playhead: _picturePlayhead,
                     controller: _aIsActive ? _controllerA : _controllerB,
                     focusMode: _osdFocusNotifier,
                     onOpenSubtitles: () => _openTrackPicker(TrackSelectorPanel.subtitle, singlePanel: true),

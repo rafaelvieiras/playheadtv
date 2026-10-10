@@ -67,6 +67,11 @@ class ChannelOsd extends StatefulWidget {
   // updates without the parent rebuilding. When given, it wins over the
   // item/next/start/end props above, which stay as the fallback.
   final OsdSubject? Function()? resolveSubject;
+  // Where the picture is in the schedule (see main.dart `_picturePlayhead`):
+  // the progress bar and the elapsed time follow it, so a program that begins
+  // reads 0:00 even when the wall clock is a little ahead of the picture. Null
+  // result (or no callback): the wall clock.
+  final DateTime? Function()? playhead;
   final VideoPlayerController? controller;
   final ValueListenable<bool> focusMode;
   final VoidCallback onOpenSubtitles;
@@ -90,6 +95,7 @@ class ChannelOsd extends StatefulWidget {
     required this.endAt,
     this.progressByClock = false,
     this.resolveSubject,
+    this.playhead,
     required this.controller,
     required this.focusMode,
     required this.onOpenSubtitles,
@@ -348,7 +354,7 @@ class ChannelOsdState extends State<ChannelOsd> {
       duration = Duration.zero;
     } else if (progressByClock) {
       duration = endAt.difference(startAt);
-      final elapsed = widget.now().toUtc().difference(startAt);
+      final elapsed = (widget.playhead?.call() ?? widget.now()).toUtc().difference(startAt);
       position = elapsed.isNegative ? Duration.zero : (elapsed > duration ? duration : elapsed);
     } else {
       position = widget.controller?.value.position ?? Duration.zero;
@@ -477,6 +483,7 @@ class ChannelOsdState extends State<ChannelOsd> {
                       SizedBox(width: _u(12)),
                       Text(
                         '${_fmtDuration(position)} / ${_fmtDuration(duration)}',
+                        key: const Key('osd-elapsed'),
                         style: TextStyle(color: Colors.white70, fontSize: _u(13)),
                       ),
                     ],
