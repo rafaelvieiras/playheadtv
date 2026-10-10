@@ -78,6 +78,7 @@ class AppConfig {
   static double? _mosaicSafeMargin;
   static Duration? _preloadLead;
   static Duration? _preloadRetryBase;
+  static Duration? _channelLoadStallBound;
   // The config file's settings (lib/config/config_file.dart), read once at
   // boot by loadConfigFile. A packaged install configures itself here; each
   // getter below falls back to it when neither a test override nor a
@@ -175,6 +176,10 @@ class AppConfig {
   // Base of the preload retry back-off, shrunk by tests.
   static Duration get preloadRetryBase => _preloadRetryBase ?? defaultPreloadRetryBase;
 
+  // How long a channel load may run before a further switch stops waiting
+  // for it (see _switchToChannelIndex); shrunk by tests.
+  static Duration get channelLoadStallBound => _channelLoadStallBound ?? defaultChannelLoadStallBound;
+
   // Where the offline cache lives, only overridden by integration tests; null
   // (the app) means the platform's application support/cache directories.
   static String? get cacheDirOverride => _cacheDir;
@@ -196,6 +201,7 @@ class AppConfig {
     double? mosaicSafeMargin,
     Duration? preloadLead,
     Duration? preloadRetryBase,
+    Duration? channelLoadStallBound,
   }) {
     // Not part of the app's config: the guide's tail cap, shrunk by tests so a
     // tail goes past it within seconds. Every override resets it.
@@ -215,6 +221,7 @@ class AppConfig {
     _mosaicSafeMargin = mosaicSafeMargin;
     _preloadLead = preloadLead;
     _preloadRetryBase = preloadRetryBase;
+    _channelLoadStallBound = channelLoadStallBound;
     _cacheDir = cacheDir ?? Directory.systemTemp.createTempSync('playheadtv_cache_').path;
   }
 }
@@ -223,6 +230,11 @@ class AppConfig {
 // see AppConfig.workingSetSize. A grouped tail counts as ONE program however
 // many clips it carries.
 const defaultWorkingSetSize = 5;
+
+// How long a channel load runs before a newer switch stops waiting for it and
+// loads its own target in parallel. Shorter than that, presses in quick
+// succession are still coalesced into one load (see _switchToChannelIndex).
+const defaultChannelLoadStallBound = Duration(seconds: 2);
 
 // The default refresh period of the offline cache (minutes), see
 // AppConfig.cacheSyncInterval.
@@ -697,6 +709,15 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // already in flight — resolved by _runChannelLoad right after that load
   // finishes (or self-aborts via _loadGeneration). See _switchToChannelIndex.
   int? _pendingChannelSwitchTarget;
+  // The generation of the most recent real load and when it started. A load
+  // that outlives AppConfig.channelLoadStallBound is stalled (a source that is
+  // slow or stuck opening): a newer switch stops waiting for it, see
+  // _switchToChannelIndex.
+  int _channelLoadGeneration = -1;
+  DateTime _channelLoadStartedAt = DateTime.fromMillisecondsSinceEpoch(0);
+  // Fires when the in-flight load turns stalled while a switch is deferred
+  // behind it.
+  Timer? _stallReleaseTimer;
 
   // Direct jump by number: digits accumulated while the user types a channel
   // number. While non-null/non-empty, the "Channel: NN_" overlay appears in
@@ -868,7 +889,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _status = 'switching channel…';
     });
 
-    if (_channelLoadInFlight) {
+    if (_channelLoadInFlight && !_inFlightLoadStalled) {
       // A previous switch's real load (network + controller create) hasn't
       // finished yet — starting a second one now is exactly the
       // rapid-succession case that wastes a full GET /epg + controller
@@ -877,11 +898,35 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       // the first place (see gl_serial.dart). The visual state above
       // already updated instantly regardless — only the real load is
       // deferred, to whichever target the user last asked for once the
-      // in-flight one finishes or self-aborts.
+      // in-flight one finishes or self-aborts. A load that stays in flight
+      // past AppConfig.channelLoadStallBound is stuck, not rapid pressing:
+      // the deferral is released then (see _armStallRelease), so a source
+      // that never opens cannot hold navigation hostage.
       _pendingChannelSwitchTarget = targetIndex;
+      _armStallRelease();
       return;
     }
+    _pendingChannelSwitchTarget = null;
     await _runChannelLoad(target, generation);
+  }
+
+  bool get _inFlightLoadStalled =>
+      DateTime.now().difference(_channelLoadStartedAt) >= AppConfig.channelLoadStallBound;
+
+  // Schedules the release of the switch deferred behind the in-flight load for
+  // the moment that load counts as stalled.
+  void _armStallRelease() {
+    if (_stallReleaseTimer != null) return;
+    final remaining = AppConfig.channelLoadStallBound - DateTime.now().difference(_channelLoadStartedAt);
+    _stallReleaseTimer = Timer(remaining.isNegative ? Duration.zero : remaining, () {
+      _stallReleaseTimer = null;
+      final pending = _pendingChannelSwitchTarget;
+      if (!mounted || pending == null || !_channelLoadInFlight || pending >= _channels.length) return;
+      _pendingChannelSwitchTarget = null;
+      // The stalled load aborts on its next generation check, and a
+      // controller it creates late is disposed by _startChannel.
+      unawaited(_runChannelLoad(_channels[pending], _loadGeneration));
+    });
   }
 
   // Runs the real (network + controller) load for a channel switch, then
@@ -891,11 +936,19 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // clearing `_pendingChannelSwitchTarget`, so a press that arrives in that
   // gap can only ever be the one this function itself is about to act on
   // (Dart's single-threaded event loop doesn't interleave in the middle of
-  // synchronous code) — nothing gets lost or double-fired.
+  // synchronous code) — nothing gets lost or double-fired. A load that a newer
+  // one replaced after it stalled finishes without touching that bookkeeping.
   Future<void> _runChannelLoad(PlayheadChannel target, int generation) async {
+    _stallReleaseTimer?.cancel();
+    _stallReleaseTimer = null;
     _channelLoadInFlight = true;
+    _channelLoadGeneration = generation;
+    _channelLoadStartedAt = DateTime.now();
     await _loadAndPlayChannel(target, generation: generation);
+    if (_channelLoadGeneration != generation) return;
     _channelLoadInFlight = false;
+    _stallReleaseTimer?.cancel();
+    _stallReleaseTimer = null;
     final pending = _pendingChannelSwitchTarget;
     _pendingChannelSwitchTarget = null;
     if (pending != null) {
@@ -2027,6 +2080,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     ];
   }
 
+  // Whether a channel is on air (the real OSD exists); false while it loads.
+  bool get _channelLoaded => channel.isNotEmpty && _currentIndex >= 0 && _currentIndex < channel.length;
+
   void _openEpgFromOsd() {
     _osdHideTimer?.cancel();
     _osdVisibleNotifier.value = false;
@@ -2097,6 +2153,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _gapHoldTimer?.cancel();
     _preloadTimer?.cancel();
     _channelInputCommitTimer?.cancel();
+    _stallReleaseTimer?.cancel();
     unawaited(_cacheSub?.cancel());
     if (_streamPrefsReady) _streamPrefs.dispose();
     // State.dispose() itself can't await, but still routes through the
@@ -2257,7 +2314,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
             key == LogicalKeyboardKey.arrowRight;
         // Select opened the OSD and an arrow follows: enter focus mode (the
         // arrow itself is applied below as the first focus move).
-        if (_osdVisibleNotifier.value && _osdArmed && !_osdFocusNotifier.value && isArrow) {
+        if (_osdVisibleNotifier.value && _osdArmed && !_osdFocusNotifier.value && isArrow && _channelLoaded) {
           _osdFocusNotifier.value = true;
         }
         if (_osdVisibleNotifier.value && _osdFocusNotifier.value) {
@@ -2370,6 +2427,37 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                     height: 56,
                     child: CircularProgressIndicator(key: Key('loading-indicator'), color: Colors.white, strokeWidth: 4),
                   ),
+                ),
+              ),
+            // The OSD over the spinner: Select shows it, another Select opens the
+            // EPG, so a channel that is slow to load never blocks navigation.
+            // Same ValueNotifier pattern as the real OSD (no setState).
+            if (!hasContent && !_status.startsWith('ERROR') && !_status.startsWith('HOLD'))
+              Positioned.fill(
+                child: ValueListenableBuilder<bool>(
+                  valueListenable: _osdVisibleNotifier,
+                  builder: (context, visible, _) {
+                    if (!visible || _channels.isEmpty) return const SizedBox.shrink();
+                    final c = _channels[_channelIndex];
+                    return IgnorePointer(
+                      child: Align(
+                        alignment: Alignment.bottomLeft,
+                        child: Container(
+                          key: const Key('loading-osd'),
+                          margin: EdgeInsets.all(context.ui(48)),
+                          padding: EdgeInsets.symmetric(horizontal: context.ui(24), vertical: context.ui(14)),
+                          decoration: BoxDecoration(
+                            color: Colors.black.withValues(alpha: 0.78),
+                            borderRadius: BorderRadius.circular(context.ui(8)),
+                          ),
+                          child: Text(
+                            '${c.number} · ${c.name}',
+                            style: TextStyle(color: Colors.white, fontSize: context.ui(28), fontWeight: FontWeight.bold),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ),
             if (!hasContent && (_status.startsWith('ERROR') || _status.startsWith('HOLD')))

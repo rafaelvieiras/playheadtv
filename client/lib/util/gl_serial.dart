@@ -37,17 +37,20 @@ Future<void> _glOpChain = Future.value();
 // worse than before this queue existed, when a stalled controller only ever
 // froze itself. Comfortably above any real initialize()/dispose() latency
 // (network stream open, Jellyfin transcode probe) seen in this codebase.
-const _glOpQueueTimeout = Duration(seconds: 20);
+const defaultGlOpQueueTimeout = Duration(seconds: 20);
+
+// Mutable only so a test can shrink it; the app never assigns it.
+Duration glOpQueueTimeout = defaultGlOpQueueTimeout;
 
 Future<T> serializeGlOp<T>(Future<T> Function() op) {
   final result = _glOpChain.then((_) => op());
-  // The queue itself only ever waits up to _glOpQueueTimeout for this op
+  // The queue itself only ever waits up to glOpQueueTimeout for this op
   // before moving on — but `result` (what the caller awaits) is NOT
   // time-limited: it still resolves/throws whenever the real native call
   // actually finishes, however long that takes. The timeout only stops a
   // stuck op from starving everyone queued behind it; it never cancels the
   // op or misreports its outcome to its own caller.
   final gate = result.then<void>((_) {}, onError: (_) {});
-  _glOpChain = gate.timeout(_glOpQueueTimeout, onTimeout: () {});
+  _glOpChain = gate.timeout(glOpQueueTimeout, onTimeout: () {});
   return result;
 }
