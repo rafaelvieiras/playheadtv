@@ -533,7 +533,15 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   aborts it almost immediately, and the pending target loads right after.
   Adapts to real network/controller-creation latency with no magic number to
   tune; don't replace it with a timer-based debounce without re-confirming
-  that trade-off.
+  that trade-off. Loading never blocks navigation: a load in flight longer
+  than `AppConfig.channelLoadStallBound` (2s) is stalled, and the deferred
+  switch is released then (`_armStallRelease`) instead of waiting for a source
+  that may never open; the stalled load's late controller is disposed by the
+  generation check in `_startChannel`. Over the spinner the OSD is a
+  channel-name banner (`loading-osd`) and Select, Select opens the EPG; a new
+  stall path must keep all three working (`loading_navigation_test.dart`). The
+  GL queue valve (`glOpQueueTimeout`, 20s) still bounds how long a switch can
+  wait behind a stuck `initialize()`.
 - A catalog item with a non-positive duration (reproduced 2026-09-30: a
   Jellyfin library item synced with `RunTimeTicks: 0`, missing/unprobed
   metadata) breaks the entire channel-assembly model if it ever reaches a
