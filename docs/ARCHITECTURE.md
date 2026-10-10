@@ -1342,7 +1342,11 @@ the proposal" produces a collection.
   `buildGuideCells`): while a hidden entry is on air it describes the program
   the guide attributes that entry to, never the filler. Its title, "Ends" time,
   start-end times and progress all use the program's displayed span (progress
-  runs on the wall clock across program plus filler), "Up next" is the next
+  runs across program plus filler, read at where the on-air picture is in the
+  schedule: the unit's start plus its controller position net of the file
+  offset, so a program that begins reads 0:00 even when the wall clock is a
+  little ahead of the picture; the wall clock is the fallback while the
+  position is unknown, e.g. on the gap slate), "Up next" is the next
   visible program, and it only re-announces when the attributed program
   changes, so a filler of the same program (or another clip of a tail) never
   pops it again. A `fallback` is described as itself, and so is a hidden entry

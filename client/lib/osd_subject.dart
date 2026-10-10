@@ -35,6 +35,17 @@ class OsdSubject {
   String get key => channelOnly ? 'channel' : program.id;
 }
 
+/// The schedule instant a picture is at: the unit's [entryStart] plus how far
+/// its file has played past [itemOffset] (where in the file the unit starts, so
+/// a split segment or a mid-program tune-in reads true), kept within the unit's
+/// own [clipDuration]. Pure.
+DateTime picturePlayheadAt(DateTime entryStart, Duration itemOffset, Duration clipDuration, Duration filePosition) {
+  var played = filePosition - itemOffset;
+  if (played.isNegative) played = Duration.zero;
+  if (played > clipDuration) played = clipDuration;
+  return entryStart.add(played);
+}
+
 /// The subject for [current], one of [entries] (the known schedule of the
 /// channel, any order) at [now] (needed to tell when a partly attributed tail
 /// has passed its cap; null counts as inside it). A hidden entry no cell
