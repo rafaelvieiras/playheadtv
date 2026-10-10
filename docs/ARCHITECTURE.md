@@ -1502,6 +1502,13 @@ holds the pure policy:
   current item (or the gap slate) stays on screen and the crossfade happens as
   soon as the preload is ready. One preload runs at a time per channel; a
   channel switch drops any attempt in flight and disposes its controller.
+- **End of a crossfade.** The transition follows the schedule entry, not the
+  file, so the outgoing file may still have material left. Its volume is set to
+  zero, it is paused and disposed (through the GL queue) when the ramp ends,
+  whatever its platform calls do (each is bounded and never throws), so at most
+  one controller is audible. The next transition is timed from the moment the
+  incoming item started (minus the point it joined at after a resync), so
+  transitions do not drift by the length of the ramp.
 
 ## Client window (full screen)
 
