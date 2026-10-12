@@ -1588,6 +1588,76 @@ dispose goes through `disposeController` (the shared GL queue, `serializeGlOp`).
   `leave_during_load_test.dart` covers leaving during a slow open and playing the
   channel again.
 
+## Client logging
+
+The client has one logger, `Log` (`lib/log/`, pure Dart: the updater CLI uses
+the same code). Call sites use `Log.error/warn/info/debug/trace(tag, message)`
+with a component tag (`player`, `preload`, `crossfade`, `gl`, `controller`,
+`sync`, `cache`, `mosaic`, `update`, ...); nothing in app code calls `print` or
+`debugPrint`.
+
+**Levels.** `error` is a failure (no media titles or paths), `warn` something
+unexpected that was handled (a retry, a fallback; no titles or paths either),
+`info` lifecycle summaries (a channel loaded and on air with the time it took, a
+crossfade done, a sync outcome, an update outcome), `debug` step-by-step detail
+(preload attempts, controller create/dispose, GL queue waits, scheduling) and
+`trace` very chatty detail. A message is written when its level is at or above
+the active one. A message may be a `String Function()` that is only built when
+the level is on.
+
+**Defaults and precedence.** A packaged build (it carries a release version,
+`PLAYHEADTV_CLIENT_VERSION`) logs `error` only; a local build (`0.0.0-dev`, what
+`flutter run` gives) logs `debug`. Sources, first valid one wins:
+
+1. the `PLAYHEADTV_LOG_LEVEL` environment variable,
+2. the `--dart-define=PLAYHEADTV_LOG_LEVEL=` of the build,
+3. the `log_level` key of `config.json`,
+4. the build default above.
+
+The packaging scripts pass no log define, so a release always starts at `error`
+unless the user's environment or config says otherwise. On top of that, Settings
+has a "Log level" choice (Error, Warn, Info, Debug) that applies at once and only
+until the app restarts: it is never saved, so a forgotten verbose client goes back
+to the configured level on its own (`Log.setRuntimeLevel`; `Log.configuredLevel`
+is what it returns to).
+
+**File.** `playheadtv.log` in the install's state directory, next to `update.log`
+and `state.json`: the install root of the tar.gz install (`PLAYHEADTV_ROOT`),
+`${XDG_STATE_HOME:-~/.local/state}/playheadtv` for the AppImage and any other
+run, `%LOCALAPPDATA%\playheadtv` on Windows (`logDirectory` in
+`lib/log/log_location.dart`). With no usable directory the log stays in memory
+(the debug overlay still shows it). Lines are queued in memory and written by a
+short timer, never on the calling path, so logging cannot block the UI or raster
+threads; the queue is bounded and a failing disk switches file logging off
+instead of failing on every line. The file rotates at about 2 MB: the current file plus
+`playheadtv.log.1` and `playheadtv.log.2` (6 MB at most). The updater CLI appends
+to the same file (tag `update`).
+
+**Redaction.** The logger redacts, not the call sites: the Jellyfin API key and
+device token the app holds (also URL-encoded), URL parameters named like `ApiKey`,
+`api_key`, `token`, `access_token`, `X-Emby-Token` and `password`, and
+`Authorization` header values are replaced by `<redacted>` before a line is stored
+or shown. This is a safety net; a message should still not carry a secret. Long
+messages are cut at 4000 characters.
+
+**Privacy.** `error` and `warn` lines carry no media titles or file paths. `info`
+and below may carry opaque item ids, channel numbers and timings, and exception
+text from the platform, which can include a server address. The log file is never
+sent anywhere: a user shares it voluntarily, after reading it.
+
+**Sharing.** Settings -> Diagnostics shows the log path and the active level and
+has "Create log bundle", which concatenates the rotated files (oldest first) into
+`playheadtv-log-bundle.txt` in the same directory and confirms with a toast; it
+is operable with the six buttons. The debug overlay (`D`) shows the active level and
+the last ten lines (from the logger's in-memory tail, on the overlay's own refresh,
+never a rebuild of the player page). The bug report issue template asks for that
+bundle.
+
+**Backend.** The Go backend uses the same level names through
+`PLAYHEADTV_LOG_LEVEL` (`internal/logging`). Unset, nothing changes: messages
+go through the standard logger exactly as before. Set, they are filtered by level
+and written by a structured text handler on stderr.
+
 ## Client window (full screen)
 
 The client opens in full screen by default on desktop, so a TV or console-style

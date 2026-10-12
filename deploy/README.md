@@ -31,7 +31,9 @@ admin).
 1. Copy `compose.example.yml` into your deployment repository and set the image
    tag to a published backend release (see the repository's releases; backend
    releases are tagged `vX.Y.Z`, client releases `client-vX.Y.Z`).
-2. Review the environment block. `PLAYHEADTV_EPG_WINDOW` is the main knob; the
+2. Review the environment block. `PLAYHEADTV_EPG_WINDOW` is the main knob;
+   `PLAYHEADTV_LOG_LEVEL` (`error`, `warn`, `info`, `debug`, `trace`; unset keeps the
+   default output) filters the log; the
    rest of the backend's variables are in the root `README.md`. Decide how the
    encryption key is handled (next section).
 3. Let your manager deploy it and wait for the container to become healthy.

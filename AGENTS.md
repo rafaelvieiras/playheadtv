@@ -344,6 +344,21 @@ keep in mind when touching `client/`:
   `offline_coldstart_test.dart` (2), `offline_reconcile_test.dart` (2),
   `offline_exhausted_test.dart` (2), `settings_offline_test.dart` (1).
 
+## Logging
+
+Design: `docs/ARCHITECTURE.md` "Client logging".
+
+- Client code logs through `Log` (`lib/log/log.dart`, pure Dart), with a
+  component tag; never `print`/`debugPrint`. The backend uses
+  `internal/logging` (`logging.Errorf/Warnf/Infof/Debugf`) instead of `log.Printf`.
+- Never put a secret (API key, device token, `Authorization` value) in a message,
+  even though the logger redacts the known ones. `error` and `warn` carry no media
+  titles or file paths; `info` and below may carry opaque ids, channel numbers and
+  timings.
+- Logging only observes: it must not change behavior, add a `setState`, or block
+  the UI/raster threads. A message built at a hot call site is a
+  `String Function()` so it is only built when the level is on.
+
 ## Releases and updates
 
 Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md`.

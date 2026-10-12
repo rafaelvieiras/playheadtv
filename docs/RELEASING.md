@@ -113,6 +113,12 @@ that has not yet seen the new key trusts the leaked one until it updates.
    not rename them. A release without the `.sig` asset is refused by every
    client.
 
+A release client logs errors only (`PLAYHEADTV_LOG_LEVEL` is not passed to the
+build; a build with a release version defaults to `error`). Users attach the log
+bundle from Settings -> Diagnostics to bug reports (`playheadtv.log` in the install
+root, or in `${XDG_STATE_HOME:-~/.local/state}/playheadtv` for the AppImage); see
+`docs/ARCHITECTURE.md` "Client logging".
+
 To build the package locally (the same scripts):
 `client/tool/package_linux.sh X.Y.Z [output dir]` then
 `client/tool/package_appimage.sh X.Y.Z [output dir]` (the second reuses the first's
@@ -155,6 +161,9 @@ Client on a real Linux install:
 - [ ] Extract on a clean Linux x86_64 machine, run `./install.sh`, edit
       `config.json`, start from the desktop entry and from the launcher in a
       kiosk-style session.
+- [ ] `playheadtv.log` appears next to `update.log` and stays empty or near-empty
+      during normal viewing (the release default is `error`); Settings ->
+      Diagnostics creates the bundle with the six buttons.
 - [ ] The app plays with a gamepad or remote only (the 6-button baseline: Up,
       Down, Left, Right, Select, Back), Back returns as expected, and hardware
       decoding is active (debug overlay).

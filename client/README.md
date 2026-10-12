@@ -84,7 +84,7 @@ launcher sets it to `<install root>/config.json`), else
 `$XDG_CONFIG_HOME/playheadtv/config.json`, else `~/.config/playheadtv/config.json`.
 Keys: `playhead_base_url`, `playhead_device_token`, `jellyfin_url`,
 `jellyfin_api_key`, `playhead_channel_id`, `working_set_size`,
-`preload_lead_seconds`, `dim_level_percent`, `epg_sync_interval_minutes`, `start_fullscreen`, `auto_update`, `update_channel` (see
+`preload_lead_seconds`, `dim_level_percent`, `epg_sync_interval_minutes`, `start_fullscreen`, `log_level`, `auto_update`, `update_channel` (see
 `packaging/linux/config.example.json`). An absent or invalid file is treated as
 empty.
 
@@ -102,6 +102,20 @@ empty.
 or `start_fullscreen` in the config file (a JSON boolean, the variable wins) changes
 that default for an installation, so a packaged launcher can start windowed or full
 screen. The choice made in Settings is saved and wins over that default.
+
+### Logging
+
+The client writes a log file, `playheadtv.log`, in the state directory (next to
+`update.log`): the install root of the tar.gz install, else
+`${XDG_STATE_HOME:-~/.local/state}/playheadtv`. It rotates at about 2 MB and keeps two
+older files. A packaged client logs errors only; a local build (`flutter run`) logs at
+`debug`. Change the level with, in order of precedence, the `PLAYHEADTV_LOG_LEVEL`
+environment variable, a `--dart-define=PLAYHEADTV_LOG_LEVEL=<level>`, or `"log_level"`
+in `config.json`; the levels are `error`, `warn`, `info`, `debug` and `trace`.
+Settings -> Log level changes it until the next start, and Settings -> Diagnostics shows the
+path and builds one `.txt` bundle of the log files to attach to a bug report. Secrets
+(the API key, the device token, `Authorization` values) are redacted, but read the
+file before sharing it. Details: `docs/ARCHITECTURE.md` "Client logging".
 
 If any of the three required values is empty the player screen shows an `ERROR:`
 message telling you which defines to pass.
@@ -157,7 +171,7 @@ Each release also carries `playheadtv-client-X.Y.Z-linux-x64.AppImage`, beside t
 helper, or run it with `--appimage-extract-and-run`). The config is looked up like for any
 run without the launcher: `PLAYHEADTV_CONFIG`, else
 `${XDG_CONFIG_HOME:-~/.config}/playheadtv/config.json` (created from the example on first
-start); the update state and `update.log` are in `${XDG_STATE_HOME:-~/.local/state}/playheadtv`.
+start); the update state, `update.log` and `playheadtv.log` are in `${XDG_STATE_HOME:-~/.local/state}/playheadtv`.
 The same updater replaces the AppImage file itself (the previous one is kept next to it as
 `<name>.previous` and restored if the new one does not come up healthy), so the folder it
 lives in must be writable by you for updates to apply. The AppImage was launched and its

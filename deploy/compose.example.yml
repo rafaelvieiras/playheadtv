@@ -23,6 +23,8 @@ services:
       # How far ahead the guide is materialized; clients cache this window and
       # can play offline for about as long. Go duration, between 1h and 720h.
       PLAYHEADTV_EPG_WINDOW: 72h
+      # Optional: error, warn, info, debug or trace. Unset keeps the default output.
+      # PLAYHEADTV_LOG_LEVEL: info
       # Optional: 32 random bytes, base64 (`openssl rand -base64 32`), supplied by
       # your manager's secret store (never commit it). Without it the backend
       # generates a key on first start and keeps it in the data volume as

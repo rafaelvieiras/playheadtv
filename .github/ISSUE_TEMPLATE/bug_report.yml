@@ -1,0 +1,64 @@
+name: Bug report
+description: Something in the client or the backend does not work as expected
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. The more precisely you describe what happened, the faster it can be fixed.
+
+        **About logs:** the client keeps a log file, and sharing it is entirely voluntary. The Jellyfin API key, the device token and `Authorization` values are redacted by the client, but the log can still contain item ids, channel numbers, timings and server addresses. Read it before you paste it and remove anything you do not want to share.
+  - type: input
+    id: client-version
+    attributes:
+      label: Client version
+      description: Shown in the release you installed (for example `1.4.0`), or the commit if you built it yourself. Also say how you run it (tar.gz install, AppImage, built from source).
+    validations:
+      required: true
+  - type: input
+    id: backend-version
+    attributes:
+      label: Backend version
+      description: The `version` field of `GET /version` on your backend.
+    validations:
+      required: false
+  - type: input
+    id: jellyfin-version
+    attributes:
+      label: Jellyfin version
+      description: For example `10.10.7` or `12.0.0`.
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the client and go to channel ...
+        2. Wait until ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Log excerpt
+      description: |
+        The lines around the problem, from the client log. Where to find it: in the client, open Settings, then Diagnostics, which shows the log file path and can create a single `.txt` bundle of the log files. By default the log file `playheadtv.log` is in the install folder (tar.gz install) or in `${XDG_STATE_HOME:-~/.local/state}/playheadtv` (AppImage).
+
+        A packaged client only logs errors by default. If the problem leaves nothing there, set Settings, then Log level, to Debug (it lasts until the app restarts), reproduce the problem, and take the log again. For a long log, attach the `.txt` bundle instead of pasting it.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Screenshots of the debug overlay (`D`), the platform you run on, how your media is stored, and so on.
+    validations:
+      required: false

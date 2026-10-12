@@ -77,6 +77,13 @@ Registry, `client-vX.Y.Z` publishes the packaged Linux client, which updates its
 from those releases. See [`docs/RELEASING.md`](docs/RELEASING.md). The running
 backend reports its version at `GET /version`.
 
+### Logging
+
+The backend logs as it always has. Set `PLAYHEADTV_LOG_LEVEL` (`error`, `warn`, `info`,
+`debug` or `trace`) to filter it by level; unset keeps today's output. The client has its
+own log file and Settings -> Diagnostics screen to attach to a bug report; see
+[`client/README.md`](client/README.md#logging).
+
 ### Encryption key
 
 Media source credentials (e.g. a Jellyfin API key) are stored encrypted at
