@@ -42,6 +42,7 @@ import '../services/screen_awake.dart';
 import '../services/settings_service.dart';
 import '../util/gl_serial.dart';
 import 'settings_page.dart';
+import '../log/log.dart';
 
 class _MosaicTile {
   final PlayheadChannel? channel;
@@ -204,9 +205,12 @@ class _MosaicPageState extends State<MosaicPage> {
       if (!mounted || externalId == null) return;
 
       final controller = trackController(VideoPlayerController.networkUrl(Uri.parse(streamUrl(externalId))));
+      final clock = Stopwatch()..start();
       try {
         await _openPreview(controller, now, itemStart, itemEnd);
-      } catch (_) {
+        Log.debug('mosaic', 'preview opened in ${clock.elapsedMilliseconds}ms');
+      } catch (e) {
+        Log.warn('mosaic', 'preview failed to open after ${clock.elapsedMilliseconds}ms', error: e);
         unawaited(disposeController(controller));
         return;
       }
@@ -223,7 +227,7 @@ class _MosaicPageState extends State<MosaicPage> {
   }
 
   Future<void> _openPreview(VideoPlayerController controller, DateTime now, DateTime itemStart, DateTime itemEnd) async {
-    await serializeGlOp(() => controller.initialize());
+    await serializeGlOp(() => controller.initialize(), label: 'initialize-preview');
     if (!mounted) return;
 
     var seek = now.difference(itemStart);
@@ -277,6 +281,7 @@ class _MosaicPageState extends State<MosaicPage> {
       return;
     }
     final channelId = tile.channel!.id;
+    Log.info('mosaic', 'opening channel ${tile.channel!.number} from the mosaic');
     final preview = _previewController;
     _previewController = null;
     if (preview != null) {
@@ -327,6 +332,7 @@ class _MosaicPageState extends State<MosaicPage> {
       },
       releaseScreenAwake,
       () async => OfflineRuntime.reset(),
+      Log.flush,
     ]).exit();
   }
 

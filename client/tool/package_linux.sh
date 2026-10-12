@@ -48,6 +48,8 @@ fi
 BUNDLE="$CLIENT_DIR/build/linux/x64/release/bundle"
 if [ "${SKIP_BUILD:-0}" != 1 ]; then
     $FLUTTER pub get
+    # No PLAYHEADTV_LOG_LEVEL define on purpose: a packaged build logs errors only
+    # by default (it carries a release version); a local build logs at debug.
     $FLUTTER build linux --release --dart-define=PLAYHEADTV_CLIENT_VERSION="$VERSION"
     mkdir -p build
     UPDATER_DEFINES=()

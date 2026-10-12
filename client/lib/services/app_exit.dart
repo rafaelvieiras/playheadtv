@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import '../log/log.dart';
 
 /// Platform side of "close the app for real". Kept tiny so the teardown order
 /// in [AppExitController] can be unit-tested with a fake, and so integration
@@ -54,7 +55,7 @@ class AppExitController {
       try {
         await step().timeout(stepTimeout);
       } catch (e) {
-        debugPrint('exit teardown step failed: $e');
+        Log.error('exit', 'teardown step failed', error: e);
       }
     }
     await (platform ?? appExitOverride).terminate();

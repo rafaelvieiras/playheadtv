@@ -1,4 +1,4 @@
-// Settings screen: "Remap controls" (see controls_mapping_page.dart), "Offline
+// Settings screen: "Log level" (until restart), "Diagnostics" (see diagnostics_page.dart), "Remap controls" (see controls_mapping_page.dart), "Offline
 // cache" (see offline_cache_page.dart) and, on desktop, "Start in full screen".
 //
 // Operable with the six baseline buttons: Up/Down move the focus between the
@@ -16,7 +16,9 @@ import '../dimmer.dart';
 import '../preload_lead.dart';
 import '../services/settings_service.dart';
 import '../ui/ui_scale.dart';
+import '../log/log.dart';
 import 'controls_mapping_page.dart';
+import 'diagnostics_page.dart';
 import 'offline_cache_page.dart';
 import '../widgets/app_icons.dart';
 import '../widgets/dimmer_level_dialog.dart';
@@ -74,6 +76,13 @@ class _SettingsPageState extends State<SettingsPage> {
     unawaited(settings.setPreloadLeadSeconds(nextPreloadLeadChoice(current)).then((_) {
       if (mounted) setState(() {});
     }));
+  }
+
+  // Select steps through the log levels. Applies at once and only until the app
+  // restarts (never saved): a forgotten verbose client must not keep logging.
+  void _cycleLogLevel() {
+    Log.setRuntimeLevel(nextLogLevelChoice(Log.level));
+    setState(() {});
   }
 
   // Opens the dim level dialog (six buttons) and saves the confirmed level.
@@ -174,6 +183,22 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 onTap: _editDimLevel,
               ),
+            ListTile(
+              key: const Key('settings-log-level-tile'),
+              leading: const Icon(AppIcons.logLevel),
+              title: const Text('Log level'),
+              subtitle: Text(logLevelLabel(Log.level, Log.configuredLevel), key: const Key('settings-log-level-value')),
+              onTap: _cycleLogLevel,
+            ),
+            ListTile(
+              key: const Key('settings-diagnostics-tile'),
+              leading: const Icon(AppIcons.diagnostics),
+              title: const Text('Diagnostics'),
+              subtitle: const Text('Log file location and a shareable log bundle'),
+              onTap: () {
+                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DiagnosticsPage()));
+              },
+            ),
           ],
         ),
       ),

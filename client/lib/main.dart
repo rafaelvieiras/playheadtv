@@ -21,6 +21,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -31,6 +32,8 @@ import 'cache/offline_runtime.dart';
 import 'cache/schedule_cache.dart';
 import 'cache/schedule_sync.dart';
 import 'config/config_file.dart';
+import 'log/log.dart';
+import 'log/log_setup.dart';
 import 'update/app_update.dart';
 import 'update/compat.dart';
 import 'widgets/update_overlay.dart';
@@ -95,6 +98,9 @@ class AppConfig {
   static void loadConfigFile([Map<String, String>? env]) {
     _file = readConfigFile(configFileLocation(env ?? Platform.environment));
   }
+
+  /// The config file's settings as read at boot (for the logger's level).
+  static Map<String, Object?> get fileSettings => _file;
 
   static String get jellyfinUrl => resolveStringSetting(
       override: _jellyfinUrl, define: const String.fromEnvironment('JELLYFIN_URL'), file: _file, key: 'jellyfin_url');
@@ -434,6 +440,13 @@ Future<void> applyStartupFullScreen() async {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   AppConfig.loadConfigFile();
+  initLogging(
+    env: Platform.environment,
+    file: AppConfig.fileSettings,
+    appVersion: appVersion,
+    secrets: [AppConfig.jellyfinApiKey, AppConfig.playheadDeviceToken],
+  );
+  _installErrorLogging();
   await applyStartupFullScreen();
   // video.decoders: fvp's default decoder order on Linux tries VAAPI before
   // CUDA/VDPAU. On some setups (e.g. NVIDIA without VAAPI configured) that
@@ -453,6 +466,20 @@ Future<void> main() async {
   unawaited(_warnIfBackendIncompatible());
 }
 
+// Routes framework and uncaught errors to the log, then lets the default
+// handling carry on (the console report, the debugger).
+void _installErrorLogging() {
+  final previous = FlutterError.onError;
+  FlutterError.onError = (details) {
+    Log.error('flutter', details.exceptionAsString(), stack: details.stack);
+    if (previous != null) previous(details);
+  };
+  PlatformDispatcher.instance.onError = (error, stack) {
+    Log.error('app', 'uncaught error', error: error, stack: stack);
+    return false;
+  };
+}
+
 // The app's navigator, so a message that is not tied to a screen (the backend
 // compatibility notice) can be shown over whatever is on top.
 final GlobalKey<NavigatorState> _appNavigatorKey = GlobalKey<NavigatorState>();
@@ -466,6 +493,7 @@ Future<void> _warnIfBackendIncompatible() async {
   final compat = await checkBackendCompat(AppConfig.playheadBaseUrl);
   final message = compat.message;
   if (message == null) return;
+  Log.warn('app', 'backend version not supported: $message');
   // Wait for the first frame so the navigator exists.
   for (var i = 0; i < 50 && _appNavigatorKey.currentContext == null; i++) {
     await Future<void>.delayed(const Duration(milliseconds: 100));
@@ -720,6 +748,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // that already left the scene — abort instead of applying the result on top
   // of the new channel's state.
   int _loadGeneration = 0;
+  // Times the current channel load for the log only (never read by logic).
+  final Stopwatch _loadClock = Stopwatch();
   // Whether _loadAndPlayChannel is currently doing real work (network fetch
   // + controller create) for the current generation. See _switchToChannelIndex.
   bool _channelLoadInFlight = false;
@@ -788,6 +818,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // to wait for the backend.
   Future<void> _bootstrapChannels() async {
     setState(() => _status = 'loading channels…');
+    Log.info('player', 'boot: loading channels');
     try {
       _settings = await SettingsService.create();
       _keyBindings = KeyBindingsService(_settings);
@@ -809,6 +840,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _streamPrefs.startPolling();
       _cacheSub = _cache.changes.listen(_onCacheChange);
       if (channels.isEmpty) {
+        Log.error('player', 'boot: no channels available (sync ok=${_runtime.syncer.status.value.lastSucceeded})');
         if (!mounted) return;
         final error = _runtime.syncer.status.value.lastError;
         setState(() => _status = _runtime.syncer.status.value.lastSucceeded
@@ -831,7 +863,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       });
       await _loadAndPlayChannel(sorted[index], generation: _loadGeneration);
       unawaited(_settings.recordWatched(sorted[index].id));
-    } catch (e) {
+    } catch (e, st) {
+      Log.error('player', 'boot: failed to load the channel list', error: e, stack: st);
       if (!mounted) return;
       setState(() => _status = 'ERROR: failed to load channel list: $e');
     }
@@ -859,6 +892,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     unawaited(_settings.recordWatched(target.id));
 
     final generation = ++_loadGeneration;
+    Log.info('player', 'switch to channel ${target.number} (generation $generation)');
     _advanceTimer?.cancel();
     _resetPreload();
     _volumeRampTimer?.cancel();
@@ -922,6 +956,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       // the deferral is released then (see _armStallRelease), so a source
       // that never opens cannot hold navigation hostage.
       _pendingChannelSwitchTarget = targetIndex;
+      Log.debug('player', 'switch deferred behind the load in flight (generation $generation)');
       _armStallRelease();
       return;
     }
@@ -942,6 +977,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       final pending = _pendingChannelSwitchTarget;
       if (!mounted || pending == null || !_channelLoadInFlight || pending >= _channels.length) return;
       _pendingChannelSwitchTarget = null;
+      Log.warn('player', 'channel load stalled past ${AppConfig.channelLoadStallBound.inMilliseconds}ms; releasing the deferred switch');
       // The stalled load aborts on its next generation check, and a
       // controller it creates late is disposed by _startChannel.
       unawaited(_runChannelLoad(_channels[pending], _loadGeneration));
@@ -964,6 +1000,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _channelLoadGeneration = generation;
     _channelLoadStartedAt = DateTime.now();
     await _loadAndPlayChannel(target, generation: generation);
+    Log.debug('player', 'channel load call returned after ${DateTime.now().difference(_channelLoadStartedAt).inMilliseconds}ms (generation $generation, superseded=${generation != _loadGeneration})');
     if (_channelLoadGeneration != generation) return;
     _channelLoadInFlight = false;
     _stallReleaseTimer?.cancel();
@@ -1034,6 +1071,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // is checked before every `setState` that follows an `await`, so it
   // doesn't trample a channel that was switched again in the meantime.
   Future<void> _loadAndPlayChannel(PlayheadChannel target, {required int generation}) async {
+    _loadClock
+      ..reset()
+      ..start();
+    Log.info('player', 'channel load started: channel ${target.number} (generation $generation)');
     try {
       final now = DateTime.now().toUtc();
       // Kicked off in parallel with the work below (never awaited until just
@@ -1048,6 +1089,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         upcoming = _upcomingFromCache(target.id, now);
         if (upcoming.isEmpty && unreachable) {
           // The cache is exhausted: the client's own setting decides.
+          Log.warn('player', 'cache exhausted and the backend is unreachable at load (behavior=${_settings.exhaustedBehavior.name})');
           if (_settings.exhaustedBehavior == ExhaustedBehavior.slate) {
             await _holdSlateAtLoad(generation);
             return;
@@ -1057,6 +1099,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         }
       }
       if (upcoming.isEmpty) {
+        Log.error('player', 'channel load failed: nothing scheduled in the next ${_cache.window.inHours}h for channel ${target.number}');
         if (!mounted) return;
         setState(() => _status = 'ERROR: nothing scheduled in the next ${_cache.window.inHours}h for channel ${target.number}');
         return;
@@ -1074,6 +1117,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       await _expandInto(loaded, generation, notBefore: now);
       if (generation != _loadGeneration) return;
       if (loaded.isEmpty) {
+        Log.error('player', 'channel load failed: nothing playable scheduled for channel ${target.number}');
         if (!mounted) return;
         setState(() => _status = 'ERROR: nothing playable scheduled for channel ${target.number}');
         return;
@@ -1100,11 +1144,13 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       // backend/schedule problem instead).
       try {
         await _startChannel(initialSeek: initialSeek, generation: generation);
-      } catch (e) {
+      } catch (e, st) {
+        Log.error('player', 'channel load failed: could not start playback after ${_loadClock.elapsedMilliseconds}ms', error: e, stack: st);
         if (!mounted || generation != _loadGeneration) return;
         setState(() => _status = 'ERROR: could not start playback — is Jellyfin reachable? ($e)');
       }
-    } catch (e) {
+    } catch (e, st) {
+      Log.error('player', 'channel load failed: could not load the schedule', error: e, stack: st);
       if (!mounted || generation != _loadGeneration) return;
       setState(() => _status = 'ERROR: failed to load the schedule: $e');
     }
@@ -1114,16 +1160,21 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // ever hold controllers that opened.
   Future<VideoPlayerController> _createController(ChannelEntry entry, {Duration? seekTo}) async {
     final controller = trackController(VideoPlayerController.networkUrl(Uri.parse(streamUrl(entry.id))));
+    final clock = Stopwatch()..start();
+    Log.debug('player', 'opening item ${entry.id} (seek=${seekTo?.inSeconds ?? 0}s, offset=${entry.itemOffset.inSeconds}s)');
     try {
-      return await _prepareController(controller, entry, seekTo);
-    } catch (_) {
+      final prepared = await _prepareController(controller, entry, seekTo);
+      Log.debug('player', 'item ${entry.id} opened in ${clock.elapsedMilliseconds}ms');
+      return prepared;
+    } catch (e) {
+      Log.debug('player', 'item ${entry.id} failed to open after ${clock.elapsedMilliseconds}ms', error: e);
       unawaited(disposeController(controller));
       rethrow;
     }
   }
 
   Future<VideoPlayerController> _prepareController(VideoPlayerController controller, ChannelEntry entry, Duration? seekTo) async {
-    await serializeGlOp(() => controller.initialize());
+    await serializeGlOp(() => controller.initialize(), label: 'initialize');
     // `seekTo` is a position within the entry (the "TV turned on" in the
     // middle of a program); the entry itself starts at its item offset, so the
     // later segment of a split item (same file, resumed after the break) is
@@ -1212,6 +1263,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     final entry = channel[0];
     final controller = await _createController(entry, seekTo: initialSeek);
     if (generation != _loadGeneration || !mounted) {
+      Log.debug('player', 'channel start abandoned after the controller opened (generation $generation, mounted=$mounted)');
       // Switched channel again, or left the player, while the controller was
       // initializing/seeking. See serializeGlOp's doc comment for why this
       // fire-and-forget dispose still has to go through the shared queue.
@@ -1232,6 +1284,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       return;
     }
     _screenAwake.playing = true;
+    Log.info('player', 'channel on air ${_loadClock.elapsedMilliseconds}ms after the load started (units=${channel.length}, seek=${initialSeek.inSeconds}s)');
     setState(() {
       _controllerA = controller;
       _currentIndex = 0;
@@ -1269,7 +1322,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // starts.
     final lead = _preloadTracker.effective(AppConfig.configuredPreloadLead(_settings));
     _preloadTimer?.cancel();
-    _preloadTimer = Timer(preloadDelay(remaining: effective, lead: lead), () => _preloadNext(index + 1, generation));
+    final preloadIn = preloadDelay(remaining: effective, lead: lead);
+    Log.debug('player', 'item $index scheduled: preload in ${preloadIn.inSeconds}s (lead ${lead.inSeconds}s), advance in ${effective.inSeconds}s');
+    _preloadTimer = Timer(preloadIn, () => _preloadNext(index + 1, generation));
 
     _advanceTimer?.cancel();
     _advanceTimer = Timer(effective, () => _crossfadeTo(index + 1, generation));
@@ -1317,6 +1372,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       setState(() => _status = 'preload: ${nextEntry.label}');
       final clock = Stopwatch()..start();
       VideoPlayerController? controller;
+      Log.debug('preload', 'attempt ${failures + 1} for item $nextIndex started');
       try {
         controller = await _createController(nextEntry);
         await controller.setVolume(0);
@@ -1326,8 +1382,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         final broken = controller;
         if (broken != null) unawaited(disposeController(broken));
         failures++;
+        Log.warn('preload', 'attempt $failures for item $nextIndex failed after ${clock.elapsedMilliseconds}ms', error: e);
         if (!mounted || generation != _loadGeneration) return;
         if (failures >= preloadAttemptsBeforeError) {
+          if (failures == preloadAttemptsBeforeError) Log.error('preload', 'item $nextIndex failed $failures times; still retrying', error: e);
           setState(() => _status = 'ERROR: preload of ${nextEntry.label} failed, retrying… ($e)');
         }
         await Future<void>.delayed(preloadRetryDelay(failures, AppConfig.preloadRetryBase));
@@ -1335,6 +1393,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       }
       clock.stop();
       _preloadTracker.record(clock.elapsed);
+      Log.debug('preload', 'item $nextIndex ready in ${clock.elapsedMilliseconds}ms after $failures failure(s)');
       // Also dropped when the bookkeeping was reset while this attempt was in
       // flight (the player restarted the channel from another item): a late
       // controller must never reach a slot of a channel that moved on.
@@ -1380,6 +1439,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
   Future<void> _crossfadeTo(int nextIndex, int generation) async {
     if (generation != _loadGeneration) return;
+    Log.debug('crossfade', 'transition to item $nextIndex due (known units=${channel.length})');
     if (nextIndex >= channel.length) {
       // What the cache knows ran out before the extension trigger
       // (_maybeExtendGrid) found more — look once more right here before
@@ -1399,8 +1459,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       // and the client's own setting decides what the channel does; if it
       // answers, the schedule really has nothing more and the retry below
       // waits for it.
+      Log.warn('crossfade', 'no unit known for item $nextIndex; checking the backend');
       if (await _backendUnreachable()) {
         if (generation != _loadGeneration) return;
+        Log.warn('crossfade', 'backend unreachable, cache exhausted (behavior=${_settings.exhaustedBehavior.name})');
         if (await _extendWindowNow(generation) && nextIndex < channel.length) {
           await _resumeAt(nextIndex, generation);
           return;
@@ -1431,6 +1493,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       // Still empty: a real gap in the schedule. Don't hang forever — show a
       // status and retry periodically until something shows up, resuming on
       // its own.
+      Log.warn('crossfade', 'nothing more scheduled; retrying every ${epgGapRetryInterval.inSeconds}s');
       if (!mounted) return;
       setState(() => _status = 'ERROR: nothing more scheduled right now — retrying…');
       _gapRetryTimer?.cancel();
@@ -1456,7 +1519,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // Not ready yet (a slow source, a failed first attempt): keep what is on
     // air and wait for it; the retry loop in _runPreload does not give up.
     if (_preloadGeneration != generation || _preloadReadyIndex != nextIndex) {
+      final waiting = Stopwatch()..start();
+      Log.warn('crossfade', 'preload for item $nextIndex not ready at the transition; waiting');
       if (!await _awaitPreload(nextIndex, generation)) return;
+      Log.warn('crossfade', 'preload for item $nextIndex became ready after ${waiting.elapsedMilliseconds}ms');
     }
     final incoming = _aIsActive ? _controllerB : _controllerA;
     if (incoming == null) return;
@@ -1474,6 +1540,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       // Interior schedule gap — hold on the slate instead of starting
       // `incoming` early and running ahead of the EPG clock for the rest of
       // the session.
+      Log.info('crossfade', 'schedule gap of ${gap.inSeconds}s before item $nextIndex; holding the slate');
       await _holdForGap(nextIndex: nextIndex, outgoing: outgoing, pending: incoming, gap: gap, generation: generation);
       return;
     }
@@ -1483,14 +1550,17 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       // only let the drift accumulate further on every following item.
       var seek = -gap;
       if (seek > nextEntry.clipDuration) seek = nextEntry.clipDuration;
+      Log.info('crossfade', 'running ${(-gap).inMilliseconds}ms behind the schedule; seeking ${seek.inMilliseconds}ms into item $nextIndex');
       await incoming.seekTo(nextEntry.itemOffset + seek);
       if (generation != _loadGeneration) return;
       seeked = seek;
     }
 
     setState(() => _status = 'CROSSFADE -> ${nextEntry.label}');
+    Log.debug('crossfade', 'ramp to item $nextIndex starting');
     final onAir = await _rampCrossfade(outgoing: outgoing, incoming: incoming, generation: generation);
     if (generation != _loadGeneration) return;
+    Log.info('crossfade', 'item $nextIndex on air (${onAir.inMilliseconds}ms on air at the end of the ramp, seeked ${seeked.inMilliseconds}ms)');
     if (!mounted) return;
     final previousKey = _osdSubjectAt(_currentIndex)?.key;
     setState(() {
@@ -1527,10 +1597,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     if (generation != _loadGeneration) return Duration.zero;
     try {
       await incoming.play();
-    } catch (_) {
+    } catch (e) {
       // The page was left (or the channel switched) while play() was in
       // flight: both controllers are disposed by whoever moved on.
       if (generation != _loadGeneration) return Duration.zero;
+      Log.error('crossfade', 'play of the incoming controller failed', error: e);
       rethrow;
     }
     if (generation != _loadGeneration) return Duration.zero;
@@ -1609,9 +1680,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   Future<VideoPlayerController> _createSlateController() async {
     final controller = trackController(VideoPlayerController.asset(slateAssetPath));
     try {
-      await serializeGlOp(() => controller.initialize());
+      await serializeGlOp(() => controller.initialize(), label: 'initialize-slate');
       await controller.setLooping(true);
-    } catch (_) {
+    } catch (e) {
+      Log.error('slate', 'the gap slate failed to open', error: e);
       unawaited(disposeController(controller));
       rethrow;
     }
@@ -1663,8 +1735,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
     _gapHoldTimer?.cancel();
     _gapHoldPending = pending;
+    Log.debug('crossfade', 'slate on air; next item $nextIndex due in ${gap.inSeconds}s');
     _gapHoldTimer = Timer(gap, () async {
       _gapHoldPending = null;
+      Log.info('crossfade', 'gap hold over; crossfading from the slate into item $nextIndex');
       if (generation != _loadGeneration) {
         unawaited(disposeController(pending));
         return;
@@ -1703,6 +1777,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     if (generation != _loadGeneration) return;
     if (index >= channel.length) return;
     final entry = channel[index];
+    Log.info('player', 'resuming at item $index with a hard cut (no preload to fade from)');
     _resetPreload();
     final controller = await _createController(entry);
     if (generation != _loadGeneration || !mounted) {
@@ -1774,7 +1849,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         await _expandInto(added, generation, currentOrdinal: current);
         if (generation != _loadGeneration || !mounted || added.isEmpty) return;
         setState(() => channel = [...channel, ...added]);
-      } catch (_) {
+      } catch (e) {
+        Log.warn('player', 'topping up the working set failed; will retry', error: e);
         // A failed lookup (older backend) or fetch must not bring down the
         // playback in progress — the next call tries again.
       }
@@ -1893,13 +1969,17 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     if (_degraded != _Degraded.none) {
       // Playing the fallback of an exhausted cache: real programming is back,
       // so leave the fallback for it.
-      if (fresh.isNotEmpty) unawaited(_switchToChannelIndex(_channelIndex));
+      if (fresh.isNotEmpty) {
+        Log.info('cache', 'reconcile: real programming is back; leaving the fallback');
+        unawaited(_switchToChannelIndex(_channelIndex));
+      }
       return;
     }
 
     final onAirNow = fresh.where((e) => !e.startAt.isAfter(now) && e.endAt.isAfter(now)).firstOrNull;
     final playing = channel[_currentIndex].program;
     if (onAirNow != null && (playing == null || !_sameAiring(playing, onAirNow))) {
+      Log.info('cache', 'reconcile: what is on air changed; reloading the channel');
       // What is on air changed: switch to the new schedule, as a reset would.
       unawaited(_switchToChannelIndex(_channelIndex));
       return;
@@ -1928,6 +2008,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     }
 
     if (same() && grown == null) return;
+    Log.info('cache', 'reconcile: refreshed ${following.length} following program(s) in place');
     final extra = grown == null ? const <ChannelEntry>[] : unitsOfProgram(grown, curOrdinal, notBefore: playing.endAt);
     _known = [..._known.take(curOrdinal), grown ?? _known[curOrdinal], ...following];
     _knownExpanded = curOrdinal + 1;
@@ -1944,6 +2025,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // fallback).
   Future<void> _holdSlateExhausted(int generation) async {
     final outgoing = _aIsActive ? _controllerA : _controllerB;
+    Log.warn('crossfade', 'cache exhausted; holding the slate');
     final slate = await _createSlateController();
     if (generation != _loadGeneration || !mounted) {
       unawaited(disposeController(slate));
@@ -1995,6 +2077,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         t.cancel();
         return;
       }
+      Log.debug('cache', 'exhausted-schedule retry');
       unawaited(_reconcileWithCache());
     });
   }
@@ -2275,6 +2358,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   /// page risks the GL-texture bug (see AGENTS.md).
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    Log.debug('app', 'lifecycle ${state.name}');
     _screenAwake.lifecycle(state);
     if (state != AppLifecycleState.resumed || !mounted) return;
     final primary = FocusManager.instance.primaryFocus;
@@ -2291,6 +2375,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // discarded (silenced, then disposed through the GL queue) instead of
     // being attached to a page that no longer exists.
     _loadGeneration++;
+    Log.debug('player', 'player page disposed (generation $_loadGeneration)');
     _pendingChannelSwitchTarget = null;
     _volumeRampTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);

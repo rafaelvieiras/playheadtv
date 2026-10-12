@@ -22,6 +22,7 @@ import 'package:flutter/foundation.dart';
 import '../playhead_api.dart';
 import 'art_cache.dart';
 import 'schedule_cache.dart';
+import '../log/log.dart';
 
 enum SyncOutcome {
   /// The backend had a different schedule (or channel list): the cache changed.
@@ -117,6 +118,7 @@ class ScheduleSyncer {
     status.value = SyncStatus(syncing: true, lastOutcome: status.value.lastOutcome, lastAttempt: status.value.lastAttempt, lastError: status.value.lastError);
     var outcome = SyncOutcome.failed;
     String? error;
+    final clock = Stopwatch()..start();
     try {
       outcome = await _refresh();
     } on PlayheadConnectionException catch (e) {
@@ -128,6 +130,18 @@ class ScheduleSyncer {
     } catch (e) {
       outcome = SyncOutcome.failed;
       error = '$e';
+    }
+    switch (outcome) {
+      case SyncOutcome.updated:
+        Log.info('sync', 'guide refreshed: updated in ${clock.elapsedMilliseconds}ms');
+      case SyncOutcome.unchanged:
+        Log.debug('sync', 'guide refreshed: unchanged in ${clock.elapsedMilliseconds}ms');
+      case SyncOutcome.offline:
+        Log.warn('sync', 'backend unreachable after ${clock.elapsedMilliseconds}ms; keeping the cache: $error');
+      case SyncOutcome.authRejected:
+        Log.error('sync', 'backend rejected the access token; keeping the cache: $error');
+      case SyncOutcome.failed:
+        Log.error('sync', 'refresh failed after ${clock.elapsedMilliseconds}ms; keeping the cache: $error');
     }
     status.value = SyncStatus(lastOutcome: outcome, lastAttempt: cache.now(), lastError: error);
     _scheduleNext(outcome);
