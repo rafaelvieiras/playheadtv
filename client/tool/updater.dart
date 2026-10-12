@@ -24,6 +24,7 @@
 import 'dart:io';
 
 import 'package:client/config/config_file.dart';
+import 'package:client/log/log.dart';
 import 'package:client/update/install_layout.dart';
 import 'package:client/update/install_target.dart';
 import 'package:client/update/pinned_keys.dart';
@@ -55,6 +56,7 @@ Future<void> main(List<String> args) async {
 
   final UpdateTarget target;
   final File? configFile;
+  Directory? logDir;
   final appImagePath = _option(args, '--appimage');
   if (appImagePath != null) {
     final running = SemVer.tryParse(_option(args, '--version') ?? '');
@@ -63,15 +65,24 @@ Future<void> main(List<String> args) async {
     if (stateDir == null) _usage('no state directory (set XDG_STATE_HOME or HOME, or pass --state-dir)');
     target = AppImageTarget(appImage: File(appImagePath), running: running, stateFile: File('${stateDir.path}/state.json'));
     configFile = configFileLocation(env);
+    logDir = stateDir;
   } else {
     final root = _option(args, '--root') ?? env['PLAYHEADTV_ROOT'] ?? '';
     if (root.isEmpty) _usage('no install root (set PLAYHEADTV_ROOT or pass --root)');
     final layout = InstallLayout(Directory(root));
     target = TarballTarget(layout);
     configFile = layout.configFile;
+    logDir = layout.root;
   }
 
   final config = readConfigFile(configFile);
+  // The same level setting and log file as the app (a packaged updater logs
+  // errors only unless PLAYHEADTV_LOG_LEVEL or config.json `log_level` say
+  // otherwise).
+  Log.configure(
+    level: resolveLogLevel(env: env['PLAYHEADTV_LOG_LEVEL'], file: config, fallback: LogLevel.error),
+    directory: logDir,
+  );
   final settings = UpdateSettings.fromConfig(config, env: env);
   final repo = env['PLAYHEADTV_UPDATE_REPO'] ?? (config['update_repo'] is String ? config['update_repo'] as String : defaultUpdateRepo);
 
@@ -80,9 +91,25 @@ Future<void> main(List<String> args) async {
     source: GithubReleaseSource(repo),
     verifier: defaultUpdateVerifier(),
     settings: settings,
-    log: (m) => stderr.writeln('playheadtv-updater: $m'),
+    log: (m) {
+      stderr.writeln('playheadtv-updater: $m');
+      Log.debug('update', m);
+    },
   );
   final result = await updater.prepare();
+  final summary = '${result.outcome.name}: ${result.message}'
+      '${result.rolledBackFrom == null ? '' : ' (rolled back ${result.rolledBackFrom})'}';
+  switch (result.outcome) {
+    case UpdateOutcome.checkFailed ||
+          UpdateOutcome.downloadFailed ||
+          UpdateOutcome.checksumMismatch ||
+          UpdateOutcome.signatureRejected ||
+          UpdateOutcome.failed:
+      Log.error('update', summary);
+    default:
+      Log.info('update', summary);
+  }
+  await Log.close();
   stdout.writeln('playheadtv-updater: ${result.outcome.name}: ${result.message}'
       '${result.rolledBackFrom == null ? '' : ' (rolled back ${result.rolledBackFrom})'}');
   exit(0);

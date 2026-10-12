@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:video_player/video_player.dart';
 
+import '../log/log.dart';
 import 'gl_serial.dart';
 
 // Bookkeeping for every `VideoPlayerController` the app creates (the player's
@@ -17,6 +18,7 @@ List<VideoPlayerController> get liveControllers => List.unmodifiable(_live);
 /// Registers a freshly created controller. Returns it for chaining.
 VideoPlayerController trackController(VideoPlayerController controller) {
   _live.add(controller);
+  Log.debug('controller', 'created (live=${_live.length})');
   return controller;
 }
 
@@ -26,10 +28,14 @@ Future<void> disposeController(VideoPlayerController controller) {
   return serializeGlOp(() async {
     try {
       await controller.dispose();
+    } catch (e, st) {
+      Log.error('controller', 'dispose failed', error: e, stack: st);
+      rethrow;
     } finally {
       _live.remove(controller);
+      Log.debug('controller', 'disposed (live=${_live.length})');
     }
-  });
+  }, label: 'dispose');
 }
 
 /// For a controller that may already be playing but can no longer be attached

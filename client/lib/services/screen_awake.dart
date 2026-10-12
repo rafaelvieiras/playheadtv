@@ -5,6 +5,8 @@ import 'package:dbus/dbus.dart';
 import 'package:flutter/widgets.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
+import '../log/log.dart';
+
 /// Platform side of "keep the display awake". Kept tiny so the policy in
 /// [ScreenAwakeController] can be unit-tested with a fake.
 abstract class ScreenAwake {
@@ -52,7 +54,7 @@ class WakelockPlusScreenAwake implements ScreenAwake {
               replySignature: DBusSignature('u'));
       _cookie = reply.returnValues.single.asUint32();
     } catch (e) {
-      debugPrint('ScreenSaver inhibit unavailable ($e), falling back to the portal');
+      Log.warn('screen', 'ScreenSaver inhibit unavailable, falling back to the portal', error: e);
       _viaPortal = true;
       await WakelockPlus.enable();
     }
@@ -122,7 +124,7 @@ class ScreenAwakeController {
     if (want == _held) return;
     _held = want;
     unawaited((want ? _platform.enable() : _platform.disable()).catchError((Object e) {
-      debugPrint('screen awake ${want ? 'enable' : 'disable'} failed: $e');
+      Log.error('screen', 'screen awake ${want ? 'enable' : 'disable'} failed', error: e);
     }));
   }
 }

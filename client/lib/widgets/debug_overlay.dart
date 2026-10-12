@@ -14,6 +14,7 @@ import 'package:flutter/material.dart';
 import 'package:video_player/video_player.dart';
 import 'package:fvp/fvp.dart';
 
+import '../log/log.dart';
 import '../services/perf_stats.dart';
 
 class DebugOverlay extends StatefulWidget {
@@ -130,6 +131,33 @@ class _DebugOverlayState extends State<DebugOverlay> {
                 _section('Video freezes'),
                 _row('Detected', '${VideoStallTracker.instance.stallCount}'),
                 _row('Last', VideoStallTracker.instance.lastStallLabel),
+                const SizedBox(height: 8),
+                _section('Log'),
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 1),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text('Level', style: TextStyle(color: Colors.white70)),
+                      Text(Log.level.title, key: const Key('debug-overlay-log-level')),
+                    ],
+                  ),
+                ),
+                // The overlay already rebuilds itself twice a second; the tail
+                // rides on that, so no page above it is touched.
+                Column(
+                  key: const Key('debug-overlay-log-tail'),
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    for (final line in Log.tail(10))
+                      Text(
+                        _shortLine(line),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(color: Colors.white54, fontSize: 10, height: 1.2),
+                      ),
+                  ],
+                ),
               ],
             ),
           ),
@@ -157,6 +185,13 @@ class _DebugOverlayState extends State<DebugOverlay> {
           ],
         ),
       );
+
+  // Drops the date from a log line ("2026-10-12T10:11:12.345Z ..." becomes
+  // "10:11:12 ..."): the overlay is narrow.
+  String _shortLine(String line) {
+    final t = line.indexOf('T');
+    return t > 0 && line.length > t + 9 ? '${line.substring(t + 1, t + 9)}${line.substring(line.indexOf(' '))}' : line;
+  }
 
   String _bufferedLabel(VideoPlayerValue value) {
     if (value.buffered.isEmpty) return '—';

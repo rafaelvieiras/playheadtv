@@ -5,6 +5,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import '../log/log.dart';
 import 'install_layout.dart';
 import 'install_target.dart';
 import 'semver.dart';
@@ -44,7 +45,9 @@ Timer? scheduleHealthConfirmation({
   return Timer(window, () {
     try {
       confirmPendingHealthyAt(stateFile, running);
-    } on Object {
+      Log.info('update', 'health check passed for $running');
+    } on Object catch (e) {
+      Log.warn('update', 'could not confirm the pending update', error: e);
       // A failed confirmation only means a later start may roll back; it must
       // never disturb playback.
     }

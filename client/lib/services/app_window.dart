@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
+import '../log/log.dart';
 
 /// Platform side of the application window. Kept tiny so the policy in
 /// [FullScreenController] can be unit-tested with a fake, and so a platform
@@ -75,7 +76,7 @@ class FullScreenController {
       _applied = on;
       _appliedTo = window;
     } catch (e) {
-      debugPrint('full screen ${on ? 'on' : 'off'} failed: $e');
+      Log.error('window', 'full screen ${on ? 'on' : 'off'} failed', error: e);
     }
   }
 }
