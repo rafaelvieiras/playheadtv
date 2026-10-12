@@ -20,13 +20,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/crypto"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
@@ -146,7 +146,7 @@ func (s *Syncer) runLogged(ctx context.Context) {
 	runCtx, cancel := context.WithTimeout(ctx, runTimeout)
 	defer cancel()
 	if err := s.Run(runCtx); err != nil {
-		log.Printf("pullsync: run failed: %v", err)
+		logging.Errorf("pullsync: run failed: %v", err)
 	}
 }
 
@@ -171,12 +171,12 @@ func (s *Syncer) runTenant(ctx context.Context, tenantID string) {
 		"SELECT "+mediaSourceColumns+" FROM media_source WHERE tenant_id = ? AND type = ? AND sync_mode = ?",
 		tenantID, string(domain.SourceJellyfin), string(domain.SyncPull),
 	); err != nil {
-		log.Printf("pullsync: tenant %s: list media sources: %v", tenantID, err)
+		logging.Errorf("pullsync: tenant %s: list media sources: %v", tenantID, err)
 		return
 	}
 	for _, ms := range sources {
 		if _, err := s.SyncOne(ctx, ms); err != nil {
-			log.Printf("pullsync: media source %s (%s): %v", ms.ID, ms.Name, err)
+			logging.Errorf("pullsync: media source %s (%s): %v", ms.ID, ms.Name, err)
 		}
 	}
 }

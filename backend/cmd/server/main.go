@@ -24,6 +24,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/crypto"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/mcpserver"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/pullsync"
@@ -79,6 +80,11 @@ func main() {
 		}
 		return
 	}
+	// PLAYHEADTV_LOG_LEVEL (error, warn, info, debug, trace) filters the log;
+	// unset, the output is what it always was.
+	if note := logging.Setup(os.Getenv(logging.EnvVar), nil); note != "" {
+		log.Print(note)
+	}
 	if err := run(); err != nil {
 		log.Fatal(err)
 	}
@@ -87,7 +93,10 @@ func main() {
 func run() error {
 	dbPath := envOrDefault("PLAYHEADTV_DB_PATH", "./playheadtv.db")
 	addr := envOrDefault("PLAYHEADTV_ADDR", ":9394")
-	log.Printf("playheadtv %s (api %d)", buildinfo.Version, buildinfo.APIVersion)
+	logging.Infof("playheadtv %s (api %d)", buildinfo.Version, buildinfo.APIVersion)
+	if lvl, ok := logging.Configured(); ok {
+		logging.Infof("log level: %s (%s)", lvl, logging.EnvVar)
+	}
 
 	db, err := storage.Open(dbPath)
 	if err != nil {
@@ -118,7 +127,7 @@ func run() error {
 	if err := storage.RunMigrations(upgradeCtx, db, migrations.FS); err != nil {
 		return err
 	}
-	log.Printf("storage: migrations applied (db=%s)", dbPath)
+	logging.Infof("storage: migrations applied (db=%s)", dbPath)
 	if err := catalogsync.BackfillSearchText(upgradeCtx, db); err != nil {
 		return err
 	}
@@ -170,12 +179,12 @@ func run() error {
 		if err := api.SeedAdminUser(ctx, db, seedEmail, seedPassword); err != nil {
 			return err
 		}
-		log.Printf("api: PLAYHEADTV_SEED_ADMIN_EMAIL is set — seeded/kept dev admin user %s (never set this in a real deployment)", seedEmail)
+		logging.Warnf("api: PLAYHEADTV_SEED_ADMIN_EMAIL is set — seeded/kept dev admin user %s (never set this in a real deployment)", seedEmail)
 	}
 
 	epgWindow, windowWarning := epgWindowFromEnv(os.Getenv("PLAYHEADTV_EPG_WINDOW"))
 	if windowWarning != "" {
-		log.Printf("materializer: %s", windowWarning)
+		logging.Warnf("materializer: %s", windowWarning)
 	}
 	mat := materializer.New(db, epgWindow)
 	// PLAYHEADTV_EPG_FREEZE_MARGIN (a Go duration, e.g. "3h") overrides the
@@ -184,7 +193,7 @@ func run() error {
 		if d, err := time.ParseDuration(v); err == nil && d > 0 {
 			mat.SetFreezeMargin(d)
 		} else {
-			log.Printf("materializer: ignoring invalid PLAYHEADTV_EPG_FREEZE_MARGIN %q", v)
+			logging.Warnf("materializer: ignoring invalid PLAYHEADTV_EPG_FREEZE_MARGIN %q", v)
 		}
 	}
 	// Where programs are cut into segments comes from the stored cut rule sets
@@ -194,7 +203,7 @@ func run() error {
 	// soon as the server comes up, without blocking startup on a broken
 	// schedule forever — a failure here is logged, not fatal.
 	if err := mat.Run(ctx); err != nil {
-		log.Printf("materializer: initial run failed: %v", err)
+		logging.Errorf("materializer: initial run failed: %v", err)
 	}
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
@@ -241,7 +250,7 @@ func run() error {
 
 	serveErr := make(chan error, 1)
 	go func() {
-		log.Printf("listening on %s", addr)
+		logging.Infof("listening on %s", addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 		}
@@ -255,7 +264,7 @@ func run() error {
 	case err := <-serveErr:
 		return err
 	case <-stop:
-		log.Print("shutting down")
+		logging.Infof("shutting down")
 		matCancel()
 		syncCancel()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -11,7 +11,6 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"strconv"
@@ -19,6 +18,7 @@ import (
 	"time"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
@@ -206,7 +206,7 @@ func consumePasswordReset(db storage.DB) http.HandlerFunc {
 		// time as an invalid one.
 		passwordHash, err := hashPassword(req.NewPassword)
 		if err != nil {
-			log.Printf("api: hash password: %v", err)
+			logging.Errorf("api: hash password: %v", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}

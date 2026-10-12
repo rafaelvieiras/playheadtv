@@ -1,13 +1,13 @@
 package materializer
 
 import (
-	"log"
 	"math/rand"
 	"sort"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 )
 
 // occurrence is one nominal airing of a schedule_item's block, resolved to
@@ -168,7 +168,7 @@ func buildOccurrences(items []domain.ScheduleItem, loc *time.Location, scanFrom,
 			if err != nil {
 				// The API layer already validates start_time_local as HH:MM;
 				// this only defends against bad data written some other way.
-				log.Printf("materializer: schedule_item %s: invalid start_time_local %q: %v", e.ID, *e.StartTimeLocal, err)
+				logging.Warnf("materializer: schedule_item %s: invalid start_time_local %q: %v", e.ID, *e.StartTimeLocal, err)
 				continue
 			}
 			for _, t := range times {
@@ -741,7 +741,7 @@ func emitSeries(
 	}
 	if !completed && cursor.Before(limit) && (run.emitted >= maxSeriesEntries || run.skipped >= maxSeriesSkips) && !run.capLogged {
 		run.capLogged = true
-		log.Printf("materializer: series cap hit: block item %s on channel %s stopped after %d entries (%d skipped slots), the rest of the window is not filled by it (cap %d entries / %d skips; items this short are almost certainly bad catalog data)",
+		logging.Warnf("materializer: series cap hit: block item %s on channel %s stopped after %d entries (%d skipped slots), the rest of the window is not filled by it (cap %d entries / %d skips; items this short are almost certainly bad catalog data)",
 			blockItemID, channelID, run.emitted, run.skipped, maxSeriesEntries, maxSeriesSkips)
 	}
 	return entries, cursor, completed
@@ -910,7 +910,7 @@ func fillLoopingBlock(
 func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *selectionState) []domain.EpgEntry {
 	loc, err := time.LoadLocation(in.Timezone)
 	if err != nil {
-		log.Printf("materializer: channel %s: invalid timezone %q, falling back to UTC: %v", in.ChannelID, in.Timezone, err)
+		logging.Warnf("materializer: channel %s: invalid timezone %q, falling back to UTC: %v", in.ChannelID, in.Timezone, err)
 		loc = time.UTC
 	}
 
@@ -1248,7 +1248,7 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			}
 		}
 		if repeat && len(entries)-listStart >= maxRepeatEntries {
-			log.Printf("materializer: repeat cap hit: block %s on channel %s stopped after %d entries in one occurrence (cap %d; items this short are almost certainly bad catalog data)", occ.BlockID, in.ChannelID, len(entries)-listStart, maxRepeatEntries)
+			logging.Warnf("materializer: repeat cap hit: block %s on channel %s stopped after %d entries in one occurrence (cap %d; items this short are almost certainly bad catalog data)", occ.BlockID, in.ChannelID, len(entries)-listStart, maxRepeatEntries)
 		}
 
 		if hasNextOccurrence {

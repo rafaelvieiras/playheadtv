@@ -14,13 +14,13 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"errors"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -133,7 +133,7 @@ func bootstrapAppUser(db storage.DB) http.HandlerFunc {
 
 		passwordHash, err := hashPassword(req.Password)
 		if err != nil {
-			log.Printf("api: hash password: %v", err)
+			logging.Errorf("api: hash password: %v", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
@@ -228,7 +228,7 @@ func login(db storage.DB) http.HandlerFunc {
 
 		token, err := generateToken()
 		if err != nil {
-			log.Printf("api: generate session token: %v", err)
+			logging.Errorf("api: generate session token: %v", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
@@ -319,7 +319,7 @@ func createDevice(db storage.DB) http.HandlerFunc {
 
 		token, err := generateToken()
 		if err != nil {
-			log.Printf("api: generate device token: %v", err)
+			logging.Errorf("api: generate device token: %v", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
@@ -537,7 +537,7 @@ func authenticateDevice(ctx context.Context, db storage.DB, tokenHash string) (c
 		return ctx, false
 	}
 	if err := db.Exec(ctx, "UPDATE device SET last_seen_at = ? WHERE id = ?", time.Now().UnixMilli(), d.ID); err != nil {
-		log.Printf("api: update device last_seen_at: %v", err)
+		logging.Errorf("api: update device last_seen_at: %v", err)
 	}
 	ctx = context.WithValue(ctx, ctxDeviceID, d.ID)
 	return ctx, true

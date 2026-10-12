@@ -1,7 +1,6 @@
 package api
 
 import (
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -10,6 +9,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/crypto"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/pullsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
@@ -97,7 +97,7 @@ func createMediaSource(db storage.DB, sync *pullsync.Syncer, encKey [32]byte) ht
 		if req.Credential != nil {
 			sealed, err := crypto.Encrypt(encKey, []byte(*req.Credential))
 			if err != nil {
-				log.Printf("api: encrypt media source credential: %v", err)
+				logging.Errorf("api: encrypt media source credential: %v", err)
 				writeError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
@@ -209,7 +209,7 @@ func updateMediaSource(db storage.DB, sync *pullsync.Syncer, encKey [32]byte) ht
 		if req.Credential != nil {
 			sealed, err := crypto.Encrypt(encKey, []byte(*req.Credential))
 			if err != nil {
-				log.Printf("api: encrypt media source credential: %v", err)
+				logging.Errorf("api: encrypt media source credential: %v", err)
 				writeError(w, http.StatusInternalServerError, "internal error")
 				return
 			}
@@ -396,7 +396,7 @@ func pullSyncHandler(db storage.DB, sync *pullsync.Syncer) http.HandlerFunc {
 
 		result, err := sync.SyncOne(r.Context(), ms)
 		if err != nil {
-			log.Printf("api: pull-sync media source %s: %v", id, err)
+			logging.Errorf("api: pull-sync media source %s: %v", id, err)
 			writeError(w, http.StatusBadGateway, "failed to sync with jellyfin: "+err.Error())
 			return
 		}

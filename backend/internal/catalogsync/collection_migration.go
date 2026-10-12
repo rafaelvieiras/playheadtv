@@ -6,10 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"time"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
@@ -108,7 +108,7 @@ func MigrateToCollections(ctx context.Context, db storage.DB) (CollectionMigrati
 	}
 	start := time.Now()
 	lastLog := start
-	log.Printf("catalogsync: moving the queries of %d dynamic blocks, filler pools and criteria items into collections", len(owners))
+	logging.Infof("catalogsync: moving the queries of %d dynamic blocks, filler pools and criteria items into collections", len(owners))
 
 	sigs := map[string]matchSig{} // tenant + query text -> signature
 	sigFor := func(tenantID, query string) (matchSig, []string, error) {
@@ -229,10 +229,10 @@ func MigrateToCollections(ctx context.Context, db storage.DB) (CollectionMigrati
 		report.Assigned += len(apply)
 		if now := time.Now(); now.Sub(lastLog) >= backfillLogEvery {
 			lastLog = now
-			log.Printf("catalogsync: collection migration: %d/%d owners", to, len(owners))
+			logging.Infof("catalogsync: collection migration: %d/%d owners", to, len(owners))
 		}
 	}
-	log.Printf("catalogsync: collection migration: %d owners now use %d new collections, %d held for review (GET /criteria-migration-review), in %s",
+	logging.Infof("catalogsync: collection migration: %d owners now use %d new collections, %d held for review (GET /criteria-migration-review), in %s",
 		report.Assigned, report.Created, report.Held, time.Since(start).Round(time.Millisecond))
 	return report, nil
 }

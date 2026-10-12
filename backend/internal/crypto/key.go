@@ -4,7 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"log"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"os"
 )
 
@@ -64,11 +64,11 @@ func LoadOrGenerateKey(keyPath string) ([32]byte, error) {
 		return key, fmt.Errorf("crypto: write key file %s: %w", keyPath, err)
 	}
 
-	log.Printf("⚠ ⚠ ⚠  NEW ENCRYPTION KEY GENERATED  ⚠ ⚠ ⚠")
-	log.Printf("crypto: no %s set and no key file found; generated a new one at %s", encryptionKeyEnvVar, keyPath)
-	log.Printf("crypto: BACK UP THIS FILE along with your database. If it is lost, any")
-	log.Printf("crypto: media_source credential already stored encrypted CANNOT be recovered")
-	log.Printf("crypto: (the rest of the database is unaffected).")
+	logging.Warnf("⚠ ⚠ ⚠  NEW ENCRYPTION KEY GENERATED  ⚠ ⚠ ⚠")
+	logging.Warnf("crypto: no %s set and no key file found; generated a new one at %s", encryptionKeyEnvVar, keyPath)
+	logging.Warnf("crypto: BACK UP THIS FILE along with your database. If it is lost, any")
+	logging.Warnf("crypto: media_source credential already stored encrypted CANNOT be recovered")
+	logging.Warnf("crypto: (the rest of the database is unaffected).")
 
 	return key, nil
 }

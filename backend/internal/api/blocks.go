@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -12,6 +11,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/blockitem"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/series"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
@@ -937,7 +937,7 @@ func LogListModeReview(ctx context.Context, db storage.DB) error {
 		for _, s := range e.Schedules {
 			names = append(names, s.ScheduleName)
 		}
-		log.Printf("blocks: review needed: block %q (%s) now repeats its list and is scheduled at fixed times in %s; set its list mode to play once if it should not repeat",
+		logging.Warnf("blocks: review needed: block %q (%s) now repeats its list and is scheduled at fixed times in %s; set its list mode to play once if it should not repeat",
 			e.BlockName, e.BlockID, strings.Join(names, ", "))
 	}
 	return nil
