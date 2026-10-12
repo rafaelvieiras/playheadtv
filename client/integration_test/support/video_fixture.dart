@@ -157,7 +157,8 @@ class VideoFixture {
 
     final path = request.uri.path;
     videoRequests.add(path);
-    for (final e in _openDelays.entries) {
+    // A copy: slowOpen() may change the map while a delayed request waits.
+    for (final e in _openDelays.entries.toList()) {
       if (path.contains(e.key)) await Future<void>.delayed(e.value);
     }
     for (final e in _failuresLeft.entries) {

@@ -1565,6 +1565,29 @@ holds the pure policy:
   incoming item started (minus the point it joined at after a resync), so
   transitions do not drift by the length of the ramp.
 
+## Client controller lifecycle (leaving the player)
+
+Every `VideoPlayerController` the client creates (the player's crossfade pair,
+preloads, the gap slate, the mosaic preview) is registered by
+`lib/util/controller_lifecycle.dart` until its dispose has finished, and every
+dispose goes through `disposeController` (the shared GL queue, `serializeGlOp`).
+
+- **Leaving invalidates everything.** `_ChannelPlayerPageState.dispose()` bumps
+  `_loadGeneration` (the same counter a channel switch bumps), so every load,
+  preload, crossfade and gap hold still in flight sees it has been superseded
+  after its next await.
+- **A late controller is discarded.** A source can take many seconds to open (a
+  cold library file). A controller whose open, seek or `play()` finishes after
+  the page is gone, or after the channel changed, is never attached: it is
+  silenced, paused and disposed (`discardController`), so nothing stays audible
+  over another screen and no connection or GL queue slot is held. The same
+  holds for the mosaic preview when the mosaic is left while it opens. A
+  controller whose preparation fails is disposed where it was created.
+- **Re-entering is a fresh start.** The next load queues its own `initialize()`
+  behind the abandoned one in the GL queue, bounded by `glOpQueueTimeout`.
+  `leave_during_load_test.dart` covers leaving during a slow open and playing the
+  channel again.
+
 ## Client window (full screen)
 
 The client opens in full screen by default on desktop, so a TV or console-style

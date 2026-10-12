@@ -44,6 +44,7 @@ import 'services/stream_preferences_service.dart';
 import 'services/stream_selection_resolver.dart';
 import 'input/input_action.dart';
 import 'pages/mosaic_page.dart';
+import 'util/controller_lifecycle.dart';
 import 'util/gl_serial.dart';
 import 'epg_guide.dart' as guide show defaultTailAttributionCap, tailAttributionCap;
 import 'epg_guide.dart' show guideContextLookback, isHiddenGuideKind;
@@ -871,7 +872,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // real next item's controller outside _controllerA/_controllerB, so
     // cancelling the timer above would otherwise leak it.
     if (_gapHoldPending != null) {
-      unawaited(serializeGlOp(() => _gapHoldPending!.dispose()));
+      unawaited(disposeController(_gapHoldPending!));
       _gapHoldPending = null;
     }
     _pendingExpand = null;
@@ -887,8 +888,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // dispose() is still freeing GL resources on its dispose thread.
     final staleA = _controllerA;
     final staleB = _controllerB;
-    if (staleA != null) unawaited(serializeGlOp(() => staleA.dispose()));
-    if (staleB != null) unawaited(serializeGlOp(() => staleB.dispose()));
+    if (staleA != null) unawaited(disposeController(staleA));
+    if (staleB != null) unawaited(disposeController(staleB));
     _osdVisibleNotifier.value = false;
     setState(() {
       _channelIndex = targetIndex;
@@ -1109,8 +1110,19 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     }
   }
 
+  // A controller whose preparation fails is disposed here, so the callers only
+  // ever hold controllers that opened.
   Future<VideoPlayerController> _createController(ChannelEntry entry, {Duration? seekTo}) async {
-    final controller = VideoPlayerController.networkUrl(Uri.parse(streamUrl(entry.id)));
+    final controller = trackController(VideoPlayerController.networkUrl(Uri.parse(streamUrl(entry.id))));
+    try {
+      return await _prepareController(controller, entry, seekTo);
+    } catch (_) {
+      unawaited(disposeController(controller));
+      rethrow;
+    }
+  }
+
+  Future<VideoPlayerController> _prepareController(VideoPlayerController controller, ChannelEntry entry, Duration? seekTo) async {
     await serializeGlOp(() => controller.initialize());
     // `seekTo` is a position within the entry (the "TV turned on" in the
     // middle of a program); the entry itself starts at its item offset, so the
@@ -1199,16 +1211,26 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   Future<void> _startChannel({Duration initialSeek = Duration.zero, required int generation}) async {
     final entry = channel[0];
     final controller = await _createController(entry, seekTo: initialSeek);
-    if (generation != _loadGeneration) {
-      // Switched channel again while the controller was initializing/seeking.
-      // See serializeGlOp's doc comment for why this fire-and-forget dispose
-      // still has to go through the shared queue.
-      unawaited(serializeGlOp(() => controller.dispose()));
+    if (generation != _loadGeneration || !mounted) {
+      // Switched channel again, or left the player, while the controller was
+      // initializing/seeking. See serializeGlOp's doc comment for why this
+      // fire-and-forget dispose still has to go through the shared queue.
+      unawaited(disposeController(controller));
       return;
     }
-    await controller.setVolume(1);
-    await controller.play();
-    if (!mounted) return;
+    try {
+      await controller.setVolume(1);
+      await controller.play();
+    } catch (_) {
+      unawaited(disposeController(controller));
+      rethrow;
+    }
+    if (generation != _loadGeneration || !mounted) {
+      // The channel was left while play() was in flight: it may already be
+      // audible, so it is silenced before its dispose waits its turn.
+      unawaited(discardController(controller));
+      return;
+    }
     _screenAwake.playing = true;
     setState(() {
       _controllerA = controller;
@@ -1302,7 +1324,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         clock.stop();
         _preloadTracker.record(clock.elapsed);
         final broken = controller;
-        if (broken != null) unawaited(serializeGlOp(() => broken.dispose()));
+        if (broken != null) unawaited(disposeController(broken));
         failures++;
         if (!mounted || generation != _loadGeneration) return;
         if (failures >= preloadAttemptsBeforeError) {
@@ -1317,7 +1339,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       // flight (the player restarted the channel from another item): a late
       // controller must never reach a slot of a channel that moved on.
       if (!mounted || generation != _loadGeneration || _preloadGeneration != generation || _preloadTargetIndex != nextIndex) {
-        unawaited(serializeGlOp(() => controller!.dispose()));
+        unawaited(disposeController(controller));
         return;
       }
       // Captured before setState so the old controller's dispose (fire-and
@@ -1331,7 +1353,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
           _controllerA = controller;
         }
       });
-      if (replaced != null) unawaited(serializeGlOp(() => replaced.dispose()));
+      if (replaced != null) unawaited(disposeController(replaced));
       _preloadReadyIndex = nextIndex;
       return;
     }
@@ -1502,7 +1524,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     required VideoPlayerController incoming,
     required int generation,
   }) async {
-    await incoming.play();
+    if (generation != _loadGeneration) return Duration.zero;
+    try {
+      await incoming.play();
+    } catch (_) {
+      // The page was left (or the channel switched) while play() was in
+      // flight: both controllers are disposed by whoever moved on.
+      if (generation != _loadGeneration) return Duration.zero;
+      rethrow;
+    }
+    if (generation != _loadGeneration) return Duration.zero;
     // The incoming item is on air from here: the caller times its end from this
     // instant, not from the end of the ramp.
     final onAir = Stopwatch()..start();
@@ -1566,7 +1597,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     await _bestEffort(() => incoming.setVolume(1));
     // A channel switch meanwhile already took both slots and disposes them.
     if (generation != _loadGeneration) return;
-    if (outgoing != null) unawaited(serializeGlOp(() => outgoing.dispose()));
+    if (outgoing != null) unawaited(disposeController(outgoing));
     if (_aIsActive) {
       _controllerA = null;
     } else {
@@ -1576,9 +1607,14 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   }
 
   Future<VideoPlayerController> _createSlateController() async {
-    final controller = VideoPlayerController.asset(slateAssetPath);
-    await serializeGlOp(() => controller.initialize());
-    await controller.setLooping(true);
+    final controller = trackController(VideoPlayerController.asset(slateAssetPath));
+    try {
+      await serializeGlOp(() => controller.initialize());
+      await controller.setLooping(true);
+    } catch (_) {
+      unawaited(disposeController(controller));
+      rethrow;
+    }
     return controller;
   }
 
@@ -1608,7 +1644,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   }) async {
     final slate = await _createSlateController();
     if (generation != _loadGeneration) {
-      unawaited(serializeGlOp(() => slate.dispose()));
+      unawaited(disposeController(slate));
       return;
     }
     setState(() {
@@ -1621,7 +1657,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     });
     await _rampCrossfade(outgoing: outgoing, incoming: slate, generation: generation);
     if (generation != _loadGeneration) {
-      unawaited(serializeGlOp(() => pending.dispose()));
+      unawaited(disposeController(pending));
       return;
     }
 
@@ -1630,7 +1666,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _gapHoldTimer = Timer(gap, () async {
       _gapHoldPending = null;
       if (generation != _loadGeneration) {
-        unawaited(serializeGlOp(() => pending.dispose()));
+        unawaited(disposeController(pending));
         return;
       }
       final nextEntry = channel[nextIndex];
@@ -1669,17 +1705,25 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     final entry = channel[index];
     _resetPreload();
     final controller = await _createController(entry);
-    if (generation != _loadGeneration) {
-      unawaited(serializeGlOp(() => controller.dispose()));
+    if (generation != _loadGeneration || !mounted) {
+      unawaited(disposeController(controller));
       return;
     }
-    await controller.setVolume(1);
-    await controller.play();
-    if (!mounted) return;
+    try {
+      await controller.setVolume(1);
+      await controller.play();
+    } catch (_) {
+      unawaited(disposeController(controller));
+      rethrow;
+    }
+    if (generation != _loadGeneration || !mounted) {
+      unawaited(discardController(controller));
+      return;
+    }
     final staleA = _controllerA;
     final staleB = _controllerB;
-    if (staleA != null) unawaited(serializeGlOp(() => staleA.dispose()));
-    if (staleB != null) unawaited(serializeGlOp(() => staleB.dispose()));
+    if (staleA != null) unawaited(disposeController(staleA));
+    if (staleB != null) unawaited(disposeController(staleB));
     setState(() {
       _controllerA = controller;
       _controllerB = null;
@@ -1902,7 +1946,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     final outgoing = _aIsActive ? _controllerA : _controllerB;
     final slate = await _createSlateController();
     if (generation != _loadGeneration || !mounted) {
-      unawaited(serializeGlOp(() => slate.dispose()));
+      unawaited(disposeController(slate));
       return;
     }
     setState(() {
@@ -1924,12 +1968,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   Future<void> _holdSlateAtLoad(int generation) async {
     final slate = await _createSlateController();
     if (generation != _loadGeneration || !mounted) {
-      unawaited(serializeGlOp(() => slate.dispose()));
+      unawaited(disposeController(slate));
       return;
     }
     await slate.play();
     if (generation != _loadGeneration || !mounted) {
-      unawaited(serializeGlOp(() => slate.dispose()));
+      unawaited(disposeController(slate));
       return;
     }
     setState(() {
@@ -2241,6 +2285,14 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
   @override
   void dispose() {
+    // Leaving the player invalidates every load, preload, crossfade and gap
+    // hold still in flight: each async path re-checks the generation after its
+    // awaits, so a controller that finishes opening after this point is
+    // discarded (silenced, then disposed through the GL queue) instead of
+    // being attached to a page that no longer exists.
+    _loadGeneration++;
+    _pendingChannelSwitchTarget = null;
+    _volumeRampTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _screenAwake.dispose();
     _advanceTimer?.cancel();
@@ -2265,9 +2317,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     final finalA = _controllerA;
     final finalB = _controllerB;
     final finalPending = _gapHoldPending;
-    if (finalA != null) unawaited(serializeGlOp(() => finalA.dispose()));
-    if (finalB != null) unawaited(serializeGlOp(() => finalB.dispose()));
-    if (finalPending != null) unawaited(serializeGlOp(() => finalPending.dispose()));
+    if (finalA != null) unawaited(disposeController(finalA));
+    if (finalB != null) unawaited(disposeController(finalB));
+    if (finalPending != null) unawaited(disposeController(finalPending));
     _focusNode.dispose();
     super.dispose();
   }
