@@ -25,6 +25,7 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:video_player/video_player.dart';
+import '../util/controller_lifecycle.dart';
 import 'package:fvp/fvp.dart'; // extension setSubtitleTracks on VideoPlayerController
 
 import '../cache/offline_runtime.dart';
@@ -202,31 +203,39 @@ class _MosaicPageState extends State<MosaicPage> {
       }
       if (!mounted || externalId == null) return;
 
-      final controller = VideoPlayerController.networkUrl(Uri.parse(streamUrl(externalId)));
-      await serializeGlOp(() => controller.initialize());
-      if (!mounted) {
-        unawaited(serializeGlOp(() => controller.dispose()));
+      final controller = trackController(VideoPlayerController.networkUrl(Uri.parse(streamUrl(externalId))));
+      try {
+        await _openPreview(controller, now, itemStart, itemEnd);
+      } catch (_) {
+        unawaited(disposeController(controller));
         return;
       }
-
-      var seek = now.difference(itemStart);
-      final clipDuration = itemEnd.difference(itemStart);
-      if (seek < Duration.zero) seek = Duration.zero;
-      if (seek > clipDuration) seek = clipDuration;
-      if (seek > Duration.zero) await controller.seekTo(seek);
-
-      controller.setSubtitleTracks([]);
-      controller.setProperty('avsync.audio', '0');
-      await controller.play();
-
       if (!mounted) {
-        unawaited(serializeGlOp(() => controller.dispose()));
+        // Left the mosaic while the preview was opening or starting: it may
+        // already be audible, so it is silenced before its dispose.
+        unawaited(discardController(controller));
         return;
       }
       setState(() => _previewController = controller);
     } catch (_) {
       // decorative — no handling beyond leaving the placeholder in place.
     }
+  }
+
+  Future<void> _openPreview(VideoPlayerController controller, DateTime now, DateTime itemStart, DateTime itemEnd) async {
+    await serializeGlOp(() => controller.initialize());
+    if (!mounted) return;
+
+    var seek = now.difference(itemStart);
+    final clipDuration = itemEnd.difference(itemStart);
+    if (seek < Duration.zero) seek = Duration.zero;
+    if (seek > clipDuration) seek = clipDuration;
+    if (seek > Duration.zero) await controller.seekTo(seek);
+
+    controller.setSubtitleTracks([]);
+    controller.setProperty('avsync.audio', '0');
+    if (!mounted) return;
+    await controller.play();
   }
 
   // Spatial move (see mosaic_nav.dart); the focus stays when nothing lies that
@@ -276,7 +285,7 @@ class _MosaicPageState extends State<MosaicPage> {
       // being created through the same shared queue — it guarantees this
       // dispose is strictly ordered relative to them, not just relative to
       // this function's own subsequent code.
-      await serializeGlOp(() => preview.dispose());
+      await disposeController(preview);
     }
     if (!mounted) return;
     Navigator.of(context)
@@ -314,7 +323,7 @@ class _MosaicPageState extends State<MosaicPage> {
         if (preview == null) return;
         if (mounted) setState(() => _previewController = null);
         await WidgetsBinding.instance.endOfFrame;
-        await serializeGlOp(() => preview.dispose());
+        await disposeController(preview);
       },
       releaseScreenAwake,
       () async => OfflineRuntime.reset(),
@@ -345,7 +354,7 @@ class _MosaicPageState extends State<MosaicPage> {
   @override
   void dispose() {
     final preview = _previewController;
-    if (preview != null) unawaited(serializeGlOp(() => preview.dispose()));
+    if (preview != null) unawaited(disposeController(preview));
     for (final node in _focusNodes) {
       node.dispose();
     }
