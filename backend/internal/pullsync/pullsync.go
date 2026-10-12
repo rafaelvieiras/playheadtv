@@ -218,6 +218,9 @@ func (s *Syncer) SyncOne(ctx context.Context, ms domain.MediaSource) (SyncResult
 
 	remote, err := fetchAllItems(ctx, s.client, *ms.BaseURL, apiKey)
 	if err != nil {
+		if errors.Is(err, ErrJellyfinAuth) {
+			return SyncResult{}, fmt.Errorf("pullsync: %w", err)
+		}
 		return SyncResult{}, fmt.Errorf("pullsync: fetch jellyfin items: %w", err)
 	}
 

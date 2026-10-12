@@ -3,6 +3,7 @@ package pullsync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -249,5 +250,55 @@ func TestSyncOneSkipsSegmentLookupsWhenNoRuleCanUseThem(t *testing.T) {
 	}
 	if _, null := storedSegments(t, db, "ep-1"); !null {
 		t.Fatalf("media_segments must stay NULL")
+	}
+}
+
+func TestFetchMediaSegmentsStatusMapping(t *testing.T) {
+	for _, tc := range []struct {
+		status          int
+		unsupported, au bool
+	}{
+		{http.StatusNotFound, true, false},
+		{http.StatusMethodNotAllowed, true, false},
+		{http.StatusNotImplemented, true, false},
+		{http.StatusForbidden, true, false},
+		{http.StatusUnauthorized, false, true},
+		{http.StatusInternalServerError, false, false},
+	} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.Header.Get("Authorization") != `MediaBrowser Token="k"` || r.Header.Get("X-Emby-Token") != "" {
+				t.Errorf("segments request without the Authorization carrier")
+			}
+			http.Error(w, "no", tc.status)
+		}))
+		_, err := fetchMediaSegments(context.Background(), srv.Client(), srv.URL, "k", "item")
+		srv.Close()
+		if got := errors.Is(err, errSegmentsUnsupported); got != tc.unsupported {
+			t.Errorf("status %d: unsupported = %v, want %v (%v)", tc.status, got, tc.unsupported, err)
+		}
+		if got := errors.Is(err, ErrJellyfinAuth); got != tc.au {
+			t.Errorf("status %d: auth error = %v, want %v (%v)", tc.status, got, tc.au, err)
+		}
+	}
+}
+
+func TestSyncOneStopsSegmentLookupsOnRejectedKey(t *testing.T) {
+	db := newTestDB(t)
+	seedAfterIntroRule(t, db)
+	fake := &segmentsServer{apiStatus: http.StatusUnauthorized}
+	for i := 0; i < 30; i++ {
+		fake.items = append(fake.items, jellyfinItem{Id: fmt.Sprintf("m%02d", i), Name: fmt.Sprintf("Movie %d", i), Type: "Movie", RunTimeTicks: 60_000_000_000})
+	}
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+	ms := seedJellyfinSource(t, db, "src1", srv.URL, "token")
+	if _, err := newSyncer(db).SyncOne(context.Background(), ms); err != nil {
+		t.Fatalf("segments are best-effort, SyncOne must still succeed: %v", err)
+	}
+	if n := len(fake.requests()); n > segmentWorkers {
+		t.Fatalf("%d segment requests after a 401, want at most %d", n, segmentWorkers)
+	}
+	if _, null := storedSegments(t, db, "m00"); !null {
+		t.Fatal("m00 must stay NULL")
 	}
 }

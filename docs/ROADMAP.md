@@ -93,7 +93,9 @@ actionable checklist.
       worker mirroring `internal/materializer`'s Trigger/Start/Run shape,
       plus a synchronous `SyncOne` for the manual path), `POST
       /media-sources/{id}/pull-sync`. Queries `GET {base_url}/Items`
-      (`X-Emby-Token` header, paginated) directly, maps Movie/Episode items
+      (`Authorization: MediaBrowser Token="<key>"`, paginated; works on
+      Jellyfin 10.10+ and 12.x, see `docs/ARCHITECTURE.md` "Jellyfin
+      authentication") directly, maps Movie/Episode items
       into `catalog_item`, and deletes anything that disappeared from
       Jellyfin. The upsert/delete/last_synced_at SQL is shared with the push
       flow via `backend/internal/catalogsync`, not duplicated. Runs on a

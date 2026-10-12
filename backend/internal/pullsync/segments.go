@@ -40,7 +40,7 @@ const (
 )
 
 // errSegmentsUnsupported means the server has no media segments API (or does
-// not allow this key to read it).
+// not allow this key to read it). A 401 is not this: it is ErrJellyfinAuth.
 var errSegmentsUnsupported = errors.New("jellyfin media segments API unavailable")
 
 type jellyfinSegment struct {
@@ -56,12 +56,10 @@ type jellyfinSegmentsResponse struct {
 // fetchMediaSegments reads one item's segments. A response without segments is
 // an empty, non-nil slice.
 func fetchMediaSegments(ctx context.Context, client *http.Client, baseURL, apiKey, itemID string) ([]domain.CatalogSegment, error) {
-	u := strings.TrimRight(baseURL, "/") + "/MediaSegments/" + url.PathEscape(itemID)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req, err := newJellyfinRequest(ctx, baseURL, "/MediaSegments/"+url.PathEscape(itemID), apiKey)
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("X-Emby-Token", apiKey)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -69,7 +67,10 @@ func fetchMediaSegments(ctx context.Context, client *http.Client, baseURL, apiKe
 	defer resp.Body.Close()
 	switch resp.StatusCode {
 	case http.StatusOK:
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
+	case http.StatusUnauthorized:
+		// Never "unsupported": a rejected key must stay visible.
+		return nil, jellyfinStatusError("GET /MediaSegments/"+itemID, resp.StatusCode)
+	case http.StatusForbidden, http.StatusNotFound, http.StatusMethodNotAllowed, http.StatusNotImplemented:
 		return nil, fmt.Errorf("status %d: %w", resp.StatusCode, errSegmentsUnsupported)
 	default:
 		return nil, fmt.Errorf("jellyfin GET /MediaSegments/%s: status %d", itemID, resp.StatusCode)
@@ -141,6 +142,10 @@ func fetchSegmentsFor(ctx context.Context, client *http.Client, baseURL, apiKey 
 					mu.Lock()
 					result[id] = segs
 					mu.Unlock()
+				case errors.Is(err, ErrJellyfinAuth):
+					// The key was accepted for /Items moments ago, so this is a
+					// server-wide refusal: stop and say why in the log.
+					stop(err)
 				case errors.Is(err, errSegmentsUnsupported) && successes.Load() == 0:
 					// Before any success this is the server (no such API), not
 					// one item.

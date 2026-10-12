@@ -91,7 +91,7 @@ empty.
 | Define | Required | Meaning |
 | --- | --- | --- |
 | `JELLYFIN_URL` | yes | Base URL of your Jellyfin server, e.g. `https://jellyfin.example.com`. Videos are streamed from `<url>/Videos/<id>/stream?Static=true`. |
-| `JELLYFIN_API_KEY` | yes | A Jellyfin API key, sent as the `api_key` query parameter of the stream URL. |
+| `JELLYFIN_API_KEY` | yes | A Jellyfin API key, sent as the `ApiKey` query parameter of the stream and image URLs (the only query carrier Jellyfin 12 still accepts; `api_key` is disabled there by default). |
 | `PLAYHEADTV_BASE_URL` | yes | Base URL of the Playhead TV backend, e.g. `http://localhost:9394`. |
 | `PLAYHEADTV_DEVICE_TOKEN` | in practice | Device API token, sent as `Authorization: Bearer <token>`. Create a device in the backend's admin web UI to get one. If empty no header is sent, and a backend with auth on will reject the requests. |
 | `EPG_SYNC_INTERVAL_MINUTES` | no | How often the background syncer refreshes the offline cache (default 15). A failed refresh is retried every 30 seconds until it succeeds. |

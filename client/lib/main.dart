@@ -414,12 +414,12 @@ const playbackBufferMinMs = 2000;
 const playbackBufferMaxMs = 30000;
 
 String streamUrl(String itemId) =>
-    '${AppConfig.jellyfinUrl}/Videos/$itemId/stream?Static=true&api_key=${AppConfig.jellyfinApiKey}';
+    '${AppConfig.jellyfinUrl}/Videos/$itemId/stream?Static=true&ApiKey=${AppConfig.jellyfinApiKey}';
 
 // Poster URL built from the media server address and key the client already
 // holds and the image tag the backend sent (the backend never serves art).
 String jellyfinImageUrl(String itemId, String tag, {int maxWidth = 400}) =>
-    '${AppConfig.jellyfinUrl}/Items/$itemId/Images/Primary?tag=$tag&maxWidth=$maxWidth&api_key=${AppConfig.jellyfinApiKey}';
+    '${AppConfig.jellyfinUrl}/Items/$itemId/Images/Primary?tag=$tag&maxWidth=$maxWidth&ApiKey=${AppConfig.jellyfinApiKey}';
 
 /// Puts the window in (or out of) full screen per the saved choice, else the
 /// installation's default. Runs before `runApp`, so there is no visible resize:
