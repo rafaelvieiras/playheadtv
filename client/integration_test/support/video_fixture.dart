@@ -22,6 +22,11 @@ class VideoFixture {
   /// not fetched from the media server).
   final List<String> imageRequests = [];
 
+  /// Requests answered `401` because they did not carry the key the way
+  /// Jellyfin 12 requires (the `ApiKey` query parameter); a test may assert
+  /// this stays empty.
+  final List<String> unauthorizedRequests = [];
+
   static String get _ffmpegPath {
     final fromEnv = Platform.environment['FFMPEG_PATH'];
     return (fromEnv != null && fromEnv.isNotEmpty) ? fromEnv : 'ffmpeg';
@@ -125,6 +130,15 @@ class VideoFixture {
 
   Future<void> _respond(HttpRequest request) async {
     final bytes = _videoBytes;
+    // Like a Jellyfin 12 server with legacy authorization at its default: the
+    // key travels as `ApiKey`; the legacy `api_key` is refused.
+    final query = request.uri.queryParameters;
+    if (query.containsKey('api_key') || (query['ApiKey'] ?? '').isEmpty) {
+      unauthorizedRequests.add(request.uri.toString());
+      request.response.statusCode = HttpStatus.unauthorized;
+      await request.response.close();
+      return;
+    }
     // Poster/logo art: the same tiny PNG for any item (`/Items/<id>/Images/...`).
     if (request.uri.path.startsWith('/Items/') && request.uri.path.contains('/Images/')) {
       imageRequests.add(request.uri.toString());

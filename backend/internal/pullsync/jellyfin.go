@@ -3,6 +3,7 @@ package pullsync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -13,6 +14,42 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 )
+
+// ErrJellyfinAuth marks a request Jellyfin refused for authentication: the API
+// key is wrong, revoked, or sent in a form the server no longer accepts. It is
+// wrapped by every Jellyfin call here so a caller can tell a rejected key from
+// any other failure (errors.Is) and report it as such.
+var ErrJellyfinAuth = errors.New("jellyfin rejected the API key")
+
+// newJellyfinRequest builds a GET against baseURL+path carrying the API key
+// in the Authorization header, the one form Jellyfin 10.10+ and 12.x both
+// accept for a server API key. The legacy X-Emby-Token header and api_key
+// query parameter are disabled by default from Jellyfin 12 (401), so no
+// request in this package may send them: every Jellyfin call goes through
+// here.
+func newJellyfinRequest(ctx context.Context, baseURL, path, apiKey string) (*http.Request, error) {
+	u := strings.TrimRight(baseURL, "/") + path
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", jellyfinAuthorization(apiKey))
+	return req, nil
+}
+
+// jellyfinAuthorization is the Authorization header value for an API key.
+func jellyfinAuthorization(apiKey string) string {
+	return `MediaBrowser Token="` + apiKey + `"`
+}
+
+// jellyfinStatusError describes a non-200 answer to what (e.g. "GET /Items").
+// A 401 wraps ErrJellyfinAuth, with a message an operator can act on.
+func jellyfinStatusError(what string, status int) error {
+	if status == http.StatusUnauthorized {
+		return fmt.Errorf("jellyfin %s: status %d: %w (check the API key of this media source; it must be a server API key from the Jellyfin dashboard)", what, status, ErrJellyfinAuth)
+	}
+	return fmt.Errorf("jellyfin %s: status %d", what, status)
+}
 
 // jellyfinItem is the subset of Jellyfin's BaseItemDto (GET /Items) this
 // package cares about. Field shapes confirmed live against a real Jellyfin
@@ -131,7 +168,7 @@ const seriesFields = "Genres,Studios,Tags,People,ProductionLocations"
 const maxPages = 500
 
 // fetchAllItems pages through GET {baseURL}/Items until every movie/episode
-// is fetched, authenticating via the X-Emby-Token header — no userId
+// is fetched, authenticating via the Authorization header (see newJellyfinRequest) — no userId
 // required, matching a server-scoped API key with library read access.
 func fetchAllItems(ctx context.Context, client *http.Client, baseURL, apiKey string) ([]jellyfinItem, error) {
 	var all []jellyfinItem
@@ -151,8 +188,7 @@ func fetchAllItems(ctx context.Context, client *http.Client, baseURL, apiKey str
 }
 
 func fetchItemsPage(ctx context.Context, client *http.Client, baseURL, apiKey string, startIndex, limit int) ([]jellyfinItem, int, error) {
-	u := strings.TrimRight(baseURL, "/") + "/Items"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req, err := newJellyfinRequest(ctx, baseURL, "/Items", apiKey)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -167,7 +203,6 @@ func fetchItemsPage(ctx context.Context, client *http.Client, baseURL, apiKey st
 	q.Set("StartIndex", strconv.Itoa(startIndex))
 	q.Set("Limit", strconv.Itoa(limit))
 	req.URL.RawQuery = q.Encode()
-	req.Header.Set("X-Emby-Token", apiKey)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -175,7 +210,7 @@ func fetchItemsPage(ctx context.Context, client *http.Client, baseURL, apiKey st
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, 0, fmt.Errorf("jellyfin GET /Items: status %d", resp.StatusCode)
+		return nil, 0, jellyfinStatusError("GET /Items", resp.StatusCode)
 	}
 	var parsed jellyfinItemsResponse
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
@@ -445,12 +480,10 @@ type jellyfinUser struct {
 // (confirmed live: GET /Items/{id} 400s without one on this Jellyfin
 // version) — no assumption of admin privileges or a specific identity.
 func fetchAdminUserID(ctx context.Context, client *http.Client, baseURL, apiKey string) (string, error) {
-	u := strings.TrimRight(baseURL, "/") + "/Users"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req, err := newJellyfinRequest(ctx, baseURL, "/Users", apiKey)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("X-Emby-Token", apiKey)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -458,7 +491,7 @@ func fetchAdminUserID(ctx context.Context, client *http.Client, baseURL, apiKey 
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("jellyfin GET /Users: status %d", resp.StatusCode)
+		return "", jellyfinStatusError("GET /Users", resp.StatusCode)
 	}
 	var users []jellyfinUser
 	if err := json.NewDecoder(resp.Body).Decode(&users); err != nil {
@@ -505,8 +538,7 @@ func fetchSeriesInfo(ctx context.Context, client *http.Client, baseURL, apiKey s
 }
 
 func fetchOneSeries(ctx context.Context, client *http.Client, baseURL, apiKey, userID, seriesID string) (jellyfinItem, error) {
-	u := strings.TrimRight(baseURL, "/") + "/Items/" + seriesID
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req, err := newJellyfinRequest(ctx, baseURL, "/Items/"+seriesID, apiKey)
 	if err != nil {
 		return jellyfinItem{}, err
 	}
@@ -514,7 +546,6 @@ func fetchOneSeries(ctx context.Context, client *http.Client, baseURL, apiKey, u
 	q.Set("Fields", seriesFields)
 	q.Set("userId", userID)
 	req.URL.RawQuery = q.Encode()
-	req.Header.Set("X-Emby-Token", apiKey)
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -522,7 +553,7 @@ func fetchOneSeries(ctx context.Context, client *http.Client, baseURL, apiKey, u
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return jellyfinItem{}, fmt.Errorf("jellyfin GET /Items/%s: status %d", seriesID, resp.StatusCode)
+		return jellyfinItem{}, jellyfinStatusError("GET /Items/"+seriesID, resp.StatusCode)
 	}
 	var parsed jellyfinItem
 	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {

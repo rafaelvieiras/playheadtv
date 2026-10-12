@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -246,8 +247,8 @@ func TestSyncOneCredentialDecryptedCorrectly(t *testing.T) {
 
 	var gotHeader string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotHeader = r.Header.Get("X-Emby-Token")
-		if gotHeader != "secret-token" {
+		gotHeader = r.Header.Get("Authorization")
+		if gotHeader != `MediaBrowser Token="secret-token"` {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -260,8 +261,25 @@ func TestSyncOneCredentialDecryptedCorrectly(t *testing.T) {
 	if _, err := s.SyncOne(context.Background(), ms); err != nil {
 		t.Fatalf("SyncOne: %v", err)
 	}
-	if gotHeader != "secret-token" {
-		t.Errorf("X-Emby-Token received = %q, want %q", gotHeader, "secret-token")
+	if gotHeader != `MediaBrowser Token="secret-token"` {
+		t.Errorf("Authorization received = %q, want %q", gotHeader, `MediaBrowser Token="secret-token"`)
+	}
+}
+
+func TestSyncOneRejectedKeyIsReportedAsSuch(t *testing.T) {
+	db := newTestDB(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	ms := seedJellyfinSource(t, db, "src1", srv.URL, "revoked")
+	_, err := newSyncer(db).SyncOne(context.Background(), ms)
+	if !errors.Is(err, ErrJellyfinAuth) {
+		t.Fatalf("SyncOne error = %v, want ErrJellyfinAuth", err)
+	}
+	if !strings.Contains(err.Error(), "API key") {
+		t.Errorf("error %q does not name the API key", err)
 	}
 }
 

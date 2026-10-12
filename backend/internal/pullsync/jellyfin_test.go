@@ -3,6 +3,7 @@ package pullsync
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -238,7 +239,7 @@ func TestFetchAllItems_Pagination(t *testing.T) {
 
 func TestFetchAllItems_AuthHeader(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-Emby-Token") != "the-real-token" {
+		if r.Header.Get("Authorization") != `MediaBrowser Token="the-real-token"` || r.Header.Get("X-Emby-Token") != "" || r.URL.Query().Get("api_key") != "" {
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
@@ -246,8 +247,12 @@ func TestFetchAllItems_AuthHeader(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	if _, err := fetchAllItems(context.Background(), srv.Client(), srv.URL, "wrong-token"); err == nil {
-		t.Error("fetchAllItems with wrong token succeeded, want error (401)")
+	_, err := fetchAllItems(context.Background(), srv.Client(), srv.URL, "wrong-token")
+	if err == nil {
+		t.Fatal("fetchAllItems with wrong token succeeded, want error (401)")
+	}
+	if !errors.Is(err, ErrJellyfinAuth) {
+		t.Errorf("a 401 must wrap ErrJellyfinAuth, got %v", err)
 	}
 	if _, err := fetchAllItems(context.Background(), srv.Client(), srv.URL, "the-real-token"); err != nil {
 		t.Errorf("fetchAllItems with correct token: %v", err)
@@ -358,5 +363,37 @@ func TestFetchSeriesGenres_EmptySeriesIDsSkipsUsersCall(t *testing.T) {
 	}
 	if usersCalled {
 		t.Error("GET /Users was called with no seriesIDs to resolve, want it skipped")
+	}
+}
+
+func TestNewJellyfinRequest_OnlyTheAuthorizationHeader(t *testing.T) {
+	req, err := newJellyfinRequest(context.Background(), "http://jf.example.com/", "/Items/abc", "k3y")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := req.URL.String(); got != "http://jf.example.com/Items/abc" {
+		t.Errorf("URL = %q", got)
+	}
+	if got, want := req.Header.Get("Authorization"), `MediaBrowser Token="k3y"`; got != want {
+		t.Errorf("Authorization = %q, want %q", got, want)
+	}
+	// Legacy carriers are disabled by default from Jellyfin 12 (401).
+	if req.Header.Get("X-Emby-Token") != "" || req.URL.RawQuery != "" {
+		t.Errorf("legacy carrier present: header %q, query %q", req.Header.Get("X-Emby-Token"), req.URL.RawQuery)
+	}
+}
+
+func TestJellyfinStatusError(t *testing.T) {
+	if err := jellyfinStatusError("GET /Items", http.StatusUnauthorized); !errors.Is(err, ErrJellyfinAuth) {
+		t.Errorf("401 = %v, want ErrJellyfinAuth", err)
+	}
+	for _, status := range []int{http.StatusForbidden, http.StatusNotFound, http.StatusInternalServerError} {
+		err := jellyfinStatusError("GET /Items", status)
+		if errors.Is(err, ErrJellyfinAuth) {
+			t.Errorf("status %d must not be reported as a rejected key", status)
+		}
+		if !strings.Contains(err.Error(), fmt.Sprint(status)) {
+			t.Errorf("status %d missing from %q", status, err)
+		}
 	}
 }

@@ -187,8 +187,8 @@ Pull sync is the mirror image, and the backend does all of it itself:
 `internal/materializer` — `Trigger`/`Start`/`Run`, plus a synchronous
 `SyncOne` for the manual path) calls the real Jellyfin API
 (`GET {base_url}/Items?Recursive=true&IncludeItemTypes=Movie,Episode,Video`,
-paginated, authenticated via the `X-Emby-Token` header with the source's
-decrypted credential), maps `Movie`/`Episode` items into `catalog_item`
+paginated, authenticated with the source's decrypted credential, see "Jellyfin
+authentication" below), maps `Movie`/`Episode` items into `catalog_item`
 (`RunTimeTicks / 10_000 = duration_ms`; `SeriesName` only on episodes).
 `Video` is what Jellyfin tags every item in a `homevideos`-type library
 (no dedicated item type for that kind of clip) — mapped to
@@ -214,6 +214,34 @@ is required on that call by this Jellyfin version, resolved once per sync
 from the first entry of `GET /Users`).
 Both syncs have an MCP tool (`sync_media_source_catalog`,
 `pull_sync_media_source`) for parity with the web UI.
+
+
+#### Jellyfin authentication
+
+Jellyfin 12 disables the legacy authorization mechanisms by default: the
+`X-Emby-Token` and `X-MediaBrowser-Token` headers and the `api_key` query
+parameter answer `401`, and the `/emby/` route prefix is gone (`404`). Only the
+current forms are used, so the same code works on 10.10+ and 12.x:
+
+- **Backend** (`internal/pullsync`): every request goes through
+  `newJellyfinRequest`, which sends `Authorization: MediaBrowser Token="<key>"`.
+  No call may set a legacy header or query parameter. A `401` wraps
+  `ErrJellyfinAuth` ("jellyfin rejected the API key"), which `SyncOne` returns
+  as is, so `POST /media-sources/{id}/pull-sync` answers `502` with that
+  message and the background worker logs it. On `GET /MediaSegments/{id}` a
+  `401` is an auth error too (the lookups stop and the log says why); only
+  `403`, `404`, `405` and `501` mean "no segments API for this key/server".
+- **Client**: libmdk takes only a URL, so the key stays in the query string,
+  spelled `ApiKey` (`streamUrl`, `jellyfinImageUrl`; the mosaic preview, the
+  EPG art and the art cache reuse them). `api_key` is not accepted by 12.x.
+- `GET /Users` with the key and the mandatory `userId` on `GET /Items/{id}`
+  behave the same on both versions.
+- Tested against Jellyfin 10.11.11 and 12.2.0 (minimum supported: 10.10, which
+  introduced media segments). The stream and primary-image routes are
+  anonymous on these versions, so the client's `ApiKey` is about staying valid
+  if that changes, not a measured requirement today. An operator who cannot
+  move yet can set `EnableLegacyAuthorization` to `true` in the Jellyfin
+  server configuration as a stopgap; upstream marks it temporary.
 
 ### Catalog metadata (migration `0009`)
 
