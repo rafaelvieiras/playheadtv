@@ -3,11 +3,11 @@ package materializer
 import (
 	"context"
 	"encoding/json"
-	"log"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/cutplan"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/cutruleset"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
@@ -38,7 +38,7 @@ func (ruleSetCuts) PlanCuts(CutItem) []int64 { return nil }
 func (r ruleSetCuts) BeginPass(ctx context.Context, tenantID string) CutPlanner {
 	sets, err := cutruleset.List(ctx, r.db, tenantID)
 	if err != nil {
-		log.Printf("materializer: tenant %s: load cut rule sets: %v (no cuts this pass)", tenantID, err)
+		logging.Warnf("materializer: tenant %s: load cut rule sets: %v (no cuts this pass)", tenantID, err)
 		return nil
 	}
 	if len(sets) == 0 {
@@ -101,18 +101,18 @@ func (s *ruleSetSnapshot) item(id string, withChapters, withSegments bool) cutIt
 		SegmentsJSON *string
 	}
 	if err := s.db.Query(s.ctx, &rows, "SELECT "+cols+" FROM catalog_item WHERE id = ?", id); err != nil {
-		log.Printf("materializer: cut planner: load catalog_item %s: %v (item not cut)", id, err)
+		logging.Warnf("materializer: cut planner: load catalog_item %s: %v (item not cut)", id, err)
 	} else if len(rows) > 0 {
 		info.ok, info.kind = true, domain.CatalogItemKind(rows[0].Kind)
 		if rows[0].ChaptersJSON != nil {
 			if err := json.Unmarshal([]byte(*rows[0].ChaptersJSON), &info.chapters); err != nil {
-				log.Printf("materializer: cut planner: decode chapters of %s: %v (planned without chapters)", id, err)
+				logging.Warnf("materializer: cut planner: decode chapters of %s: %v (planned without chapters)", id, err)
 				info.chapters = nil
 			}
 		}
 		if rows[0].SegmentsJSON != nil {
 			if err := json.Unmarshal([]byte(*rows[0].SegmentsJSON), &info.segments); err != nil {
-				log.Printf("materializer: cut planner: decode media segments of %s: %v (planned without segments)", id, err)
+				logging.Warnf("materializer: cut planner: decode media segments of %s: %v (planned without segments)", id, err)
 				info.segments = nil
 			}
 		}

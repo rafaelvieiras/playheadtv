@@ -4,11 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 	"time"
 
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
@@ -180,7 +180,7 @@ func MigrateLegacyCriteria(ctx context.Context, db storage.DB) (MigrationReport,
 		}
 	}
 	if report.Converted+report.Held > 0 {
-		log.Printf("catalogsync: legacy criteria migration: %d converted to condition trees, %d held for review (GET /criteria-migration-review)", report.Converted, report.Held)
+		logging.Infof("catalogsync: legacy criteria migration: %d converted to condition trees, %d held for review (GET /criteria-migration-review)", report.Converted, report.Held)
 	}
 	return report, nil
 }

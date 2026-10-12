@@ -3,9 +3,9 @@ package catalogsync
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
@@ -47,7 +47,7 @@ func runBackfill[R any](ctx context.Context, db storage.DB, b backfill[R]) error
 	}
 	start := time.Now()
 	lastLog := start
-	log.Printf("catalogsync: backfilling %s for %d catalog items", b.name, total[0])
+	logging.Infof("catalogsync: backfilling %s for %d catalog items", b.name, total[0])
 	done, last := 0, ""
 	for {
 		var rows []R
@@ -75,9 +75,9 @@ func runBackfill[R any](ctx context.Context, db storage.DB, b backfill[R]) error
 		last = b.id(rows[len(rows)-1])
 		if now := time.Now(); now.Sub(lastLog) >= backfillLogEvery {
 			lastLog = now
-			log.Printf("catalogsync: backfilling %s: %d/%d", b.name, done, total[0])
+			logging.Infof("catalogsync: backfilling %s: %d/%d", b.name, done, total[0])
 		}
 	}
-	log.Printf("catalogsync: backfilled %s for %d items in %s", b.name, done, time.Since(start).Round(time.Millisecond))
+	logging.Infof("catalogsync: backfilled %s for %d items in %s", b.name, done, time.Since(start).Round(time.Millisecond))
 	return nil
 }

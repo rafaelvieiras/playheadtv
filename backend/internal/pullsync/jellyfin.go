@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"strconv"
 	"strings"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 )
 
 // ErrJellyfinAuth marks a request Jellyfin refused for authentication: the API
@@ -245,7 +245,7 @@ func mapJellyfinItem(ri jellyfinItem, series map[string]jellyfinItem) (catalogsy
 	// file descriptors. Skip it here rather than relying on a downstream
 	// guard to always catch it.
 	if ri.RunTimeTicks <= 0 {
-		log.Printf("pullsync: skipping %q (%s): non-positive RunTimeTicks (%d)", ri.Name, ri.Id, ri.RunTimeTicks)
+		logging.Warnf("pullsync: skipping %q (%s): non-positive RunTimeTicks (%d)", ri.Name, ri.Id, ri.RunTimeTicks)
 		return catalogsync.Item{}, false
 	}
 	var kind domain.CatalogItemKind
@@ -522,14 +522,14 @@ func fetchSeriesInfo(ctx context.Context, client *http.Client, baseURL, apiKey s
 
 	userID, err := fetchAdminUserID(ctx, client, baseURL, apiKey)
 	if err != nil {
-		log.Printf("pullsync: resolve jellyfin userId for series lookup: %v", err)
+		logging.Warnf("pullsync: resolve jellyfin userId for series lookup: %v", err)
 		return result
 	}
 
 	for _, seriesID := range seriesIDs {
 		info, err := fetchOneSeries(ctx, client, baseURL, apiKey, userID, seriesID)
 		if err != nil {
-			log.Printf("pullsync: fetch series %s: %v", seriesID, err)
+			logging.Warnf("pullsync: fetch series %s: %v", seriesID, err)
 			continue
 		}
 		result[seriesID] = info

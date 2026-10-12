@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -16,6 +15,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/cutplan"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/cutruleset"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
@@ -122,7 +122,7 @@ func fetchSegmentsFor(ctx context.Context, client *http.Client, baseURL, apiKey 
 	)
 	stop := func(why error) {
 		stopped.Store(true)
-		logOnce.Do(func() { log.Printf("pullsync: media segment lookups stopped: %v", why) })
+		logOnce.Do(func() { logging.Warnf("pullsync: media segment lookups stopped: %v", why) })
 	}
 	work := make(chan string)
 	var wg sync.WaitGroup
@@ -199,7 +199,7 @@ func pickSegmentLookups(ids []string, known map[string]bool, bucket int64) []str
 func tenantUsesSegments(ctx context.Context, db storage.DB, tenantID string) bool {
 	sets, err := cutruleset.List(ctx, db, tenantID)
 	if err != nil {
-		log.Printf("pullsync: tenant %s: read cut rule sets for media segments: %v", tenantID, err)
+		logging.Errorf("pullsync: tenant %s: read cut rule sets for media segments: %v", tenantID, err)
 		return false
 	}
 	for _, set := range sets {
@@ -220,7 +220,7 @@ func (s *Syncer) resolveSegments(ctx context.Context, ms domain.MediaSource, api
 		MediaSegments *string
 	}
 	if err := s.db.Query(ctx, &rows, "SELECT external_id, media_segments FROM catalog_item WHERE media_source_id = ?", ms.ID); err != nil {
-		log.Printf("pullsync: media source %s: read stored media segments: %v", ms.ID, err)
+		logging.Errorf("pullsync: media source %s: read stored media segments: %v", ms.ID, err)
 		return out
 	}
 	known := make(map[string]bool, len(rows))

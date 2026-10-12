@@ -1,11 +1,11 @@
 package materializer
 
 import (
-	"log"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 )
 
 // maxLoopEntries bounds the entries one looping fill (a continuous item's span
@@ -203,5 +203,5 @@ func warnLoopCap(channelID string, sourceID *string) {
 	if sourceID != nil {
 		id = *sourceID
 	}
-	log.Printf("materializer: looping fill capped: schedule item %s on channel %s stopped after %d entries (items or fillers this short are almost certainly bad catalog data)", id, channelID, maxLoopEntries)
+	logging.Warnf("materializer: looping fill capped: schedule item %s on channel %s stopped after %d entries (items or fillers this short are almost certainly bad catalog data)", id, channelID, maxLoopEntries)
 }

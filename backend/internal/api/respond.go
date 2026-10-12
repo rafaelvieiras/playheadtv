@@ -8,7 +8,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"log"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"net/http"
 	"strings"
 )
@@ -60,7 +60,7 @@ func handleDBError(w http.ResponseWriter, err error) {
 		strings.Contains(msg, "CHECK constraint failed"):
 		writeError(w, http.StatusBadRequest, "invalid reference or value")
 	default:
-		log.Printf("api: internal error: %v", err)
+		logging.Errorf("api: internal error: %v", err)
 		writeError(w, http.StatusInternalServerError, "internal error")
 	}
 }

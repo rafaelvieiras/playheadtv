@@ -15,7 +15,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -24,6 +23,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/blockitem"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/series"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
@@ -178,7 +178,7 @@ func (m *Materializer) runLogged(ctx context.Context) {
 	runCtx, cancel := context.WithTimeout(ctx, runTimeout)
 	defer cancel()
 	if err := m.Run(runCtx); err != nil {
-		log.Printf("materializer: run failed: %v", err)
+		logging.Errorf("materializer: run failed: %v", err)
 	}
 }
 
@@ -219,7 +219,7 @@ func (m *Materializer) runTenant(ctx context.Context, tenantID string, now, scan
 	if err := m.db.Query(ctx, &channels,
 		"SELECT "+channelColumns+" FROM channel WHERE tenant_id = ?", tenantID,
 	); err != nil {
-		log.Printf("materializer: tenant %s: list channels: %v", tenantID, err)
+		logging.Errorf("materializer: tenant %s: list channels: %v", tenantID, err)
 		return
 	}
 
@@ -228,12 +228,12 @@ func (m *Materializer) runTenant(ctx context.Context, tenantID string, now, scan
 		err := m.materializeChannel(chCtx, ch, tenantID, now, scanFrom, windowEnd, cache, state)
 		cancel()
 		if err != nil {
-			log.Printf("materializer: channel %s: %v", ch.ID, err)
+			logging.Errorf("materializer: channel %s: %v", ch.ID, err)
 		}
 	}
 
 	if err := m.bumpRevision(ctx, tenantID, now, windowEnd); err != nil {
-		log.Printf("materializer: tenant %s: bump epg_revision: %v", tenantID, err)
+		logging.Errorf("materializer: tenant %s: bump epg_revision: %v", tenantID, err)
 	}
 }
 
@@ -268,7 +268,7 @@ func (m *Materializer) ResetSchedule(ctx context.Context, tenantID, scheduleID s
 // margin rules). Handlers use it because the write itself has succeeded.
 func (m *Materializer) ResetAfterScheduleEdit(ctx context.Context, tenantID, scheduleID string) {
 	if err := m.ResetSchedule(ctx, tenantID, scheduleID); err != nil {
-		log.Printf("materializer: reset after schedule edit: %v", err)
+		logging.Errorf("materializer: reset after schedule edit: %v", err)
 		m.Trigger()
 	}
 }
@@ -277,7 +277,7 @@ func (m *Materializer) ResetAfterScheduleEdit(ctx context.Context, tenantID, sch
 // schedule assignment just changed (assigned, swapped or cleared).
 func (m *Materializer) ResetAfterChannelEdit(ctx context.Context, tenantID string, ch domain.Channel) {
 	if err := m.ResetChannel(ctx, tenantID, ch); err != nil {
-		log.Printf("materializer: reset after channel schedule change: %v", err)
+		logging.Errorf("materializer: reset after channel schedule change: %v", err)
 		m.Trigger()
 	}
 }
@@ -428,13 +428,13 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 			var il domain.Interleave
 			if d.InterleaveSpec != nil {
 				if err := json.Unmarshal([]byte(*d.InterleaveSpec), &il); err != nil {
-					log.Printf("materializer: block %s: bad interleave spec, using defaults: %v", d.ID, err)
+					logging.Warnf("materializer: block %s: bad interleave spec, using defaults: %v", d.ID, err)
 				}
 			}
 			il = il.Normalized()
 			if _, err := catalogsync.ParseQuery([]byte(d.Criteria)); err != nil {
 				// A legacy criteria still held for review cannot be walked.
-				log.Printf("materializer: block %s: interleaved order needs a condition tree, playing by title: %v", d.ID, err)
+				logging.Warnf("materializer: block %s: interleaved order needs a condition tree, playing by title: %v", d.ID, err)
 				continue
 			}
 			amount := domain.SeriesAmount{Mode: domain.AmountSlotEnd}
@@ -920,7 +920,7 @@ func repeatWarnings(items []domain.ScheduleItem, blockItems map[string][]domain.
 			}
 		}
 		if !airs {
-			log.Printf("materializer: WARNING block %s is set to repeat but none of its items can air (empty list, empty series or no positive duration)", si.BlockID)
+			logging.Warnf("materializer: WARNING block %s is set to repeat but none of its items can air (empty list, empty series or no positive duration)", si.BlockID)
 			out = append(out, Warning{
 				Kind: WarningRepeatEmpty, BlockID: si.BlockID,
 				Message: "the block repeats its list, but none of its items can air (empty list, empty series or no positive duration). Its time stays empty until it has content.",
@@ -988,7 +988,7 @@ func (m *Materializer) loadSeriesRuns(ctx context.Context, ch domain.Channel, te
 	// reported as a warning (see Warning), and the item airs nothing, which
 	// leaves a hole the fallback filler (if any) covers.
 	skip := func(kind, blockID, itemID, what string, err error) {
-		log.Printf("materializer: ERROR channel %s: block %s item %s: %s: %v (the item is skipped, its time is left to the fallback filler or a gap)", ch.ID, blockID, itemID, what, err)
+		logging.Errorf("materializer: ERROR channel %s: block %s item %s: %s: %v (the item is skipped, its time is left to the fallback filler or a gap)", ch.ID, blockID, itemID, what, err)
 		warnings = append(warnings, Warning{
 			Kind: kind, BlockID: blockID, BlockItemID: itemID,
 			Message: fmt.Sprintf("%s: %v. The item airs nothing until this is fixed.", what, err),
