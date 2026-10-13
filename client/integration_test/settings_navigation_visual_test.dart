@@ -284,11 +284,10 @@ void main() {
           return true;
         });
       }
-      if (onRow) return;
       // Up on the first row legitimately reaches the AppBar back button: come
-      // back with a real Down (not a recovery).
+      // back with a real Down (not a recovery), then continue from the row.
       var onBack = false;
-      if (ctx != null && primary is! FocusScopeNode) {
+      if (!onRow && ctx != null && primary is! FocusScopeNode) {
         if (ctx.widget is BackButton) onBack = true;
         ctx.visitAncestorElements((e) {
           if (e.widget is BackButton) onBack = true;
@@ -297,7 +296,19 @@ void main() {
       }
       if (onBack) {
         await tap(tester, LogicalKeyboardKey.arrowDown);
-        if (focusedRow(rows) != null) return;
+        if (focusedRow(rows) != null) return recoverTo(tester, pageKey, rows, rowKey);
+      }
+      if (onRow) {
+        // On a different row: walk to the target with real Up/Down taps.
+        for (var i = 0; i < rows.length + 2; i++) {
+          final current = focusedRow(rows);
+          if (current == null || current == rowKey) break;
+          final goDown = rows.indexOf(current) < rows.indexOf(rowKey);
+          await tap(tester, goDown ? LogicalKeyboardKey.arrowDown : LogicalKeyboardKey.arrowUp);
+        }
+        if (focusedRow(rows) == rowKey) return;
+        violations.add('could not walk to $rowKey with Up/Down (focus on ${focusedRow(rows)})');
+        return;
       }
       violations.add('TEST RECOVERY needed on $pageKey (focus was not on a row)');
       out('TEST RECOVERY: focus was not on a row; requesting focus on $rowKey (the app did not do this)');

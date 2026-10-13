@@ -1651,7 +1651,18 @@ has "Create log bundle", which concatenates the rotated files (oldest first) int
 is operable with the six buttons. The debug overlay (`D`) shows the active level and
 the last ten lines (from the logger's in-memory tail, on the overlay's own refresh,
 never a rebuild of the player page). The bug report issue template asks for that
-bundle.
+bundle. In Diagnostics the Log level row is focusable (the page opens on it; "Log
+file" is informational) and Select cycles the level exactly like Settings -> Log
+level: until the app restarts, never saved. The debug overlay stays read-only.
+
+**Focus conventions for pages.** A widget that only catches Back from a
+focused row (a page-level `Focus(onKeyEvent: ...)` or `KeyboardListener`) must be
+non-focusable (`canRequestFocus: false, skipTraversal: true`). A focusable one
+covers the whole page, so Down on the last row lands on it (no row highlighted,
+Up/Down/Select dead, only Back works). Key events still bubble through it from the
+focused row. The page then needs an `autofocus` row of its own. Down on the last
+row and Up on the first keep focus on that row (Up on the first may reach the
+AppBar controls).
 
 **Backend.** The Go backend uses the same level names through
 `PLAYHEADTV_LOG_LEVEL` (`internal/logging`). Unset, nothing changes: messages

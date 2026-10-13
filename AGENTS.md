@@ -138,6 +138,11 @@ or LLM, and to every artifact in the repo:
   choice is capped by `maxFitUiScale` so it cannot overflow the OSD; keep
   `uiScaleFitHeight`/`uiScaleFitWidth` in step if the OSD grows. Never drive it
   through `setState` on the player page.
+- A page-level wrapper that only catches Back (`Focus(onKeyEvent:)`,
+  `KeyboardListener`) is non-focusable (`canRequestFocus: false,
+  skipTraversal: true`), else it takes traversal focus past the last row
+  (`docs/ARCHITECTURE.md` "Client logging", focus conventions); give the page an
+  `autofocus` row instead.
 - **6-button baseline**: every user-facing flow in the client (not the web
   UI, which is desktop/mouse admin tooling by nature) must be fully
   operable with exactly six inputs — Up, Down, Left, Right, Select, Back —
