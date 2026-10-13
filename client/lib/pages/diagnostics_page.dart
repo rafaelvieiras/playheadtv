@@ -49,12 +49,23 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
     );
   }
 
+  // Select steps through the log levels, exactly like Settings -> Log level:
+  // applied at once, until the app restarts, never saved.
+  void _cycleLogLevel() {
+    Log.setRuntimeLevel(nextLogLevelChoice(Log.level));
+    setState(() {});
+  }
+
   @override
   Widget build(BuildContext context) => UiScaled(child: _buildPage(context));
 
   Widget _buildPage(BuildContext context) {
     final file = Log.file;
     return Focus(
+      // Only catches Back bubbling up from a row: it must never be a traversal
+      // target itself (it would take focus past the last row).
+      canRequestFocus: false,
+      skipTraversal: true,
       onKeyEvent: (node, event) {
         if (event is KeyDownEvent && _keyBindings?.resolve(event.logicalKey) == InputAction.back) {
           Navigator.of(context).maybePop();
@@ -75,13 +86,14 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
             ),
             ListTile(
               key: const Key('diagnostics-level-tile'),
+              autofocus: true,
+              onTap: _cycleLogLevel,
               leading: const Icon(AppIcons.logLevel),
               title: const Text('Log level'),
               subtitle: Text(logLevelLabel(Log.level, Log.configuredLevel), key: const Key('diagnostics-level-value')),
             ),
             ListTile(
               key: const Key('diagnostics-bundle-tile'),
-              autofocus: true,
               leading: const Icon(AppIcons.diagnostics),
               title: const Text('Create log bundle'),
               subtitle: const Text(

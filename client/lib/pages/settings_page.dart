@@ -108,6 +108,10 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _buildPage(BuildContext context) {
     return Focus(
+      // Only catches Back bubbling up from a row: it must never be a traversal
+      // target itself (it would take focus past the last row).
+      canRequestFocus: false,
+      skipTraversal: true,
       onKeyEvent: (node, event) {
         if (event is KeyDownEvent && _keyBindings?.resolve(event.logicalKey) == InputAction.back) {
           Navigator.of(context).maybePop();

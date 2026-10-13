@@ -88,7 +88,9 @@ class _ControlsMappingPageState extends State<ControlsMappingPage> {
   Map<InputAction, LogicalKeyboardKey> _bindings = {};
   InputAction? _capturingAction;
 
-  final FocusNode _pageFocusNode = FocusNode();
+  // Only catches Back (and the captured key) bubbling up from a button; it must
+  // never be a traversal target itself (it would take focus past the last row).
+  final FocusNode _pageFocusNode = FocusNode(canRequestFocus: false, skipTraversal: true);
 
   @override
   void initState() {
@@ -157,6 +159,7 @@ class _ControlsMappingPageState extends State<ControlsMappingPage> {
             ),
       trailing: ElevatedButton(
         key: Key('remap-button-${action.name}'),
+        autofocus: action == _groups.first.actions.first,
         onPressed: () => _startCapture(action),
         child: const Text('Change'),
       ),
@@ -176,7 +179,6 @@ class _ControlsMappingPageState extends State<ControlsMappingPage> {
 
     return KeyboardListener(
       focusNode: _pageFocusNode,
-      autofocus: true,
       onKeyEvent: (event) {
         unawaited(_handleKeyEvent(event));
       },

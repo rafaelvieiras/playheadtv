@@ -16,6 +16,8 @@ class ExitDialog extends StatelessWidget {
   Widget build(BuildContext context) {
     return UiScaled(
       child: Focus(
+        canRequestFocus: false,
+        skipTraversal: true,
         onKeyEvent: (node, event) {
           if (event is KeyDownEvent && isBack(event.logicalKey)) {
             Navigator.of(context).pop(false);
