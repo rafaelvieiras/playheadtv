@@ -247,6 +247,25 @@ void main() {
       await screenshot(tester, label, find.byKey(ValueKey(pageKey)));
     }
 
+    // The row key holding primary focus, or null.
+    String? focusedRow(List<String> rows) {
+      final primary = FocusManager.instance.primaryFocus;
+      final ctx = primary?.context;
+      if (ctx == null || primary is FocusScopeNode) return null;
+      String? found;
+      void visit(Element e) {
+        final k = e.widget.key;
+        if (found == null && k is ValueKey<String> && rows.contains(k.value)) found = k.value;
+      }
+
+      if (ctx is Element) visit(ctx);
+      ctx.visitAncestorElements((e) {
+        visit(e);
+        return true;
+      });
+      return found;
+    }
+
     // Test-only recovery so one lost focus does not poison the later scenarios:
     // when primary focus is not on a row, request it on [rowKey] and say so.
     Future<void> recoverTo(WidgetTester tester, String pageKey, List<String> rows, String rowKey) async {
@@ -266,6 +285,21 @@ void main() {
         });
       }
       if (onRow) return;
+      // Up on the first row legitimately reaches the AppBar back button: come
+      // back with a real Down (not a recovery).
+      var onBack = false;
+      if (ctx != null && primary is! FocusScopeNode) {
+        if (ctx.widget is BackButton) onBack = true;
+        ctx.visitAncestorElements((e) {
+          if (e.widget is BackButton) onBack = true;
+          return true;
+        });
+      }
+      if (onBack) {
+        await tap(tester, LogicalKeyboardKey.arrowDown);
+        if (focusedRow(rows) != null) return;
+      }
+      violations.add('TEST RECOVERY needed on $pageKey (focus was not on a row)');
       out('TEST RECOVERY: focus was not on a row; requesting focus on $rowKey (the app did not do this)');
       if (find.byKey(Key(rowKey)).evaluate().isEmpty) {
         // A lazy row that is not built: scroll the list to the end or the start first.
@@ -277,25 +311,6 @@ void main() {
       final inner = find.descendant(of: find.byKey(Key(rowKey)), matching: find.byType(Focus)).evaluate().first;
       ((inner as StatefulElement).state as dynamic).focusNode.requestFocus();
       await tester.pump(const Duration(milliseconds: 400));
-    }
-
-    // The row key holding primary focus, or null.
-    String? focusedRow(List<String> rows) {
-      final primary = FocusManager.instance.primaryFocus;
-      final ctx = primary?.context;
-      if (ctx == null || primary is FocusScopeNode) return null;
-      String? found;
-      void visit(Element e) {
-        final k = e.widget.key;
-        if (found == null && k is ValueKey<String> && rows.contains(k.value)) found = k.value;
-      }
-
-      if (ctx is Element) visit(ctx);
-      ctx.visitAncestorElements((e) {
-        visit(e);
-        return true;
-      });
-      return found;
     }
 
     // Moves to [rowKey] with real Up/Down taps; when focus is not on a row,
@@ -488,8 +503,20 @@ void main() {
       const dp = 'diagnostics-page';
       String dlevel() => tester.widget<Text>(find.byKey(const Key('diagnostics-level-value'))).data ?? '';
       await step(tester, 'diagnostics_open', dp, _diagnosticsRows);
-      await recoverTo(tester, dp, _diagnosticsRows, 'diagnostics-bundle-tile');
+      if (focusedRow(_diagnosticsRows) != 'diagnostics-level-tile') {
+        violations.add('diagnostics opened with focus on ${focusedRow(_diagnosticsRows)}, not diagnostics-level-tile');
+      }
       final diagLevelBefore = dlevel();
+      await tap(tester, LogicalKeyboardKey.enter); // cycle the level on the focused tile
+      final diagLevelAfter = dlevel();
+      out('Diagnostics log level Select: $diagLevelBefore -> $diagLevelAfter (Log.level=${Log.level})');
+      if (diagLevelAfter == diagLevelBefore) violations.add('Select on the Diagnostics Log level tile did not change it');
+      await step(tester, 'diagnostics_level_cycled', dp, _diagnosticsRows);
+      await tap(tester, LogicalKeyboardKey.arrowDown);
+      await step(tester, 'diagnostics_down_to_bundle', dp, _diagnosticsRows);
+      await tap(tester, LogicalKeyboardKey.arrowDown);
+      await step(tester, 'diagnostics_down_past_end', dp, _diagnosticsRows);
+      if (focusedRow(_diagnosticsRows) != 'diagnostics-bundle-tile') violations.add('Down past the end left the bundle tile');
       await tap(tester, LogicalKeyboardKey.arrowUp);
       await step(tester, 'diagnostics_up_1', dp, _diagnosticsRows);
       await tap(tester, LogicalKeyboardKey.arrowUp);

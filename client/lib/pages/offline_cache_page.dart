@@ -172,6 +172,8 @@ class _OfflineCachePageState extends State<OfflineCachePage> {
     final window = runtime.cache.window;
     final backend = runtime.cache.backendWindow;
     return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
       // Back (Esc by default, remappable) leaves; the arrows and Select are
       // the focus traversal and activation Flutter gives every tile.
       onKeyEvent: (node, event) {

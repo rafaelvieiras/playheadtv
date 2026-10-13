@@ -86,7 +86,9 @@ void main() {
     expect(text(tester, 'diagnostics-path-value'), '${dir.path}/$logFileName');
     expect(text(tester, 'diagnostics-level-value'), 'Info');
 
-    // The action has the focus on arrival: one Select.
+    // Arrival focuses Log level (the first actionable row); Down reaches the action.
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     // The bundle is real file I/O inside the fake-async zone: alternate real
     // time with frames until the toast shows.
@@ -106,6 +108,28 @@ void main() {
     expect(find.byKey(const Key('settings-page')), findsOneWidget);
   });
 
+  testWidgets('Diagnostics: Select on Log level cycles it like Settings, until restart', (tester) async {
+    Log.configure(level: LogLevel.error);
+    await pumpSettings(tester);
+    await downTo(tester, 'settings-diagnostics-tile');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(text(tester, 'diagnostics-level-value'), 'Error');
+    await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+    await tester.pumpAndSettle();
+    expect(Log.level, LogLevel.warn);
+    expect(text(tester, 'diagnostics-level-value'), contains('Warn (until the app restarts, then Error)'));
+    expect(Log.configuredLevel, LogLevel.error);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getKeys().where((k) => k.contains('log')), isEmpty);
+    // Down past the end keeps the focus on the last row.
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pump();
+    final focused = FocusManager.instance.primaryFocus!.context!;
+    expect(focused.findAncestorWidgetOfExactType<ListTile>()?.key, const Key('diagnostics-bundle-tile'));
+  });
+
   testWidgets('Diagnostics says so when there is no log file', (tester) async {
     Log.configure(level: LogLevel.error);
     await pumpSettings(tester);
@@ -113,6 +137,8 @@ void main() {
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pumpAndSettle();
     expect(text(tester, 'diagnostics-path-value'), contains('Not written to a file'));
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pump();
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 100));
