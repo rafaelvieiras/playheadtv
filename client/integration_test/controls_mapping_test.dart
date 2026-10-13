@@ -312,6 +312,15 @@ void main() {
       // Assign a key to cycleAudioTrack, same capture flow as any other action.
       await tester.tap(find.byKey(const Key('remap-button-cycleAudioTrack')));
       await tester.pump();
+      // A pointer tap does not move keyboard focus in this harness and the
+      // page keeps no focus node of its own (a real user presses Select on the
+      // focused button): focus the button so the captured key has a path.
+      final inner = find
+          .descendant(of: find.byKey(const Key('remap-button-cycleAudioTrack')), matching: find.byType(Focus))
+          .evaluate()
+          .first;
+      ((inner as StatefulElement).state as dynamic).focusNode.requestFocus();
+      await tester.pump();
       await pressKey(tester, LogicalKeyboardKey.keyA);
       await tester.pump();
       await pumpUntil(

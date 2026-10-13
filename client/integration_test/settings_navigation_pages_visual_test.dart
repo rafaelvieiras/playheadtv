@@ -108,7 +108,7 @@ void main() {
         if (found == null && k is ValueKey<String> && (exact.contains(k.value) || (prefix.isNotEmpty && k.value.startsWith(prefix)))) {
           found = k.value;
         }
-        if (e.widget is BackButton) back = true;
+        if (e.widget is BackButton || (k is ValueKey<String> && k.value == 'restore-defaults-button')) back = true;
       }
 
       if (ctx is Element) visit(ctx);
@@ -116,7 +116,7 @@ void main() {
         visit(e);
         return true;
       });
-      return found ?? (back ? 'back-button' : null);
+      return found ?? (back ? 'app-bar-action' : null);
     }
 
     void expectOn(String step, String? actual, String expected) {
@@ -173,7 +173,7 @@ void main() {
       await shot(tester, 'controls_held_up', cp);
       await tap(tester, LogicalKeyboardKey.arrowUp);
       expectRow('controls Up on the first row', where('remap-button-', {}));
-      if (where('remap-button-', {}) == 'back-button') await tap(tester, LogicalKeyboardKey.arrowDown);
+      if (where('remap-button-', {}) == 'app-bar-action') await tap(tester, LogicalKeyboardKey.arrowDown);
       // Back from a focused row leaves.
       await tap(tester, LogicalKeyboardKey.escape);
       await pumpUntil(tester, () => find.byKey(const Key('controls-mapping-page')).evaluate().isEmpty, failMessage: 'Back did not leave Remap controls');
@@ -199,7 +199,7 @@ void main() {
       expectRow('offline held Up', where('', oRows));
       await tap(tester, LogicalKeyboardKey.arrowUp);
       expectRow('offline Up on the first row', where('', oRows));
-      if (where('', oRows) == 'back-button') await tap(tester, LogicalKeyboardKey.arrowDown);
+      if (where('', oRows) == 'app-bar-action') await tap(tester, LogicalKeyboardKey.arrowDown);
       await tap(tester, LogicalKeyboardKey.escape);
       await pumpUntil(tester, () => find.byKey(const Key('offline-cache-page')).evaluate().isEmpty, failMessage: 'Back did not leave Offline cache');
 
