@@ -64,7 +64,9 @@ export function ChannelFillerRules({ channelId }: { channelId: string }) {
 
       {rules && !hasFallback && (
         <InlineWarning title="No fallback filler for this channel">
-          Time not covered by the schedule stays empty without a channel-scoped fallback rule.
+          {channel?.base_schedule_id
+            ? 'Time the base schedule does not cover stays empty without a channel-scoped fallback rule.'
+            : 'Time not covered by the schedule stays empty without a channel-scoped fallback rule.'}
         </InlineWarning>
       )}
 

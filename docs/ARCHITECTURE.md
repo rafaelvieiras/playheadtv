@@ -875,6 +875,12 @@ Taking a span from the base (`baseGapFiller` in `expand.go`):
   with no continuous item) are filled by that rule too. Filler is thus only
   what the base does not cover.
 
+The configuration warnings follow the same rule: with a base schedule a slot's
+leftover that the base airs is not an `unfilled-slot`, and only a span the base
+itself leaves empty before the next pinned item is reported (a channel fallback
+rule silences it, as without a base). The channel's "no fallback filler" notice
+then speaks of time the base schedule does not cover.
+
 With no base schedule nothing changes. With one, the pinned schedule's own
 continuous item does not air in the gaps (the base owns them), and the
 continuous item whose rotation is persisted for grid stability is the base

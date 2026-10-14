@@ -312,6 +312,56 @@ func TestBaseLayer_PinnedContinuousDoesNotAir(t *testing.T) {
 	}
 }
 
+func blResiduals(in channelInput) []residual {
+	var found []residual
+	in.Residuals = &found
+	blExpand(in, baseDay0.Add(24*time.Hour))
+	return found
+}
+
+// A slot's leftover that the base layer airs is not an unfilled slot, even
+// with no channel fallback rule.
+func TestBaseLayer_CoveredSlotLeftoverIsNotAResidual(t *testing.T) {
+	in := baseLayerInput(time.Hour, time.Hour, blAt(4, 0), blAt(8, 0), blAt(12, 0))
+	if got := blResiduals(in); len(got) != 0 {
+		t.Fatalf("base covers the gaps, got residuals %+v", got)
+	}
+	// The same channel without the base layer still reports them.
+	in.HasBase = false
+	in.BaseScheduleItems = nil
+	if got := blResiduals(in); len(got) == 0 {
+		t.Fatalf("no base: want residuals for the unfilled slots")
+	}
+}
+
+// What the base layer itself leaves empty is still reported, and a channel
+// fallback rule silences it.
+func TestBaseLayer_BaseHoleIsStillAResidual(t *testing.T) {
+	in := baseLayerInput(time.Hour, time.Hour, blAt(4, 0), blAt(8, 0), blAt(12, 0))
+	in.BaseScheduleItems = []domain.ScheduleItem{{
+		ID: "base-once", ScheduleID: "base", BlockID: "base",
+		Recurrence: domain.RecurrenceOnce, StartAt: int64Ptr(blAt(1, 0)), Active: true,
+	}}
+	in.RepeatBlockIDs = nil
+	got := blResiduals(in)
+	if len(got) == 0 {
+		t.Fatalf("base leaves holes before the next pinned item: want a residual")
+	}
+	for _, r := range got {
+		if r.BlockID != "p" {
+			t.Errorf("residual %+v: want block p", r)
+		}
+	}
+	in.FillerRules = []domain.FillerRule{
+		{ID: "fb", Kind: domain.FillerFallback, Scope: domain.ScopeChannel, ScopeID: "chan1", FillerPoolID: "pool", Selection: domain.SelectionSequential},
+	}
+	in.PoolItems = map[string][]domain.FillerPoolItem{"pool": {{ID: "pi", FillerPoolID: "pool", CatalogItemID: "f0"}}}
+	in.CatalogDuration["f0"] = blMs(time.Hour)
+	if got := blResiduals(in); len(got) != 0 {
+		t.Fatalf("with a fallback rule: %+v, want none", got)
+	}
+}
+
 // End to end through the loader and the database: a channel with a pinned
 // weekly item and a base schedule with a continuous item. The base airs around
 // the pinned occurrence, resumes at its natural position, and a second full

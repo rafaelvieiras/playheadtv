@@ -1057,7 +1057,16 @@ func expandLayer(in channelInput, now, scanFrom, windowEnd time.Time, state *sel
 	// noteResidual records what a slot is left with at a real boundary when no
 	// fallback rule will cover it (see residual); seams under a minute are not
 	// worth a warning.
+	//
+	// With a base schedule the base layer covers a slot's leftover, so nothing is
+	// recorded there; only what the base itself leaves empty is (see baseFill),
+	// attributed to the block of the slot that precedes it.
+	lastSlotBlock := ""
 	noteResidual := func(blockID string, from, to time.Time) {
+		lastSlotBlock = blockID
+		if in.HasBase {
+			return
+		}
 		if in.Residuals == nil || to.Sub(from) < unfilledSlotMin || !to.After(now) {
 			return
 		}
@@ -1067,7 +1076,13 @@ func expandLayer(in channelInput, now, scanFrom, windowEnd time.Time, state *sel
 		*in.Residuals = append(*in.Residuals, residual{BlockID: blockID, Length: to.Sub(from)})
 	}
 
+	baseHoleIsResidual := false
 	fillFallbackOnly := func(from, to time.Time) {
+		if baseHoleIsResidual && in.Residuals != nil && lastSlotBlock != "" &&
+			to.Sub(from) >= unfilledSlotMin && to.After(now) &&
+			resolveFillerRule(in.FillerRules, domain.FillerFallback, "", in.ChannelID) == nil {
+			*in.Residuals = append(*in.Residuals, residual{BlockID: lastSlotBlock, Length: to.Sub(from)})
+		}
 		rule := resolveFillerRule(in.FillerRules, domain.FillerFallback, "", in.ChannelID)
 		gapEntries, _ := fillGap(rule, in.PoolItems, in.CatalogDuration, from, to, domain.EpgFallback, in.TenantID, in.ChannelID, generatedAt, nil, state)
 		entries = append(entries, gapEntries...)
@@ -1075,7 +1090,13 @@ func expandLayer(in channelInput, now, scanFrom, windowEnd time.Time, state *sel
 
 	var baseFill func(from, to time.Time, boundary bool)
 	if in.HasBase {
-		baseFill = baseGapFiller(baseEntries, func(e domain.EpgEntry) { entries = append(entries, e) }, fillFallbackOnly)
+		inner := baseGapFiller(baseEntries, func(e domain.EpgEntry) { entries = append(entries, e) }, fillFallbackOnly)
+		baseFill = func(from, to time.Time, boundary bool) {
+			// A hole only counts when the span ends at a real next timed item.
+			baseHoleIsResidual = boundary
+			inner(from, to, boundary)
+			baseHoleIsResidual = false
+		}
 	}
 
 	// fillFallbackGap fills a span no timed item claims: with the continuous
