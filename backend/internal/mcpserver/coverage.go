@@ -18,8 +18,16 @@ var RouteTools = map[string]string{
 	"GET /channels/{id}/epg-preview":  "preview_channel_grid_reset",
 	"GET /channels/{id}/epg-warnings": "get_channel_epg_warnings",
 
+	// Watermarks.
+	"GET /channels/{id}/watermark":    "get_channel_watermark",
+	"PUT /channels/{id}/watermark":    "set_channel_watermark",
+	"DELETE /channels/{id}/watermark": "clear_channel_watermark",
+	"GET /blocks/{id}/watermark":      "get_block_watermark",
+	"PUT /blocks/{id}/watermark":      "set_block_watermark",
+	"DELETE /blocks/{id}/watermark":   "clear_block_watermark",
+
 	// Media sources.
-	"POST /media-sources":                   "register_media_source",
+	"POST /media-sources":                  "register_media_source",
 	"GET /media-sources":                    "list_media_sources",
 	"GET /media-sources/{id}":               "get_media_source",
 	"PUT /media-sources/{id}":               "update_media_source",
@@ -121,5 +129,6 @@ var NoMCPCounterpart = map[string]string{
 	"DELETE /sessions":              "logs the calling session out; ending the transport's own credential from inside it is not an authoring operation",
 	"POST /password-resets/consume": "unauthenticated by design, credentialed by a single-use token that an operator mints at the server console; MCP requires an authenticated session, and a password reset must not be drivable by an agent",
 	"GET /me":                       "returns the session's own user (e-mail); there is nothing to author, and the identity is already implied by the session",
+	"GET /watermarks/{image_id}/image": "serves the binary image bytes to the playback client (what the guide's watermark image_id names); an MCP tool result is JSON, and the settings tools already return image_id and content_type",
 	"GET /stream-preferences/meta":  "the playback client's cheap staleness poll over the preference rows; the preference tools already read the data itself",
 }

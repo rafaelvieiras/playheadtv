@@ -11,6 +11,8 @@ import 'dart:isolate';
 
 import 'package:http/http.dart' as http;
 
+import 'watermark.dart';
+
 /// The backend answered, with a status other than the one expected. 401/403
 /// is [isAuthRejection]: the token is missing, expired or revoked, which a
 /// caller must tell apart from the backend being unreachable (the offline
@@ -151,6 +153,11 @@ class EpgEntry {
   /// program (lib/epg_guide.dart).
   final String? splitGroup;
 
+  /// The watermark to draw while this entry is on air (resolved by the
+  /// backend from the channel and the entry's block); null for none, and for a
+  /// backend that predates it.
+  final EpgWatermark? watermark;
+
   /// Only for a grouped tail (`kind == 'tail'` with clips): the individual
   /// clips, in playing order. [catalogItemId] is then the first clip's.
   final List<EpgClip> clips;
@@ -176,6 +183,7 @@ class EpgEntry {
     this.seriesImagePrimaryTag,
     this.itemOffsetMs = 0,
     this.splitGroup,
+    this.watermark,
     this.clips = const [],
   });
 
@@ -204,6 +212,7 @@ class EpgEntry {
       seriesImagePrimaryTag: json['series_image_primary_tag'] as String?,
       itemOffsetMs: (json['item_offset_ms'] as int?) ?? 0,
       splitGroup: json['split_group'] as String?,
+      watermark: EpgWatermark.tryParse(json['watermark']),
       clips: clips,
     );
   }
@@ -231,6 +240,7 @@ class EpgEntry {
         'series_image_primary_tag': seriesImagePrimaryTag,
         if (itemOffsetMs != 0) 'item_offset_ms': itemOffsetMs,
         if (splitGroup != null) 'split_group': splitGroup,
+        if (watermark != null) 'watermark': watermark!.toJson(),
         if (isTailGroup) 'clips': [for (final c in clips) c.toJson()],
       };
 
@@ -292,6 +302,7 @@ class EpgEntry {
         seriesImagePrimaryTag: seriesImagePrimaryTag,
         itemOffsetMs: itemOffsetMs,
         splitGroup: splitGroup,
+        watermark: watermark,
         clips: clips ?? this.clips,
       );
 
@@ -318,6 +329,7 @@ class EpgEntry {
         seriesImagePrimaryTag: seriesImagePrimaryTag,
         itemOffsetMs: itemOffsetMs,
         splitGroup: splitGroup == null ? null : '$idPrefix$splitGroup',
+        watermark: watermark,
         clips: [
           for (final c in clips)
             EpgClip(
@@ -481,6 +493,14 @@ class PlayheadApi {
   }) : _client = client ?? http.Client();
 
   String get _normalizedBaseUrl => baseUrl.endsWith('/') ? baseUrl.substring(0, baseUrl.length - 1) : baseUrl;
+
+  /// Where a watermark image is downloaded from (`GET /watermarks/{id}/image`).
+  /// The id changes whenever the image does, so a cached copy never goes stale.
+  String watermarkImageUrl(String imageId) => '$_normalizedBaseUrl/watermarks/${Uri.encodeComponent(imageId)}/image';
+
+  /// The headers a download from this backend needs (the device token, when
+  /// there is one), for what the art cache fetches on its behalf.
+  Map<String, String> get authHeaders => _headers;
 
   Map<String, String> get _headers {
     final token = deviceToken;

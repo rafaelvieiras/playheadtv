@@ -326,10 +326,13 @@ actionable checklist.
       programming, with its own filler chain, in every gap the pinned
       schedule leaves, resuming at its natural position (REST, MCP, channel
       Settings tab). See `docs/ARCHITECTURE.md` "Base schedule".
-- [ ] Deco layer, remaining: the watermark (a client-side overlay setting,
-      inherit/disable/override) and one unified, simple-by-default place in
-      the web UI for a channel's decorative behavior (watermark, filler,
-      dead-air fallback, base schedule).
+- [x] Watermark: a channel and a block each carry an optional client-drawn
+      image (inherit/disable/override, corner, opacity, size), resolved per
+      guide entry and drawn over the player (REST, MCP, channel Settings tab,
+      block editor). See `docs/ARCHITECTURE.md` "Watermark".
+- [ ] Deco layer, remaining: one unified, simple-by-default place in the web
+      UI for a channel's decorative behavior (watermark, filler, dead-air
+      fallback, base schedule).
 - [x] Issue #10 — overrun policy: "stop before end" replaces "delay the next
       occurrence" as the *only* behavior (no per-block/per-channel
       configuration — the user's own working example decided this: a

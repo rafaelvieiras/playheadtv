@@ -431,6 +431,11 @@ func isDeviceOrSessionPath(r *http.Request) bool {
 	if strings.HasPrefix(r.URL.Path, "/channels/") {
 		return true
 	}
+	// A watermark image: the playback client downloads it with its device
+	// token (the id is unguessable and changes on every upload).
+	if strings.HasPrefix(r.URL.Path, "/watermarks/") {
+		return true
+	}
 	// GET /catalog-items/{id} (lookup) is device-or-session; GET
 	// /catalog-items (search/browse, no trailing segment) is session-only,
 	// handled by falling through to the default case below.

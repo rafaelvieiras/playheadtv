@@ -181,6 +181,12 @@ or LLM, and to every artifact in the repo:
   button toggles; while dimmed a level chip beside it opens the level dialog
   with Select. Holding Select is only an accelerator to that dialog. The level
   is persisted, the toggle is not (`docs/ARCHITECTURE.md` "Client dimmer").
+- The watermark (`lib/widgets/watermark_overlay.dart`) is a pointer-transparent,
+  never-focusable layer above the video and below the OSD, driven by
+  `_watermarkNotifier` (set by `_syncWatermark` wherever `_currentIndex`
+  changes, cleared on the gap slate and on a channel switch), never `setState`.
+  The backend resolves it per entry; the client draws `program.watermark` and
+  never decides inherit/disable (`docs/ARCHITECTURE.md` "Watermark").
 - The OSD never describes a filler: for a hidden-kind entry on air it shows the
   program the guide attributes it to, over that program's displayed span
   (`lib/osd_subject.dart`, same `buildGuideCells` rule as the EPG).

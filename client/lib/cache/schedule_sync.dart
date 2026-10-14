@@ -227,12 +227,24 @@ class ScheduleSyncer {
         }
       }
     }
+    // The watermark images of what is on the guide (a few small files, one
+    // per image): downloaded with the backend's credentials, so a channel that
+    // is watched offline still draws its watermark.
+    final backendUrls = <String>{};
+    for (final channel in cache.channels()) {
+      for (final e in cache.entries(channel.id, now, cache.horizonEnd)) {
+        final w = e.watermark;
+        if (w != null) backendUrls.add(api.watermarkImageUrl(w.imageId));
+      }
+    }
+    urls.removeAll(backendUrls);
     var fetched = 0;
     var failures = 0;
-    for (final url in urls) {
+    for (final url in [...backendUrls, ...urls]) {
       if (_stopped || fetched >= _maxArtPerRun || failures >= _maxArtFailuresInARow) break;
       if (art.cached(url) != null) continue;
-      if (await art.fetch(url) == null) {
+      final headers = backendUrls.contains(url) ? api.authHeaders : const <String, String>{};
+      if (await art.fetch(url, headers: headers) == null) {
         failures++;
       } else {
         failures = 0;
