@@ -14,6 +14,7 @@
 // Proven end to end: the channel's watermark shows over the player (its
 // corner, opacity and size), disappears while the disabled block's program is
 // on air, and the override block draws its own image with its own options.
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:client/main.dart';
@@ -27,11 +28,9 @@ import 'support/offline_helpers.dart';
 import 'support/video_fixture.dart';
 
 // A valid 1x1 PNG.
-const _png = <int>[
-  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d, 0x49, 0x48, 0x44, 0x52, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 0x1f, 0x15, 0xc4, 0x89, //
-  0, 0, 0, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xf8, 0xff, 0xff, 0x3f, 0, 5, 0xfe, 2, 0xfe, 0xdc, 0xcc, 0x59, 0xe7, //
-  0, 0, 0, 0, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
-];
+final _png = base64Decode(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+);
 
 typedef Mark = ({double elapsed, bool shown, Rect? rect, double? opacity, String? file});
 
