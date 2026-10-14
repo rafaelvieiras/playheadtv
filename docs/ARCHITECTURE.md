@@ -891,8 +891,8 @@ programs hidden under it are walked again from there; a series or criteria
 item walked by both layers (the same block in both schedules) shares its
 cursor, which is rebuilt from the entries that aired.
 
-Authoring: the channel's Settings tab in the web UI has an optional "Base
-schedule" select next to the schedule one; the MCP tools are
+Authoring: the channel's Deco tab in the web UI has an optional "Base
+schedule" select; the MCP tools are
 `assign_channel_base_schedule` and the `base_schedule_id` field of
 `update_channel`. The client reads only the materialized guide, where base
 entries are ordinary `program`/`preroll`/... entries, so it needs no change.
@@ -983,7 +983,7 @@ the player with the next guide refresh; a refresh that leaves the on-air
 program in place does not redraw it, so the new settings show from the next
 program on.
 
-**Authoring.** Channel Settings tab: a "Watermark" section (Off/On, then image,
+**Authoring.** Channel Deco tab: a "Watermark" section (Off/On, then image,
 corner, opacity and size only when On). Block editor: a "Watermark" select
 (Inherit the channel's / No watermark / Use its own) that reveals the same
 controls only for "Use its own". Each section saves with its own button. MCP:
@@ -997,6 +997,32 @@ Known limits: one watermark image per owner (no per-program, no animated
 image); the size is relative to the player area, not to the letterboxed
 picture inside it; changing a watermark does not reset the grid, so it takes
 effect at the next guide refresh and program change.
+
+### Deco tab
+
+A channel's decorative behavior is authored in one place, the **Deco** tab of
+the channel page (`?tab=deco`). It is a composition over existing resources,
+not an entity: no table, no endpoint, no MCP tool of its own.
+
+- **Common controls**, always visible and all optional: Base schedule (the
+  channel's `base_schedule_id`, saved with `PUT /channels/{id}`), Watermark
+  (`WatermarkSection`, its own resource) and Fallback filler (one
+  channel-scoped `fallback` filler rule: picking a pool creates or repoints
+  it, "None" deletes it). A new channel has none of the three and plays its
+  schedule with an empty gap where nothing is scheduled.
+- **Advanced**, collapsed unless the channel already has rules beyond the
+  plain fallback: it embeds `ChannelFillerRules` (per-kind rules, scope,
+  selection strategy, position, several pools, break templates) and links to
+  the global Filler pools and Filler rules pages. The decision lives in
+  `webui/src/lib/deco.ts` (`hasAdvancedRules`): any per-kind rule of the
+  channel, any rule of a block in its schedule, several fallbacks, or a
+  fallback with a non-default strategy or fit attempts. In that last case the
+  simple control defers to Advanced instead of hiding options it cannot show.
+- **Block overrides** stay in the block editor (watermark select, block-scoped
+  rules); the tab only points at it.
+
+The Settings tab keeps the channel fields and the pinned schedule, with a
+pointer to Deco instead of the base schedule and watermark controls.
 
 ### Block tail and the fill cascade (migration `0017`)
 
