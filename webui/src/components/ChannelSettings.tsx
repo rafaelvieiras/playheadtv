@@ -216,6 +216,12 @@ export function ChannelSettings({ channel, channels }: { channel: Channel; chann
             <p className="text-sm text-muted-foreground" data-testid="base-schedule-help">
               Plays in every gap the schedule above leaves, with its own breaks, instead of filler clips.
             </p>
+            {draft.base_schedule_id && (
+              <p className="text-sm text-muted-foreground" data-testid="base-schedule-continuous-note">
+                With a base schedule set, a continuous item in the schedule above no longer fills the gaps; the base
+                schedule does.
+              </p>
+            )}
           </Field>
         </FieldGroup>
         <SaveBar dirty={dirty} saving={saveMutation.isPending} onSave={save} onDiscard={discard} error={error} />
