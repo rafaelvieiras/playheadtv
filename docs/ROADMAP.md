@@ -322,12 +322,14 @@ actionable checklist.
       in. See `docs/ARCHITECTURE.md` "Season 0 (specials) of a block". Not yet:
       the block editor's dynamic preview and the collection preview still count
       season 0.
-- [ ] Issue #4 (Deco) expanded, not implemented yet: dead-air fallback needs
-      to support real programming (a low-priority "base" schedule, with its
-      own filler chain) resuming in the gaps a channel's pinned schedule
-      doesn't cover, not just short filler_pool clips — see the issue for
-      the full writeup and open questions (how a channel references a base
-      schedule, priority resolution at materialization time).
+- [x] Base schedule: a channel's optional `base_schedule_id` plays its own
+      programming, with its own filler chain, in every gap the pinned
+      schedule leaves, resuming at its natural position (REST, MCP, channel
+      Settings tab). See `docs/ARCHITECTURE.md` "Base schedule".
+- [ ] Deco layer, remaining: the watermark (a client-side overlay setting,
+      inherit/disable/override) and one unified, simple-by-default place in
+      the web UI for a channel's decorative behavior (watermark, filler,
+      dead-air fallback, base schedule).
 - [x] Issue #10 — overrun policy: "stop before end" replaces "delay the next
       occurrence" as the *only* behavior (no per-block/per-channel
       configuration — the user's own working example decided this: a
