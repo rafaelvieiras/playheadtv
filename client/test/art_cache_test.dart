@@ -42,6 +42,19 @@ void main() {
     expect(file.path, isNot(contains('media')));
   });
 
+  test('request headers are sent with the download', () async {
+    String? seen;
+    final art = ArtCache(
+      dir: Directory('${dir.path}/art'),
+      client: MockClient((request) async {
+        seen = request.headers['Authorization'];
+        return http.Response.bytes(bytes(5), 200);
+      }),
+    );
+    expect(await art.fetch('http://backend/watermarks/i/image', headers: {'Authorization': 'Bearer t'}), isNotNull);
+    expect(seen, 'Bearer t');
+  });
+
   test('concurrent fetches of one URL share one download', () async {
     final requested = <String>[];
     final art = cache(sizes: {'http://media/a': 10}, requested: requested);

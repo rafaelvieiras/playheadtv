@@ -48,6 +48,10 @@ type epgItem struct {
 	ImageBackdropTag      *string `json:"image_backdrop_tag,omitempty"`
 	ImageThumbTag         *string `json:"image_thumb_tag,omitempty"`
 	SeriesImagePrimaryTag *string `json:"series_image_primary_tag,omitempty"`
+	// Watermark is the resolved watermark of the entry (see
+	// watermark_resolve.go); omitted when none applies, which is also all an
+	// older backend sends.
+	Watermark *domain.WatermarkRef `json:"watermark,omitempty"`
 }
 
 // epgTailClip is one stored tail entry inside a tail group: all a player
@@ -78,6 +82,9 @@ type epgTailGroup struct {
 	StartAt   int64               `json:"start_at"`
 	EndAt     int64               `json:"end_at"`
 	Clips     []epgTailClip       `json:"clips"`
+	// Watermark is resolved from the group's first clip (every clip of a run
+	// decorates the same block).
+	Watermark *domain.WatermarkRef `json:"watermark,omitempty"`
 }
 
 type catalogBrief struct {
@@ -235,6 +242,11 @@ func buildEPGView(ctx context.Context, db storage.DB, entries []domain.EpgEntry,
 		return nil, err
 	}
 
+	wms, err := newWatermarkResolver(ctx, db, entries)
+	if err != nil {
+		return nil, err
+	}
+
 	out := make([]any, 0, len(entries))
 	var group *epgTailGroup
 	var groupLast domain.EpgEntry
@@ -262,6 +274,7 @@ func buildEPGView(ctx context.Context, db storage.DB, entries []domain.EpgEntry,
 				group = &epgTailGroup{
 					ID: e.ID, TenantID: e.TenantID, ChannelID: e.ChannelID, Kind: domain.EpgTail,
 					Title: tailGroupTitle, StartAt: e.StartAt,
+					Watermark: wms.resolve(e),
 				}
 			}
 			group.Clips = append(group.Clips, clip)
@@ -270,7 +283,7 @@ func buildEPGView(ctx context.Context, db storage.DB, entries []domain.EpgEntry,
 			continue
 		}
 		flush()
-		item := epgItem{EpgEntry: e}
+		item := epgItem{EpgEntry: e, Watermark: wms.resolve(e)}
 		if haveBrief {
 			item.MediaSourceID = strPtr(b.MediaSourceID)
 			item.ExternalID = strPtr(b.ExternalID)

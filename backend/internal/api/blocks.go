@@ -302,6 +302,10 @@ func deleteBlock(db storage.DB) http.HandlerFunc {
 			handleDBError(w, err)
 			return
 		}
+		if err := deleteWatermarkOf(r.Context(), db, "block", id); err != nil {
+			handleDBError(w, err)
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}
 }

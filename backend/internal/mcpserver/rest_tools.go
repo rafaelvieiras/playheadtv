@@ -32,6 +32,16 @@ type (
 		BaseScheduleID *string `json:"base_schedule_id,omitempty" jsonschema:"the base Schedule that plays in every gap schedule_id leaves; omitted clears it. Must differ from schedule_id. Changing it resets the EPG grid"`
 	}
 
+	// watermarkArgs carries a channel's or block's watermark (id is the owner).
+	watermarkArgs struct {
+		ID          string  `json:"id" jsonschema:"the channel or block the watermark belongs to"`
+		Mode        string  `json:"mode" jsonschema:"one of: inherit (a block uses its channel's; for a channel same as disable), disable (no watermark), override (this owner's own image and options)"`
+		Position    *string `json:"position,omitempty" jsonschema:"corner: top_left, top_right, bottom_left or bottom_right; omitted keeps the stored value (bottom_right at first)"`
+		OpacityPct  *int    `json:"opacity_pct,omitempty" jsonschema:"0-100; omitted keeps the stored value (70 at first)"`
+		SizePct     *int    `json:"size_pct,omitempty" jsonschema:"percent of the video height, 2-40; omitted keeps the stored value (8 at first)"`
+		ImageBase64 *string `json:"image_base64,omitempty" jsonschema:"the image, base64 encoded: PNG, JPEG or WebP (no SVG), at most 1 MiB decoded, validated by its content; omitted keeps the stored image"`
+	}
+
 	scheduleArgs struct {
 		ID          string  `json:"id" jsonschema:"the schedule to replace"`
 		Name        string  `json:"name" jsonschema:"schedule display name"`
@@ -145,6 +155,20 @@ func registerRESTTools(s *mcp.Server, db storage.DB, mux http.Handler) {
 		"List configuration problems that leave holes in a channel's guide (e.g. a criteria item whose query fails). Read only.", false)
 	addREST[idConfirmArgs](s, rc, "reset_channel_epg", "POST /channels/{id}/reset-epg",
 		"Apply a grid reset now: the materialized future and the program on air are discarded, continuous rotations restart from the beginning and the channel is regenerated before this returns; viewers switch program immediately. Use preview_channel_grid_reset first.", true)
+
+	// Watermarks (client-rendered overlay, see docs/ARCHITECTURE.md "Watermark").
+	addREST[idArgs](s, rc, "get_channel_watermark", "GET /channels/{id}/watermark",
+		"Read a channel's watermark settings (mode disable with defaults when none was set). The image itself is not returned: image_id names it.", false)
+	addREST[watermarkArgs](s, rc, "set_channel_watermark", "PUT /channels/{id}/watermark",
+		"Set a channel's watermark: mode override with an image shows it over the channel's video on the client; options and the image keep their stored value when omitted. Returns the stored settings.", false)
+	addREST[idConfirmArgs](s, rc, "clear_channel_watermark", "DELETE /channels/{id}/watermark",
+		"Remove a channel's watermark settings and its stored image.", true)
+	addREST[idArgs](s, rc, "get_block_watermark", "GET /blocks/{id}/watermark",
+		"Read a block's watermark settings (mode inherit with defaults when none was set). The image itself is not returned: image_id names it.", false)
+	addREST[watermarkArgs](s, rc, "set_block_watermark", "PUT /blocks/{id}/watermark",
+		"Set a block's watermark: inherit (the channel's applies), disable (none while this block's programs and the filler decorating them are on air) or override (its own image and options). Omitted options and image keep their stored value.", false)
+	addREST[idConfirmArgs](s, rc, "clear_block_watermark", "DELETE /blocks/{id}/watermark",
+		"Remove a block's watermark settings (it inherits the channel's again) and its stored image.", true)
 
 	// Blocks.
 	addREST[noArgs](s, rc, "list_blocks", "GET /blocks", "List every block. The result is {items: [...]}.", false)

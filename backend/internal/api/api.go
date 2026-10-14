@@ -29,6 +29,7 @@ func Register(mux Router, db storage.DB, mat *materializer.Materializer, sync *p
 	registerBlocks(mux, db, mat)
 	registerFiller(mux, db, mat)
 	registerSchedules(mux, db, mat)
+	registerWatermarks(mux, db)
 	registerEPG(mux, db, mat)
 	registerStreamPreferences(mux, db)
 }
