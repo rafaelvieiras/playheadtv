@@ -64,20 +64,22 @@ class ArtCache {
 
   /// Downloads [url] into the cache (or returns the cached file). Null when it
   /// cannot be fetched. Concurrent calls for one URL share one download.
-  Future<File?> fetch(String url) {
+  /// [headers] are sent with the request (a backend image needs the device
+  /// token; they are not part of the cache key).
+  Future<File?> fetch(String url, {Map<String, String> headers = const {}}) {
     final hit = cached(url);
     if (hit != null) return Future.value(hit);
     // A URL that just failed is not retried on every rebuild of a widget that
     // asks for it.
     final failed = _failedAt[url];
     if (failed != null && _clock().difference(failed) < retryAfterFailure) return Future.value(null);
-    return _inFlight.putIfAbsent(url, () => _download(url).whenComplete(() {
+    return _inFlight.putIfAbsent(url, () => _download(url, headers).whenComplete(() {
       _inFlight.remove(url);
     }));
   }
 
-  Future<File?> _download(String url) async {
-    final file = await _tryDownload(url);
+  Future<File?> _download(String url, Map<String, String> headers) async {
+    final file = await _tryDownload(url, headers);
     if (file == null) {
       _failedAt[url] = _clock();
     } else {
@@ -86,9 +88,9 @@ class ArtCache {
     return file;
   }
 
-  Future<File?> _tryDownload(String url) async {
+  Future<File?> _tryDownload(String url, Map<String, String> headers) async {
     try {
-      final response = await _client.get(Uri.parse(url)).timeout(timeout);
+      final response = await _client.get(Uri.parse(url), headers: headers).timeout(timeout);
       if (response.statusCode != 200 || response.bodyBytes.isEmpty) return null;
       dir.createSync(recursive: true);
       final file = _fileFor(url);

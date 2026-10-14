@@ -359,6 +359,27 @@ class BackendFixture {
     return data.cast<Map<String, dynamic>>();
   }
 
+  /// PUT /{channels|blocks}/{id}/watermark: [ownerType] is `channel` or
+  /// `block`, [mode] `inherit`, `disable` or `override`; [png] (base64 inside
+  /// the body) is the image, kept as it is when null. Returns the stored
+  /// settings (`image_id` among them).
+  Future<Map<String, dynamic>> setWatermark({
+    required String ownerType,
+    required String ownerId,
+    required String mode,
+    List<int>? png,
+    String? position,
+    int? opacityPct,
+    int? sizePct,
+  }) =>
+      _putJson('/${ownerType}s/$ownerId/watermark', {
+        'mode': mode,
+        if (png != null) 'image_base64': base64Encode(png),
+        if (position != null) 'position': position,
+        if (opacityPct != null) 'opacity_pct': opacityPct,
+        if (sizePct != null) 'size_pct': sizePct,
+      });
+
   /// POST /channels/{id}/reset-epg: the admin's grid reset of one channel.
   Future<void> resetChannelEpg(String channelId) async {
     await _postJson('/channels/$channelId/reset-epg', {});
