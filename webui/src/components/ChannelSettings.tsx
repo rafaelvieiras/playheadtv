@@ -34,6 +34,7 @@ function toInput(channel: Channel): ChannelInput {
     guide_art_url: channel.guide_art_url,
     timezone: channel.timezone,
     schedule_id: channel.schedule_id,
+    base_schedule_id: channel.base_schedule_id,
   }
 }
 
@@ -59,8 +60,10 @@ export function ChannelSettings({ channel, channels }: { channel: Channel; chann
   const channelsBySchedule = useMemo(() => {
     const map = new Map<string, Channel[]>()
     for (const c of channels) {
-      if (!c.schedule_id) continue
-      map.set(c.schedule_id, [...(map.get(c.schedule_id) ?? []), c])
+      for (const id of new Set([c.schedule_id, c.base_schedule_id])) {
+        if (!id) continue
+        map.set(id, [...(map.get(id) ?? []), c])
+      }
     }
     return map
   }, [channels])
@@ -97,7 +100,11 @@ export function ChannelSettings({ channel, channels }: { channel: Channel; chann
     mutationFn: (id: string) => api.delete(`/schedules/${id}`),
     onSuccess: (_, id) => {
       queryClient.invalidateQueries({ queryKey: ['schedules'] })
-      setDraft((d) => (d.schedule_id === id ? { ...d, schedule_id: null } : d))
+      setDraft((d) => ({
+        ...d,
+        schedule_id: d.schedule_id === id ? null : d.schedule_id,
+        base_schedule_id: d.base_schedule_id === id ? null : d.base_schedule_id,
+      }))
       toast.success('Schedule deleted.')
       setDeletingSchedule(undefined)
     },
@@ -147,7 +154,18 @@ export function ChannelSettings({ channel, channels }: { channel: Channel; chann
             <div className="flex items-center gap-2">
               <Select
                 value={draft.schedule_id ?? NONE_VALUE}
-                onValueChange={(v) => setDraft((d) => ({ ...d, schedule_id: v === NONE_VALUE ? null : v }))}
+                onValueChange={(v) =>
+                  setDraft((d) => {
+                    const schedule_id = v === NONE_VALUE ? null : v
+                    // The two layers are different schedules: picking the
+                    // current base as the pinned one clears the base.
+                    return {
+                      ...d,
+                      schedule_id,
+                      base_schedule_id: d.base_schedule_id === schedule_id ? null : d.base_schedule_id,
+                    }
+                  })
+                }
               >
                 <SelectTrigger id="channel-settings-schedule" className="w-full">
                   <SelectValue placeholder="No schedule" />
@@ -174,6 +192,30 @@ export function ChannelSettings({ channel, channels }: { channel: Channel; chann
                 New schedule
               </Button>
             </div>
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="channel-settings-base-schedule">Base schedule (optional)</FieldLabel>
+            <Select
+              value={draft.base_schedule_id ?? NONE_VALUE}
+              onValueChange={(v) => setDraft((d) => ({ ...d, base_schedule_id: v === NONE_VALUE ? null : v }))}
+            >
+              <SelectTrigger id="channel-settings-base-schedule" className="w-full">
+                <SelectValue placeholder="No base schedule" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={NONE_VALUE}>None</SelectItem>
+                {sortedSchedules
+                  .filter((schedule) => schedule.id !== draft.schedule_id)
+                  .map((schedule) => (
+                    <SelectItem key={schedule.id} value={schedule.id}>
+                      {schedule.name}
+                    </SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+            <p className="text-sm text-muted-foreground" data-testid="base-schedule-help">
+              Plays in every gap the schedule above leaves, with its own breaks, instead of filler clips.
+            </p>
           </Field>
         </FieldGroup>
         <SaveBar dirty={dirty} saving={saveMutation.isPending} onSave={save} onDiscard={discard} error={error} />

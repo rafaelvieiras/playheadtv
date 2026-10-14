@@ -28,6 +28,9 @@ export interface Channel {
   // Schedule/Playout split. null means no schedule assigned (e.g. a channel
   // relying only on a channel-scoped fallback filler rule).
   schedule_id: string | null
+  // base_schedule_id is an optional second Schedule that plays its own
+  // programming in every gap the pinned schedule_id leaves uncovered.
+  base_schedule_id: string | null
   created_at: number
   updated_at: number
 }
@@ -39,6 +42,7 @@ export interface ChannelInput {
   guide_art_url: string | null
   timezone: string
   schedule_id: string | null
+  base_schedule_id: string | null
 }
 
 // Mirrors backend/internal/domain.EpgEntryKind.
