@@ -16,6 +16,7 @@ import { InterleaveControls } from '@/components/InterleaveControls'
 import { InlineWarning } from '@/components/InlineWarning'
 import { PageHeader } from '@/components/PageHeader'
 import { SaveBar } from '@/components/SaveBar'
+import { WatermarkSection } from '@/components/WatermarkSection'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
@@ -231,6 +232,8 @@ function BlockDetailsForm({ block }: { block: Block }) {
       )}
 
       <SaveBar dirty={dirty} saving={saveMutation.isPending} onSave={save} onDiscard={discard} error={error} />
+
+      <WatermarkSection ownerType="block" ownerId={block.id} />
     </section>
   )
 }
