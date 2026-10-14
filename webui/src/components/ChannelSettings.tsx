@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 
 import { SaveBar } from '@/components/SaveBar'
 import { ScheduleDialog } from '@/components/ScheduleDialog'
+import { WatermarkSection } from '@/components/WatermarkSection'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -226,6 +227,8 @@ export function ChannelSettings({ channel, channels }: { channel: Channel; chann
         </FieldGroup>
         <SaveBar dirty={dirty} saving={saveMutation.isPending} onSave={save} onDiscard={discard} error={error} />
       </section>
+
+      <WatermarkSection ownerType="channel" ownerId={channel.id} />
 
       <section className="flex flex-col gap-2" data-testid="schedule-library">
         <h2 className="text-sm font-medium">Schedules</h2>
