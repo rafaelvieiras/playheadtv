@@ -836,6 +836,61 @@ the request, like the endpoint above, and waits at most for a materializer run
 already in progress (they share one mutex). Catalog-only changes (sync,
 catalog edits) never reset; they keep the freeze margin.
 
+### Base schedule (migration `0024`)
+
+A channel may reference a second schedule, `channel.base_schedule_id`
+(nullable, next to `schedule_id`, never the same schedule: validated by the
+REST and MCP writes and by a `CHECK`). Exactly two layers exist:
+
+- the **pinned** layer is the channel's `schedule_id`, expanded exactly as
+  described above (timed items, overrun policy, its own preroll/midroll/
+  postroll/tail);
+- the **base** layer is the base schedule, which plays real programming
+  (its own blocks, its own filler chain, any recurrence including a
+  continuous item) in every gap the pinned layer leaves, in place of the
+  continuous item and plain fallback filler.
+
+The pinned layer always wins. The base is expanded over the whole window as
+if it ran all the time underneath, by the same code as any schedule, with a
+selection state of its own, and the pinned layer then takes from it what falls
+in the spans it leaves empty (the spans that used to go to
+`fillFallbackGap`). Nothing about the base is stored per channel: what airs at
+an instant is a function of the stored configuration, so a full-window
+regeneration is deterministic and the base continues, when a pinned occurrence
+(with its postroll and tail) ends, at the position it would have had anyway,
+not where it left off.
+
+Taking a span from the base (`baseGapFiller` in `expand.go`):
+
+- entries inside the span are used as they are;
+- a program that began before the span continues from where it is: its entry
+  starts with the span and `item_offset_ms` says how far into the file;
+- a program running past the span's end is cut there, so the pinned
+  occurrence starts on time (the entry is shorter than the item, like a
+  segment of a split item); the last span of the window is not cut;
+- a program with less than a minute of it left in the span is dropped, and
+  so is any preroll/midroll/postroll/tail that is not wholly inside the span;
+- what the drops leave empty goes to the channel's fallback rule (whole
+  fillers that fit), and the base layer's own holes (a timed base schedule
+  with no continuous item) are filled by that rule too. Filler is thus only
+  what the base does not cover.
+
+With no base schedule nothing changes. With one, the pinned schedule's own
+continuous item does not air in the gaps (the base owns them), and the
+continuous item whose rotation is persisted for grid stability is the base
+schedule's, so the freeze margin applies to the base layer. Known limits: the
+persisted rotation position is that of the last base entry before the frozen
+head's end, so when that end falls inside a pinned occurrence the base
+programs hidden under it are walked again from there; a series or criteria
+item walked by both layers (the same block in both schedules) shares its
+cursor, which is rebuilt from the entries that aired.
+
+Authoring: the channel's Settings tab in the web UI has an optional "Base
+schedule" select next to the schedule one; the MCP tools are
+`assign_channel_base_schedule` and the `base_schedule_id` field of
+`update_channel`. The client reads only the materialized guide, where base
+entries are ordinary `program`/`preroll`/... entries, so it needs no change.
+
 ### Block tail and the fill cascade (migration `0017`)
 
 What a slot (a timed occurrence, or the continuous item's stretch before the
