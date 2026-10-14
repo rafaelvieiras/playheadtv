@@ -21,7 +21,9 @@ import '../watermark.dart';
 
 /// Finds the image file of a watermark: the art cache first (the syncer
 /// prefetched it), a download otherwise. Null when it is not available.
-typedef WatermarkImageResolver = FutureOr<File?> Function(EpgWatermark watermark);
+typedef WatermarkImageResolver = FutureOr<File?> Function(
+  EpgWatermark watermark,
+);
 
 /// The resolver the app uses: the shared offline runtime's art cache.
 FutureOr<File?> resolveWatermarkFromRuntime(EpgWatermark watermark) {
@@ -37,18 +39,31 @@ class WatermarkOverlay extends StatelessWidget {
   final ValueListenable<EpgWatermark?> source;
   final WatermarkImageResolver resolve;
 
-  const WatermarkOverlay({super.key, required this.source, this.resolve = resolveWatermarkFromRuntime});
+  const WatermarkOverlay({
+    super.key,
+    required this.source,
+    this.resolve = resolveWatermarkFromRuntime,
+  });
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<EpgWatermark?>(
-      valueListenable: source,
-      builder: (context, watermark, _) {
-        if (watermark == null) return const SizedBox.shrink();
-        // Keyed by the image: another image starts a new lookup, a change of
-        // options only re-lays out.
-        return _WatermarkImage(key: ValueKey(watermark.imageId), watermark: watermark, resolve: resolve);
-      },
+    // Always a Positioned.fill child of the player's Stack (never a loose,
+    // zero-sized child, which would shrink a Stack that only has positioned
+    // children).
+    return Positioned.fill(
+      child: ValueListenableBuilder<EpgWatermark?>(
+        valueListenable: source,
+        builder: (context, watermark, _) {
+          if (watermark == null) return const SizedBox.shrink();
+          // Keyed by the image: another image starts a new lookup, a change of
+          // options only re-lays out.
+          return _WatermarkImage(
+            key: ValueKey(watermark.imageId),
+            watermark: watermark,
+            resolve: resolve,
+          );
+        },
+      ),
     );
   }
 }
@@ -57,7 +72,11 @@ class _WatermarkImage extends StatefulWidget {
   final EpgWatermark watermark;
   final WatermarkImageResolver resolve;
 
-  const _WatermarkImage({super.key, required this.watermark, required this.resolve});
+  const _WatermarkImage({
+    super.key,
+    required this.watermark,
+    required this.resolve,
+  });
 
   @override
   State<_WatermarkImage> createState() => _WatermarkImageState();
@@ -72,9 +91,13 @@ class _WatermarkImageState extends State<_WatermarkImage> {
     try {
       final result = widget.resolve(widget.watermark);
       if (result is Future<File?>) {
-        unawaited(result.then((f) {
-          if (mounted && f != null) setState(() => _file = f);
-        }).catchError((Object _) {}));
+        unawaited(
+          result
+              .then((f) {
+                if (mounted && f != null) setState(() => _file = f);
+              })
+              .catchError((Object _) {}),
+        );
       } else {
         _file = result;
       }
@@ -88,37 +111,42 @@ class _WatermarkImageState extends State<_WatermarkImage> {
     final file = _file;
     if (file == null) return const SizedBox.shrink();
     final w = widget.watermark;
-    return Positioned.fill(
-      child: IgnorePointer(
-        child: ExcludeSemantics(
-          child: LayoutBuilder(
-            builder: (context, box) {
-              final height = w.heightIn(box.maxHeight);
-              if (!height.isFinite || height <= 0) return const SizedBox.shrink();
-              return Align(
-                key: const Key('watermark-overlay'),
-                alignment: Alignment(w.position.isLeft ? -1 : 1, w.position.isTop ? -1 : 1),
-                child: Padding(
-                  padding: EdgeInsets.all(context.ui(32)),
-                  child: ConstrainedBox(
-                    constraints: BoxConstraints(maxWidth: box.maxWidth * watermarkMaxWidthFraction, maxHeight: height),
-                    child: Opacity(
-                      key: const Key('watermark-opacity'),
-                      opacity: w.opacity,
-                      child: Image.file(
-                        file,
-                        key: const Key('watermark-image'),
-                        height: height,
-                        fit: BoxFit.contain,
-                        gaplessPlayback: true,
-                        errorBuilder: (context, error, stack) => const SizedBox.shrink(),
-                      ),
+    return IgnorePointer(
+      child: ExcludeSemantics(
+        child: LayoutBuilder(
+          builder: (context, box) {
+            final height = w.heightIn(box.maxHeight);
+            if (!height.isFinite || height <= 0) return const SizedBox.shrink();
+            return Align(
+              key: const Key('watermark-overlay'),
+              alignment: Alignment(
+                w.position.isLeft ? -1 : 1,
+                w.position.isTop ? -1 : 1,
+              ),
+              child: Padding(
+                padding: EdgeInsets.all(context.ui(32)),
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    maxWidth: box.maxWidth * watermarkMaxWidthFraction,
+                    maxHeight: height,
+                  ),
+                  child: Opacity(
+                    key: const Key('watermark-opacity'),
+                    opacity: w.opacity,
+                    child: Image.file(
+                      file,
+                      key: const Key('watermark-image'),
+                      height: height,
+                      fit: BoxFit.contain,
+                      gaplessPlayback: true,
+                      errorBuilder: (context, error, stack) =>
+                          const SizedBox.shrink(),
                     ),
                   ),
                 ),
-              );
-            },
-          ),
+              ),
+            );
+          },
         ),
       ),
     );

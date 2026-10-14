@@ -147,6 +147,21 @@ void main() {
       expect(tester.getSize(find.byKey(const Key('watermark-image'))).height, closeTo(100, 0.5));
     });
 
+    testWidgets('with no watermark it does not shrink a Stack of positioned children', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1000, 500));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: Stack(children: [
+            const Positioned.fill(child: ColoredBox(key: Key('behind'), color: Colors.black)),
+            WatermarkOverlay(source: ValueNotifier<EpgWatermark?>(null), resolve: (_) => file),
+            const Positioned.fill(child: ColoredBox(key: Key('front'), color: Colors.transparent)),
+          ]),
+        ),
+      ));
+      expect(tester.getSize(find.byKey(const Key('front'))), const Size(1000, 500));
+    });
+
     testWidgets('going back to none removes it', (tester) async {
       final source = ValueNotifier<EpgWatermark?>(const EpgWatermark(imageId: 'a'));
       await pump(tester, source);
