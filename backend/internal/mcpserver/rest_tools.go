@@ -23,12 +23,13 @@ type (
 	}
 
 	channelArgs struct {
-		ID          string  `json:"id" jsonschema:"the channel to replace"`
-		Number      int     `json:"number" jsonschema:"channel number shown in the guide"`
-		Name        string  `json:"name" jsonschema:"channel display name"`
-		GuideArtURL *string `json:"guide_art_url,omitempty" jsonschema:"guide artwork/logo URL; omitted clears it"`
-		Timezone    string  `json:"timezone,omitempty" jsonschema:"IANA timezone name; UTC when omitted"`
-		ScheduleID  *string `json:"schedule_id,omitempty" jsonschema:"the Schedule the channel airs; omitted clears it. Changing it resets the EPG grid"`
+		ID             string  `json:"id" jsonschema:"the channel to replace"`
+		Number         int     `json:"number" jsonschema:"channel number shown in the guide"`
+		Name           string  `json:"name" jsonschema:"channel display name"`
+		GuideArtURL    *string `json:"guide_art_url,omitempty" jsonschema:"guide artwork/logo URL; omitted clears it"`
+		Timezone       string  `json:"timezone,omitempty" jsonschema:"IANA timezone name; UTC when omitted"`
+		ScheduleID     *string `json:"schedule_id,omitempty" jsonschema:"the Schedule the channel airs; omitted clears it. Changing it resets the EPG grid"`
+		BaseScheduleID *string `json:"base_schedule_id,omitempty" jsonschema:"the base Schedule that plays in every gap schedule_id leaves; omitted clears it. Must differ from schedule_id. Changing it resets the EPG grid"`
 	}
 
 	scheduleArgs struct {
@@ -137,7 +138,7 @@ func registerRESTTools(s *mcp.Server, db storage.DB, mux http.Handler) {
 	// Channels.
 	addREST[idArgs](s, rc, "get_channel", "GET /channels/{id}", "Read one channel.", false)
 	addREST[channelArgs](s, rc, "update_channel", "PUT /channels/{id}",
-		"Replace a channel (a full replace: omitted guide_art_url and schedule_id are cleared). Changing the schedule resets the EPG grid.", false)
+		"Replace a channel (a full replace: omitted guide_art_url, schedule_id and base_schedule_id are cleared). Changing the schedule resets the EPG grid.", false)
 	addREST[idConfirmArgs](s, rc, "delete_channel", "DELETE /channels/{id}",
 		"Delete a channel and its materialized guide.", true)
 	addREST[idArgs](s, rc, "get_channel_epg_warnings", "GET /channels/{id}/epg-warnings",
