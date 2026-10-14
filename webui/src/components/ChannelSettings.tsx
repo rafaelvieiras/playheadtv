@@ -5,7 +5,6 @@ import { toast } from 'sonner'
 
 import { SaveBar } from '@/components/SaveBar'
 import { ScheduleDialog } from '@/components/ScheduleDialog'
-import { WatermarkSection } from '@/components/WatermarkSection'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -21,6 +20,7 @@ import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { channelToInput } from '@/lib/deco'
 import { ApiError, api } from '@/lib/http'
 import type { Channel, ChannelInput, Schedule } from '@/lib/types'
 
@@ -28,24 +28,21 @@ import type { Channel, ChannelInput, Schedule } from '@/lib/types'
 // empty string as an item value.
 const NONE_VALUE = '__none__'
 
-function toInput(channel: Channel): ChannelInput {
-  return {
-    number: channel.number,
-    name: channel.name,
-    guide_art_url: channel.guide_art_url,
-    timezone: channel.timezone,
-    schedule_id: channel.schedule_id,
-    base_schedule_id: channel.base_schedule_id,
-  }
-}
-
 // Settings tab: channel fields and schedule assignment saved through the
 // SaveBar, plus the schedule library (create, rename, delete, which channels
 // use each one). Schedule create/rename/delete are their own requests; only
 // the assignment is part of the channel draft.
-export function ChannelSettings({ channel, channels }: { channel: Channel; channels: Channel[] }) {
+export function ChannelSettings({
+  channel,
+  channels,
+  onGoToDeco,
+}: {
+  channel: Channel
+  channels: Channel[]
+  onGoToDeco: () => void
+}) {
   const queryClient = useQueryClient()
-  const initial = useMemo(() => toInput(channel), [channel])
+  const initial = useMemo(() => channelToInput(channel), [channel])
   const [draft, setDraft] = useState<ChannelInput>(initial)
   const [error, setError] = useState<string | null>(null)
   const dirty = JSON.stringify(draft) !== JSON.stringify(initial)
@@ -194,41 +191,17 @@ export function ChannelSettings({ channel, channels }: { channel: Channel; chann
               </Button>
             </div>
           </Field>
-          <Field>
-            <FieldLabel htmlFor="channel-settings-base-schedule">Base schedule (optional)</FieldLabel>
-            <Select
-              value={draft.base_schedule_id ?? NONE_VALUE}
-              onValueChange={(v) => setDraft((d) => ({ ...d, base_schedule_id: v === NONE_VALUE ? null : v }))}
-            >
-              <SelectTrigger id="channel-settings-base-schedule" className="w-full">
-                <SelectValue placeholder="No base schedule" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={NONE_VALUE}>None</SelectItem>
-                {sortedSchedules
-                  .filter((schedule) => schedule.id !== draft.schedule_id)
-                  .map((schedule) => (
-                    <SelectItem key={schedule.id} value={schedule.id}>
-                      {schedule.name}
-                    </SelectItem>
-                  ))}
-              </SelectContent>
-            </Select>
-            <p className="text-sm text-muted-foreground" data-testid="base-schedule-help">
-              Plays in every gap the schedule above leaves, with its own breaks, instead of filler clips.
-            </p>
-            {draft.base_schedule_id && (
-              <p className="text-sm text-muted-foreground" data-testid="base-schedule-continuous-note">
-                With a base schedule set, a continuous item in the schedule above no longer fills the gaps; the base
-                schedule does.
-              </p>
-            )}
-          </Field>
         </FieldGroup>
         <SaveBar dirty={dirty} saving={saveMutation.isPending} onSave={save} onDiscard={discard} error={error} />
       </section>
 
-      <WatermarkSection ownerType="channel" ownerId={channel.id} />
+      <p className="text-sm text-muted-foreground" data-testid="settings-deco-pointer">
+        Base schedule, watermark and fallback filler live in the{' '}
+        <button type="button" className="underline" data-testid="settings-deco-link" onClick={onGoToDeco}>
+          Deco
+        </button>{' '}
+        tab.
+      </p>
 
       <section className="flex flex-col gap-2" data-testid="schedule-library">
         <h2 className="text-sm font-medium">Schedules</h2>

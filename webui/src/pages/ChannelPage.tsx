@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query'
 import { useParams, useSearchParams } from 'react-router-dom'
 
 import { ChannelGuide } from '@/components/ChannelGuide'
+import { ChannelDeco } from '@/components/ChannelDeco'
 import { ChannelFillerRules } from '@/components/ChannelFillerRules'
 import { ChannelProgramming } from '@/components/ChannelProgramming'
 import { ChannelSettings } from '@/components/ChannelSettings'
@@ -13,7 +14,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { api } from '@/lib/http'
 import type { Channel } from '@/lib/types'
 
-const TABS = ['programming', 'fillers', 'guide', 'settings'] as const
+const TABS = ['programming', 'fillers', 'guide', 'deco', 'settings'] as const
 type TabName = (typeof TABS)[number]
 
 // The authoring hub of one channel. Panels stay mounted (hidden when
@@ -59,6 +60,7 @@ export function ChannelPage() {
             <TabsTrigger value="programming">Programming</TabsTrigger>
             <TabsTrigger value="fillers">Fillers</TabsTrigger>
             <TabsTrigger value="guide">Guide</TabsTrigger>
+            <TabsTrigger value="deco">Deco</TabsTrigger>
             <TabsTrigger value="settings">Settings</TabsTrigger>
           </TabsList>
           <TabsContent value="programming" forceMount className={hidden}>
@@ -70,9 +72,18 @@ export function ChannelPage() {
           <TabsContent value="guide" forceMount className={hidden}>
             <ChannelGuide channel={channel} active={tab === 'guide'} />
           </TabsContent>
+          <TabsContent value="deco" forceMount className={hidden}>
+            {/* Remounted after a channel save so the base schedule draft resets. */}
+            <ChannelDeco key={`${channel.id}-${channel.updated_at}`} channel={channel} />
+          </TabsContent>
           <TabsContent value="settings" forceMount className={hidden}>
             {/* Remounted after a save (updated_at changes) so the draft resets. */}
-            <ChannelSettings key={`${channel.id}-${channel.updated_at}`} channel={channel} channels={channels ?? []} />
+            <ChannelSettings
+              key={`${channel.id}-${channel.updated_at}`}
+              channel={channel}
+              channels={channels ?? []}
+              onGoToDeco={() => setTab('deco')}
+            />
           </TabsContent>
         </Tabs>
       )}
