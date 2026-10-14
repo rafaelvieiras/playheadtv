@@ -255,9 +255,14 @@ class BackendFixture {
   /// the next one's start_at materialize a real interior EPG gap (no filler
   /// rule configured by these tests to fill it) — see epg_gap_test.dart
   /// (issue #9).
+  ///
+  /// With [asBase] the schedule is assigned as the channel's base schedule
+  /// (`base_schedule_id`) instead of its pinned one; the other of the two is
+  /// kept as it is.
   Future<void> createScheduleWithItems({
     required String channelId,
     required List<({String blockId, DateTime startAt})> items,
+    bool asBase = false,
   }) async {
     final scheduleResp = await _postJson('/schedules', {
       'name': 'Schedule ${DateTime.now().microsecondsSinceEpoch}',
@@ -276,7 +281,8 @@ class BackendFixture {
       'name': ch['name'],
       'guide_art_url': ch['guide_art_url'],
       'timezone': ch['timezone'],
-      'schedule_id': scheduleId,
+      'schedule_id': asBase ? ch['schedule_id'] : scheduleId,
+      'base_schedule_id': asBase ? scheduleId : ch['base_schedule_id'],
     });
   }
 
