@@ -78,7 +78,7 @@ func (in channelInput) shortestProgram(blockID string) int64 {
 func (in channelInput) fillerRatioWarnings() []Warning {
 	var out []Warning
 	seen := map[string]bool{}
-	for _, si := range in.ScheduleItems {
+	for _, si := range append(append([]domain.ScheduleItem(nil), in.ScheduleItems...), in.BaseScheduleItems...) {
 		endless := si.Recurrence == domain.RecurrenceContinuous || in.DynamicBlockIDs[si.BlockID]
 		if !endless || seen[si.BlockID] {
 			continue

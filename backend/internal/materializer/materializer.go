@@ -336,8 +336,23 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		}
 	}
 
-	blockIDs := make(map[string]struct{}, len(scheduleItems))
+	// The base schedule's blocks load next to the pinned ones: its items are
+	// expanded by the same code, in a layer under the pinned one.
+	var baseItems []domain.ScheduleItem
+	if ch.BaseScheduleID != nil {
+		if err := m.db.Query(ctx, &baseItems,
+			"SELECT "+scheduleItemColumns+" FROM schedule_item WHERE tenant_id = ? AND schedule_id = ? AND active = 1",
+			tenantID, *ch.BaseScheduleID,
+		); err != nil {
+			return channelInput{}, fmt.Errorf("list base schedule items: %w", err)
+		}
+	}
+
+	blockIDs := make(map[string]struct{}, len(scheduleItems)+len(baseItems))
 	for _, si := range scheduleItems {
+		blockIDs[si.BlockID] = struct{}{}
+	}
+	for _, si := range baseItems {
 		blockIDs[si.BlockID] = struct{}{}
 	}
 
@@ -524,23 +539,25 @@ func (m *Materializer) loadChannelInput(ctx context.Context, ch domain.Channel, 
 		return channelInput{}, err
 	}
 
-	warnings = append(warnings, repeatWarnings(scheduleItems, blockItems, repeatBlockIDs, catalogDuration, runs, warnings)...)
+	warnings = append(warnings, repeatWarnings(append(append([]domain.ScheduleItem(nil), scheduleItems...), baseItems...), blockItems, repeatBlockIDs, catalogDuration, runs, warnings)...)
 
 	in := channelInput{
-		RepeatBlockIDs:  repeatBlockIDs,
-		Series:          runs,
-		ChannelID:       ch.ID,
-		TenantID:        tenantID,
-		Timezone:        ch.Timezone,
-		ScheduleItems:   scheduleItems,
-		BlockItems:      blockItems,
-		FillerRules:     fillerRules,
-		BreakTemplates:  breakTemplates,
-		PoolItems:       poolItems,
-		CatalogDuration: catalogDuration,
-		CutPlanner:      m.cutsForPass(ctx, tenantID),
-		DynamicBlockIDs: dynamicBlockIDs,
-		Warnings:        warnings,
+		RepeatBlockIDs:    repeatBlockIDs,
+		Series:            runs,
+		ChannelID:         ch.ID,
+		TenantID:          tenantID,
+		Timezone:          ch.Timezone,
+		ScheduleItems:     scheduleItems,
+		HasBase:           ch.BaseScheduleID != nil,
+		BaseScheduleItems: baseItems,
+		BlockItems:        blockItems,
+		FillerRules:       fillerRules,
+		BreakTemplates:    breakTemplates,
+		PoolItems:         poolItems,
+		CatalogDuration:   catalogDuration,
+		CutPlanner:        m.cutsForPass(ctx, tenantID),
+		DynamicBlockIDs:   dynamicBlockIDs,
+		Warnings:          warnings,
 	}
 	in.Warnings = append(in.Warnings, in.fillerRatioWarnings()...)
 	return in, nil
@@ -574,7 +591,13 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 	continuousVisitDone := 0
 	continuousStage := stageFresh
 	var continuousID, continuousBlockID string
-	for _, si := range scheduleItems {
+	// The continuous item whose rotation is persisted is the one that airs in
+	// the gaps: the base schedule's when the channel has one.
+	continuousSource := scheduleItems
+	if in.HasBase {
+		continuousSource = in.BaseScheduleItems
+	}
+	for _, si := range continuousSource {
 		if si.Recurrence == domain.RecurrenceContinuous {
 			continuousID = si.ID
 			continuousBlockID = si.BlockID
