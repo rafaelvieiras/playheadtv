@@ -33,6 +33,7 @@ const emptyForm: ChannelInput = {
   guide_art_url: null,
   timezone: 'UTC',
   schedule_id: null,
+  base_schedule_id: null,
 }
 
 export function ChannelDialog({ open, onOpenChange }: ChannelDialogProps) {
