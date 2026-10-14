@@ -147,7 +147,7 @@ void main() {
 
     Future<void> openTrackSelector(WidgetTester tester) async {
       await showOsd(tester);
-      await pressKey(tester, LogicalKeyboardKey.arrowRight); // first arrow after Select enters OSD focus mode (audio button)
+      await pressKey(tester, LogicalKeyboardKey.arrowLeft); // first arrow after Select enters OSD focus mode and is applied as a move; Left stays on the first control (audio), Right would reach the dimmer
       await tester.pump();
       await pressKey(tester, LogicalKeyboardKey.enter); // activate the focused audio button
       await tester.pump();
