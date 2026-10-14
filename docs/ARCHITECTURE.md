@@ -891,6 +891,107 @@ schedule" select next to the schedule one; the MCP tools are
 `update_channel`. The client reads only the materialized guide, where base
 entries are ordinary `program`/`preroll`/... entries, so it needs no change.
 
+### Watermark (migration `0025`)
+
+A channel and a block may each carry a watermark: a small image the client
+draws over the player. It is a client-rendered overlay (the backend never
+transcodes), so a watermark is configuration the backend stores and resolves
+and the client paints.
+
+**Settings.** One `watermark` row per owner (`owner_type` channel or block;
+no row means the default of the level). Every owner has a `mode`:
+
+- `inherit`: a block uses its channel's watermark; for a channel it means none.
+- `disable`: no watermark. For a block, none while its programs, and the filler
+  that decorates them, are on air.
+- `override`: the owner's own image and options.
+
+A channel is therefore "on" only in `override` with an image; the web UI shows
+it as Off/On. Options (same at both levels): `position` (`top_left`,
+`top_right`, `bottom_left`, `bottom_right`; default `bottom_right`),
+`opacity_pct` (0-100; default 70) and `size_pct` (percent of the player's
+height, 2-40; default 8; the image keeps its aspect ratio and is never wider
+than 40% of the width).
+
+**Image.** Uploaded by the web UI or the MCP tool, inside the JSON body as
+base64 (`image_base64`), PNG, JPEG or WebP only, at most 1 MiB decoded. The
+type is decided by sniffing the bytes (`http.DetectContentType`), never by an
+extension or a declared type, so an SVG (a document that can carry script) or
+anything else is rejected (`415`, too large `413`). The bytes are stored in
+the database. Every upload gets a fresh `image_id`, the immutable identity of
+the bytes and of their URL, `GET /watermarks/{image_id}/image`, served with its
+content type, `Cache-Control: private, max-age=31536000, immutable`, an `ETag`,
+`nosniff` and a `default-src 'none'; sandbox` CSP. A device token may read it
+(like `/epg` and `/channels`). Deleting a channel or a block deletes its row
+and with it the image; `DELETE .../watermark` clears one explicitly.
+
+**Resolution (per guide entry, in the backend).** `GET /epg` and the
+epg-preview carry on each entry that has one a `watermark` object
+`{image_id, position, opacity_pct, size_pct}`, omitted when none applies (so a
+guide with no watermark configured is byte-identical to before). The entry's
+block is that of the schedule item that produced it
+(`epg_entry.source_schedule_item_id`):
+
+1. a block in `override` with an image: its own;
+2. a block in `disable`: none;
+3. a block in `inherit` (or with no row), and an entry with no schedule item
+   (a channel fallback): the channel's, if it is on.
+
+Filler (preroll, midroll, postroll, tail) carries the source schedule item of
+the program it decorates, so it follows that block whatever the scope of its
+filler rule; only an entry with no source (a channel fallback in a gap) takes
+the channel's directly. A block `override` with no image yet resolves to none.
+A grouped tail carries the watermark of its first clip. The base schedule's
+entries are ordinary entries of the base schedule's own items, so they resolve
+by their block like any other.
+
+**Why per entry, not a channel plus block table.** The client already holds
+exactly the on-air entry and reads only the guide; resolving server-side
+keeps the rule in one place, adds one optional object to an array it already
+downloads, needs no second request and no new cache table, and the entry
+JSON in the offline cache simply carries it (`scheduleCacheSchemaVersion` is
+3). The cost is a little repeated JSON per entry, small next to the titles
+and art tags.
+
+**Compatibility.** The `watermark` field is optional on every entry. An older
+client ignores it; a newer client against an older backend sees none and draws
+nothing. Neither can fail, so `buildinfo.APIVersion` is not bumped.
+
+**Client.** `WatermarkOverlay` (`client/lib/widgets/watermark_overlay.dart`)
+is a child of the player's `Stack` above the video and below the loading
+spinner, the OSD, the EPG and the dimmer. It listens to the player's
+`_watermarkNotifier`, a `ValueNotifier` set from the on-air entry's
+`program.watermark` wherever `_currentIndex` takes a value
+(`_syncWatermark`), never `setState`, so a program change never rebuilds the
+video widgets. It is pointer-transparent and never focusable, so no 6-button
+flow is affected. Its margin is scaled with `UiScale` (`context.ui`) and its
+size is relative to the player's height. It is not shown on the gap slate
+(the notifier is cleared when a hold starts), not while a channel loads
+(cleared on a channel switch) and not on the mosaic previews (the mosaic does
+not use the widget). The image comes from the art cache, keyed by its URL: the
+syncer prefetches the images of the cached entries (with the device token, a
+few small files) after each refresh, and the overlay falls back to one
+download when it is not on disk; a failed download, a missing image or an
+undecodable file means no watermark, never an error. A settings change reaches
+the player with the next guide refresh; a refresh that leaves the on-air
+program in place does not redraw it, so the new settings show from the next
+program on.
+
+**Authoring.** Channel Settings tab: a "Watermark" section (Off/On, then image,
+corner, opacity and size only when On). Block editor: a "Watermark" select
+(Inherit the channel's / No watermark / Use its own) that reveals the same
+controls only for "Use its own". Each section saves with its own button. MCP:
+`get_channel_watermark`, `set_channel_watermark`, `clear_channel_watermark` and
+the same three for a block (`get_block_watermark`, ...); the image goes in
+`image_base64`. The watermark is deliberately its own resource, not fields of
+`PUT /channels/{id}` and `PUT /blocks/{id}` (full replaces that would clear it
+on every unrelated edit and carry a multi-hundred-KiB body).
+
+Known limits: one watermark image per owner (no per-program, no animated
+image); the size is relative to the player area, not to the letterboxed
+picture inside it; changing a watermark does not reset the grid, so it takes
+effect at the next guide refresh and program change.
+
 ### Block tail and the fill cascade (migration `0017`)
 
 What a slot (a timed occurrence, or the continuous item's stretch before the
@@ -1377,7 +1478,8 @@ the proposal" produces a collection.
     are built from), `item_kind` (the catalog kind, not the entry `kind`),
     `title`, `series_title`, `season_number`, `episode_number`,
     `episode_number_end`, `series_external_id`, `duration_ms` (the item's own
-    length; `end_at - start_at` is what is scheduled) and the image tags
+    length; `end_at - start_at` is what is scheduled), `watermark` (the
+    resolved watermark, see "Watermark") and the image tags
     `image_primary_tag`, `image_backdrop_tag`, `image_thumb_tag`,
     `series_image_primary_tag`. The backend never serves images: a client
     builds `<media server>/Items/<external_id or series_external_id>/Images/

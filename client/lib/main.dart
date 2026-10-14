@@ -60,6 +60,8 @@ import 'widgets/debug_overlay.dart';
 import 'widgets/track_selector_overlay.dart';
 import 'widgets/dimmer_overlay.dart';
 import 'widgets/dimmer_level_dialog.dart';
+import 'widgets/watermark_overlay.dart';
+import 'watermark.dart';
 
 // AppConfig: in production, every field below is just the --dart-define of the
 // same name (a compile-time constant). The integration tests
@@ -664,6 +666,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // same isolated ValueNotifier pattern as above, for the same GL-texture
   // reason. See widgets/track_selector_overlay.dart.
   final ValueNotifier<bool> _trackPickerOpenNotifier = ValueNotifier(false);
+
+  // The watermark of the entry on air (null: none, also on the gap slate and
+  // while a channel loads). Same isolated ValueNotifier pattern as above: it
+  // changes with the on-air entry and never rebuilds the video widgets.
+  final ValueNotifier<EpgWatermark?> _watermarkNotifier = ValueNotifier(null);
   final GlobalKey<TrackSelectorOverlayState> _trackSelectorKey = GlobalKey<TrackSelectorOverlayState>();
 
   // The Enter KeyDownEvent that OPENS the EPG is handled outside the overlay
@@ -925,6 +932,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     if (staleA != null) unawaited(disposeController(staleA));
     if (staleB != null) unawaited(disposeController(staleB));
     _osdVisibleNotifier.value = false;
+    _watermarkNotifier.value = null;
     setState(() {
       _channelIndex = targetIndex;
       _controllerA = null;
@@ -1292,6 +1300,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _headIndex = 0;
       _status = 'playing: ${entry.label}';
     });
+    _syncWatermark();
     _showOsd();
     // If we joined in the middle of the program (initialSeek > 0), only
     // clipDuration - initialSeek of real playback remains — scheduling by the
@@ -1569,6 +1578,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _headIndex = nextIndex;
       _status = 'playing: ${nextEntry.label}';
     });
+    _syncWatermark();
     // The OSD announces programs: a filler of the same program, or one more
     // 10-second clip inside a tail, is not an announcement.
     if (_osdSubjectAt(nextIndex)?.key != previousKey) _showOsd();
@@ -1727,6 +1737,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       }
       _status = 'HOLD — next program starts shortly';
     });
+    // The slate carries no watermark.
+    _watermarkNotifier.value = null;
     await _rampCrossfade(outgoing: outgoing, incoming: slate, generation: generation);
     if (generation != _loadGeneration) {
       unawaited(disposeController(pending));
@@ -1763,6 +1775,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         _headIndex = nextIndex;
         _status = 'playing: ${nextEntry.label}';
       });
+      _syncWatermark();
       if (_osdSubjectAt(nextIndex)?.key != previousKey) _showOsd();
       _scheduleTransitions(nextIndex, remaining: nextEntry.clipDuration - onAir, generation: generation);
       unawaited(_maybeExtendGrid(nextIndex, generation));
@@ -1810,6 +1823,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _headIndex = index;
       _status = 'playing: ${entry.label}';
     });
+    _syncWatermark();
     _showOsd();
     _scheduleTransitions(index, generation: generation);
     unawaited(_maybeExtendGrid(index, generation));
@@ -2310,6 +2324,14 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   }
 
   // Whether a channel is on air (the real OSD exists); false while it loads.
+  /// Points the watermark overlay at the entry on air (`_currentIndex`): its
+  /// own resolved watermark, or none. Called wherever `_currentIndex` takes a
+  /// new value; touches only the notifier, never `setState`.
+  void _syncWatermark() {
+    final i = _currentIndex;
+    _watermarkNotifier.value = (i >= 0 && i < channel.length) ? channel[i].program?.watermark : null;
+  }
+
   bool get _channelLoaded => channel.isNotEmpty && _currentIndex >= 0 && _currentIndex < channel.length;
 
   void _openEpgFromOsd() {
@@ -2389,6 +2411,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _epgOpenNotifier.dispose();
     _debugOverlayVisibleNotifier.dispose();
     _trackPickerOpenNotifier.dispose();
+    _watermarkNotifier.dispose();
     _gapRetryTimer?.cancel();
     _gapHoldTimer?.cancel();
     _preloadTimer?.cancel();
@@ -2666,6 +2689,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                 ],
               ),
             ),
+            // The channel watermark: above the video, below the OSD, the EPG and
+            // the dimmer (children after this one); pointer-transparent and
+            // never focusable.
+            WatermarkOverlay(source: _watermarkNotifier),
             // Loading a channel (boot or switch): a spinner in the middle of the
             // screen until playback starts. Errors keep the plain status card.
             if (!hasContent && !_status.startsWith('ERROR') && !_status.startsWith('HOLD'))
