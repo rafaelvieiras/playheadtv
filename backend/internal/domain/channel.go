@@ -17,8 +17,16 @@ type Channel struct {
 	// independently. Nil for a channel with no schedule (e.g. one relying
 	// only on a channel-scoped fallback filler rule).
 	ScheduleID *string `json:"schedule_id"`
-	CreatedAt  int64   `json:"created_at"`
-	UpdatedAt  int64   `json:"updated_at"`
+	// BaseScheduleID is an optional second Schedule that plays real
+	// programming (its own blocks and its own preroll/midroll/postroll/tail
+	// filler) in every gap the pinned ScheduleID leaves uncovered, in place of
+	// the continuous item and plain fallback filler. It is resolved as if it
+	// ran all the time underneath the pinned layer: a pinned occurrence only
+	// covers it, and the base continues at the position it would have had
+	// anyway. It can not be the same Schedule as ScheduleID.
+	BaseScheduleID *string `json:"base_schedule_id"`
+	CreatedAt      int64   `json:"created_at"`
+	UpdatedAt      int64   `json:"updated_at"`
 }
 
 // Block is a reusable programming template (e.g. "Sitcom Night"): an ordered

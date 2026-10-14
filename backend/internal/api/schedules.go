@@ -157,7 +157,7 @@ func deleteSchedule(db storage.DB, mat *materializer.Materializer) http.HandlerF
 		// violate the FK — surfaced as a normal handleDBError, same as any
 		// other in-use-reference delete in this codebase.
 		var users []string
-		if err := db.Query(r.Context(), &users, "SELECT id FROM channel WHERE tenant_id = ? AND schedule_id = ?", DefaultTenantID, id); err != nil {
+		if err := db.Query(r.Context(), &users, "SELECT id FROM channel WHERE tenant_id = ? AND (schedule_id = ? OR base_schedule_id = ?)", DefaultTenantID, id, id); err != nil {
 			handleDBError(w, err)
 			return
 		}

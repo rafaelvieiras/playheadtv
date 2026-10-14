@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"time"
 
@@ -22,7 +24,7 @@ func registerChannels(mux Router, db storage.DB, mat *materializer.Materializer)
 	mux.HandleFunc("POST /channels/{id}/reset-epg", resetChannelEPG(db, mat))
 }
 
-const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, schedule_id, created_at, updated_at"
+const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, schedule_id, base_schedule_id, created_at, updated_at"
 
 type channelRequest struct {
 	Number      int     `json:"number"`
@@ -32,6 +34,30 @@ type channelRequest struct {
 	// ScheduleID assigns a Schedule to this channel (issue #7); nil/omitted
 	// means no schedule (e.g. a pure dynamic-filler-pool channel).
 	ScheduleID *string `json:"schedule_id"`
+	// BaseScheduleID is the optional second Schedule that plays real
+	// programming in every gap ScheduleID leaves (see
+	// domain.Channel.BaseScheduleID). It must differ from ScheduleID.
+	BaseScheduleID *string `json:"base_schedule_id"`
+}
+
+// ValidateChannelSchedules checks a channel's two schedule references: the
+// base schedule must exist for the tenant and must not be the pinned one.
+// The message of the returned error is meant for the client.
+func ValidateChannelSchedules(ctx context.Context, db storage.DB, scheduleID, baseScheduleID *string) error {
+	if baseScheduleID == nil {
+		return nil
+	}
+	if scheduleID != nil && *scheduleID == *baseScheduleID {
+		return errors.New("base_schedule_id must be a different schedule than schedule_id")
+	}
+	var ids []string
+	if err := db.Query(ctx, &ids, "SELECT id FROM schedule WHERE tenant_id = ? AND id = ?", DefaultTenantID, *baseScheduleID); err != nil {
+		return err
+	}
+	if len(ids) == 0 {
+		return errors.New("base_schedule_id does not reference an existing schedule")
+	}
+	return nil
 }
 
 func fetchChannel(db storage.DB, r *http.Request, id string) (domain.Channel, error) {
@@ -57,29 +83,34 @@ func createChannel(db storage.DB, mat *materializer.Materializer) http.HandlerFu
 		if req.Timezone == "" {
 			req.Timezone = "UTC"
 		}
+		if err := ValidateChannelSchedules(r.Context(), db, req.ScheduleID, req.BaseScheduleID); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 
 		now := time.Now().UnixMilli()
 		ch := domain.Channel{
-			ID:          uuid.NewString(),
-			TenantID:    DefaultTenantID,
-			Number:      req.Number,
-			Name:        req.Name,
-			GuideArtURL: req.GuideArtURL,
-			Timezone:    req.Timezone,
-			ScheduleID:  req.ScheduleID,
-			CreatedAt:   now,
-			UpdatedAt:   now,
+			ID:             uuid.NewString(),
+			TenantID:       DefaultTenantID,
+			Number:         req.Number,
+			Name:           req.Name,
+			GuideArtURL:    req.GuideArtURL,
+			Timezone:       req.Timezone,
+			ScheduleID:     req.ScheduleID,
+			BaseScheduleID: req.BaseScheduleID,
+			CreatedAt:      now,
+			UpdatedAt:      now,
 		}
 		err := db.Exec(r.Context(),
-			`INSERT INTO channel (id, tenant_id, number, name, guide_art_url, timezone, schedule_id, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			ch.ID, ch.TenantID, ch.Number, ch.Name, ch.GuideArtURL, ch.Timezone, ch.ScheduleID, ch.CreatedAt, ch.UpdatedAt,
+			`INSERT INTO channel (id, tenant_id, number, name, guide_art_url, timezone, schedule_id, base_schedule_id, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ch.ID, ch.TenantID, ch.Number, ch.Name, ch.GuideArtURL, ch.Timezone, ch.ScheduleID, ch.BaseScheduleID, ch.CreatedAt, ch.UpdatedAt,
 		)
 		if err != nil {
 			handleDBError(w, err)
 			return
 		}
-		if ch.ScheduleID != nil {
+		if ch.ScheduleID != nil || ch.BaseScheduleID != nil {
 			mat.ResetAfterChannelEdit(r.Context(), DefaultTenantID, ch)
 		}
 		writeJSON(w, http.StatusCreated, ch)
@@ -133,11 +164,15 @@ func updateChannel(db storage.DB, mat *materializer.Materializer) http.HandlerFu
 		if req.Timezone == "" {
 			req.Timezone = "UTC"
 		}
+		if err := ValidateChannelSchedules(r.Context(), db, req.ScheduleID, req.BaseScheduleID); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 
 		err = db.Exec(r.Context(),
-			`UPDATE channel SET number = ?, name = ?, guide_art_url = ?, timezone = ?, schedule_id = ?, updated_at = ?
+			`UPDATE channel SET number = ?, name = ?, guide_art_url = ?, timezone = ?, schedule_id = ?, base_schedule_id = ?, updated_at = ?
 			 WHERE tenant_id = ? AND id = ?`,
-			req.Number, req.Name, req.GuideArtURL, req.Timezone, req.ScheduleID, time.Now().UnixMilli(), DefaultTenantID, id,
+			req.Number, req.Name, req.GuideArtURL, req.Timezone, req.ScheduleID, req.BaseScheduleID, time.Now().UnixMilli(), DefaultTenantID, id,
 		)
 		if err != nil {
 			handleDBError(w, err)
@@ -154,8 +189,8 @@ func updateChannel(db storage.DB, mat *materializer.Materializer) http.HandlerFu
 		// or swapped) needs a regeneration; comparing before/after avoids
 		// triggering one on every unrelated field edit (e.g. renaming a
 		// channel that has no schedule at all).
-		scheduleChanged := (before.ScheduleID == nil) != (ch.ScheduleID == nil) ||
-			(before.ScheduleID != nil && ch.ScheduleID != nil && *before.ScheduleID != *ch.ScheduleID)
+		scheduleChanged := !sameStringPtr(before.ScheduleID, ch.ScheduleID) ||
+			!sameStringPtr(before.BaseScheduleID, ch.BaseScheduleID)
 		if scheduleChanged {
 			mat.ResetAfterChannelEdit(r.Context(), DefaultTenantID, ch)
 		}
@@ -195,4 +230,11 @@ func resetChannelEPG(db storage.DB, mat *materializer.Materializer) http.Handler
 		}
 		w.WriteHeader(http.StatusNoContent)
 	}
+}
+
+func sameStringPtr(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return *a == *b
 }

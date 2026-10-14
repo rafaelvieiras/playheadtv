@@ -6,6 +6,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/api"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
@@ -13,7 +14,7 @@ import (
 
 // channelColumns mirrors internal/api/channels.go's channelColumns constant
 // — duplicated rather than imported, see mcpserver.go's package comment.
-const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, schedule_id, created_at, updated_at"
+const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, schedule_id, base_schedule_id, created_at, updated_at"
 
 func registerChannelTools(s *mcp.Server, db storage.DB, mat *materializer.Materializer) {
 	mcp.AddTool(s, &mcp.Tool{
@@ -33,6 +34,16 @@ func registerChannelTools(s *mcp.Server, db storage.DB, mat *materializer.Materi
 			"what that channel airs — issue #7's Schedule/Playout split. Resets the channel's EPG grid immediately (same as reset-epg). " +
 			"Mirrors the schedule_id field of PUT /channels/{id}.",
 	}, assignChannelScheduleHandler(db, mat))
+
+	mcp.AddTool(s, &mcp.Tool{
+		Name: "assign_channel_base_schedule",
+		Description: "Assign a base Schedule to a channel (or clear it, by omitting base_schedule_id). The base " +
+			"schedule plays its own programming, with its own preroll/midroll/postroll/tail filler, in every gap the " +
+			"channel's pinned schedule (assign_channel_schedule) leaves uncovered, instead of the continuous item and plain " +
+			"fallback filler; a pinned occurrence always wins and the base continues at the position it would have had anyway. " +
+			"It must be a different schedule than the pinned one. Resets the channel's EPG grid immediately. " +
+			"Mirrors the base_schedule_id field of PUT /channels/{id}.",
+	}, assignChannelBaseScheduleHandler(db, mat))
 }
 
 type createChannelInput struct {
@@ -105,11 +116,59 @@ func assignChannelScheduleHandler(db storage.DB, mat *materializer.Materializer)
 		if in.ChannelID == "" {
 			return nil, domain.Channel{}, errors.New("channel_id is required")
 		}
+		var current domain.Channel
+		if err := db.Query(ctx, &current,
+			"SELECT "+channelColumns+" FROM channel WHERE tenant_id = ? AND id = ?",
+			defaultTenantID, in.ChannelID,
+		); err != nil {
+			return nil, domain.Channel{}, err
+		}
+		if err := api.ValidateChannelSchedules(ctx, db, in.ScheduleID, current.BaseScheduleID); err != nil {
+			return nil, domain.Channel{}, err
+		}
 		err := db.Exec(ctx,
 			"UPDATE channel SET schedule_id = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
 			in.ScheduleID, nowMillis(), defaultTenantID, in.ChannelID,
 		)
 		if err != nil {
+			return nil, domain.Channel{}, err
+		}
+		var ch domain.Channel
+		if err := db.Query(ctx, &ch,
+			"SELECT "+channelColumns+" FROM channel WHERE tenant_id = ? AND id = ?",
+			defaultTenantID, in.ChannelID,
+		); err != nil {
+			return nil, domain.Channel{}, err
+		}
+		mat.ResetAfterChannelEdit(ctx, defaultTenantID, ch)
+		return nil, ch, nil
+	}
+}
+
+type assignChannelBaseScheduleInput struct {
+	ChannelID      string  `json:"channel_id" jsonschema:"the channel to assign a base Schedule to"`
+	BaseScheduleID *string `json:"base_schedule_id,omitempty" jsonschema:"the Schedule to use as the base layer; omit/null to clear it. Must differ from the channel's pinned schedule"`
+}
+
+func assignChannelBaseScheduleHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[assignChannelBaseScheduleInput, domain.Channel] {
+	return func(ctx context.Context, _ *mcp.CallToolRequest, in assignChannelBaseScheduleInput) (*mcp.CallToolResult, domain.Channel, error) {
+		if in.ChannelID == "" {
+			return nil, domain.Channel{}, errors.New("channel_id is required")
+		}
+		var current domain.Channel
+		if err := db.Query(ctx, &current,
+			"SELECT "+channelColumns+" FROM channel WHERE tenant_id = ? AND id = ?",
+			defaultTenantID, in.ChannelID,
+		); err != nil {
+			return nil, domain.Channel{}, err
+		}
+		if err := api.ValidateChannelSchedules(ctx, db, current.ScheduleID, in.BaseScheduleID); err != nil {
+			return nil, domain.Channel{}, err
+		}
+		if err := db.Exec(ctx,
+			"UPDATE channel SET base_schedule_id = ?, updated_at = ? WHERE tenant_id = ? AND id = ?",
+			in.BaseScheduleID, nowMillis(), defaultTenantID, in.ChannelID,
+		); err != nil {
 			return nil, domain.Channel{}, err
 		}
 		var ch domain.Channel
