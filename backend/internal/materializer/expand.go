@@ -25,15 +25,24 @@ type channelInput struct {
 	// Warnings are the configuration problems the loader met (see Warning).
 	Warnings []Warning
 
-	ChannelID       string
-	TenantID        string
-	Timezone        string // IANA name; see domain.Channel.Timezone
-	ScheduleItems   []domain.ScheduleItem
-	BlockItems      map[string][]domain.BlockItem      // blockID -> ordered by position
-	FillerRules     []domain.FillerRule                // every rule scoped to this channel or one of its blocks
-	BreakTemplates  []domain.BreakTemplate             // every break template scoped to this channel or one of its blocks, steps in order
-	PoolItems       map[string][]domain.FillerPoolItem // filler_pool_id -> ordered by rowid (insertion order)
-	CatalogDuration map[string]int64                   // catalog_item_id -> duration_ms
+	ChannelID     string
+	TenantID      string
+	Timezone      string // IANA name; see domain.Channel.Timezone
+	ScheduleItems []domain.ScheduleItem
+	// HasBase is set when the channel references a base schedule (see
+	// domain.Channel.BaseScheduleID), whose active items are
+	// BaseScheduleItems. The base layer is expanded as if it ran all the time
+	// underneath ScheduleItems, and the gaps the pinned layer leaves are
+	// filled from it (see baseGapFiller) instead of by the continuous item
+	// and the fallback rule alone; a pinned schedule's own continuous item
+	// does not air then, the base schedule owns those gaps.
+	HasBase           bool
+	BaseScheduleItems []domain.ScheduleItem
+	BlockItems        map[string][]domain.BlockItem      // blockID -> ordered by position
+	FillerRules       []domain.FillerRule                // every rule scoped to this channel or one of its blocks
+	BreakTemplates    []domain.BreakTemplate             // every break template scoped to this channel or one of its blocks, steps in order
+	PoolItems         map[string][]domain.FillerPoolItem // filler_pool_id -> ordered by rowid (insertion order)
+	CatalogDuration   map[string]int64                   // catalog_item_id -> duration_ms
 	// CutPlanner decides where a program is cut into segments (cuts.go); nil
 	// never cuts.
 	CutPlanner      CutPlanner
@@ -908,6 +917,90 @@ func fillLoopingBlock(
 // ending before now); the caller (materializer.go) is responsible for
 // discarding those before writing to epg_entry.
 func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *selectionState) []domain.EpgEntry {
+	entries := expandLayer(in, now, scanFrom, windowEnd, state)
+
+	if !in.KeptUntil.IsZero() {
+		keptMs := in.KeptUntil.UnixMilli()
+		kept := entries[:0]
+		for _, e := range entries {
+			if e.StartAt >= keptMs {
+				kept = append(kept, e)
+			}
+		}
+		entries = kept
+	}
+
+	return entries
+}
+
+// baseGapFiller returns the function the pinned layer calls for a span no
+// pinned occurrence claims: it lays the base layer's entries of that span down
+// and hands what the base does not cover to fill (the channel's fallback
+// rule). base is the base layer expanded over the whole window as if it ran
+// all the time, so what airs at an instant is what the base would have aired
+// there anyway, whatever the pinned layer did before:
+//
+//   - entries inside the span are kept as they are;
+//   - a program that began before the span (a pinned occurrence covered its
+//     beginning) continues from where it is: the entry starts with the span
+//     and seeks into the file (ItemOffsetMs);
+//   - when boundary is true, the span ends at a pinned occurrence that must
+//     start on time, so a program running past it is cut at the span's end
+//     (the entry is shorter than the item, like a segment of a split item) and
+//     anything else running past it is dropped;
+//   - a program with less than unfilledSlotMin of it left in the span is not
+//     worth a cut and is dropped, like every other kind of entry (preroll,
+//     midroll, postroll, tail, fallback) that is not wholly inside the span.
+//
+// What these drops leave empty goes to fill, which only lays down whole
+// fillers that fit.
+func baseGapFiller(base []domain.EpgEntry, emit func(domain.EpgEntry), fill func(from, to time.Time)) func(from, to time.Time, boundary bool) {
+	sorted := append([]domain.EpgEntry(nil), base...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].StartAt < sorted[j].StartAt })
+	minPart := unfilledSlotMin.Milliseconds()
+	return func(from, to time.Time, boundary bool) {
+		cur := from
+		toMs := to.UnixMilli()
+		for _, e := range sorted {
+			curMs := cur.UnixMilli()
+			if e.EndAt <= curMs {
+				continue
+			}
+			if e.StartAt >= toMs {
+				break
+			}
+			if e.StartAt < curMs || (boundary && e.EndAt > toMs) {
+				start, end := e.StartAt, e.EndAt
+				if start < curMs {
+					start = curMs
+				}
+				if boundary && end > toMs {
+					end = toMs
+				}
+				if e.Kind != domain.EpgProgram || end-start < minPart {
+					continue
+				}
+				e.ItemOffsetMs += start - e.StartAt
+				e.StartAt, e.EndAt = start, end
+			}
+			if e.StartAt > curMs {
+				fill(cur, time.UnixMilli(e.StartAt).UTC())
+			}
+			e.ID = uuid.NewString()
+			emit(e)
+			cur = time.UnixMilli(e.EndAt).UTC()
+		}
+		if cur.Before(to) {
+			fill(cur, to)
+		}
+	}
+}
+
+// expandLayer is expandChannel without the final cut of the kept head: the
+// entries of one layer, which may start before in.KeptUntil. With a base
+// schedule it expands the base layer first (a recursive call on the base
+// items) and fills the pinned layer's gaps from it.
+func expandLayer(in channelInput, now, scanFrom, windowEnd time.Time, state *selectionState) []domain.EpgEntry {
 	loc, err := time.LoadLocation(in.Timezone)
 	if err != nil {
 		logging.Warnf("materializer: channel %s: invalid timezone %q, falling back to UTC: %v", in.ChannelID, in.Timezone, err)
@@ -926,6 +1019,20 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 			continuous = &in.ScheduleItems[i]
 			break
 		}
+	}
+	// With a base schedule the gaps are the base layer's, not the pinned
+	// schedule's continuous item's.
+	var baseEntries []domain.EpgEntry
+	if in.HasBase {
+		continuous = nil
+		baseIn := in
+		baseIn.ScheduleItems = in.BaseScheduleItems
+		baseIn.BaseScheduleItems = nil
+		baseIn.HasBase = false
+		baseIn.Residuals = nil
+		// Its own selection state: the base layer's rotations and filler
+		// cursors must not start where the pinned layer's ended.
+		baseEntries = expandLayer(baseIn, now, scanFrom, windowEnd, newSelectionState())
 	}
 	continuousKey := ""
 	// Never generate the continuous item in the past or inside the kept head.
@@ -966,6 +1073,11 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 		entries = append(entries, gapEntries...)
 	}
 
+	var baseFill func(from, to time.Time, boundary bool)
+	if in.HasBase {
+		baseFill = baseGapFiller(baseEntries, func(e domain.EpgEntry) { entries = append(entries, e) }, fillFallbackOnly)
+	}
+
 	// fillFallbackGap fills a span no timed item claims: with the continuous
 	// item's rotation when the schedule has one (whole programs only, so a
 	// residual shorter than the next program is handed to the fallback rule),
@@ -974,6 +1086,10 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 	// boundary says the span ends at a real next timed item, as opposed to the
 	// end of the window.
 	fillFallbackGap := func(from, to time.Time, boundary bool) {
+		if baseFill != nil {
+			baseFill(from, to, boundary)
+			return
+		}
 		if continuous == nil {
 			fillFallbackOnly(from, to)
 			return
@@ -1276,17 +1392,6 @@ func expandChannel(in channelInput, now, scanFrom, windowEnd time.Time, state *s
 
 	if cursor.Before(windowEnd) {
 		fillFallbackGap(cursor, windowEnd, false)
-	}
-
-	if !in.KeptUntil.IsZero() {
-		keptMs := in.KeptUntil.UnixMilli()
-		kept := entries[:0]
-		for _, e := range entries {
-			if e.StartAt >= keptMs {
-				kept = append(kept, e)
-			}
-		}
-		entries = kept
 	}
 
 	return entries
