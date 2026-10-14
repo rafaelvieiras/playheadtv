@@ -375,9 +375,9 @@ class BackendFixture {
       _putJson('/${ownerType}s/$ownerId/watermark', {
         'mode': mode,
         if (png != null) 'image_base64': base64Encode(png),
-        if (position != null) 'position': position,
-        if (opacityPct != null) 'opacity_pct': opacityPct,
-        if (sizePct != null) 'size_pct': sizePct,
+        'position': ?position,
+        'opacity_pct': ?opacityPct,
+        'size_pct': ?sizePct,
       });
 
   /// POST /channels/{id}/reset-epg: the admin's grid reset of one channel.
