@@ -1983,7 +1983,8 @@ and CI needs no display.
   optional screen recording (`-r`) and the host kernel's segfault lines when
   readable.
 - `.github/workflows/gui-suites.yml` shards the suites across a matrix. It is
-  informational (`continue-on-error`) and separate from the regular CI.
+  informational (`continue-on-error`) and separate from the regular CI. It runs weekly and on demand
+  (`workflow_dispatch`), not on every push or pull request, to save Actions minutes.
 - Limits: Docker does not validate real GPU rendering or the texture path,
   hardware decoders, input devices and remotes, window-manager fullscreen and
   focus, audio output, the `org.freedesktop.ScreenSaver` service or the

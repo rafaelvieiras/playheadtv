@@ -5,19 +5,14 @@ name: GUI suites
 # docs/ARCHITECTURE.md "Headless GUI suites in containers"). Informational for
 # now: a failing shard never fails the workflow (continue-on-error), and a suite
 # that passed only on its retry is reported as FLAKY in the job summary. The
-# regular CI workflow does not depend on this one.
+# regular CI workflow does not depend on this one. It is not triggered by
+# push/PR to save Actions minutes (see the `on:` block).
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'client/**'
-      - 'backend/**'
-      - '.github/workflows/gui-suites.yml'
-  pull_request:
-    paths:
-      - 'client/**'
-      - 'backend/**'
-      - '.github/workflows/gui-suites.yml'
+  # Not run on every push/PR: the suites are informational and cost ~15 min x 4
+  # shards each time. Run them locally (client/tool/run_gui_suites.sh), on
+  # demand (workflow_dispatch), or via the weekly schedule below.
+  schedule:
+    - cron: '0 6 * * 1' # Mondays 06:00 UTC
   workflow_dispatch:
 
 permissions:
