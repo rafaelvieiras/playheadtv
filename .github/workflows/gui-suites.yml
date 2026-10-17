@@ -8,11 +8,9 @@ name: GUI suites
 # regular CI workflow does not depend on this one. It is not triggered by
 # push/PR to save Actions minutes (see the `on:` block).
 on:
-  # Not run on every push/PR: the suites are informational and cost ~15 min x 4
-  # shards each time. Run them locally (client/tool/run_gui_suites.sh), on
-  # demand (workflow_dispatch), or via the weekly schedule below.
-  schedule:
-    - cron: '0 6 * * 1' # Mondays 06:00 UTC
+  # Disabled as an automatic trigger to save Actions minutes (~15 min x 4 shards
+  # per run). Run the suites locally (client/tool/run_gui_suites.sh) before a
+  # release; this manual trigger stays available if a hosted run is ever wanted.
   workflow_dispatch:
 
 permissions:
