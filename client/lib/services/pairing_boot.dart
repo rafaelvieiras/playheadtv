@@ -66,9 +66,13 @@ class ServerUrlResolver {
     if (schemeEnd == -1) {
       // No scheme: only accept a plain host[:port][/path]; a stray ':' before
       // the first '/' is a scheme we do not support.
-      final firstColon = url.indexOf(':');
-      final firstSlash = url.indexOf('/');
-      if (firstColon != -1 && (firstSlash == -1 || firstColon < firstSlash)) return '';
+      // A colon followed only by digits is a port ("host:9394"), not a scheme.
+      final authority = url.split('/').first;
+      final firstColon = authority.indexOf(':');
+      if (firstColon != -1) {
+        final port = authority.substring(firstColon + 1);
+        if (port.isEmpty || port.length > 5 || int.tryParse(port) == null) return '';
+      }
       url = 'http://$url';
     } else {
       final scheme = url.substring(0, schemeEnd).toLowerCase();

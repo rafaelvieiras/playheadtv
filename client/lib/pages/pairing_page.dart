@@ -224,6 +224,8 @@ class _PairingPageState extends State<PairingPage> {
         padding: EdgeInsets.all(context.ui(16)),
         decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(context.ui(12))),
         child: QrImageView(
+          // The encoded address is also the key, so a test can read what the QR holds.
+          key: ValueKey<String>('pairing-qr-data:$data'),
           data: data,
           version: QrVersions.auto,
           size: context.ui(200),
