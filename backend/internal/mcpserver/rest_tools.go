@@ -33,6 +33,10 @@ type (
 	}
 
 	// watermarkArgs carries a channel's or block's watermark (id is the owner).
+	jellyfinServerConfigArgs struct {
+		BaseURL string `json:"base_url" jsonschema:"the Jellyfin server address, http or https, e.g. https://jellyfin.example.com"`
+		APIKey  string `json:"api_key,omitempty" jsonschema:"the Jellyfin API key (write-only); omitted keeps the stored key"`
+	}
 	watermarkArgs struct {
 		ID          string  `json:"id" jsonschema:"the channel or block the watermark belongs to"`
 		Mode        string  `json:"mode" jsonschema:"one of: inherit (a block uses its channel's; for a channel same as disable), disable (no watermark), override (this owner's own image and options)"`
@@ -216,6 +220,12 @@ func registerRESTTools(s *mcp.Server, db storage.DB, mux http.Handler) {
 
 	// Media sources. Credentials are written by update_media_source and
 	// register_media_source and never come back from a read.
+	// The Jellyfin address and key handed to a device when it pairs. The key is
+	// write-only: a read reports only whether one is set and its last characters.
+	addREST[noArgs](s, rc, "get_jellyfin_server_config", "GET /server-config/jellyfin",
+		"Read the Jellyfin address and API key that paired devices receive. The key is never returned: only api_key_set and a short hint of its last characters.", false)
+	addREST[jellyfinServerConfigArgs](s, rc, "update_jellyfin_server_config", "PUT /server-config/jellyfin",
+		"Set the Jellyfin address and API key that paired devices receive. An omitted api_key keeps the stored one. Returns the masked configuration.", false)
 	addREST[noArgs](s, rc, "list_media_sources", "GET /media-sources",
 		"List every media source. Credentials are never returned. The result is {items: [...]}.", false)
 	addREST[idArgs](s, rc, "get_media_source", "GET /media-sources/{id}", "Read one media source. Credentials are never returned.", false)

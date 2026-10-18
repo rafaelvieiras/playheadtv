@@ -27,6 +27,8 @@ var RouteTools = map[string]string{
 	"DELETE /blocks/{id}/watermark":   "clear_block_watermark",
 
 	// Media sources.
+	"GET /server-config/jellyfin":           "get_jellyfin_server_config",
+	"PUT /server-config/jellyfin":           "update_jellyfin_server_config",
 	"POST /media-sources":                   "register_media_source",
 	"GET /media-sources":                    "list_media_sources",
 	"GET /media-sources/{id}":               "get_media_source",
