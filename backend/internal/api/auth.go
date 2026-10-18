@@ -16,6 +16,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
@@ -58,6 +59,23 @@ func hashPassword(password string) (string, error) {
 // callers must not be able to distinguish those).
 func checkPassword(hash, password string) bool {
 	return bcrypt.CompareHashAndPassword([]byte(hash), []byte(password)) == nil
+}
+
+var (
+	timingPadOnce sync.Once
+	timingPadHash string
+)
+
+// burnPasswordCheck spends the same bcrypt time a real check would. Callers use
+// it when the e-mail is unknown so response time does not reveal which e-mails
+// have an account.
+func burnPasswordCheck(password string) {
+	timingPadOnce.Do(func() {
+		if h, err := hashPassword("playheadtv-timing-pad"); err == nil {
+			timingPadHash = h
+		}
+	})
+	_ = checkPassword(timingPadHash, password)
 }
 
 // generateToken returns a high-entropy, URL-safe opaque token — used both for
@@ -215,6 +233,7 @@ func login(db storage.DB) http.HandlerFunc {
 		)
 		if err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
+				burnPasswordCheck(req.Password)
 				writeError(w, http.StatusUnauthorized, "invalid email or password")
 				return
 			}

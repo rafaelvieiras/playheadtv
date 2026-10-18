@@ -230,6 +230,12 @@ class PairingApi {
       // The Jellyfin URL is a server value used to build request URLs later:
       // http(s) only, bounded, never a javascript:/file: scheme.
       final jellyfinUrl = ServerUrlResolver.normalize(_stringField(json, 'jellyfin_url', ServerUrlResolver.maxUrlLength));
+      // Both end up in HTTP headers: a control character (CR/LF) from a hostile
+      // server must never get that far. Tokens are URL-safe text; keys are
+      // printable ASCII without spaces.
+      if (!_headerSafe.hasMatch(token) || !_headerSafe.hasMatch(key)) {
+        return const PairingPollFailure('The server sent an unexpected response.');
+      }
       if (token.isEmpty || key.isEmpty || jellyfinUrl.isEmpty) {
         return const PairingPollFailure('The server sent an unexpected response.');
       }
@@ -237,6 +243,8 @@ class PairingApi {
     }
     return const PairingPollFailure('The server sent an unexpected response.');
   }
+
+  static final RegExp _headerSafe = RegExp(r'^[\x21-\x7E]+$');
 
   /// Bounded, trimmed copy of a request field.
   static String _trimmed(String value, int max) {

@@ -162,8 +162,12 @@ class _PairingPageState extends State<PairingPage> {
     final problem = connection.validate();
     if (problem != null) {
       _approved = false;
+      // The PIN is dropped so the error screen (with "Try again") shows; the
+      // server's reply cannot be used, so the old code is of no value anyway.
       setState(() {
         _loading = false;
+        _pin = null;
+        _pollSecret = null;
         _error = problem;
       });
       return;

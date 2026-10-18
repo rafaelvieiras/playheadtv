@@ -64,6 +64,16 @@ const pairingColumns = "id, tenant_id, pin_hash, poll_secret_hash, name, platfor
 // so the poll response is not an oracle for which pairings exist.
 var errPairingNotFound = errors.New("pairing not found or expired")
 
+// maxPublicBody bounds the body of the unauthenticated pairing routes: their
+// payloads are a few hundred bytes, so anything larger is hostile or broken.
+const maxPublicBody = 16 << 10
+
+func limitPublicBody(w http.ResponseWriter, r *http.Request) {
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxPublicBody)
+	}
+}
+
 func registerPairing(mux Router, db storage.DB, encKey [32]byte) {
 	mux.HandleFunc("POST /pair", createPairing(db))
 	mux.HandleFunc("POST /pair/poll", pollPairing(db, encKey))
@@ -156,6 +166,7 @@ func createPairing(db storage.DB) http.HandlerFunc {
 		}
 
 		var req createPairingRequest
+		limitPublicBody(w, r)
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
@@ -298,6 +309,7 @@ func pollPairing(db storage.DB, encKey [32]byte) http.HandlerFunc {
 		}
 
 		var req pollPairingRequest
+		limitPublicBody(w, r)
 		if err := decodeJSON(r, &req); err != nil {
 			writeError(w, http.StatusBadRequest, "invalid request body")
 			return
@@ -397,6 +409,7 @@ type approvePairingRequest struct {
 // work.
 func decodeApproval(w http.ResponseWriter, r *http.Request) (approvePairingRequest, bool) {
 	var req approvePairingRequest
+	limitPublicBody(w, r)
 	ct := r.Header.Get("Content-Type")
 	if strings.HasPrefix(ct, "application/x-www-form-urlencoded") || strings.HasPrefix(ct, "multipart/form-data") {
 		if err := r.ParseForm(); err != nil {
@@ -423,27 +436,19 @@ func decodeApproval(w http.ResponseWriter, r *http.Request) (approvePairingReque
 // pairing client talks to Jellyfin directly, and the operator can switch it in
 // settings if the backend cannot reach that URL.
 func saveJellyfinConfigIfAbsent(ctx context.Context, db storage.DB, encKey [32]byte, baseURL, apiKey string) error {
-	var counts []int64
-	if err := db.Query(ctx, &counts,
-		"SELECT COUNT(*) FROM media_source WHERE tenant_id = ? AND type = ?",
-		DefaultTenantID, string(domain.SourceJellyfin),
-	); err != nil {
-		return err
-	}
-	if len(counts) == 1 && counts[0] > 0 {
-		return nil
-	}
 	sealed, err := crypto.Encrypt(encKey, []byte(apiKey))
 	if err != nil {
 		return err
 	}
 	now := time.Now().UnixMilli()
-	u := baseURL
+	// One statement, so two approvals can never both see "no row yet".
 	return db.Exec(ctx,
 		`INSERT INTO media_source (id, tenant_id, type, name, base_url, credential_cipher, sync_mode, last_probe_at, last_probe_ok, last_synced_at, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?)`,
-		uuid.NewString(), DefaultTenantID, string(domain.SourceJellyfin), "Jellyfin", u, sealed,
+		 SELECT ?, ?, ?, ?, ?, ?, ?, NULL, NULL, NULL, ?, ?
+		 WHERE NOT EXISTS (SELECT 1 FROM media_source WHERE tenant_id = ? AND type = ?)`,
+		uuid.NewString(), DefaultTenantID, string(domain.SourceJellyfin), "Jellyfin", baseURL, sealed,
 		string(domain.SyncPull), now, now,
+		DefaultTenantID, string(domain.SourceJellyfin),
 	)
 }
 
@@ -476,8 +481,10 @@ func approvePairing(db storage.DB, encKey [32]byte) http.HandlerFunc {
 			return
 		}
 		pinHash := hashToken(normalizePairingPin(req.Pin))
+		// The per-PIN counter is keyed on a value the caller chooses, so it is only
+		// touched once the per-address limit passed: one address cannot grow it.
 		okAddr := byAddr.allow(clientAddr(r))
-		okPin := byPin.allow(pinHash)
+		okPin := okAddr && byPin.allow(pinHash)
 		if !okAddr || !okPin {
 			w.Header().Set("Retry-After", strconv.Itoa(int(pairingWindow.Seconds())))
 			fail(http.StatusTooManyRequests, "too many attempts, try again later")
@@ -498,7 +505,8 @@ func approvePairing(db storage.DB, encKey [32]byte) http.HandlerFunc {
 			case uerr == nil:
 				credsOK = checkPassword(user.PasswordHash, req.Password)
 			case errors.Is(uerr, sql.ErrNoRows):
-				// Unknown e-mail: fall through with credsOK false.
+				// Unknown e-mail: same bcrypt time as a known one, credsOK stays false.
+				burnPasswordCheck(req.Password)
 			default:
 				return uerr
 			}
@@ -537,7 +545,9 @@ func approvePairing(db storage.DB, encKey [32]byte) http.HandlerFunc {
 				return err
 			}
 			approved = true
-			if req.JellyfinURL != "" && req.JellyfinAPIKey != "" {
+			// Only a well-formed http(s) address is stored; anything else is
+			// ignored here and can be set later through /server-config/jellyfin.
+			if req.JellyfinURL != "" && req.JellyfinAPIKey != "" && validJellyfinBaseURL(req.JellyfinURL) {
 				if err := saveJellyfinConfigIfAbsent(r.Context(), tx, encKey, req.JellyfinURL, req.JellyfinAPIKey); err != nil {
 					return err
 				}
