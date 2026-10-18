@@ -45,6 +45,9 @@ dependencies:
   wakelock_plus: ^1.8.1
   dbus: ^0.8.0
   cryptography: ^2.9.0
+  # Pure-Dart QR rendering (quick-connect pairing). No native code, so it
+  # works on armeabi-v7a and every other target.
+  qr_flutter: ^4.1.0
 
 dev_dependencies:
   flutter_test:
