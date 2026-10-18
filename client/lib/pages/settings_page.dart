@@ -20,6 +20,7 @@ import '../log/log.dart';
 import 'controls_mapping_page.dart';
 import 'diagnostics_page.dart';
 import 'offline_cache_page.dart';
+import 'server_url_page.dart';
 import 'setup_page.dart';
 import '../widgets/app_icons.dart';
 import '../widgets/dimmer_level_dialog.dart';
@@ -132,6 +133,15 @@ class _SettingsPageState extends State<SettingsPage> {
               subtitle: const Text('Media server and Playhead TV addresses'),
               onTap: () {
                 Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SetupPage()));
+              },
+            ),
+            ListTile(
+              key: const Key('settings-server-tile'),
+              leading: const Icon(Icons.dns),
+              title: const Text('Server'),
+              subtitle: const Text('Change server or pair this device again'),
+              onTap: () {
+                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ServerUrlPage()));
               },
             ),
             ListTile(
