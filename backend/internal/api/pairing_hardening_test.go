@@ -41,15 +41,15 @@ func TestPairingJellyfinConfigIsCreatedOnce(t *testing.T) {
 	}
 }
 
-// A malformed Jellyfin address on the approval form is ignored rather than
-// stored: it would later be used to build request URLs.
-func TestPairingIgnoresInvalidJellyfinAddress(t *testing.T) {
+// A malformed Jellyfin address is never stored: with none configured the
+// approval is refused (422) and the pairing stays pending.
+func TestPairingRejectsInvalidJellyfinAddress(t *testing.T) {
 	db, mux := newTestDB(t)
 	started := startPairing(t, mux, "TV", "android_tv")
 	body := `{"pin":` + strconvQuote(started.Pin) + `,"email":` + strconvQuote(testUserEmail) + `,"password":` + strconvQuote(testUserPassword) + `,` +
 		`"jellyfin_url":"javascript:alert(1)","jellyfin_api_key":"k"}`
-	if rec := pairingPost(t, mux, pairingTestRemote, "/pin/approve", body); rec.Code != http.StatusOK {
-		t.Fatalf("approve: got %d %s", rec.Code, rec.Body.String())
+	if rec := pairingPost(t, mux, pairingTestRemote, "/pin/approve", body); rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("approve: got %d %s, want 422", rec.Code, rec.Body.String())
 	}
 	var counts []int64
 	if err := db.Query(t.Context(), &counts, "SELECT COUNT(*) FROM media_source WHERE type = 'jellyfin'"); err != nil {
@@ -71,5 +71,29 @@ func TestApprovalPerPinLimiterNotFedByBlockedAddress(t *testing.T) {
 	}
 	if len(byPin.hits) > 2 {
 		t.Fatalf("per-PIN limiter grew to %d keys despite a blocked address", len(byPin.hits))
+	}
+}
+
+// With no Jellyfin configured, an approval that does not supply it is refused
+// and the pairing stays pending: otherwise the device would get a token it
+// cannot use and the pairing row would be gone.
+func TestPairingApprovalNeedsJellyfinUntilConfigured(t *testing.T) {
+	_, mux := newTestDB(t)
+	started := startPairing(t, mux, "TV", "android_tv")
+	creds := `,"email":` + strconvQuote(testUserEmail) + `,"password":` + strconvQuote(testUserPassword)
+	rec := pairingPost(t, mux, pairingTestRemote, "/pin/approve", `{"pin":`+strconvQuote(started.Pin)+creds+`}`)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("approve without Jellyfin: got %d %s, want 422", rec.Code, rec.Body.String())
+	}
+	if got := poll(t, mux, started.PollSecret); got.Code != http.StatusOK || !strings.Contains(got.Body.String(), "pending") {
+		t.Fatalf("the pairing must stay pending: %d %s", got.Code, got.Body.String())
+	}
+	rec = pairingPost(t, mux, pairingTestRemote, "/pin/approve",
+		`{"pin":`+strconvQuote(started.Pin)+creds+`,"jellyfin_url":"http://jellyfin.example.com:8096","jellyfin_api_key":"k"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("approve with Jellyfin: got %d %s", rec.Code, rec.Body.String())
+	}
+	if got := poll(t, mux, started.PollSecret); !strings.Contains(got.Body.String(), "jellyfin_url") {
+		t.Fatalf("the approved poll must carry the Jellyfin address: %s", got.Body.String())
 	}
 }

@@ -99,6 +99,7 @@ func seedJellyfinSource(t *testing.T, db storage.DB, url, key string) {
 
 func TestPairingHappyPath(t *testing.T) {
 	db, mux := newTestDB(t)
+	seedJellyfinSource(t, db, "http://jellyfin.example.com:8096", "seed-key")
 	p := startPairing(t, mux, "Living Room", "android_tv")
 
 	rec := poll(t, mux, p.PollSecret)
