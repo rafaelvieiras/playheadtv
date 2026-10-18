@@ -48,7 +48,9 @@ import 'services/stream_preferences_service.dart';
 import 'services/stream_selection_resolver.dart';
 import 'input/input_action.dart';
 import 'pages/mosaic_page.dart';
-import 'pages/setup_page.dart';
+import 'pages/pairing_page.dart';
+import 'pages/server_url_page.dart';
+import 'services/pairing_boot.dart' show BootRoute, ServerUrlResolver, decideBootRoute;
 import 'util/controller_lifecycle.dart';
 import 'util/gl_serial.dart';
 import 'epg_guide.dart' as guide show defaultTailAttributionCap, tailAttributionCap;
@@ -602,17 +604,23 @@ class _InitialRouteResolverState extends State<_InitialRouteResolver> {
   Future<void> _resolve() async {
     final settings = await SettingsService.create();
     if (!mounted) return;
-    // A fresh install has nothing to connect to: ask where the servers are
-    // (no config file, no build defines, nothing typed yet). Once saved, the
-    // setup page replaces itself with the home page (this widget is gone by then).
-    if (!AppConfig.isConnectionConfigured) {
+    // First-run routing lives in pairing_boot.dart so the decision is pure Dart
+    // and unit tested: a complete connection goes straight home, a known server
+    // URL goes to quick-connect pairing, otherwise we ask the user to type one.
+    final serverUrl = ServerUrlResolver.knownServerUrl(storedBackendUrl: settings.chosenServerUrl);
+    final route = decideBootRoute(configured: AppConfig.isConnectionConfigured, serverUrl: serverUrl);
+    if (route == BootRoute.pairing) {
       Navigator.of(context).pushReplacement(MaterialPageRoute(
-        builder: (_) => SetupPage(
-          firstRun: true,
-          onSaved: (setupContext) => Navigator.of(setupContext)
+        builder: (_) => PairingPage(
+          serverUrl: serverUrl,
+          onDone: (doneContext) => Navigator.of(doneContext)
               .pushReplacement(MaterialPageRoute(builder: (_) => _homePage(settings))),
         ),
       ));
+      return;
+    }
+    if (route == BootRoute.serverUrl) {
+      Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const ServerUrlPage()));
       return;
     }
     Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => _homePage(settings)));
