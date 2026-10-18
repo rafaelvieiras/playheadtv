@@ -67,6 +67,7 @@ var errPairingNotFound = errors.New("pairing not found or expired")
 func registerPairing(mux Router, db storage.DB, encKey [32]byte) {
 	mux.HandleFunc("POST /pair", createPairing(db))
 	mux.HandleFunc("POST /pair/poll", pollPairing(db, encKey))
+	mux.HandleFunc("GET /pin", pinPageHandler(db, encKey))
 	mux.HandleFunc("POST /pin/approve", approvePairing(db, encKey))
 }
 
@@ -223,10 +224,10 @@ type pollPairingRequest struct {
 }
 
 type pollPairingResponse struct {
-	Status        string `json:"status"`
-	DeviceToken   string `json:"device_token,omitempty"`
-	JellyfinURL   string `json:"jellyfin_url,omitempty"`
-	JellyfinKey   string `json:"jellyfin_api_key,omitempty"`
+	Status      string `json:"status"`
+	DeviceToken string `json:"device_token,omitempty"`
+	JellyfinURL string `json:"jellyfin_url,omitempty"`
+	JellyfinKey string `json:"jellyfin_api_key,omitempty"`
 }
 
 // newDevice mints the device token and the row createDevice would persist. It
@@ -456,12 +457,22 @@ func approvePairing(db storage.DB, encKey [32]byte) http.HandlerFunc {
 	byAddr := newAttemptLimiter(approvePerAddrLimit, pairingWindow)
 	byPin := newAttemptLimiter(approvePerPinLimit, pairingWindow)
 	return func(w http.ResponseWriter, r *http.Request) {
+		// A browser submitting the GET /pin form gets an HTML result page;
+		// every other caller keeps the JSON contract. Same errors either way.
+		htmlForm := wantsHTML(r)
+		fail := func(status int, msg string) {
+			if htmlForm {
+				writePinResultPage(w, status, "Pairing failed", msg)
+				return
+			}
+			writeError(w, status, msg)
+		}
 		req, ok := decodeApproval(w, r)
 		if !ok {
 			return
 		}
 		if req.Pin == "" || req.Email == "" || req.Password == "" {
-			writeError(w, http.StatusBadRequest, "pin, email and password are required")
+			fail(http.StatusBadRequest, "pin, email and password are required")
 			return
 		}
 		pinHash := hashToken(normalizePairingPin(req.Pin))
@@ -469,7 +480,7 @@ func approvePairing(db storage.DB, encKey [32]byte) http.HandlerFunc {
 		okPin := byPin.allow(pinHash)
 		if !okAddr || !okPin {
 			w.Header().Set("Retry-After", strconv.Itoa(int(pairingWindow.Seconds())))
-			writeError(w, http.StatusTooManyRequests, "too many attempts, try again later")
+			fail(http.StatusTooManyRequests, "too many attempts, try again later")
 			return
 		}
 
@@ -538,7 +549,12 @@ func approvePairing(db storage.DB, encKey [32]byte) http.HandlerFunc {
 			return
 		}
 		if !approved {
-			writeError(w, http.StatusBadRequest, "invalid PIN or credentials")
+			fail(http.StatusBadRequest, "invalid PIN or credentials")
+			return
+		}
+		if htmlForm {
+			writePinResultPage(w, http.StatusOK, "Device paired",
+				"Your device is now linked. You can close this page.")
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"status": string(domain.PairingApproved)})

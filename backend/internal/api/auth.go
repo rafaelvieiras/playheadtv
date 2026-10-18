@@ -393,9 +393,13 @@ func isOpenPath(r *http.Request) bool {
 	}
 	// Device pairing: an unconfigured client has no credentials yet. POST
 	// /pair mints the PIN/poll secret, /pair/poll is credentialed by the
-	// poll secret, and /pin/approve by the human's app_user e-mail/password
-	// in the body — all in pairing.go.
+	// poll secret, /pin/approve by the human's app_user e-mail/password in
+	// the body, and GET /pin serves the human-facing approval form — all in
+	// pairing.go and pin_page.go.
 	if r.Method == http.MethodPost && (r.URL.Path == "/pair" || r.URL.Path == "/pair/poll" || r.URL.Path == "/pin/approve") {
+		return true
+	}
+	if r.Method == http.MethodGet && r.URL.Path == "/pin" {
 		return true
 	}
 	// The admin SPA's static shell (HTML/JS/CSS) has to be public — the
