@@ -100,7 +100,8 @@ func TestPinPageJellyfinFieldsOnlyWhenUnconfigured(t *testing.T) {
 }
 
 func TestPinApproveFormSuccessPage(t *testing.T) {
-	_, mux := newTestDB(t)
+	db, mux := newTestDB(t)
+	seedJellyfinSource(t, db, "http://jellyfin.example.com:8096", "seed-key")
 	p := startPairing(t, mux, "Living Room", "android_tv")
 
 	rec := pinApproveForm(t, mux, "text/html,application/xhtml+xml", url.Values{
@@ -144,7 +145,8 @@ func TestPinApproveFormFailurePage(t *testing.T) {
 }
 
 func TestPinApproveJSONStaysJSON(t *testing.T) {
-	_, mux := newTestDB(t)
+	db, mux := newTestDB(t)
+	seedJellyfinSource(t, db, "http://jellyfin.example.com:8096", "seed-key")
 	p := startPairing(t, mux, "Living Room", "android_tv")
 
 	rec := pinApproveForm(t, mux, "application/json", url.Values{

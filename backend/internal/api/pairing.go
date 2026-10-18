@@ -492,6 +492,7 @@ func approvePairing(db storage.DB, encKey [32]byte) http.HandlerFunc {
 		}
 
 		approved := false
+		needJellyfin := false
 		err := db.Transact(r.Context(), func(tx storage.DB) error {
 			// Credentials first: a wrong password must not short-circuit the
 			// PIN lookup, and the PIN comparison below never early-exits.
@@ -538,6 +539,18 @@ func approvePairing(db storage.DB, encKey [32]byte) http.HandlerFunc {
 					"UPDATE pairing SET failed_attempts = failed_attempts + 1 WHERE id = ?", match.ID)
 			}
 
+			// A device cannot use a token without the media-server address and
+			// key, so while none is configured the approval must supply them.
+			// The credentials already checked out, so saying so is no oracle.
+			_, _, haveJellyfin, jerr := readJellyfinConfig(r.Context(), tx, encKey)
+			if jerr != nil {
+				return jerr
+			}
+			if !haveJellyfin && !(req.JellyfinURL != "" && req.JellyfinAPIKey != "" && validJellyfinBaseURL(req.JellyfinURL)) {
+				needJellyfin = true
+				return nil
+			}
+
 			if err := tx.Exec(r.Context(),
 				"UPDATE pairing SET status = ?, approved_by = ? WHERE id = ?",
 				string(domain.PairingApproved), user.ID, match.ID,
@@ -556,6 +569,11 @@ func approvePairing(db storage.DB, encKey [32]byte) http.HandlerFunc {
 		})
 		if err != nil {
 			handleDBError(w, err)
+			return
+		}
+		if needJellyfin {
+			fail(http.StatusUnprocessableEntity,
+				"this server has no media server configured yet: enter the Jellyfin address (http:// or https://) and API key")
 			return
 		}
 		if !approved {

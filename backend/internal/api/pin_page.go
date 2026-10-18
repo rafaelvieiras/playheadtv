@@ -52,9 +52,9 @@ var pinPageTemplate = template.Must(template.New("pin").Parse(`<!DOCTYPE html>
 <input id="password" name="password" type="password" autocomplete="current-password" required>
 {{if .ShowJellyfin}}
 <label for="jellyfin_url">Jellyfin URL</label>
-<input id="jellyfin_url" name="jellyfin_url" type="url" placeholder="https://example.com">
+<input id="jellyfin_url" name="jellyfin_url" type="url" placeholder="https://example.com" required>
 <label for="jellyfin_api_key">Jellyfin API key</label>
-<input id="jellyfin_api_key" name="jellyfin_api_key" type="password" autocomplete="off">
+<input id="jellyfin_api_key" name="jellyfin_api_key" type="password" autocomplete="off" required>
 {{end}}
 <button type="submit">Approve</button>
 </form>
