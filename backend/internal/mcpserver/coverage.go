@@ -134,4 +134,5 @@ var NoMCPCounterpart = map[string]string{
 	"POST /pair":                    "an unconfigured device bootstraps its first credential here; minting a PIN for a device that has no session yet is device provisioning, not authoring",
 	"POST /pair/poll":               "the second half of the device bootstrap handshake, credentialed only by the one-time poll secret the device just received; there is no authenticated session to drive it from",
 	"POST /pin/approve":             "a human approves the pairing from a browser with app_user credentials; an MCP tool would bypass the out-of-band human confirmation this flow exists to require",
+	"GET /pin":                      "the human-facing HTML form a browser loads to approve a pairing; it has no session and only posts back to /pin/approve, so there is nothing an authenticated MCP tool could call",
 }
