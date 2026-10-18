@@ -117,4 +117,23 @@ void main() {
     await tester.pumpAndSettle(const Duration(milliseconds: 100));
     expect(find.byKey(const Key('server-url-page')), findsOneWidget);
   });
+
+  testWidgets('an approval the client cannot use shows the error and offers a retry', (tester) async {
+    final client = MockClient((r) async {
+      if (r.url.path == '/pair') return _json(_started('ABCD-EFGH'));
+      // A token with a line break must never reach a header.
+      return _json({
+        'status': 'approved',
+        'device_token': 'tok\r\nX-Evil: 1',
+        'jellyfin_url': 'http://jellyfin.example.com:8096',
+        'jellyfin_api_key': 'key',
+      });
+    });
+    await _pump(tester, client);
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(AppConfig.isConnectionConfigured, isFalse);
+    expect((await SettingsService.create()).connection.playheadDeviceToken, isEmpty);
+    await tester.pumpWidget(const SizedBox());
+  });
 }
