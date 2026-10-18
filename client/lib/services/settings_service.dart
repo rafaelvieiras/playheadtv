@@ -42,6 +42,7 @@ class SettingsService implements UpdateNoticeStore {
   static const _preloadLeadKey = 'preload_lead_seconds';
   static const _dimLevelKey = 'dim_level_percent';
   static const _connectionPrefix = 'connection_'; // + a connection_settings.dart key
+  static const _chosenServerUrlKey = 'chosen_server_url';
 
   /// Choices offered for the cache window limit (hours).
   static const cacheWindowLimitChoicesHours = [6, 12, 24, 48, 72, 168];
@@ -121,6 +122,15 @@ class SettingsService implements UpdateNoticeStore {
         for (final key in [jellyfinUrlKey, jellyfinApiKeyKey, playheadBaseUrlKey, playheadDeviceTokenKey])
           key: _prefs.getString('$_connectionPrefix$key'),
       });
+
+  /// The Playhead TV backend URL the user picked on first run (typed on the
+  /// server-URL screen). Persisted even while the connection is still
+  /// incomplete, so the next boot goes straight to pairing instead of asking
+  /// for a URL again. Empty when the user never picked one.
+  String get chosenServerUrl => _prefs.getString(_chosenServerUrlKey) ?? '';
+
+  Future<void> setChosenServerUrl(String value) =>
+      value.isEmpty ? _prefs.remove(_chosenServerUrlKey) : _prefs.setString(_chosenServerUrlKey, value);
 
   Future<void> setConnection(ConnectionSettings value) async {
     for (final e in value.toStored().entries) {
