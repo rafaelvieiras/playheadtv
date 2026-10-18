@@ -2253,6 +2253,52 @@ interrupted. Unattended, the banner leaves after 25 s (and is not remembered as
 dismissed), the changelog after 90 s (it counts as shown from the moment it
 appears).
 
+## Device pairing
+
+An unconfigured client has no credentials, so it pairs with a short-lived PIN
+instead of asking the user to type a server address, a device token and a
+media-server key.
+
+1. The client calls `POST /pair` (public) with its display name and platform and
+   receives an 8-character PIN (shown `XXXX-XXXX`, from an alphabet without
+   look-alike characters), a 64-hex poll secret and a 10 minute lifetime. The PIN
+   and the poll secret are stored only as hashes; the poll secret never leaves
+   the device.
+2. The client shows the PIN and a QR code of `<server>/pin?code=<PIN>`.
+3. On a phone or computer the user opens `GET /pin`: a tiny server-rendered form
+   (no JavaScript, no external requests; `Content-Security-Policy`,
+   `Referrer-Policy: no-referrer`, `X-Frame-Options: DENY`, `Cache-Control:
+   no-store`). The user types the PIN (prefilled from the QR), signs in with an
+   `app_user` e-mail and password and approves. Only while the server has no
+   media-server configuration yet does the form also ask for the Jellyfin
+   address and API key.
+4. The client polls `POST /pair/poll` with the poll secret. Once approved, that
+   one response carries the device token and the Jellyfin address and key, and
+   the pairing row is deleted in the same transaction. A second poll is a 404.
+
+The device token is minted at poll time, with the same code path as device
+registration, and is never stored in clear: nothing in the database can hand the
+token out twice. The Jellyfin address and key reuse the encrypted `media_source`
+row; `GET/PUT /server-config/jellyfin` (and the matching MCP tools) read and
+change them, and a read never returns the key, only whether one is set and its
+last characters. Today there is one such configuration for the single tenant;
+per-profile or per-user media-server tokens would hang off the same tenant key.
+
+Abuse limits: a per-address rate limit on `POST /pair`, `POST /pair/poll` and
+`POST /pin/approve`, a cap on pending pairings, a per-pairing failed-approval
+counter that deletes the pairing after a few wrong tries, constant-time
+comparisons, generic error messages that do not reveal whether a PIN or an
+e-mail exists, and lazy cleanup of expired rows. None of the secrets is logged
+or put in a URL.
+
+Client side: the app is built with an optional official server address
+(`--dart-define=PLAYHEADTV_OFFICIAL_URL`). When the connection is not configured
+it opens the pairing screen for that server, or for one the user chose earlier;
+without either it first asks for a server address. "Select another server" on the
+pairing screen and Settings > Server reach the address screen, and "Enter details
+manually" keeps the old manual setup. The decision is a pure function in
+`client/lib/services/pairing_boot.dart`.
+
 ## Status
 
 The schema, domain types, SQLite storage layer, REST API, EPG materializer,

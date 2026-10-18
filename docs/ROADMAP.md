@@ -77,6 +77,10 @@ actionable checklist.
       single-user per the "no real multi-tenant" note above). Login/lookup
       failures are indistinguishable (generic "invalid email or password" /
       "unauthorized").
+- [x] Device pairing: a client with no configuration shows a PIN and QR code,
+      the user approves it at `GET /pin` and the device receives its token plus
+      the Jellyfin address and key (`POST /pair`, `/pair/poll`, `/pin/approve`;
+      `GET/PUT /server-config/jellyfin`). `docs/ARCHITECTURE.md` "Device pairing".
 - [x] Password recovery: `server reset-password` mints a single-use token
       (hash + expiry in `password_reset`), `POST /password-resets/consume` and
       the web UI page `/admin/reset-password` set the new password and end the
