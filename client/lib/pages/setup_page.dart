@@ -49,6 +49,12 @@ class _SetupPageState extends State<SetupPage> {
   final _backendUrl = TextEditingController();
   final _deviceToken = TextEditingController();
 
+  // A text field swallows Up/Down (caret movement) and, on a TV remote, Select
+  // does not open the keyboard by itself. Each field's own node sees the key
+  // first, so the six baseline buttons keep working: Up/Down move between the
+  // fields and buttons, Select (or Enter) opens the on-screen keyboard.
+  late final List<FocusNode> _nodes = List.generate(4, (i) => FocusNode(debugLabel: 'setup-field-$i', onKeyEvent: _fieldKey));
+
   SettingsService? _settings;
   KeyBindingsService? _keyBindings;
   bool _testing = false;
@@ -73,11 +79,34 @@ class _SetupPageState extends State<SetupPage> {
         _settings = settings;
         _keyBindings = KeyBindingsService(settings);
       });
+      // The first field takes focus on arrival; the keyboard waits for Select.
+      WidgetsBinding.instance.addPostFrameCallback((_) => SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
     }));
+  }
+
+  KeyEventResult _fieldKey(FocusNode node, KeyEvent event) {
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    if (key == LogicalKeyboardKey.arrowDown) {
+      node.nextFocus();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.arrowUp) {
+      node.previousFocus();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.select || key == LogicalKeyboardKey.enter || key == LogicalKeyboardKey.numpadEnter) {
+      if (event is KeyDownEvent) unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.show'));
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
   }
 
   @override
   void dispose() {
+    for (final n in _nodes) {
+      n.dispose();
+    }
     _jellyfinUrl.dispose();
     _jellyfinKey.dispose();
     _backendUrl.dispose();
@@ -142,13 +171,14 @@ class _SetupPageState extends State<SetupPage> {
   @override
   Widget build(BuildContext context) => UiScaled(child: _buildPage(context));
 
-  Widget _field(String key, TextEditingController controller, String label,
+  Widget _field(int index, String key, TextEditingController controller, String label,
       {String? hint, bool autofocus = false, bool last = false}) {
     return Padding(
       padding: EdgeInsets.symmetric(horizontal: context.ui(24), vertical: context.ui(6)),
       child: TextField(
         key: Key(key),
         controller: controller,
+        focusNode: _nodes[index],
         autofocus: autofocus,
         autocorrect: false,
         enableSuggestions: false,
@@ -223,11 +253,11 @@ class _SetupPageState extends State<SetupPage> {
                         style: TextStyle(fontSize: context.ui(20)),
                       ),
                     ),
-                    _field('setup-jellyfin-url', _jellyfinUrl, 'Media server URL',
+                    _field(0, 'setup-jellyfin-url', _jellyfinUrl, 'Media server URL',
                         hint: 'http://192.168.1.10:8096', autofocus: true),
-                    _field('setup-jellyfin-key', _jellyfinKey, 'Media server API key'),
-                    _field('setup-backend-url', _backendUrl, 'Playhead TV URL', hint: 'http://192.168.1.10:9394'),
-                    _field('setup-device-token', _deviceToken, 'Device token (optional)', last: true),
+                    _field(1, 'setup-jellyfin-key', _jellyfinKey, 'Media server API key'),
+                    _field(2, 'setup-backend-url', _backendUrl, 'Playhead TV URL', hint: 'http://192.168.1.10:9394'),
+                    _field(3, 'setup-device-token', _deviceToken, 'Device token (optional)', last: true),
                     if (_error != null)
                       Padding(
                         padding: EdgeInsets.symmetric(horizontal: context.ui(24), vertical: context.ui(6)),
