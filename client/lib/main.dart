@@ -32,6 +32,7 @@ import 'cache/offline_runtime.dart';
 import 'cache/schedule_cache.dart';
 import 'cache/schedule_sync.dart';
 import 'config/config_file.dart';
+import 'config/connection_settings.dart';
 import 'log/log.dart';
 import 'log/log_setup.dart';
 import 'update/app_update.dart';
@@ -47,6 +48,7 @@ import 'services/stream_preferences_service.dart';
 import 'services/stream_selection_resolver.dart';
 import 'input/input_action.dart';
 import 'pages/mosaic_page.dart';
+import 'pages/setup_page.dart';
 import 'util/controller_lifecycle.dart';
 import 'util/gl_serial.dart';
 import 'epg_guide.dart' as guide show defaultTailAttributionCap, tailAttributionCap;
@@ -93,6 +95,9 @@ class AppConfig {
   // getter below falls back to it when neither a test override nor a
   // --dart-define is set.
   static Map<String, Object?> _file = const {};
+  // What was typed into the setup screen (SettingsService.connection): the
+  // lowest-ranked source, so a config file or a build's --dart-define wins.
+  static ConnectionSettings _stored = const ConnectionSettings();
 
   /// Reads the config file (PLAYHEADTV_CONFIG, else the XDG config
   /// directory); called once by main() before runApp. An absent or invalid
@@ -101,28 +106,45 @@ class AppConfig {
     _file = readConfigFile(configFileLocation(env ?? Platform.environment));
   }
 
+  /// Sets the settings typed into the setup screen; called at boot and after a save.
+  static void applyStoredConnection(ConnectionSettings value) {
+    _stored = value;
+    Log.setSecrets([jellyfinApiKey, playheadDeviceToken]);
+  }
+
+  /// The file's value when it has one, else the typed one.
+  static Map<String, Object?> get _withStored => {
+        ..._stored.toStored(),
+        for (final e in _file.entries)
+          if (!(e.value is String && (e.value as String).isEmpty)) e.key: e.value,
+      };
+
+  /// True when the player has what it needs to start (media server, key, backend).
+  static bool get isConnectionConfigured =>
+      jellyfinUrl.isNotEmpty && jellyfinApiKey.isNotEmpty && playheadBaseUrl.isNotEmpty;
+
   /// The config file's settings as read at boot (for the logger's level).
   static Map<String, Object?> get fileSettings => _file;
 
   static String get jellyfinUrl => resolveStringSetting(
-      override: _jellyfinUrl, define: const String.fromEnvironment('JELLYFIN_URL'), file: _file, key: 'jellyfin_url');
+      override: _jellyfinUrl, define: const String.fromEnvironment('JELLYFIN_URL'), file: _withStored, key: 'jellyfin_url');
   static String get jellyfinApiKey => resolveStringSetting(
       override: _jellyfinApiKey,
       define: const String.fromEnvironment('JELLYFIN_API_KEY'),
-      file: _file,
+      file: _withStored,
       key: 'jellyfin_api_key');
   // Playhead TV backend (Go) that materializes the schedule — see docs/ARCHITECTURE.md.
   static String get playheadBaseUrl => resolveStringSetting(
       override: _playheadBaseUrl,
       define: const String.fromEnvironment('PLAYHEADTV_BASE_URL'),
-      file: _file,
+      file: _withStored,
       key: 'playhead_base_url');
   // Optional: device token for the Auth flow. Empty = no Authorization header
   // is sent, which matches a backend running without auth.
   static String get playheadDeviceToken => resolveStringSetting(
       override: _playheadDeviceToken,
       define: const String.fromEnvironment('PLAYHEADTV_DEVICE_TOKEN'),
-      file: _file,
+      file: _withStored,
       key: 'playhead_device_token');
   // Optional: if empty, automatically resolves the channel with the lowest
   // `number` via GET /channels instead of requiring the operator to know an ID
@@ -442,6 +464,7 @@ Future<void> applyStartupFullScreen() async {
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   AppConfig.loadConfigFile();
+  AppConfig.applyStoredConnection((await SettingsService.create()).connection);
   initLogging(
     env: Platform.environment,
     file: AppConfig.fileSettings,
@@ -569,14 +592,30 @@ class _InitialRouteResolverState extends State<_InitialRouteResolver> {
     _resolve();
   }
 
+  // The page a configured install opens on: straight to the last watched
+  // channel when there is one, else the mosaic.
+  static Widget _homePage(SettingsService settings) {
+    final lastWatched = settings.lastWatchedChannelId;
+    return lastWatched != null ? ChannelPlayerPage(initialChannelId: lastWatched) : const MosaicPage();
+  }
+
   Future<void> _resolve() async {
     final settings = await SettingsService.create();
     if (!mounted) return;
-    final lastWatched = settings.lastWatchedChannelId;
-    final page = lastWatched != null
-        ? ChannelPlayerPage(initialChannelId: lastWatched)
-        : const MosaicPage();
-    Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => page));
+    // A fresh install has nothing to connect to: ask where the servers are
+    // (no config file, no build defines, nothing typed yet). Once saved, the
+    // setup page replaces itself with the home page (this widget is gone by then).
+    if (!AppConfig.isConnectionConfigured) {
+      Navigator.of(context).pushReplacement(MaterialPageRoute(
+        builder: (_) => SetupPage(
+          firstRun: true,
+          onSaved: (setupContext) => Navigator.of(setupContext)
+              .pushReplacement(MaterialPageRoute(builder: (_) => _homePage(settings))),
+        ),
+      ));
+      return;
+    }
+    Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => _homePage(settings)));
   }
 
   @override
@@ -808,8 +847,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       }
     });
     if (AppConfig.jellyfinUrl.isEmpty || AppConfig.jellyfinApiKey.isEmpty || AppConfig.playheadBaseUrl.isEmpty) {
-      _status = 'ERROR: run with --dart-define=JELLYFIN_URL=... --dart-define=JELLYFIN_API_KEY=... '
-          '--dart-define=PLAYHEADTV_BASE_URL=...';
+      _status = 'ERROR: the media server and the Playhead TV backend are not configured. '
+          'Set them in Settings > Connection (or via the config file / --dart-define).';
       return;
     }
     _bootstrapChannels();

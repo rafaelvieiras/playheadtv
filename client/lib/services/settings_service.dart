@@ -1,5 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../config/connection_settings.dart';
 import '../dimmer.dart';
 import '../preload_lead.dart';
 import '../update/semver.dart';
@@ -40,6 +41,7 @@ class SettingsService implements UpdateNoticeStore {
   static const _uiScaleKey = 'ui_scale_override';
   static const _preloadLeadKey = 'preload_lead_seconds';
   static const _dimLevelKey = 'dim_level_percent';
+  static const _connectionPrefix = 'connection_'; // + a connection_settings.dart key
 
   /// Choices offered for the cache window limit (hours).
   static const cacheWindowLimitChoicesHours = [6, 12, 24, 48, 72, 168];
@@ -112,6 +114,23 @@ class SettingsService implements UpdateNoticeStore {
   }
 
   Future<void> setDimLevelPercent(int percent) => _prefs.setInt(_dimLevelKey, sanitizeDimLevelPercent(percent));
+
+  /// The connection settings typed into the setup screen (empty until then).
+  /// They rank below the config file and a build's --dart-define.
+  ConnectionSettings get connection => ConnectionSettings.fromStored({
+        for (final key in [jellyfinUrlKey, jellyfinApiKeyKey, playheadBaseUrlKey, playheadDeviceTokenKey])
+          key: _prefs.getString('$_connectionPrefix$key'),
+      });
+
+  Future<void> setConnection(ConnectionSettings value) async {
+    for (final e in value.toStored().entries) {
+      if (e.value.isEmpty) {
+        await _prefs.remove('$_connectionPrefix${e.key}');
+      } else {
+        await _prefs.setString('$_connectionPrefix${e.key}', e.value);
+      }
+    }
+  }
 
   static Future<SettingsService> create() async => SettingsService(await SharedPreferences.getInstance());
 
