@@ -57,6 +57,15 @@ void main() {
       expect(ServerUrlResolver.normalize('https://example.test:8443/base/'), 'https://example.test:8443/base');
     });
 
+    test('normalize accepts host:port without a scheme but still rejects scheme-like input', () {
+      expect(ServerUrlResolver.normalize('192.168.1.10:9394'), 'http://192.168.1.10:9394');
+      expect(ServerUrlResolver.normalize('server.example.com:9394/base/'), 'http://server.example.com:9394/base');
+      expect(ServerUrlResolver.normalize('javascript:alert(1)'), '');
+      expect(ServerUrlResolver.normalize('mailto:someone'), '');
+      expect(ServerUrlResolver.normalize('host:'), '');
+      expect(ServerUrlResolver.normalize('host:99999999'), '');
+    });
+
     test('normalize rejects non-http(s) schemes, missing hosts and overlong values', () {
       expect(ServerUrlResolver.normalize('javascript:alert(1)'), '');
       expect(ServerUrlResolver.normalize('file:///etc/passwd'), '');
