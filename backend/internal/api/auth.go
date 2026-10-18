@@ -317,27 +317,13 @@ func createDevice(db storage.DB) http.HandlerFunc {
 			return
 		}
 
-		token, err := generateToken()
+		device, token, err := newDevice(req.Name, domain.Platform(req.Platform))
 		if err != nil {
 			logging.Errorf("api: generate device token: %v", err)
 			writeError(w, http.StatusInternalServerError, "internal error")
 			return
 		}
-
-		device := domain.Device{
-			ID:           uuid.NewString(),
-			TenantID:     DefaultTenantID,
-			Name:         req.Name,
-			Platform:     domain.Platform(req.Platform),
-			APITokenHash: hashToken(token),
-			CreatedAt:    time.Now().UnixMilli(),
-		}
-		err = db.Exec(r.Context(),
-			`INSERT INTO device (id, tenant_id, name, platform, api_token_hash, last_seen_at, created_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-			device.ID, device.TenantID, device.Name, string(device.Platform), device.APITokenHash, device.LastSeenAt, device.CreatedAt,
-		)
-		if err != nil {
+		if err := insertDevice(r.Context(), db, device); err != nil {
 			handleDBError(w, err)
 			return
 		}
@@ -403,6 +389,13 @@ func isOpenPath(r *http.Request) bool {
 	}
 	// The token in the body is the credential (see password_reset.go).
 	if r.Method == http.MethodPost && r.URL.Path == "/password-resets/consume" {
+		return true
+	}
+	// Device pairing: an unconfigured client has no credentials yet. POST
+	// /pair mints the PIN/poll secret, /pair/poll is credentialed by the
+	// poll secret, and /pin/approve by the human's app_user e-mail/password
+	// in the body — all in pairing.go.
+	if r.Method == http.MethodPost && (r.URL.Path == "/pair" || r.URL.Path == "/pair/poll" || r.URL.Path == "/pin/approve") {
 		return true
 	}
 	// The admin SPA's static shell (HTML/JS/CSS) has to be public — the
