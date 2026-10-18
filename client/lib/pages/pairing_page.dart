@@ -93,7 +93,11 @@ class _PairingPageState extends State<PairingPage> {
       _pin = null;
       _pollSecret = null;
     });
-    final result = await api.start(name: DeviceIdentity.name(), platform: DeviceIdentity.platform());
+    final device = await DeviceIdentity.detect();
+    final result = await api.start(
+      name: DeviceIdentity.name(hostname: device.model),
+      platform: DeviceIdentity.platform(isAndroidTv: device.isTv),
+    );
     if (!mounted || generation != _generation) return;
     switch (result) {
       case final PairingStarted started:

@@ -3,6 +3,8 @@
 // the defaults) so the mapping is unit-tested with injected values.
 import 'dart:io';
 
+import 'package:flutter/services.dart';
+
 /// Platforms the backend's device registration accepts (internal/domain/tenant.go).
 /// A value outside this list is rejected there, so the client must map to one
 /// of them before sending.
@@ -18,6 +20,22 @@ const List<String> backendPlatforms = <String>[
 /// Maps the running platform and a display name to the pairing request.
 class DeviceIdentity {
   const DeviceIdentity._();
+
+  static const MethodChannel _channel = MethodChannel('playheadtv/device');
+
+  /// Whether this is an Android TV and the hardware model name, asked of the
+  /// Android side. Anything else (other platforms, a failing channel) yields a
+  /// plain device with no model, so pairing never depends on it.
+  static Future<({bool isTv, String? model})> detect() async {
+    if (!Platform.isAndroid) return (isTv: false, model: null);
+    try {
+      final info = await _channel.invokeMapMethod<String, Object?>('info');
+      final model = info?['model'];
+      return (isTv: info?['tv'] == true, model: model is String && model.isNotEmpty ? model : null);
+    } catch (_) {
+      return (isTv: false, model: null);
+    }
+  }
 
   /// The default display name when the hostname is empty or unusable.
   static const String defaultName = 'Playhead TV client';
