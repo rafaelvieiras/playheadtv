@@ -58,7 +58,7 @@ void main() {
     });
 
     test('normalize accepts host:port without a scheme but still rejects scheme-like input', () {
-      expect(ServerUrlResolver.normalize('192.168.1.10:9394'), 'http://192.168.1.10:9394');
+      expect(ServerUrlResolver.normalize('203.0.113.10:9394'), 'http://203.0.113.10:9394');
       expect(ServerUrlResolver.normalize('server.example.com:9394/base/'), 'http://server.example.com:9394/base');
       expect(ServerUrlResolver.normalize('javascript:alert(1)'), '');
       expect(ServerUrlResolver.normalize('mailto:someone'), '');
