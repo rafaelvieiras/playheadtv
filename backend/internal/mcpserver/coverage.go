@@ -131,4 +131,7 @@ var NoMCPCounterpart = map[string]string{
 	"GET /me":                       "returns the session's own user (e-mail); there is nothing to author, and the identity is already implied by the session",
 	"GET /watermarks/{image_id}/image": "serves the binary image bytes to the playback client (what the guide's watermark image_id names); an MCP tool result is JSON, and the settings tools already return image_id and content_type",
 	"GET /stream-preferences/meta":  "the playback client's cheap staleness poll over the preference rows; the preference tools already read the data itself",
+	"POST /pair":                    "an unconfigured device bootstraps its first credential here; minting a PIN for a device that has no session yet is device provisioning, not authoring",
+	"POST /pair/poll":               "the second half of the device bootstrap handshake, credentialed only by the one-time poll secret the device just received; there is no authenticated session to drive it from",
+	"POST /pin/approve":             "a human approves the pairing from a browser with app_user credentials; an MCP tool would bypass the out-of-band human confirmation this flow exists to require",
 }
