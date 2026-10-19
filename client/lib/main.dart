@@ -482,9 +482,12 @@ Future<void> main() async {
   // the default order. Putting CUDA first avoids that and keeps VAAPI/VDPAU as
   // fallbacks for AMD/Intel machines (where CUDA simply fails fast and falls
   // through to the next decoder).
-  fvp.registerWith(options: {
-    'video.decoders': ['CUDA', 'VAAPI', 'VDPAU', 'FFmpeg'],
-  });
+  // Desktop only: on Android that list has no hardware decoder, so a TV box
+  // would decode in software (audio only, black picture). Leaving it unset
+  // keeps fvp's own order there (AMediaCodec, then FFmpeg).
+  fvp.registerWith(
+    options: Platform.isAndroid ? const <String, Object>{} : const {'video.decoders': ['CUDA', 'VAAPI', 'VDPAU', 'FFmpeg']},
+  );
   runApp(const PlayheadSpikeApp());
   // When the launcher started this process right after an update, confirm
   // the new version once it has stayed up for the healthy window (no-op
