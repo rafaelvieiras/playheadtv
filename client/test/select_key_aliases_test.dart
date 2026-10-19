@@ -10,6 +10,7 @@ Future<KeyBindingsService> _service() async {
 }
 
 void main() {
+  backAliasTests();
   test('the D-pad centre button and other activate keys resolve to select', () async {
     final keys = await _service();
     for (final key in [
@@ -32,5 +33,20 @@ void main() {
     final keys = await _service();
     expect(keys.resolve(LogicalKeyboardKey.arrowLeft), isNull);
     expect(keys.resolve(LogicalKeyboardKey.keyQ), isNull);
+  });
+}
+
+void backAliasTests() {
+  test('the remote Back button and the gamepad B button resolve to back', () async {
+    final keys = await _service();
+    for (final key in [LogicalKeyboardKey.escape, LogicalKeyboardKey.goBack, LogicalKeyboardKey.gameButtonB]) {
+      expect(keys.resolve(key), InputAction.back, reason: key.keyLabel);
+    }
+  });
+
+  test('a key bound to another action keeps that action over the back aliases', () async {
+    final keys = await _service();
+    await keys.rebind(InputAction.debugOverlay, LogicalKeyboardKey.goBack);
+    expect(keys.resolve(LogicalKeyboardKey.goBack), InputAction.debugOverlay);
   });
 }

@@ -94,6 +94,16 @@ final Set<LogicalKeyboardKey> selectKeyAliases = {
   LogicalKeyboardKey.gameButtonA,
 };
 
+/// Keys that mean "back" besides the default `Esc`: the Android/TV remote Back
+/// button (reported as `goBack`, never as `Esc`) and the gamepad B button. Like
+/// `selectKeyAliases`, they always mean `back` unless the user bound that exact
+/// key to another action, so the 6-button baseline holds on a D-pad remote.
+final Set<LogicalKeyboardKey> backKeyAliases = {
+  LogicalKeyboardKey.escape,
+  LogicalKeyboardKey.goBack,
+  LogicalKeyboardKey.gameButtonB,
+};
+
 /// Resolves LogicalKeyboardKey -> InputAction by combining the default +
 /// the persisted override (SettingsService). The action is persisted by
 /// `InputAction.name` (the enum member's name, e.g. "channelNext").
@@ -133,6 +143,7 @@ class KeyBindingsService {
     // exact key to something else (handled above), so the 6-button baseline
     // holds even after `select` is remapped.
     if (selectKeyAliases.contains(key)) return InputAction.select;
+    if (backKeyAliases.contains(key)) return InputAction.back;
     return null;
   }
 

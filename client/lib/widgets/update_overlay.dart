@@ -109,9 +109,9 @@ class _UpdateOverlayHostState extends State<UpdateOverlayHost> {
 
     final action =
         _bindings?.resolve(key) ??
-        (key == defaultKeyBindings[InputAction.select]
+        (selectKeyAliases.contains(key)
             ? InputAction.select
-            : key == defaultKeyBindings[InputAction.back]
+            : backKeyAliases.contains(key)
             ? InputAction.back
             : null);
     if (action != InputAction.select && action != InputAction.back) return KeyEventResult.ignored;

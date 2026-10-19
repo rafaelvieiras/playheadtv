@@ -131,6 +131,13 @@ or LLM, and to every artifact in the repo:
   up/down-as-channel-switch semantics (`channelNext`/`channelPrevious`, which
   must never drive a menu: Up always moves visually up) and isn't something a
   user would sensibly remap.
+  Hardware keys that mean the same thing as a default are aliases inside
+  `resolve` (`selectKeyAliases`, `backKeyAliases`: the Android remote Back is
+  `LogicalKeyboardKey.goBack`, never Esc), so every screen gets them for free;
+  never compare against `defaultKeyBindings[...]` or a key constant in a page.
+  `BackKeyGuard` (above the Navigator) consumes any Back a page left unhandled,
+  so the platform default (finish the activity) can never skip the exit dialog;
+  a new page that reacts to Back still handles it itself.
 - The mosaic frame fills the screen height (`lib/mosaic_layout.dart`) and its
   focus moves spatially (`lib/mosaic_nav.dart`, pure: the opposite arrow returns
   to the origin, empty slots are skipped). Text, icons, paddings and focus rings

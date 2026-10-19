@@ -45,6 +45,7 @@ import 'services/settings_service.dart';
 import 'services/app_window.dart';
 import 'services/stream_preferences_service.dart';
 import 'services/stream_selection_resolver.dart';
+import 'input/back_key_guard.dart';
 import 'input/input_action.dart';
 import 'pages/mosaic_page.dart';
 import 'pages/pairing_page.dart';
@@ -572,7 +573,7 @@ class PlayheadSpikeApp extends StatelessWidget {
       // The update banner / changelog sit above the Navigator: they never
       // rebuild a page (the Navigator is passed through as a child).
       builder: (context, child) =>
-          UiScaleHost(child: UpdateOverlayHost(child: child ?? const SizedBox.shrink())),
+          UiScaleHost(child: BackKeyGuard(child: UpdateOverlayHost(child: child ?? const SizedBox.shrink()))),
       theme: ThemeData.dark(),
       home: const _InitialRouteResolver(),
     );
