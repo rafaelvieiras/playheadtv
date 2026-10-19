@@ -1209,6 +1209,11 @@ Design: `ARCHITECTURE.md` "Releases and updates"; procedures: `RELEASING.md` and
       `RELEASING.md`).
 - [ ] Client builds for other platforms (Windows, Android); only Linux x86_64
       is packaged.
+  - [x] Android: opt-in ExoPlayer engine (Settings > Video player) for devices
+    where libmdk shows a black picture; HEVC playback and channel switching
+    verified on an Android TV box.
+  - [ ] Android: crossfade, gap slate and long-run stability on ExoPlayer still
+    need a full manual pass.
 - [ ] An in-app setting for auto-update; today it is the `auto_update` key of
       the config file.
 
@@ -1260,8 +1265,3 @@ Design: `ARCHITECTURE.md` "Releases and updates"; procedures: `RELEASING.md` and
       the player page), global level 10-80% (default 50, Settings and
       `dim_level_percent`), level dialog reachable with six buttons
       (`docs/ARCHITECTURE.md` "Client dimmer"). Not checked on a real display.
-  - [x] Android: opt-in ExoPlayer engine (Settings > Video player) for devices
-    where libmdk shows a black picture; HEVC playback and channel switching
-    verified on an Android TV box.
-  - [ ] Android: crossfade, gap slate and long-run stability on ExoPlayer still
-    need a full manual pass.
