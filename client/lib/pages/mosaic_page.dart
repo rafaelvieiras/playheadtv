@@ -337,7 +337,8 @@ class _MosaicPageState extends State<MosaicPage> {
   void _handleKeyEvent(KeyEvent event) {
     if (event is! KeyDownEvent) return;
     final key = event.logicalKey;
-    if (_keyBindings?.resolve(key) == InputAction.back) {
+    final action = _keyBindings?.resolve(key);
+    if (action == InputAction.back) {
       unawaited(_confirmExit());
       return;
     }
@@ -350,7 +351,7 @@ class _MosaicPageState extends State<MosaicPage> {
       _move(MosaicDirection.up);
     } else if (key == LogicalKeyboardKey.arrowDown) {
       _move(MosaicDirection.down);
-    } else if (selectKeyAliases.contains(key)) {
+    } else if (action == InputAction.select) {
       unawaited(_activateFocused());
     }
   }
