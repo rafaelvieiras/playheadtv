@@ -185,31 +185,57 @@ class _PairingPageState extends State<PairingPage> {
     }
     // Stand-in for the home page until main.dart wires this page in: the same
     // destination the current first-run setup flow uses.
-    Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const MosaicPage()));
+    Navigator.of(context)
+        .pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const MosaicPage()), (route) => false);
   }
 
-  void _goToServerUrl() {
+  // Both secondary screens are pushed, not swapped in: Back from either one
+  // returns to the PIN instead of leaving the app.
+  void _resume() {
+    if (_pin != null && _pollSecret != null) {
+      // The code is still valid (a stale one answers 404 and gets replaced).
+      _schedulePoll(_pollInterval);
+    } else {
+      unawaited(_startPairing());
+    }
+  }
+
+  Future<void> _goToServerUrl() async {
     _timer?.cancel();
-    Navigator.of(context).pushReplacement(MaterialPageRoute(
-      builder: (_) => ServerUrlPage(httpClient: widget.httpClient),
+    final chosen = await Navigator.of(context).push<String>(MaterialPageRoute(
+      builder: (_) => ServerUrlPage(httpClient: widget.httpClient, returnsResult: true),
     ));
+    if (!mounted || _approved) return;
+    if (chosen != null && chosen != _serverUrl) {
+      _api?.close();
+      _serverUrl = chosen;
+      _api = PairingApi(baseUrl: _serverUrl, client: widget.httpClient);
+      await _startPairing();
+      return;
+    }
+    _resume();
   }
 
-  void _goToManual() {
+  Future<void> _goToManual() async {
     _timer?.cancel();
-    Navigator.of(context).pushReplacement(MaterialPageRoute(
+    await Navigator.of(context).push<void>(MaterialPageRoute(
+      // Not the first screen any more: it sits above the PIN, so Back returns.
       builder: (_) => SetupPage(
-        firstRun: true,
         httpClient: widget.httpClient,
-        onSaved: (ctx) => Navigator.of(ctx).pushReplacement(MaterialPageRoute(builder: (_) => const MosaicPage())),
+        onSaved: (ctx) => Navigator.of(ctx)
+            .pushAndRemoveUntil(MaterialPageRoute(builder: (_) => const MosaicPage()), (route) => false),
       ),
     ));
+    // Saved: the whole stack (this page included) was replaced.
+    if (!mounted || _approved || AppConfig.isConnectionConfigured) return;
+    _resume();
   }
 
   @override
   void dispose() {
     _timer?.cancel();
     _generation++;
+    _api?.close();
     super.dispose();
   }
 

@@ -136,4 +136,54 @@ void main() {
     expect((await SettingsService.create()).connection.playheadDeviceToken, isEmpty);
     await tester.pumpWidget(const SizedBox());
   });
+
+  testWidgets('Back from "Select another server" returns to the same PIN', (tester) async {
+    final client = MockClient((r) async => r.url.path == '/pair' ? _json(_started('ABCD-EFGH')) : _json({'status': 'pending'}));
+    await _pump(tester, client);
+    await tester.ensureVisible(find.byKey(const Key('pairing-select-server-button')));
+    await tester.tap(find.byKey(const Key('pairing-select-server-button')));
+    await tester.pumpAndSettle(const Duration(milliseconds: 100));
+    expect(find.byKey(const Key('server-url-page')), findsOneWidget);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle(const Duration(milliseconds: 100));
+    expect(find.byKey(const Key('pairing-page')), findsOneWidget);
+    expect(_pinShown(tester), 'ABCD-EFGH');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('Back from "Enter details manually" returns to the same PIN', (tester) async {
+    final client = MockClient((r) async => r.url.path == '/pair' ? _json(_started('ABCD-EFGH')) : _json({'status': 'pending'}));
+    await _pump(tester, client);
+    await tester.ensureVisible(find.byKey(const Key('pairing-manual-button')));
+    await tester.tap(find.byKey(const Key('pairing-manual-button')));
+    await tester.pumpAndSettle(const Duration(milliseconds: 100));
+    expect(find.byKey(const Key('pairing-page')), findsNothing);
+    await tester.sendKeyEvent(LogicalKeyboardKey.escape);
+    await tester.pumpAndSettle(const Duration(milliseconds: 100));
+    expect(find.byKey(const Key('pairing-page')), findsOneWidget);
+    expect(_pinShown(tester), 'ABCD-EFGH');
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets('choosing another server restarts pairing against it', (tester) async {
+    final seen = <String>[];
+    final client = MockClient((r) async {
+      seen.add('${r.url.host}${r.url.path}');
+      if (r.url.path == '/version') return http.Response('{"version":"dev","api_version":1}', 200);
+      if (r.url.path == '/pair') return _json(_started(r.url.host == 'other.example.com' ? 'WXYZ-2345' : 'ABCD-EFGH'));
+      return _json({'status': 'pending'});
+    });
+    await _pump(tester, client);
+    await tester.ensureVisible(find.byKey(const Key('pairing-select-server-button')));
+    await tester.tap(find.byKey(const Key('pairing-select-server-button')));
+    await tester.pumpAndSettle(const Duration(milliseconds: 100));
+    await tester.enterText(find.byKey(const Key('server-url-field')), 'other.example.com');
+    await tester.ensureVisible(find.byKey(const Key('server-url-continue-button')));
+    await tester.tap(find.byKey(const Key('server-url-continue-button')));
+    await tester.pumpAndSettle(const Duration(milliseconds: 200));
+    expect(find.byKey(const Key('pairing-page')), findsOneWidget);
+    expect(_pinShown(tester), 'WXYZ-2345');
+    expect(seen, contains('other.example.com/pair'));
+    await tester.pumpWidget(const SizedBox());
+  });
 }

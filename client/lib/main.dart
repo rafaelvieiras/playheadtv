@@ -613,8 +613,9 @@ class _InitialRouteResolverState extends State<_InitialRouteResolver> {
       Navigator.of(context).pushReplacement(MaterialPageRoute(
         builder: (_) => PairingPage(
           serverUrl: serverUrl,
+          // Clear the stack: the pairing page may have a secondary screen above it.
           onDone: (doneContext) => Navigator.of(doneContext)
-              .pushReplacement(MaterialPageRoute(builder: (_) => _homePage(settings))),
+              .pushAndRemoveUntil(MaterialPageRoute(builder: (_) => _homePage(settings)), (route) => false),
         ),
       ));
       return;
