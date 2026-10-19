@@ -85,6 +85,15 @@ const Map<InputAction, LogicalKeyboardKey> defaultKeyBindings = {
   InputAction.debugOverlay: LogicalKeyboardKey.keyD,
 };
 
+/// Keys that mean "activate" besides the default `Enter`: the D-pad centre
+/// button (`select`), the keypad Enter and the gamepad A button.
+final Set<LogicalKeyboardKey> selectKeyAliases = {
+  LogicalKeyboardKey.enter,
+  LogicalKeyboardKey.select,
+  LogicalKeyboardKey.numpadEnter,
+  LogicalKeyboardKey.gameButtonA,
+};
+
 /// Resolves LogicalKeyboardKey -> InputAction by combining the default +
 /// the persisted override (SettingsService). The action is persisted by
 /// `InputAction.name` (the enum member's name, e.g. "channelNext").
@@ -118,6 +127,12 @@ class KeyBindingsService {
     for (final entry in bindings.entries) {
       if (entry.value == key) return entry.key;
     }
+    // The centre button of a D-pad remote is not `Enter`: Android reports it as
+    // DPAD_CENTER (LogicalKeyboardKey.select), and some pads send gameButtonA
+    // or the keypad Enter. They always mean `select` unless the user bound that
+    // exact key to something else (handled above), so the 6-button baseline
+    // holds even after `select` is remapped.
+    if (selectKeyAliases.contains(key)) return InputAction.select;
     return null;
   }
 
