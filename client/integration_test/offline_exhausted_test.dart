@@ -14,7 +14,7 @@ import 'package:client/main.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:video_player/video_player.dart';
+import 'package:client/video/video_engine.dart';
 
 import 'support/backend_fixture.dart';
 import 'support/offline_helpers.dart';
@@ -62,10 +62,10 @@ void main() {
     }
 
     bool slateOnScreen(WidgetTester tester) => find
-        .byType(VideoPlayer)
+        .byType(VideoSurface)
         .evaluate()
-        .map((e) => (e.widget as VideoPlayer).controller)
-        .any((c) => c.dataSource.contains('gap_slate'));
+        .map((e) => (e.widget as VideoSurface).playback)
+        .any((c) => c.source.contains('gap_slate'));
 
     testWidgets('default: loops the last known programming', (tester) async {
       final channelId = await seedChannel(backend, number: 71, prefix: 'LOOP', items: 3, itemMs: 10000);

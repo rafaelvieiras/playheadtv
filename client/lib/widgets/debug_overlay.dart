@@ -11,19 +11,20 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:video_player/video_player.dart';
-import 'package:fvp/fvp.dart';
+import '../video/video_engine.dart';
 
 import '../log/log.dart';
 import '../services/perf_stats.dart';
 
 class DebugOverlay extends StatefulWidget {
-  final VideoPlayerController? controller;
+  final VideoPlayback? controller;
+  final String engineName;
   final String decoderPreference;
 
   const DebugOverlay({
     super.key,
     required this.controller,
+    required this.engineName,
     required this.decoderPreference,
   });
 
@@ -43,7 +44,7 @@ class _DebugOverlayState extends State<DebugOverlay> {
     PerfStats.instance.start();
     _timer = Timer.periodic(const Duration(milliseconds: 500), (_) async {
       await ProcessStats.instance.sample();
-      VideoStallTracker.instance.sample(widget.controller?.value);
+      VideoStallTracker.instance.sample(widget.controller?.state);
       if (!mounted) return;
       setState(() {
         _perf = PerfStats.instance.snapshot();
@@ -62,11 +63,10 @@ class _DebugOverlayState extends State<DebugOverlay> {
 
   @override
   Widget build(BuildContext context) {
-    final info = widget.controller?.getMediaInfo();
-    final videoStreams = info?.video;
-    final video = (videoStreams != null && videoStreams.isNotEmpty) ? videoStreams.first : null;
-    final audioStreams = info?.audio ?? const [];
-    final value = widget.controller?.value;
+    final tracks = widget.controller?.tracks ?? MediaTracks.none;
+    final video = tracks.video.isNotEmpty ? tracks.video.first : null;
+    final audioStreams = tracks.audio;
+    final value = widget.controller?.state;
 
     return Align(
       alignment: Alignment.topRight,
@@ -88,7 +88,7 @@ class _DebugOverlayState extends State<DebugOverlay> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 _section('Playback'),
-                _row('Player', 'fvp (libmdk)'),
+                _row('Player', widget.engineName),
                 _row('Decoder preference', widget.decoderPreference),
                 _row('Protocol', 'http'),
                 _row('Stream type', 'Direct (no transcoding)'),
@@ -106,18 +106,18 @@ class _DebugOverlayState extends State<DebugOverlay> {
                 if (video != null) ...[
                   const SizedBox(height: 8),
                   _section('Video'),
-                  _row('Codec', '${video.codec.codec} (profile ${video.codec.profile}, level ${video.codec.level})'),
-                  _row('Resolution', '${video.codec.width}x${video.codec.height}'),
-                  _row('Frame rate', '${video.codec.frameRate.toStringAsFixed(2)} fps'),
-                  _row('Declared bitrate', '${(video.codec.bitRate / 1000).toStringAsFixed(0)} kbps'),
+                  _row('Codec', '${video.codec} (profile ${video.profile}, level ${video.level})'),
+                  _row('Resolution', '${video.width}x${video.height}'),
+                  _row('Frame rate', '${video.frameRate.toStringAsFixed(2)} fps'),
+                  _row('Declared bitrate', '${(video.bitRate / 1000).toStringAsFixed(0)} kbps'),
                 ],
                 if (audioStreams.isNotEmpty) ...[
                   const SizedBox(height: 8),
                   _section('Audio'),
                   for (final a in audioStreams)
                     _row(
-                      '${a.codec.codec} ${a.codec.channels}ch @${a.codec.sampleRate}Hz',
-                      '${(a.codec.bitRate / 1000).toStringAsFixed(0)} kbps',
+                      '${a.codec} ${a.channels}ch @${a.sampleRate}Hz',
+                      '${(a.bitRate / 1000).toStringAsFixed(0)} kbps',
                     ),
                 ],
                 if (value != null) ...[
@@ -193,9 +193,10 @@ class _DebugOverlayState extends State<DebugOverlay> {
     return t > 0 && line.length > t + 9 ? '${line.substring(t + 1, t + 9)}${line.substring(line.indexOf(' '))}' : line;
   }
 
-  String _bufferedLabel(VideoPlayerValue value) {
-    if (value.buffered.isEmpty) return '—';
-    return _fmt(value.buffered.last.end);
+  String _bufferedLabel(PlaybackState value) {
+    final until = value.bufferedUntil;
+    if (until == null) return '—';
+    return _fmt(until);
   }
 
   String _fmt(Duration d) {

@@ -12,7 +12,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:video_player/video_player.dart';
+import 'package:client/video/video_engine.dart';
 
 import 'support/backend_fixture.dart';
 import 'support/key_focus.dart';
@@ -108,25 +108,25 @@ void main() {
       await tester.pumpWidget(const PlayheadSpikeApp());
       await pumpUntil(tester, () => find.byKey(const Key('mosaic-frame')).evaluate().isNotEmpty,
           failMessage: 'mosaic frame did not appear');
-      await pumpUntil(tester, () => find.byType(VideoPlayer).evaluate().isNotEmpty,
+      await pumpUntil(tester, () => find.byType(VideoSurface).evaluate().isNotEmpty,
           failMessage: 'the featured preview never started');
 
       double frameHeight() => tester.getSize(find.byKey(const Key('mosaic-frame'))).height;
       expect(frameHeight(), closeTo(720 * 0.96, 0.5));
       expect(tiles().evaluate().length, 6); // featured + 4 channels + Settings
 
-      final controller = tester.widget<VideoPlayer>(find.byType(VideoPlayer)).controller;
-      expect(controller.value.isPlaying, isTrue);
+      final controller = tester.widget<VideoSurface>(find.byType(VideoSurface)).playback;
+      expect(controller.state.isPlaying, isTrue);
 
       // A 21:9 window: same height rule, same controller, still playing.
       tester.view.physicalSize = const Size(2560, 1080);
       await tester.pump(const Duration(milliseconds: 500));
       expect(frameHeight(), closeTo(1080 * 0.96, 0.5));
-      expect(identical(tester.widget<VideoPlayer>(find.byType(VideoPlayer)).controller, controller), isTrue);
-      final position = controller.value.position;
+      expect(identical(tester.widget<VideoSurface>(find.byType(VideoSurface)).playback, controller), isTrue);
+      final position = controller.state.position;
       await tester.pump(const Duration(seconds: 2));
-      expect(controller.value.isPlaying, isTrue);
-      expect(controller.value.position, greaterThan(position));
+      expect(controller.state.isPlaying, isTrue);
+      expect(controller.state.position, greaterThan(position));
       expect(tester.takeException(), isNull);
 
       // Portrait: fits the width, no overflow.

@@ -22,8 +22,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:video_player/video_player.dart';
-import 'package:fvp/fvp.dart'; // getMediaInfo() on VideoPlayerController
+import '../video/video_engine.dart';
 
 import '../dimmer.dart';
 import '../osd_subject.dart';
@@ -72,7 +71,7 @@ class ChannelOsd extends StatefulWidget {
   // reads 0:00 even when the wall clock is a little ahead of the picture. Null
   // result (or no callback): the wall clock.
   final DateTime? Function()? playhead;
-  final VideoPlayerController? controller;
+  final VideoPlayback? controller;
   final ValueListenable<bool> focusMode;
   final VoidCallback onOpenSubtitles;
   final VoidCallback onOpenAudio;
@@ -162,9 +161,9 @@ class ChannelOsdState extends State<ChannelOsd> {
   // Focusable rows, top to bottom: [CC, audio] then the recent channels. CC
   // needs a real subtitle track and audio needs a real choice (>1 track).
   List<List<String>> _rows() {
-    final info = widget.controller?.getMediaInfo();
-    final hasSubtitles = (info?.subtitle ?? const []).isNotEmpty;
-    final hasAudioChoice = (info?.audio ?? const []).length > 1;
+    final tracks = widget.controller?.tracks ?? MediaTracks.none;
+    final hasSubtitles = tracks.subtitle.isNotEmpty;
+    final hasAudioChoice = tracks.audio.length > 1;
     return [
       [if (hasSubtitles) _captions, if (hasAudioChoice) _audio, _dimmer, if (Dimmer.active.value) _dimmerLevel],
       [for (final c in widget.recentChannels) '$_channelPrefix${c.id}'],
@@ -221,11 +220,11 @@ class ChannelOsdState extends State<ChannelOsd> {
   }
 
   List<String> _chips() {
-    final info = widget.controller?.getMediaInfo();
+    final tracks = widget.controller?.tracks ?? MediaTracks.none;
     final chips = <String>[];
-    final video = (info?.video ?? const []).firstOrNull;
+    final video = tracks.video.firstOrNull;
     if (video != null) {
-      final h = video.codec.height;
+      final h = video.height;
       if (h >= 720) chips.add('HD');
       if (h >= 2160) {
         chips.add('4K');
@@ -233,9 +232,9 @@ class ChannelOsdState extends State<ChannelOsd> {
         chips.add('${h}p');
       }
     }
-    final audio = (info?.audio ?? const []).firstOrNull;
+    final audio = tracks.audio.firstOrNull;
     if (audio != null) {
-      chips.add(switch (audio.codec.channels) {
+      chips.add(switch (audio.channels) {
         1 => 'MONO',
         2 => 'STEREO',
         6 => '5.1',
@@ -357,8 +356,8 @@ class ChannelOsdState extends State<ChannelOsd> {
       final elapsed = (widget.playhead?.call() ?? widget.now()).toUtc().difference(startAt);
       position = elapsed.isNegative ? Duration.zero : (elapsed > duration ? duration : elapsed);
     } else {
-      position = widget.controller?.value.position ?? Duration.zero;
-      duration = widget.controller?.value.duration ?? Duration.zero;
+      position = widget.controller?.state.position ?? Duration.zero;
+      duration = widget.controller?.state.duration ?? Duration.zero;
     }
     final progress =
         duration.inMilliseconds > 0 ? (position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0) : 0.0;

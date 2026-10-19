@@ -24,9 +24,8 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:video_player/video_player.dart';
+import '../video/video_engine.dart';
 import '../util/controller_lifecycle.dart';
-import 'package:fvp/fvp.dart'; // extension setSubtitleTracks on VideoPlayerController
 
 import '../cache/offline_runtime.dart';
 import '../cache/schedule_sync.dart';
@@ -40,7 +39,6 @@ import '../input/input_action.dart';
 import '../services/app_exit.dart';
 import '../services/screen_awake.dart';
 import '../services/settings_service.dart';
-import '../util/gl_serial.dart';
 import 'settings_page.dart';
 import '../log/log.dart';
 
@@ -79,7 +77,7 @@ class _MosaicPageState extends State<MosaicPage> {
   // opposite arrow returns to the origin (mosaic_nav.dart, `returnTo`).
   ({int from, MosaicDirection direction})? _lastMove;
 
-  VideoPlayerController? _previewController;
+  VideoPlayback? _previewController;
 
   final FocusNode _pageFocusNode = FocusNode();
 
@@ -204,7 +202,7 @@ class _MosaicPageState extends State<MosaicPage> {
       }
       if (!mounted || externalId == null) return;
 
-      final controller = trackController(VideoPlayerController.networkUrl(Uri.parse(streamUrl(externalId))));
+      final controller = trackController(videoEngine.createNetwork(Uri.parse(streamUrl(externalId))));
       final clock = Stopwatch()..start();
       try {
         await _openPreview(controller, now, itemStart, itemEnd);
@@ -226,8 +224,8 @@ class _MosaicPageState extends State<MosaicPage> {
     }
   }
 
-  Future<void> _openPreview(VideoPlayerController controller, DateTime now, DateTime itemStart, DateTime itemEnd) async {
-    await serializeGlOp(() => controller.initialize(), label: 'initialize-preview');
+  Future<void> _openPreview(VideoPlayback controller, DateTime now, DateTime itemStart, DateTime itemEnd) async {
+    await controller.open(label: 'initialize-preview');
     if (!mounted) return;
 
     var seek = now.difference(itemStart);
@@ -236,8 +234,8 @@ class _MosaicPageState extends State<MosaicPage> {
     if (seek > clipDuration) seek = clipDuration;
     if (seek > Duration.zero) await controller.seekTo(seek);
 
-    controller.setSubtitleTracks([]);
-    controller.setProperty('avsync.audio', '0');
+    controller.selectSubtitles(const []);
+    controller.tune(const PlaybackTuning());
     if (!mounted) return;
     await controller.play();
   }
@@ -285,7 +283,7 @@ class _MosaicPageState extends State<MosaicPage> {
     final preview = _previewController;
     _previewController = null;
     if (preview != null) {
-      // Routed through serializeGlOp (see its doc comment): this await
+      // Native teardown is queued by the engine (see gl_serial.dart): this await
       // alone isn't enough once the channel player's own controllers start
       // being created through the same shared queue — it guarantees this
       // dispose is strictly ordered relative to them, not just relative to
@@ -379,13 +377,14 @@ class _MosaicPageState extends State<MosaicPage> {
   // the channel's art or a placeholder.
   Widget _featuredBackground() {
     final controller = _previewController;
-    if (controller != null && controller.value.isInitialized) {
+    final state = controller?.state;
+    if (controller != null && state != null && state.isInitialized) {
       return FittedBox(
         fit: BoxFit.cover,
         child: SizedBox(
-          width: controller.value.size.width,
-          height: controller.value.size.height,
-          child: VideoPlayer(controller),
+          width: state.size.width,
+          height: state.size.height,
+          child: VideoSurface(controller),
         ),
       );
     }

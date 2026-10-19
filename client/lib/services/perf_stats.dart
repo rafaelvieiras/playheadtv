@@ -12,7 +12,7 @@ import 'dart:collection';
 import 'dart:io';
 
 import 'package:flutter/scheduler.dart';
-import 'package:video_player/video_player.dart';
+import '../video/video_engine.dart';
 
 class PerfSnapshot {
   final double fps;
@@ -171,7 +171,7 @@ class VideoStallTracker {
   int stallCount = 0;
   DateTime? lastStallAt;
 
-  void sample(VideoPlayerValue? value) {
+  void sample(PlaybackState? value) {
     final now = DateTime.now();
     if (value == null || !value.isInitialized) {
       _lastPosition = null;

@@ -25,8 +25,7 @@ import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:video_player/video_player.dart';
-import 'package:fvp/fvp.dart' as fvp;
+import 'video/video_engine.dart';
 
 import 'cache/offline_runtime.dart';
 import 'cache/schedule_cache.dart';
@@ -52,7 +51,6 @@ import 'pages/pairing_page.dart';
 import 'pages/server_url_page.dart';
 import 'services/pairing_boot.dart' show BootRoute, ServerUrlResolver, decideBootRoute;
 import 'util/controller_lifecycle.dart';
-import 'util/gl_serial.dart';
 import 'epg_guide.dart' as guide show defaultTailAttributionCap, tailAttributionCap;
 import 'epg_guide.dart' show guideContextLookback, isHiddenGuideKind;
 import 'osd_subject.dart';
@@ -475,19 +473,7 @@ Future<void> main() async {
   );
   _installErrorLogging();
   await applyStartupFullScreen();
-  // video.decoders: fvp's default decoder order on Linux tries VAAPI before
-  // CUDA/VDPAU. On some setups (e.g. NVIDIA without VAAPI configured) that
-  // stalls decoding of HEVC videos (audio plays, "initialized" never fires):
-  // the same Jellyfin URL plays smoothly with CUDA or FFmpeg but stalls with
-  // the default order. Putting CUDA first avoids that and keeps VAAPI/VDPAU as
-  // fallbacks for AMD/Intel machines (where CUDA simply fails fast and falls
-  // through to the next decoder).
-  // Desktop only: on Android that list has no hardware decoder, so a TV box
-  // would decode in software (audio only, black picture). Leaving it unset
-  // keeps fvp's own order there (AMediaCodec, then FFmpeg).
-  fvp.registerWith(
-    options: Platform.isAndroid ? const <String, Object>{} : const {'video.decoders': ['CUDA', 'VAAPI', 'VDPAU', 'FFmpeg']},
-  );
+  videoEngine.register();
   runApp(const PlayheadSpikeApp());
   // When the launcher started this process right after an update, confirm
   // the new version once it has stayed up for the healthy window (no-op
@@ -645,12 +631,12 @@ class ChannelPlayerPage extends StatefulWidget {
 }
 
 class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindingObserver {
-  // Each slot holds the VideoPlayerController of the item that is playing
+  // Each slot holds the VideoPlayback of the item that is playing
   // (active) or being preloaded (inactive). Unlike media_kit, video_player/fvp
   // doesn't reuse the same instance to switch media — every new item is a new
   // VideoPlayerController, disposed when it leaves the scene.
-  VideoPlayerController? _controllerA;
-  VideoPlayerController? _controllerB;
+  VideoPlayback? _controllerA;
+  VideoPlayback? _controllerB;
 
   bool _aIsActive = true;
   double _opacityA = 1;
@@ -659,7 +645,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // The controller that is the picture of `channel[_headIndex]` (set together
   // with `_currentIndex` whenever an item takes over). `_picturePlayhead` reads
   // where the viewer really is in the schedule from it.
-  VideoPlayerController? _headController;
+  VideoPlayback? _headController;
   int _headIndex = -1;
   String _status = 'starting…';
   Timer? _advanceTimer;
@@ -780,7 +766,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // channel switch's generic staleA/staleB teardown can't reach it. Tracked
   // here instead purely so that teardown can dispose it too; cleared as soon
   // as the second crossfade picks it back up.
-  VideoPlayerController? _gapHoldPending;
+  VideoPlayback? _gapHoldPending;
 
   // The preload of the next unit (see _preloadNext). `_preloadReadyIndex` is
   // the channel index whose controller sits in the inactive slot, ready to be
@@ -1217,8 +1203,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
   // A controller whose preparation fails is disposed here, so the callers only
   // ever hold controllers that opened.
-  Future<VideoPlayerController> _createController(ChannelEntry entry, {Duration? seekTo}) async {
-    final controller = trackController(VideoPlayerController.networkUrl(Uri.parse(streamUrl(entry.id))));
+  Future<VideoPlayback> _createController(ChannelEntry entry, {Duration? seekTo}) async {
+    final controller = trackController(videoEngine.createNetwork(Uri.parse(streamUrl(entry.id))));
     final clock = Stopwatch()..start();
     Log.debug('player', 'opening item ${entry.id} (seek=${seekTo?.inSeconds ?? 0}s, offset=${entry.itemOffset.inSeconds}s)');
     try {
@@ -1232,8 +1218,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     }
   }
 
-  Future<VideoPlayerController> _prepareController(VideoPlayerController controller, ChannelEntry entry, Duration? seekTo) async {
-    await serializeGlOp(() => controller.initialize(), label: 'initialize');
+  Future<VideoPlayback> _prepareController(VideoPlayback controller, ChannelEntry entry, Duration? seekTo) async {
+    await controller.open();
     // `seekTo` is a position within the entry (the "TV turned on" in the
     // middle of a program); the entry itself starts at its item offset, so the
     // later segment of a split item (same file, resumed after the break) is
@@ -1249,16 +1235,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // built from the SAME list position setAudioTracks/setSubtitleTracks
     // expect (the mdk API takes a 0-based index within that media type, not
     // StreamInfo.index, which is the demuxer's absolute stream number) —
-    // see debug_overlay.dart for another read of this same getMediaInfo()
+    // see debug_overlay.dart for another read of this same track list
     // data. `selection.audioTracks == null` (no cascade step matched
     // anything, across every tier) leaves the player's own default alone;
     // `selection.subtitleTracks` is never null — an empty list is what
     // disables fvp/libmdk's default-enabled first MKV subtitle track when
     // no step matched, same as the unconditional setSubtitleTracks([]) this
     // replaced.
-    final info = controller.getMediaInfo();
-    final audioStreams = info?.audio ?? const [];
-    final subtitleStreams = info?.subtitle ?? const [];
+    final tracks = controller.tracks;
+    final audioStreams = tracks.audio;
+    final subtitleStreams = tracks.subtitle;
     // Tier 1 (client-local override, see SettingsService's doc comment and
     // TierOneOverride): looked up by the CURRENT channel id — safe to read
     // here because _createController is only ever called for items of the
@@ -1276,16 +1262,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         for (var i = 0; i < audioStreams.length; i++)
           TrackCandidate(
             index: i,
-            language: _metadataValue(audioStreams[i].metadata, 'language'),
-            title: _metadataValue(audioStreams[i].metadata, 'title'),
+            language: audioStreams[i].language,
+            title: audioStreams[i].title,
           ),
       ],
       subtitleTracks: [
         for (var i = 0; i < subtitleStreams.length; i++)
           TrackCandidate(
             index: i,
-            language: _metadataValue(subtitleStreams[i].metadata, 'language'),
-            title: _metadataValue(subtitleStreams[i].metadata, 'title'),
+            language: subtitleStreams[i].language,
+            title: subtitleStreams[i].title,
           ),
       ],
       tierOneOverride: tierOneOverride,
@@ -1294,27 +1280,19 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       globalRules: _streamPrefs.globalRules,
     );
     if (selection.audioTracks != null) {
-      controller.setAudioTracks(selection.audioTracks!);
+      controller.selectAudio(selection.audioTracks!);
     }
-    controller.setSubtitleTracks(selection.subtitleTracks);
-    // By default mdk syncs video frame presentation to the AUDIO clock — when
-    // that sync stalls (same mechanism reported in wang-bin/mdk-sdk#179, root
-    // cause confirmed by the maintainer: "bug comes from the audio
-    // renderer"), the video freezes on the last frame while the audio, already
-    // on its own queue, keeps playing normally. Confirmed by the debug overlay
-    // showing a high, stable Flutter FPS during the freeze — it isn't
-    // compositor jank, it's video presentation stuck in that sync.
-    // 'avsync.audio'=0 decouples it and syncs to a stable clock instead of the
-    // audio; the value must be "0"/"1" (not "false"/"true" — mdk calls stoi()
-    // on the value and "false" kills the process with
-    // std::invalid_argument).
-    controller.setProperty('avsync.audio', '0');
-    // Read-ahead window ("minMs+maxMs", mdk's setBufferRange): playback only
-    // starts/resumes once `min` is buffered and the demuxer keeps reading up
-    // to `max` — mdk's default is 1s..4s, too little for a source with
-    // bursty latency (e.g. a network-mounted library), where each hiccup
-    // shows as a stutter.
-    controller.setProperty('buffer', '$playbackBufferMinMs+$playbackBufferMaxMs');
+    controller.selectSubtitles(selection.subtitleTracks);
+    // Engine-specific workarounds (a/v sync) live in the engine. The read-ahead
+    // is "min+max": playback only starts/resumes once `min` is buffered and the
+    // demuxer keeps reading up to `max`, to ride out bursty latency from a
+    // network-backed library.
+    controller.tune(
+      const PlaybackTuning(
+        bufferMin: Duration(milliseconds: playbackBufferMinMs),
+        bufferMax: Duration(milliseconds: playbackBufferMaxMs),
+      ),
+    );
     return controller;
   }
 
@@ -1431,7 +1409,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       final nextEntry = channel[nextIndex];
       setState(() => _status = 'preload: ${nextEntry.label}');
       final clock = Stopwatch()..start();
-      VideoPlayerController? controller;
+      VideoPlayback? controller;
       Log.debug('preload', 'attempt ${failures + 1} for item $nextIndex started');
       try {
         controller = await _createController(nextEntry);
@@ -1651,8 +1629,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // differs between a real item and the gap slate, so the caller handles
   // that itself once this completes.
   Future<Duration> _rampCrossfade({
-    required VideoPlayerController? outgoing,
-    required VideoPlayerController incoming,
+    required VideoPlayback? outgoing,
+    required VideoPlayback incoming,
     required int generation,
   }) async {
     if (generation != _loadGeneration) return Duration.zero;
@@ -1721,7 +1699,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // controller is disposed (through the shared GL queue, not awaited: the next
   // controller's initialize is queued behind it). Whatever a platform call
   // does, the swap happens: the ramp must always complete.
-  Future<void> _finishRamp(VideoPlayerController? outgoing, VideoPlayerController incoming, int generation) async {
+  Future<void> _finishRamp(VideoPlayback? outgoing, VideoPlayback incoming, int generation) async {
     if (outgoing != null) {
       await _bestEffort(() => outgoing.setVolume(0));
       await _bestEffort(() => outgoing.pause());
@@ -1738,10 +1716,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _aIsActive = !_aIsActive;
   }
 
-  Future<VideoPlayerController> _createSlateController() async {
-    final controller = trackController(VideoPlayerController.asset(slateAssetPath));
+  Future<VideoPlayback> _createSlateController() async {
+    final controller = trackController(videoEngine.createAsset(slateAssetPath));
     try {
-      await serializeGlOp(() => controller.initialize(), label: 'initialize-slate');
+      await controller.open(label: 'initialize-slate');
       await controller.setLooping(true);
     } catch (e) {
       Log.error('slate', 'the gap slate failed to open', error: e);
@@ -1770,8 +1748,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // the end of the hold) if that turns out to matter.
   Future<void> _holdForGap({
     required int nextIndex,
-    required VideoPlayerController? outgoing,
-    required VideoPlayerController pending,
+    required VideoPlayback? outgoing,
+    required VideoPlayback pending,
     required Duration gap,
     required int generation,
   }) async {
@@ -2159,7 +2137,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     final active = _aIsActive ? _controllerA : _controllerB;
     if (head == null || !identical(head, active) || _headIndex != _currentIndex) return null;
     if (_currentIndex < 0 || _currentIndex >= channel.length) return null;
-    final value = head.value;
+    final value = head.state;
     if (!value.isInitialized) return null;
     return picturePlayheadAt(channel[_currentIndex].startAt, channel[_currentIndex].itemOffset, channel[_currentIndex].clipDuration, value.position);
   }
@@ -2252,12 +2230,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // Human-readable label for a track option in the picker/toast: prefers the
   // "title" metadata tag (e.g. "Director's Commentary"), falls back to
   // "language" (e.g. "por"), falls back to a positional placeholder — same
-  // metadata read _createController already does for the tier 2-4 cascade
-  // (see _metadataValue).
-  String _trackLabel(Map<String, String> metadata, int index) {
-    final title = _metadataValue(metadata, 'title');
+  // track data _createController already reads for the tier 2-4 cascade.
+  String _trackLabel(TrackInfo track, int index) {
+    final title = track.title;
     if (title != null && title.isNotEmpty) return title;
-    final language = _metadataValue(metadata, 'language');
+    final language = track.language;
     if (language != null && language.isNotEmpty) return language;
     return 'Track ${index + 1}';
   }
@@ -2275,8 +2252,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // TierOneOverride, consulted by _createController). Shared by both the
   // picker (TrackSelectorOverlay.onSelect) and the cycleAudioTrack
   // accelerator (_cycleTrack) — the one convergence point for tier 1 writes.
-  void _applyAudioTrack(VideoPlayerController controller, String channelId, int index, String label) {
-    controller.setAudioTracks([index]);
+  void _applyAudioTrack(VideoPlayback controller, String channelId, int index, String label) {
+    controller.selectAudio([index]);
     unawaited(_settings.setAudioTrackOverride(channelId, index));
     _showTrackToast('Audio: $label');
   }
@@ -2285,8 +2262,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // explicit "None" entry — setSubtitleTracks([]) disables subtitles, and
   // -1 is the sentinel TierOneOverride.subtitleIndex/StreamSelectionResolver
   // already understand as "explicit no subtitle" (see their doc comments).
-  void _applySubtitleTrack(VideoPlayerController controller, String channelId, int index, String label) {
-    controller.setSubtitleTracks(index == -1 ? const [] : [index]);
+  void _applySubtitleTrack(VideoPlayback controller, String channelId, int index, String label) {
+    controller.selectSubtitles(index == -1 ? const [] : [index]);
     unawaited(_settings.setSubtitleTrackOverride(channelId, index));
     _showTrackToast('Subtitle: $label');
   }
@@ -2401,17 +2378,17 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   void _cycleTrack(TrackSelectorPanel panel) {
     final controller = _aIsActive ? _controllerA : _controllerB;
     if (controller == null || _channels.isEmpty || _channelIndex >= _channels.length) return;
-    final info = controller.getMediaInfo();
+    final info = controller.tracks;
     final channelId = _channels[_channelIndex].id;
     if (panel == TrackSelectorPanel.audio) {
-      final tracks = info?.audio ?? const [];
+      final tracks = info.audio;
       if (tracks.isEmpty) return;
       final current = _settings.getAudioTrackOverride(channelId);
       final currentIndex = (current != null && current >= 0 && current < tracks.length) ? current : -1;
       final nextIndex = (currentIndex + 1) % tracks.length;
-      _applyAudioTrack(controller, channelId, nextIndex, _trackLabel(tracks[nextIndex].metadata, nextIndex));
+      _applyAudioTrack(controller, channelId, nextIndex, _trackLabel(tracks[nextIndex], nextIndex));
     } else {
-      final tracks = info?.subtitle ?? const [];
+      final tracks = info.subtitle;
       // -1 (the virtual "None" entry) is always part of the cycle, same set
       // the picker's Subtitle panel offers.
       final options = <int>[-1, for (var i = 0; i < tracks.length; i++) i];
@@ -2420,7 +2397,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       final currentPosition = options.indexOf(current);
       final nextPosition = ((currentPosition < 0 ? -1 : currentPosition) + 1) % options.length;
       final nextIndex = options[nextPosition];
-      final label = nextIndex == -1 ? 'None' : _trackLabel(tracks[nextIndex].metadata, nextIndex);
+      final label = nextIndex == -1 ? 'None' : _trackLabel(tracks[nextIndex], nextIndex);
       _applySubtitleTrack(controller, channelId, nextIndex, label);
     }
   }
@@ -2483,8 +2460,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     super.dispose();
   }
 
-  Widget _videoFor(VideoPlayerController? controller, double opacity) {
-    if (controller == null || !controller.value.isInitialized) {
+  Widget _videoFor(VideoPlayback? controller, double opacity) {
+    final state = controller?.state;
+    if (controller == null || state == null || !state.isInitialized) {
       return const SizedBox.shrink();
     }
     return Opacity(
@@ -2495,9 +2473,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       child: FittedBox(
         fit: BoxFit.contain,
         child: SizedBox(
-          width: controller.value.size.width,
-          height: controller.value.size.height,
-          child: VideoPlayer(controller),
+          width: state.size.width,
+          height: state.size.height,
+          child: VideoSurface(controller),
         ),
       ),
     );
@@ -2902,7 +2880,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                   child: IgnorePointer(
                     child: DebugOverlay(
                       controller: _aIsActive ? _controllerA : _controllerB,
-                      decoderPreference: 'CUDA > VAAPI > VDPAU > FFmpeg',
+                      engineName: videoEngine.name,
+                      decoderPreference: videoEngine.decoderSummary,
                     ),
                   ),
                 );
@@ -2958,20 +2937,20 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
               builder: (context, open, _) {
                 if (!open) return const Positioned.fill(child: SizedBox.shrink());
                 final controller = _aIsActive ? _controllerA : _controllerB;
-                final info = controller?.getMediaInfo();
-                final audioStreams = info?.audio ?? const [];
-                final subtitleStreams = info?.subtitle ?? const [];
+                final tracks = controller?.tracks ?? MediaTracks.none;
+                final audioStreams = tracks.audio;
+                final subtitleStreams = tracks.subtitle;
                 final channelId =
                     (_channelIndex >= 0 && _channelIndex < _channels.length) ? _channels[_channelIndex].id : null;
 
                 final audioOptions = [
                   for (var i = 0; i < audioStreams.length; i++)
-                    TrackOption(index: i, label: _trackLabel(audioStreams[i].metadata, i)),
+                    TrackOption(index: i, label: _trackLabel(audioStreams[i], i)),
                 ];
                 final subtitleOptions = [
                   const TrackOption(index: -1, label: 'None'),
                   for (var i = 0; i < subtitleStreams.length; i++)
-                    TrackOption(index: i, label: _trackLabel(subtitleStreams[i].metadata, i)),
+                    TrackOption(index: i, label: _trackLabel(subtitleStreams[i], i)),
                 ];
 
                 final currentAudioIndex = channelId == null ? null : _settings.getAudioTrackOverride(channelId);
@@ -3017,16 +2996,3 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 }
 
 int _lastIndex(List<TrackOption> options) => options.isEmpty ? 0 : options.length - 1;
-
-// Case-insensitive lookup into a track's ffmpeg-style metadata map (used by
-// _createController to read "language"/"title" for the stream selection
-// cascade) — real-world containers aren't fully consistent about casing,
-// and StreamInfo.metadata (see fvp's media_info.dart) is a plain
-// Map<String, String> with no dedicated accessor.
-String? _metadataValue(Map<String, String> metadata, String key) {
-  for (final entry in metadata.entries) {
-    if (entry.key.toLowerCase() == key) return entry.value;
-  }
-  return null;
-}
-
