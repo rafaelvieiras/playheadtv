@@ -10,10 +10,12 @@ owns scheduling metadata — it never touches video. See `README.md` and
 ## Layout
 
 - `client/` — Flutter, desktop-first (Linux/Windows) today, then
-  Android/Android TV. Video engine: `fvp` (libmdk), coupled directly today
-  (3 call sites: `main.dart`, `mosaic_page.dart`, `debug_overlay.dart`) —
-  see issue #12 for extracting it behind a playback abstraction; don't
-  assume that abstraction exists yet.
+  Android/Android TV. Video engine: `fvp` (libmdk) behind the app-owned
+  `VideoEngine`/`VideoPlayback` seam (`lib/video/video_engine.dart`, the only
+  implementation `FvpVideoEngine`; `docs/ARCHITECTURE.md` "Client video
+  engine"). Only `lib/video/` imports `fvp`/`video_player`
+  (`test/video_engine_boundary_test.dart` enforces it): everything else uses
+  `VideoPlayback`, `VideoSurface`, `MediaTracks` and `PlaybackState`.
 - `backend/` — Go.
   - `internal/domain` — plain domain types, no logic.
   - `internal/storage` — the `storage.DB` abstraction (SQLite implemented;
@@ -239,8 +241,9 @@ or LLM, and to every artifact in the repo:
   no inhibitor.
 - While a channel loads (boot or switch) the player shows a centered spinner
   instead of a status card; errors keep the plain status card. Each
-  `VideoPlayerController` gets mdk's `buffer` property
-  (`playbackBufferMinMs`+`playbackBufferMaxMs` in `main.dart`): playback
+  `VideoPlayback` is tuned with the read-ahead window
+  (`playbackBufferMinMs`+`playbackBufferMaxMs` in `main.dart`, mdk's `buffer`
+  property in `FvpVideoEngine.tune`): playback
   waits for the min and the demuxer reads ahead up to the max, to ride out
   bursty latency from network-backed libraries. A min above the remaining
   length of the 8s integration-test clips stalls their channel load — keep
@@ -481,8 +484,9 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   store, or it'll leak state between `testWidgets` cases in the same file —
   see the `setUp` in `channel_navigation_test.dart`/`mosaic_test.dart` for
   the pattern.
-- Every `VideoPlayerController` sets `avsync.audio=0` (`_createController` in
-  `client/lib/main.dart`, and the mosaic preview). By default mdk presents
+- Every `VideoPlayback` is `tune`d, and `FvpVideoEngine.tune` sets
+  `avsync.audio=0` (`_createController` in `client/lib/main.dart`, and the
+  mosaic preview). By default mdk presents
   video frames against the AUDIO clock; when that sync hiccups the picture
   freezes on one frame while audio keeps playing normally (reproduced
   2026-09-28 on every channel/decoder/renderer; Flutter's own FPS stays
@@ -531,18 +535,18 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   frees them on a separate dispose thread during `dispose()`, with no
   synchronization between the two, and those threads are process-global —
   shared by every `VideoPlayerController` instance, not one pair per
-  controller. A fast enough channel switch lets a stale controller's
+  controller. This is fvp's problem, so it is `FvpVideoEngine`'s to solve. A fast enough channel switch lets a stale controller's
   `dispose()` (fire-and-forget, since the aborting `_loadGeneration` check
   doesn't block on it) overlap with a different, already-in-flight
   generation's `initialize()` for its own controller, reusing the same GL
   object id mid-teardown. The fix: `client/lib/util/gl_serial.dart`'s
-  `serializeGlOp` — every `initialize()`/`dispose()` call in `main.dart`
-  AND `mosaic_page.dart` (its own, separate preview controller hits the same
-  process-global threads) is routed through one shared FIFO chain, so the
-  native GL work never overlaps regardless of which unrelated Future chain
-  enqueued it. Any NEW call site that creates or disposes a
-  `VideoPlayerController` must go through `serializeGlOp` too, or this comes
-  back. Centralizing every call behind one queue has its own failure mode,
+  `serializeGlOp` — `FvpVideoEngine`'s `open()` and `dispose()` (for
+  every playback: the player's, the slate, the mosaic preview, whose own
+  controller hits the same process-global threads) are routed through one
+  shared FIFO chain, so the native GL work never overlaps regardless of which
+  unrelated Future chain enqueued it. Callers just `await playback.open()` /
+  `disposeController(playback)`; a NEW call site needs nothing extra, but an
+  fvp playback created outside `FvpVideoEngine` would bring this back. Centralizing every call behind one queue has its own failure mode,
   though: the pre-existing raster-thread stall documented just above (a
   create()/dispose() that never resolves under machine load) would otherwise
   wedge that single shared queue forever, blocking every *other*, unrelated

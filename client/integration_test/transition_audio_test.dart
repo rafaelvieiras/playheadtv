@@ -10,7 +10,7 @@ import 'package:client/main.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:video_player/video_player.dart';
+import 'package:client/video/video_engine.dart';
 
 import 'support/backend_fixture.dart';
 import 'support/offline_helpers.dart';
@@ -62,9 +62,9 @@ void main() {
 
     Sample sample(WidgetTester tester) {
       final players = <({double volume, bool playing})>[];
-      for (final element in find.byType(VideoPlayer).evaluate()) {
-        final controller = (element.widget as VideoPlayer).controller;
-        if (controller.value.isInitialized) players.add((volume: controller.value.volume, playing: controller.value.isPlaying));
+      for (final element in find.byType(VideoSurface).evaluate()) {
+        final controller = (element.widget as VideoSurface).playback;
+        if (controller.state.isInitialized) players.add((volume: controller.state.volume, playing: controller.state.isPlaying));
       }
       return (at: DateTime.now(), title: osdTitle(tester), players: players);
     }

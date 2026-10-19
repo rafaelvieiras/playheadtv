@@ -80,7 +80,7 @@ void main() {
         timeout: const Duration(seconds: 30),
         failMessage: 'the controller opened after leaving the player was never disposed',
       );
-      expect(inFlight.single.value.isPlaying, isFalse, reason: 'an orphan controller must not keep playing');
+      expect(inFlight.single.state.isPlaying, isFalse, reason: 'an orphan controller must not keep playing');
 
       // Re-entering the channel (the featured tile) plays it.
       await pressKey(tester, LogicalKeyboardKey.enter);

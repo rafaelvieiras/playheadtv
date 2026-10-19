@@ -1754,12 +1754,50 @@ holds the pure policy:
   incoming item started (minus the point it joined at after a resync), so
   transitions do not drift by the length of the ramp.
 
+## Client video engine
+
+The client talks to the video engine only through `lib/video/video_engine.dart`:
+
+- `VideoEngine` creates playbacks (`createNetwork`, `createAsset`), does the
+  one-time process setup (`register()`, called from `main()`) and names itself
+  and its decoder policy for the debug overlay. `videoEngine` is the one in use;
+  `useVideoEngine` replaces it (a test double, or a per-platform choice at
+  startup) before any playback exists.
+- `VideoPlayback` is one media being played or prepared: `open`, `play`,
+  `pause`, `seekTo`, `setVolume`, `setLooping`, a `state` snapshot
+  (`PlaybackState`: initialized, playing, buffering, position, duration,
+  buffered-until, frame size, volume), the `tracks` it found (`MediaTracks`),
+  `selectAudio`/`selectSubtitles`, `tune` and `dispose`. `VideoSurface` draws one.
+- Tracks are app-owned types (`AudioTrackInfo`, `SubtitleTrackInfo`,
+  `VideoTrackInfo`), not the engine's. `selectAudio`/`selectSubtitles` take the
+  0-based position in the matching list of `MediaTracks`, never the container's
+  absolute stream number; the stream-selection resolver and the track picker use
+  the same positions.
+- Engine-specific tuning is the engine's business. `tune(PlaybackTuning)` carries
+  what the app wants (the read-ahead window); the engine adds whatever it needs
+  on its own (`FvpVideoEngine` sets `avsync.audio=0`, see AGENTS.md).
+- **The native lifecycle serialization belongs to the engine.** `FvpVideoEngine`
+  routes `open` and `dispose` through the shared FIFO (`serializeGlOp`, with its
+  stall valve) because libmdk's GL threads are process-global; `lib/main.dart`
+  and the mosaic never call `serializeGlOp`. A new engine decides for itself
+  whether it needs a queue.
+- `FvpVideoEngine` (`lib/video/fvp_video_engine.dart`) is the only file that
+  imports `fvp` or `video_player`; `test/video_engine_boundary_test.dart` fails
+  when anything else does. The crossfade A/B model, the gap slate and the mosaic
+  preview are unchanged and sit on top of this seam.
+
+The playback surface stays a single, never-rebuilt widget per playback (see the
+GL-texture gotcha in AGENTS.md): `buildView()` is called once per
+`VideoSurface` build and the player places it through the same
+`ValueListenableBuilder` structure as before.
+
 ## Client controller lifecycle (leaving the player)
 
-Every `VideoPlayerController` the client creates (the player's crossfade pair,
+Every `VideoPlayback` (the engine-neutral handle, see "Client video engine") the client creates (the player's crossfade pair,
 preloads, the gap slate, the mosaic preview) is registered by
 `lib/util/controller_lifecycle.dart` until its dispose has finished, and every
-dispose goes through `disposeController` (the shared GL queue, `serializeGlOp`).
+dispose goes through `disposeController` (the engine queues its own native
+teardown).
 
 - **Leaving invalidates everything.** `_ChannelPlayerPageState.dispose()` bumps
   `_loadGeneration` (the same counter a channel switch bumps), so every load,

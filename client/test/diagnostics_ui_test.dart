@@ -154,7 +154,7 @@ void main() {
       Log.debug('player', 'event number $i');
     }
     await tester.pumpWidget(const MaterialApp(
-      home: Scaffold(body: Stack(children: [DebugOverlay(controller: null, decoderPreference: 'test')])),
+      home: Scaffold(body: Stack(children: [DebugOverlay(controller: null, engineName: 'test', decoderPreference: 'test')])),
     ));
     expect(text(tester, 'debug-overlay-log-level'), 'Debug');
     final tail = tester.widget<Column>(find.byKey(const Key('debug-overlay-log-tail')));
