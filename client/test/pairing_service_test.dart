@@ -103,6 +103,18 @@ void main() {
       expect(await api.start(name: 'x', platform: 'linux'), isA<PairingStartFailure>());
     });
 
+    test('says an older server lacks pairing, instead of "could not reach"', () async {
+      for (final status in [401, 404, 405]) {
+        final api = PairingApi(baseUrl: 'http://example.test', client: MockClient((_) async => _json({'error': 'x'}, status)));
+        final result = await api.start(name: 'x', platform: 'linux');
+        expect(result, isA<PairingStartFailure>(), reason: 'status $status');
+        final message = (result as PairingStartFailure).message;
+        expect(message, contains('does not support device pairing'), reason: 'status $status');
+        expect(message, isNot(contains('Could not reach')));
+      }
+      final api = PairingApi(baseUrl: 'http://example.test', client: MockClient((_) async => _json({'error': 'x'}, 500)));
+      expect(((await api.start(name: 'x', platform: 'linux')) as PairingStartFailure).message, contains('refused the request (500)'));
+    });
     test('maps a transport failure to a safe message', () async {
       final api = PairingApi(
         baseUrl: 'http://example.test',

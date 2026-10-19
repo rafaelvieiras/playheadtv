@@ -170,6 +170,14 @@ class PairingApi {
     }
 
     if (response.statusCode != 200) {
+      // A server without the pairing feature answers 401 (its auth layer sits
+      // in front of unknown routes), 404 or 405: it is reachable, just too old.
+      if (const {401, 403, 404, 405}.contains(response.statusCode)) {
+        return PairingStartFailure(
+          'This server does not support device pairing. Update the Playhead TV backend and try again.',
+          statusCode: response.statusCode,
+        );
+      }
       return PairingStartFailure(_refusedMessage(response.statusCode), statusCode: response.statusCode);
     }
     final json = _decodeObject(response);
