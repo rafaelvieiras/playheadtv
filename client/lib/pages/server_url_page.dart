@@ -26,7 +26,12 @@ class ServerUrlPage extends StatefulWidget {
   /// Replaced by tests (the version probe uses it).
   final http.Client? httpClient;
 
-  const ServerUrlPage({super.key, this.httpClient});
+  /// True when the pairing screen opened this page and is waiting for the
+  /// answer: the chosen address is popped back instead of replacing the stack,
+  /// so Back returns to the PIN. False when this page is the first screen.
+  final bool returnsResult;
+
+  const ServerUrlPage({super.key, this.httpClient, this.returnsResult = false});
 
   @override
   State<ServerUrlPage> createState() => _ServerUrlPageState();
@@ -105,6 +110,10 @@ class _ServerUrlPageState extends State<ServerUrlPage> {
     await settings.setChosenServerUrl(url);
     Log.info('pairing', 'server address accepted');
     if (!mounted) return;
+    if (widget.returnsResult) {
+      Navigator.of(context).pop(url);
+      return;
+    }
     Navigator.of(context).pushReplacement(MaterialPageRoute(
       builder: (_) => PairingPage(serverUrl: url, httpClient: widget.httpClient),
     ));
