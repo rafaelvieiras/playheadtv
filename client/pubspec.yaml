@@ -52,6 +52,9 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  # The ExoPlayer engine test stands in for the Android plugin by implementing
+  # the platform interface (already in the tree through video_player).
+  video_player_platform_interface: ^6.6.0
   integration_test:
     sdk: flutter
 

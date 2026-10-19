@@ -26,4 +26,5 @@ abstract final class AppIcons {
   static const IconData dimmer = Symbols.brightness_medium;
   static const IconData diagnostics = Symbols.bug_report;
   static const IconData logLevel = Symbols.tune;
+  static const IconData videoEngine = Symbols.movie;
 }

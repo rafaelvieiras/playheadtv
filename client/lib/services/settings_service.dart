@@ -38,6 +38,7 @@ class SettingsService implements UpdateNoticeStore {
   static const _exhaustedBehaviorKey = 'cache_exhausted_behavior';
   static const _cacheWindowLimitKey = 'cache_window_limit_hours';
   static const _startFullScreenKey = 'start_fullscreen';
+  static const _videoEngineKey = 'video_engine';
   static const _uiScaleKey = 'ui_scale_override';
   static const _preloadLeadKey = 'preload_lead_seconds';
   static const _dimLevelKey = 'dim_level_percent';
@@ -87,6 +88,13 @@ class SettingsService implements UpdateNoticeStore {
   bool startFullScreen(bool defaultValue) => _prefs.getBool(_startFullScreenKey) ?? defaultValue;
 
   Future<void> setStartFullScreen(bool value) => _prefs.setBool(_startFullScreenKey, value);
+
+  /// The video engine the user chose in Settings (`fvp` or `exo`, see
+  /// video/video_engine.dart), or null when never chosen. Read once at startup:
+  /// a change applies the next time the app starts.
+  String? get videoEngine => _prefs.getString(_videoEngineKey);
+
+  Future<void> setVideoEngine(String value) => _prefs.setString(_videoEngineKey, value);
 
   /// The user's fixed interface size (a factor, see ui/ui_scale.dart), or null
   /// for Automatic.

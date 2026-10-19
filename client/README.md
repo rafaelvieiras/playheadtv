@@ -84,7 +84,7 @@ launcher sets it to `<install root>/config.json`), else
 `$XDG_CONFIG_HOME/playheadtv/config.json`, else `~/.config/playheadtv/config.json`.
 Keys: `playhead_base_url`, `playhead_device_token`, `jellyfin_url`,
 `jellyfin_api_key`, `playhead_channel_id`, `working_set_size`,
-`preload_lead_seconds`, `dim_level_percent`, `epg_sync_interval_minutes`, `start_fullscreen`, `log_level`, `auto_update`, `update_channel` (see
+`preload_lead_seconds`, `dim_level_percent`, `epg_sync_interval_minutes`, `start_fullscreen`, `video_engine`, `log_level`, `auto_update`, `update_channel` (see
 `packaging/linux/config.example.json`). An absent or invalid file is treated as
 empty.
 
@@ -102,6 +102,14 @@ empty.
 or `start_fullscreen` in the config file (a JSON boolean, the variable wins) changes
 that default for an installation, so a packaged launcher can start windowed or full
 screen. The choice made in Settings is saved and wins over that default.
+
+**Video engine.** The default is `fvp` (libmdk), on every platform. On Android,
+`video_engine` in the config file (or the `PLAYHEADTV_VIDEO_ENGINE` environment
+variable, which wins) set to `exo` plays with ExoPlayer instead, which uses the
+platform's hardware decoders; Settings has a "Video player" row for the same
+choice (it applies at the next start, and the file or variable wins over it).
+ExoPlayer cannot show embedded subtitles. An unknown value or `exo` on another
+platform falls back to `fvp` and logs a warning.
 
 ### Logging
 
