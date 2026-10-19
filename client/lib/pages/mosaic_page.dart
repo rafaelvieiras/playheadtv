@@ -352,7 +352,7 @@ class _MosaicPageState extends State<MosaicPage> {
       _move(MosaicDirection.up);
     } else if (key == LogicalKeyboardKey.arrowDown) {
       _move(MosaicDirection.down);
-    } else if (key == LogicalKeyboardKey.enter) {
+    } else if (selectKeyAliases.contains(key)) {
       unawaited(_activateFocused());
     }
   }
