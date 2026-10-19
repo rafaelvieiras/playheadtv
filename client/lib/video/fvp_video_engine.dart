@@ -3,11 +3,11 @@
 // native create/dispose and the `avsync.audio` / `buffer` properties.
 import 'dart:io' show Platform;
 
-import 'package:flutter/widgets.dart';
 import 'package:fvp/fvp.dart' as fvp;
 import 'package:video_player/video_player.dart';
 
 import '../util/gl_serial.dart';
+import 'controller_playback.dart';
 import 'video_engine.dart';
 
 class FvpVideoEngine implements VideoEngine {
@@ -49,28 +49,8 @@ class FvpVideoEngine implements VideoEngine {
       _FvpPlayback(VideoPlayerController.asset(assetPath));
 }
 
-class _FvpPlayback implements VideoPlayback {
-  final VideoPlayerController _controller;
-
-  _FvpPlayback(this._controller);
-
-  @override
-  String get source => _controller.dataSource;
-
-  @override
-  PlaybackState get state {
-    final v = _controller.value;
-    return PlaybackState(
-      isInitialized: v.isInitialized,
-      isPlaying: v.isPlaying,
-      isBuffering: v.isBuffering,
-      position: v.position,
-      duration: v.duration,
-      bufferedUntil: v.buffered.isEmpty ? null : v.buffered.last.end,
-      size: v.size,
-      volume: v.volume,
-    );
-  }
+class _FvpPlayback extends ControllerPlayback {
+  _FvpPlayback(super.controller);
 
   // fvp/libmdk creates GL resources on its own raster thread during
   // initialize() and frees them on a separate dispose thread, and those
@@ -79,30 +59,15 @@ class _FvpPlayback implements VideoPlayback {
   // So every initialize()/dispose() goes through the one shared FIFO.
   @override
   Future<void> open({String label = 'initialize'}) =>
-      serializeGlOp(() => _controller.initialize(), label: label);
+      serializeGlOp(() => controller.initialize(), label: label);
 
   @override
   Future<void> dispose() =>
-      serializeGlOp(() => _controller.dispose(), label: 'dispose');
-
-  @override
-  Future<void> play() => _controller.play();
-
-  @override
-  Future<void> pause() => _controller.pause();
-
-  @override
-  Future<void> seekTo(Duration position) => _controller.seekTo(position);
-
-  @override
-  Future<void> setVolume(double volume) => _controller.setVolume(volume);
-
-  @override
-  Future<void> setLooping(bool looping) => _controller.setLooping(looping);
+      serializeGlOp(() => controller.dispose(), label: 'dispose');
 
   @override
   MediaTracks get tracks {
-    final info = _controller.getMediaInfo();
+    final info = controller.getMediaInfo();
     if (info == null) return MediaTracks.none;
     return MediaTracks(
       video: [
@@ -143,13 +108,13 @@ class _FvpPlayback implements VideoPlayback {
   // `tracks` keeps each list in mdk's order and the app only ever passes
   // positions in it.
   @override
-  void selectAudio(List<int> tracks) => _controller.setAudioTracks(tracks);
+  void selectAudio(List<int> tracks) => controller.setAudioTracks(tracks);
 
   // An explicit empty list is what disables libmdk's default-enabled first
   // MKV subtitle track.
   @override
   void selectSubtitles(List<int> tracks) =>
-      _controller.setSubtitleTracks(tracks);
+      controller.setSubtitleTracks(tracks);
 
   @override
   void tune(PlaybackTuning tuning) {
@@ -164,7 +129,7 @@ class _FvpPlayback implements VideoPlayback {
     // audio; the value must be "0"/"1" (not "false"/"true" — mdk calls stoi()
     // on the value and "false" kills the process with
     // std::invalid_argument).
-    _controller.setProperty('avsync.audio', '0');
+    controller.setProperty('avsync.audio', '0');
     // Read-ahead window ("minMs+maxMs", mdk's setBufferRange): playback only
     // starts/resumes once `min` is buffered and the demuxer keeps reading up
     // to `max` — mdk's default is 1s..4s, too little for a source with bursty
@@ -173,15 +138,12 @@ class _FvpPlayback implements VideoPlayback {
     final min = tuning.bufferMin;
     final max = tuning.bufferMax;
     if (min != null && max != null) {
-      _controller.setProperty(
+      controller.setProperty(
         'buffer',
         '${min.inMilliseconds}+${max.inMilliseconds}',
       );
     }
   }
-
-  @override
-  Widget buildView() => VideoPlayer(_controller);
 }
 
 // Case-insensitive lookup into a track's ffmpeg-style metadata map: real-world

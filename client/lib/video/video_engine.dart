@@ -11,6 +11,7 @@
 // engine package.
 import 'package:flutter/widgets.dart';
 
+import 'exo_video_engine.dart';
 import 'fvp_video_engine.dart';
 
 /// A point-in-time snapshot of a playback. Cheap to read; never cached by the
@@ -193,6 +194,63 @@ VideoEngine? _engine;
 /// The engine in use. Lazily the default one, so a test harness that boots the
 /// app without `main()` still has an engine.
 VideoEngine get videoEngine => _engine ??= FvpVideoEngine();
+
+/// The engines the app can play with, as named in the config.
+enum VideoEngineKind {
+  /// libmdk through `fvp`: every platform.
+  fvp,
+
+  /// ExoPlayer (Media3): Android only.
+  exo,
+}
+
+/// Which engine a setting asks for. [requested] is the value of the
+/// `PLAYHEADTV_VIDEO_ENGINE` environment variable or `video_engine` in the
+/// config file (`fvp`, `exo`; case-insensitive). Absent, empty or unknown, and
+/// `exo` anywhere but Android, give [VideoEngineKind.fvp]; [onFallback] is told
+/// why when a request could not be honored.
+VideoEngineKind resolveVideoEngineKind(
+  String? requested, {
+  required bool isAndroid,
+  void Function(String reason)? onFallback,
+}) {
+  final value = requested?.trim().toLowerCase() ?? '';
+  switch (value) {
+    case '':
+    case 'fvp':
+      return VideoEngineKind.fvp;
+    case 'exo':
+    case 'exoplayer':
+      if (isAndroid) return VideoEngineKind.exo;
+      onFallback?.call('the ExoPlayer engine only exists on Android');
+      return VideoEngineKind.fvp;
+    default:
+      onFallback?.call('unknown video engine "$requested"');
+      return VideoEngineKind.fvp;
+  }
+}
+
+/// The Settings row's value: the saved engine, and a reminder when it is not the
+/// one running (a change applies at the next start).
+String videoEngineLabel(VideoEngineKind saved, {required VideoEngine running}) {
+  final name = switch (saved) {
+    VideoEngineKind.fvp => 'Default (libmdk)',
+    VideoEngineKind.exo => 'ExoPlayer',
+  };
+  final active = switch (running) {
+    ExoVideoEngine() => VideoEngineKind.exo,
+    _ => VideoEngineKind.fvp,
+  };
+  return active == saved ? name : '$name, applies after restart';
+}
+
+/// Installs the engine [kind] names. Call before [VideoEngine.register] and
+/// before any playback exists.
+void selectVideoEngine(VideoEngineKind kind) =>
+    useVideoEngine(switch (kind) {
+      VideoEngineKind.fvp => FvpVideoEngine(),
+      VideoEngineKind.exo => ExoVideoEngine(),
+    });
 
 /// Replaces the engine (a test double, or a platform choice made at startup);
 /// null goes back to the default. Call before any playback is created.

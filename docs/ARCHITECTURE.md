@@ -1781,10 +1781,48 @@ The client talks to the video engine only through `lib/video/video_engine.dart`:
   stall valve) because libmdk's GL threads are process-global; `lib/main.dart`
   and the mosaic never call `serializeGlOp`. A new engine decides for itself
   whether it needs a queue.
-- `FvpVideoEngine` (`lib/video/fvp_video_engine.dart`) is the only file that
-  imports `fvp` or `video_player`; `test/video_engine_boundary_test.dart` fails
-  when anything else does. The crossfade A/B model, the gap slate and the mosaic
+- Two implementations exist, both in `lib/video/`: `FvpVideoEngine` (libmdk,
+  every platform, the default) and `ExoVideoEngine` (ExoPlayer/Media3 through
+  `video_player_android`, Android only; see "ExoPlayer engine" below). They share
+  `ControllerPlayback`, the playback control, state and view on top of the
+  `video_player` plugin's controller. Only `lib/video/` imports `fvp` or
+  `video_player`; `test/video_engine_boundary_test.dart` fails when anything else
+  does (its one exception is the ExoPlayer engine test, which fakes the plugin). The crossfade A/B model, the gap slate and the mosaic
   preview are unchanged and sit on top of this seam.
+
+### ExoPlayer engine
+
+`ExoVideoEngine` exists because libmdk's Android path can leave a TV box with
+sound and a black picture, while ExoPlayer drives the platform MediaCodec the
+way those boxes' decoders are built for. It is opt-in and never chosen for the
+user:
+
+- **Choosing it.** `PLAYHEADTV_VIDEO_ENGINE` (environment), else `video_engine`
+  in the config file, else the choice saved in Settings -> "Video player"
+  (Android only, applies at the next start), else `fvp`. `exo` anywhere but
+  Android, and any unknown value, fall back to `fvp` with a warning in the log;
+  the app never fails to start for a bad engine name
+  (`resolveVideoEngineKind`, `selectVideoEngine`).
+- **Languages.** Stream rules are authored against the three-letter tag a
+  container carries (`por`, `eng`), which libmdk reports. Media3 reports the
+  shortest form (`pt`, `en-US`). `canonicalLanguage` (`language_code.dart`) maps
+  it back to ISO 639-2/B, so the same file resolves to the same track whichever
+  engine plays it. Add a pair there when a language is missing; an unknown tag
+  passes through unchanged.
+- **Tracks.** The plugin reads tracks asynchronously and `tracks` is
+  synchronous, so `open()` reads them once. `selectAudio` takes the position in
+  that list, translated to the plugin's `groupIndex_trackIndex` id.
+- **Limits of the plugin** (not of the app). Embedded subtitles are not exposed:
+  `tracks.subtitle` is empty, so the OSD's CC button is dimmed and a rule that
+  demands a subtitle language does not match. The read-ahead window cannot be
+  tuned. One audio track plays at a time. There is no software fallback: a codec
+  the device cannot decode does not play.
+- **Audio focus.** Players are created with `mixWithOthers`, so none asks for
+  audio focus; otherwise the crossfade's incoming player would make ExoPlayer
+  pause the one fading out.
+- **No GL queue.** The serialization around create/dispose is libmdk's problem
+  (process-global GL threads) and stays in `FvpVideoEngine`; ExoPlayer instances
+  are independent.
 
 The playback surface stays a single, never-rebuilt widget per playback (see the
 GL-texture gotcha in AGENTS.md): `buildView()` is called once per

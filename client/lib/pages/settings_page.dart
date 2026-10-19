@@ -5,6 +5,7 @@
 // rows, Select opens one (or flips the full screen row) and Back (Esc by
 // default) returns to the mosaic.
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -16,6 +17,7 @@ import '../dimmer.dart';
 import '../preload_lead.dart';
 import '../services/settings_service.dart';
 import '../ui/ui_scale.dart';
+import '../video/video_engine.dart';
 import '../log/log.dart';
 import 'controls_mapping_page.dart';
 import 'diagnostics_page.dart';
@@ -76,6 +78,19 @@ class _SettingsPageState extends State<SettingsPage> {
     if (settings == null) return;
     final current = settings.preloadLeadSeconds ?? AppConfig.preloadLeadDefaultSeconds;
     unawaited(settings.setPreloadLeadSeconds(nextPreloadLeadChoice(current)).then((_) {
+      if (mounted) setState(() {});
+    }));
+  }
+
+  // Which engine is saved, as it will apply at the next start. Settings only
+  // offers the choice where there is one (Android).
+  VideoEngineKind get _savedVideoEngine => resolveVideoEngineKind(_settings?.videoEngine, isAndroid: Platform.isAndroid);
+
+  void _toggleVideoEngine() {
+    final settings = _settings;
+    if (settings == null) return;
+    final next = _savedVideoEngine == VideoEngineKind.exo ? VideoEngineKind.fvp : VideoEngineKind.exo;
+    unawaited(settings.setVideoEngine(next.name).then((_) {
       if (mounted) setState(() {});
     }));
   }
@@ -206,6 +221,17 @@ class _SettingsPageState extends State<SettingsPage> {
                   key: const Key('settings-dim-level-value'),
                 ),
                 onTap: _editDimLevel,
+              ),
+            if (_settings != null && Platform.isAndroid)
+              ListTile(
+                key: const Key('settings-video-engine-tile'),
+                leading: const Icon(AppIcons.videoEngine),
+                title: const Text('Video player'),
+                subtitle: Text(
+                  videoEngineLabel(_savedVideoEngine, running: videoEngine),
+                  key: const Key('settings-video-engine-value'),
+                ),
+                onTap: _toggleVideoEngine,
               ),
             ListTile(
               key: const Key('settings-log-level-tile'),

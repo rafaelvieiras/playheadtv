@@ -55,11 +55,13 @@ class _FakePlayback implements VideoPlayback {
 void main() {
   test('only lib/video/ imports a concrete video engine package', () {
     final offenders = <String>[];
-    final pattern = RegExp(r'''import\s+['"]package:(fvp|video_player|media_kit)[/a-z_]*\.dart['"]''');
+    final pattern = RegExp(r'''import\s+['"]package:(fvp|video_player|video_player_platform_interface|media_kit)[/a-z_]*\.dart['"]''');
+    // The one test allowed to name a plugin: it fakes the Android plugin to test the engine on top of it.
+    const allowed = {'test/exo_video_engine_test.dart'};
     for (final dir in ['lib', 'test', 'integration_test']) {
       for (final file in Directory(dir).listSync(recursive: true).whereType<File>()) {
         if (!file.path.endsWith('.dart')) continue;
-        if (file.path.startsWith('lib/video/')) continue;
+        if (file.path.startsWith('lib/video/') || allowed.contains(file.path)) continue;
         if (pattern.hasMatch(file.readAsStringSync())) offenders.add(file.path);
       }
     }

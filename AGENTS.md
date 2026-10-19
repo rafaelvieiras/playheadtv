@@ -12,8 +12,9 @@ owns scheduling metadata — it never touches video. See `README.md` and
 - `client/` — Flutter, desktop-first (Linux/Windows) today, then
   Android/Android TV. Video engine: `fvp` (libmdk) behind the app-owned
   `VideoEngine`/`VideoPlayback` seam (`lib/video/video_engine.dart`, the only
-  implementation `FvpVideoEngine`; `docs/ARCHITECTURE.md` "Client video
-  engine"). Only `lib/video/` imports `fvp`/`video_player`
+  implementations `FvpVideoEngine` (default) and the opt-in Android
+  `ExoVideoEngine`; `docs/ARCHITECTURE.md` "Client video engine"). Only
+  `lib/video/` imports `fvp`/`video_player`
   (`test/video_engine_boundary_test.dart` enforces it): everything else uses
   `VideoPlayback`, `VideoSurface`, `MediaTracks` and `PlaybackState`.
 - `backend/` — Go.

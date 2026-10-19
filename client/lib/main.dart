@@ -188,6 +188,17 @@ class AppConfig {
       file: _file,
       key: 'start_fullscreen',
       fallback: true);
+  // Which video engine plays (see video/video_engine.dart): the
+  // PLAYHEADTV_VIDEO_ENGINE environment variable, else `video_engine` in the
+  // config file. Null when neither is set: the choice saved in Settings applies,
+  // else the default engine.
+  static String? get videoEngineSetting {
+    final fromEnv = Platform.environment['PLAYHEADTV_VIDEO_ENGINE'];
+    if (fromEnv != null && fromEnv.isNotEmpty) return fromEnv;
+    final fromFile = _file['video_engine'];
+    return fromFile is String && fromFile.isNotEmpty ? fromFile : null;
+  }
+
   // Share of the screen the mosaic leaves free on every side for display
   // overscan: `mosaic_safe_margin_percent` in the config file (0 to 10), else
   // 2%.
@@ -473,6 +484,12 @@ Future<void> main() async {
   );
   _installErrorLogging();
   await applyStartupFullScreen();
+  selectVideoEngine(resolveVideoEngineKind(
+    AppConfig.videoEngineSetting ?? (await SettingsService.create()).videoEngine,
+    isAndroid: Platform.isAndroid,
+    onFallback: (reason) => Log.warn('video', 'using fvp: $reason'),
+  ));
+  Log.info('video', 'engine: ${videoEngine.name}');
   videoEngine.register();
   runApp(const PlayheadSpikeApp());
   // When the launcher started this process right after an update, confirm
