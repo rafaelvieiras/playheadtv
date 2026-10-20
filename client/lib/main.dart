@@ -52,6 +52,7 @@ import 'pages/pairing_page.dart';
 import 'pages/server_url_page.dart';
 import 'services/pairing_boot.dart' show BootRoute, ServerUrlResolver, decideBootRoute;
 import 'util/controller_lifecycle.dart';
+import 'util/open_retry.dart';
 import 'epg_guide.dart' as guide show defaultTailAttributionCap, tailAttributionCap;
 import 'epg_guide.dart' show guideContextLookback, isHiddenGuideKind;
 import 'osd_subject.dart';
@@ -1221,7 +1222,19 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
   // A controller whose preparation fails is disposed here, so the callers only
   // ever hold controllers that opened.
-  Future<VideoPlayback> _createController(ChannelEntry entry, {Duration? seekTo}) async {
+  /// Opens [entry], retrying once on failure. A network-backed media library
+  /// can answer the first read of a cold file late (a socket timeout) and the
+  /// next one fast once its cache is warm, so one more try recovers most of
+  /// those without an error screen. Every attempt builds and, on failure,
+  /// disposes its own controller (see [_createControllerOnce]).
+  Future<VideoPlayback> _createController(ChannelEntry entry, {Duration? seekTo}) {
+    return retryOpen<VideoPlayback>(
+      attempt: (_) => _createControllerOnce(entry, seekTo: seekTo),
+      onRetry: (n, e) => Log.warn('player', 'item ${entry.id} failed to open (attempt $n), retrying', error: e),
+    );
+  }
+
+  Future<VideoPlayback> _createControllerOnce(ChannelEntry entry, {Duration? seekTo}) async {
     final controller = trackController(videoEngine.createNetwork(Uri.parse(streamUrl(entry.id))));
     final clock = Stopwatch()..start();
     Log.debug('player', 'opening item ${entry.id} (seek=${seekTo?.inSeconds ?? 0}s, offset=${entry.itemOffset.inSeconds}s)');
