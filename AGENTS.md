@@ -247,6 +247,15 @@ or LLM, and to every artifact in the repo:
   `wakelock_plus`'s portal path; without either it is a silent no-op. Don't
   swap it for the portal alone: on GNOME/X11 that call is accepted but creates
   no inhibitor.
+- Nothing plays while the app is not visible. On `hidden`/`paused` the player
+  tears the channel down through the channel-switch path
+  (`_suspendPlayback` -> `_switchToChannelIndex(load: false)`: timers, preload,
+  gap hold and both controllers) and the mosaic drops its preview; on `resumed`
+  the channel is reloaded at the point the guide has reached. `inactive` (focus
+  lost, window still visible) keeps playing. A hidden app draws no frames
+  (`framesEnabled` is false), so a teardown must never wait on `endOfFrame`
+  without a bound, and a test cannot wait with `tester.pump` while hidden
+  (`integration_test/app_background_test.dart`).
 - While a channel loads (boot or switch) the player shows a centered spinner
   instead of a status card; errors keep the plain status card. Each
   `VideoPlayback` is tuned with the read-ahead window
