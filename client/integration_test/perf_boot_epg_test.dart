@@ -120,7 +120,9 @@ void main() {
       await probe.begin('boot_to_mosaic');
       await tester.pumpWidget(const PlayheadSpikeApp());
       // The page exists from the loading state; the tiles mean it has data.
+      probe.mark('first_pump');
       await pumpUntil(tester, () => hasPrefix('mosaic-tile-'), failMessage: 'the mosaic never showed its tiles');
+      probe.mark('mosaic_tiles');
       await probe.end();
 
       // Select on the focused tile (the featured one at boot) enters its channel.
@@ -128,6 +130,7 @@ void main() {
       await perfPressKey(tester, LogicalKeyboardKey.enter);
       await pumpUntil(tester, () => osdChannelNumber(tester) != null, timeout: const Duration(seconds: 90),
           failMessage: 'no channel was tuned from the mosaic (mosaic still up: ${has('mosaic-page')})');
+      probe.mark('channel_tuned');
       await pumpUntil(tester, () => !osdVisible(tester), timeout: const Duration(seconds: 20), failMessage: 'the OSD never hid');
       await probe.end();
 
@@ -140,6 +143,7 @@ void main() {
       await perfPressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => has('epg-details-panel') && has('epg-rows'), failMessage: 'the EPG never finished loading');
+      probe.mark('epg_ready');
       await probe.end();
 
       // Phase 3: moving around the guide, the interaction that is slow on a TV

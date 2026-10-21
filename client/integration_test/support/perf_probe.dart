@@ -22,6 +22,7 @@ class PhaseResult {
     required this.frames,
     required this.cpuPercent,
     required this.rssMb,
+    this.marks = const {},
   });
 
   final String name;
@@ -29,6 +30,9 @@ class PhaseResult {
   final List<FrameTiming> frames;
   final double cpuPercent;
   final double rssMb;
+
+  /// Milliseconds from the start of the phase to each named moment inside it.
+  final Map<String, int> marks;
 
   static double _ms(Duration d) => d.inMicroseconds / 1000.0;
 
@@ -54,6 +58,7 @@ class PhaseResult {
       'raster_ms': {'avg': round(avg(rasters)), 'p95': round(_percentile(rasters, 0.95)), 'max': round(rasters.isEmpty ? 0 : rasters.last)},
       'cpu_percent': round(cpuPercent),
       'rss_mb': round(rssMb),
+      if (marks.isNotEmpty) 'marks_ms': marks,
     };
   }
 }
@@ -68,6 +73,7 @@ class PerfProbe {
   List<FrameTiming>? _frames;
   Stopwatch? _wall;
   String? _phase;
+  Map<String, int> _marks = {};
 
   void _onTimings(List<FrameTiming> timings) => _frames?.addAll(timings);
 
@@ -75,12 +81,16 @@ class PerfProbe {
   Future<void> begin(String name) async {
     if (_phase != null) await end();
     _frames = [];
+    _marks = {};
     _phase = name;
     SchedulerBinding.instance.addTimingsCallback(_onTimings);
     // Prime the CPU sampler: its first reading has no delta to report.
     await ProcessStats.instance.sample();
     _wall = Stopwatch()..start();
   }
+
+  /// Records that [name] happened now, relative to the start of the phase.
+  void mark(String name) => _marks[name] = _wall!.elapsedMilliseconds;
 
   /// Ends the current phase and records it. FrameTimings are delivered a moment
   /// after the frame, so it waits briefly for the tail to arrive.
@@ -92,7 +102,7 @@ class PerfProbe {
     final rss = ProcessStats.instance.rssKb / 1024.0;
     await Future<void>.delayed(const Duration(milliseconds: 300));
     SchedulerBinding.instance.removeTimingsCallback(_onTimings);
-    final result = PhaseResult(name: name, wallMs: wallMs, frames: _frames ?? [], cpuPercent: cpu, rssMb: rss);
+    final result = PhaseResult(name: name, wallMs: wallMs, frames: _frames ?? [], cpuPercent: cpu, rssMb: rss, marks: _marks);
     phases.add(result);
     _frames = null;
     _phase = null;
