@@ -59,7 +59,7 @@ class MosaicPage extends StatefulWidget {
   State<MosaicPage> createState() => _MosaicPageState();
 }
 
-class _MosaicPageState extends State<MosaicPage> {
+class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
   late OfflineRuntime _runtime;
   late SettingsService _settings;
   KeyBindingsService? _keyBindings;
@@ -78,13 +78,47 @@ class _MosaicPageState extends State<MosaicPage> {
   ({int from, MosaicDirection direction})? _lastMove;
 
   VideoPlayback? _previewController;
+  // Bumped whenever the preview is torn down because the app left the screen,
+  // so a preview still opening at that moment is discarded when it finishes.
+  int _previewGeneration = 0;
+  bool _appHidden = false;
 
   final FocusNode _pageFocusNode = FocusNode();
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _bootstrap();
+  }
+
+  // The preview plays with audio, so it must stop when the app is hidden or
+  // paused (Android Home, a minimized window) and come back when it returns.
+  // `inactive` (focus lost, window still visible) keeps it running.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.hidden || state == AppLifecycleState.paused) {
+      if (_appHidden) return;
+      _appHidden = true;
+      _previewGeneration++;
+      unawaited(_stopPreview());
+    } else if (state == AppLifecycleState.resumed) {
+      if (!_appHidden) return;
+      _appHidden = false;
+      if (mounted && !_loading && _previewController == null) unawaited(_startPreview());
+    }
+  }
+
+  Future<void> _stopPreview() async {
+    final preview = _previewController;
+    if (preview == null) return;
+    Log.info('mosaic', 'app hidden: stopping the preview');
+    if (mounted) setState(() => _previewController = null);
+    // Let the tree drop the surface first. A hidden app draws no frames, so
+    // this wait would never end without the bound (and the preview would stay
+    // alive, audible, behind the user's back).
+    await WidgetsBinding.instance.endOfFrame.timeout(const Duration(milliseconds: 500), onTimeout: () {});
+    await disposeController(preview);
   }
 
   Future<void> _bootstrap() async {
@@ -183,7 +217,8 @@ class _MosaicPageState extends State<MosaicPage> {
   // never blocks the mosaic.
   Future<void> _startPreview() async {
     final featured = _featured;
-    if (featured == null) return;
+    if (featured == null || _appHidden) return;
+    final generation = _previewGeneration;
     try {
       final now = DateTime.now().toUtc();
       // From the offline cache: the first program on air or ahead.
@@ -212,9 +247,10 @@ class _MosaicPageState extends State<MosaicPage> {
         unawaited(disposeController(controller));
         return;
       }
-      if (!mounted) {
-        // Left the mosaic while the preview was opening or starting: it may
-        // already be audible, so it is silenced before its dispose.
+      if (!mounted || generation != _previewGeneration) {
+        // Left the mosaic (or hid the app) while the preview was opening or
+        // starting: it may already be audible, so it is silenced before its
+        // dispose.
         unawaited(discardController(controller));
         return;
       }
@@ -358,6 +394,7 @@ class _MosaicPageState extends State<MosaicPage> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     final preview = _previewController;
     if (preview != null) unawaited(disposeController(preview));
     for (final node in _focusNodes) {

@@ -950,9 +950,13 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // channel (timers + both controllers, active and preloading), clears the
   // digit buffer (no typing should carry over into the new channel) and
   // fetches the target channel's schedule.
-  Future<void> _switchToChannelIndex(int targetIndex) async {
+  //
+  // With `load: false` it only tears down (the app went to the background): no
+  // watched-record, no schedule fetch, and the page is left idle until
+  // `_resumePlayback` switches back to `targetIndex`.
+  Future<void> _switchToChannelIndex(int targetIndex, {bool load = true}) async {
     final target = _channels[targetIndex];
-    unawaited(_settings.recordWatched(target.id));
+    if (load) unawaited(_settings.recordWatched(target.id));
 
     final generation = ++_loadGeneration;
     Log.info('player', 'switch to channel ${target.number} (generation $generation)');
@@ -1003,8 +1007,13 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _knownExpanded = 0;
       _epgLoadedUntil = null;
       _channelInputBuffer = null;
-      _status = 'switching channel…';
+      _status = load ? 'switching channel…' : 'paused';
     });
+
+    if (!load) {
+      _pendingChannelSwitchTarget = null;
+      return;
+    }
 
     if (_channelLoadInFlight && !_inFlightLoadStalled) {
       // A previous switch's real load (network + controller create) hasn't
@@ -2005,12 +2014,21 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
           });
         } else {
           // The channel on air was removed: go to the first one.
+          if (_suspended) {
+            // Hidden: nothing is loaded, the resume will open this channel.
+            setState(() {
+              _channels = fresh;
+              _channelIndex = 0;
+            });
+            return;
+          }
           setState(() => _channels = fresh);
           unawaited(_switchToChannelIndex(0));
           return;
         }
       }
     }
+    if (_suspended) return; // nothing on air to reconcile; resume reloads from the cache
     if (change.channelIds.contains(_channels[_channelIndex].id)) unawaited(_reconcileWithCache());
   }
 
@@ -2433,6 +2451,32 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     }
   }
 
+  // True while the app is hidden/paused and the channel is torn down. Nothing
+  // may play, preload or poll the schedule then: audio kept running in the
+  // background and the decoders, sockets and timers stayed alive.
+  bool _suspended = false;
+
+  /// Stops all playback when the app leaves the screen (Android Home, a
+  /// minimized window). Reuses the channel-switch teardown, so every timer,
+  /// preload, gap hold and both controllers go away through the GL queue, and
+  /// any load still in flight aborts on its generation check.
+  void _suspendPlayback() {
+    if (_suspended || !mounted || _channels.isEmpty) return;
+    _suspended = true;
+    Log.info('player', 'app hidden: suspending playback of channel ${_channels[_channelIndex].number}');
+    unawaited(_switchToChannelIndex(_channelIndex, load: false));
+  }
+
+  /// Brings the channel back when the app is visible again, at the point the
+  /// guide has reached by then (a TV that was left on, not a paused tape).
+  void _resumePlayback() {
+    if (!_suspended) return;
+    _suspended = false;
+    if (!mounted || _channels.isEmpty) return;
+    Log.info('player', 'app visible again: resuming channel ${_channels[_channelIndex].number}');
+    unawaited(_switchToChannelIndex(_channelIndex));
+  }
+
   /// When the window loses and regains OS focus Flutter drops primary focus
   /// to the root scope, and the key listener below stops receiving keys.
   /// Hand focus back on resume. Deliberately no `setState`: rebuilding this
@@ -2441,6 +2485,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   void didChangeAppLifecycleState(AppLifecycleState state) {
     Log.debug('app', 'lifecycle ${state.name}');
     _screenAwake.lifecycle(state);
+    if (state == AppLifecycleState.hidden || state == AppLifecycleState.paused) {
+      _suspendPlayback();
+    } else if (state == AppLifecycleState.resumed || state == AppLifecycleState.inactive) {
+      _resumePlayback();
+    }
     if (state != AppLifecycleState.resumed || !mounted) return;
     final primary = FocusManager.instance.primaryFocus;
     if (primary != null && primary is! FocusScopeNode) return;
