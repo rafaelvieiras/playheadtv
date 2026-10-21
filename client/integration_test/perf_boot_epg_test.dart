@@ -16,7 +16,7 @@ import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
-import 'support/key_focus.dart';
+import 'support/perf_keys.dart';
 import 'support/perf_probe.dart';
 import 'support/video_fixture.dart';
 
@@ -125,7 +125,7 @@ void main() {
 
       // Select on the focused tile (the featured one at boot) enters its channel.
       await probe.begin('mosaic_to_playing');
-      await pressKey(tester, LogicalKeyboardKey.enter);
+      await perfPressKey(tester, LogicalKeyboardKey.enter);
       await pumpUntil(tester, () => osdChannelNumber(tester) != null, timeout: const Duration(seconds: 90),
           failMessage: 'no channel was tuned from the mosaic (mosaic still up: ${has('mosaic-page')})');
       await pumpUntil(tester, () => !osdVisible(tester), timeout: const Duration(seconds: 20), failMessage: 'the OSD never hid');
@@ -134,10 +134,10 @@ void main() {
       // Phase 2: opening the guide (Select shows the OSD, Select again opens
       // the EPG). The phase ends when the grid has rows on screen.
       await probe.begin('epg_open');
-      await pressKey(tester, LogicalKeyboardKey.enter);
+      await perfPressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Select did not show the OSD');
-      await pressKey(tester, LogicalKeyboardKey.enter);
+      await perfPressKey(tester, LogicalKeyboardKey.enter);
       await tester.pump();
       await pumpUntil(tester, () => has('epg-details-panel') && has('epg-rows'), failMessage: 'the EPG never finished loading');
       await probe.end();
@@ -146,19 +146,19 @@ void main() {
       // box: down through the rows, then forward in time and back.
       await probe.begin('epg_navigate');
       for (var i = 0; i < 12; i++) {
-        await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+        await perfPressKey(tester, LogicalKeyboardKey.arrowDown);
         await tester.pump(const Duration(milliseconds: 120));
       }
       for (var i = 0; i < 8; i++) {
-        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await perfPressKey(tester, LogicalKeyboardKey.arrowRight);
         await tester.pump(const Duration(milliseconds: 120));
       }
       for (var i = 0; i < 8; i++) {
-        await tester.sendKeyEvent(LogicalKeyboardKey.arrowLeft);
+        await perfPressKey(tester, LogicalKeyboardKey.arrowLeft);
         await tester.pump(const Duration(milliseconds: 120));
       }
       for (var i = 0; i < 12; i++) {
-        await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+        await perfPressKey(tester, LogicalKeyboardKey.arrowUp);
         await tester.pump(const Duration(milliseconds: 120));
       }
       await probe.end();
