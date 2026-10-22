@@ -2021,6 +2021,42 @@ client and takes the screen back when it ends), so leaving is part of the app.
   pixels), so a large choice on a small window cannot overflow it; the
   automatic factor needs no cap.
 
+## Guide performance and start-up
+
+Measured on an Android TV box (a low-end quad-core), where the frame budget is
+tight: the guide took a single 115-170 ms frame to open and its Left/Right moves
+dropped about 30% of frames, almost all of it widget *build* time (raster stayed at
+11-18 ms). The cause was structural: the focus (`row`, `col`), the horizontal scroll
+and the clock lived in `EpgOverlayState` and every change was a `setState`, which
+rebuilt every visible row and every cell.
+
+- **Focus, scroll and clock are notifiers, not state** (`lib/widgets/epg_overlay.dart`).
+  The focus is one `ValueNotifier<(row, col)>`; a `_FocusSelector` rebuilds only the
+  cells and rows whose look changes (the one that lost focus and the one that gained
+  it). The horizontal scroll is an `AnimationController`; each row's cells sit on one
+  layer that only gets a `Transform.translate`, so the scroll repaints the header and
+  moves that layer and rebuilds no cell. The clock is a notifier read by the progress
+  bars, the "now" marker, the header and the details panel; the grid itself is rebuilt
+  only when a program starts or ends (`_nextBoundary`).
+- **`setState` on the overlay is now rare**: a cache refresh, a window extension and a
+  program going live. Never for a key press.
+- **Boot phases.** `BootTrace` (`lib/services/perf_trace.dart`) marks the phases of the
+  start (`main`, `player_init`, `runtime_open`, `sync_done`/`warm_start`,
+  `channel_on_air`) and logs them as one `boot` line. `PerfTrace` (opt-in, built with
+  `--dart-define=PLAYHEADTV_PERF_TRACE=true`) records frame timings per window
+  (`epg_open`, `epg_navigate`) on a device; `tool/mibox_perf.sh` drives it over adb.
+- **A warm start does not wait for the network.** When the on-disk cache already
+  holds upcoming programs for the channel to tune, `_bootstrapChannels` plays from
+  it right away. The startup refresh still runs in the background; if it brings a
+  different schedule, `_onCacheChange` applies it (reloading when what is on air
+  changed, else in place), as it always did. Only a first run, or a channel with
+  nothing cached, waits for the backend (`startupSyncWait`). The stream rules are
+  waited for only when none were ever fetched. Before this, every start paid up to
+  `startupSyncWait` (2 s) plus the rules request (up to 3 s) in front of the picture
+  whenever the backend was slow or far.
+- **The launch window is black** (`LaunchTheme`), like the app, so a TV does not show a
+  white screen before the first Flutter frame.
+
 ## Headless GUI suites in containers
 
 The GUI integration suites (`client/integration_test/`) need a desktop session and

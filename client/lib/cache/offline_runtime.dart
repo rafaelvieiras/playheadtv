@@ -60,8 +60,10 @@ class OfflineRuntime {
       artDir = Directory('$override/art');
     } else {
       // The schedule must survive; the OS may reclaim the art folder.
-      dataDir = Directory('${(await getApplicationSupportDirectory()).path}/schedule_cache');
-      artDir = Directory('${(await getApplicationCacheDirectory()).path}/art');
+      // Two platform round trips, independent of each other: asked together.
+      final (support, cache) = await (getApplicationSupportDirectory(), getApplicationCacheDirectory()).wait;
+      dataDir = Directory('${support.path}/schedule_cache');
+      artDir = Directory('${cache.path}/art');
     }
     // One file per backend address: pointing the app at another backend never
     // shows (or wipes) the schedule of the first.
