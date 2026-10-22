@@ -46,6 +46,7 @@ import '../epg_guide.dart';
 import '../cache/schedule_cache.dart';
 import '../main.dart' show jellyfinImageUrl;
 import '../playhead_api.dart';
+import '../services/perf_trace.dart';
 import '../ui/ui_scale.dart';
 import 'app_icons.dart';
 import 'art_image.dart';
@@ -161,6 +162,7 @@ class EpgOverlayState extends State<EpgOverlay> {
   @override
   void initState() {
     super.initState();
+    PerfTrace.begin('epg_open');
     _now = widget.clock();
     _nowTimer = Timer.periodic(_nowTickInterval, (_) {
       if (mounted) setState(() => _now = widget.clock());
@@ -266,7 +268,10 @@ class EpgOverlayState extends State<EpgOverlay> {
         _now = widget.clock();
         _followFocusHorizontally();
       });
-      WidgetsBinding.instance.addPostFrameCallback((_) => _ensureRowVisible(animate: false));
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _ensureRowVisible(animate: false);
+        PerfTrace.end();
+      });
     } catch (e) {
       if (!mounted) return;
       setState(() {
@@ -366,6 +371,7 @@ class EpgOverlayState extends State<EpgOverlay> {
   // the edges.
   void moveRow(int delta) {
     if (_loading || _error != null || _entriesByChannel.isEmpty) return;
+    PerfTrace.burst('epg_navigate');
     final newRow = _focusedRow + delta;
     if (newRow < 0 || newRow >= _entriesByChannel.length) return;
     final now = widget.clock().toUtc();
@@ -393,6 +399,7 @@ class EpgOverlayState extends State<EpgOverlay> {
   // left edge. Past the last loaded program it fetches more of GET /epg.
   void moveColumn(int delta) {
     if (_loading || _error != null || _entriesByChannel.isEmpty) return;
+    PerfTrace.burst('epg_navigate');
     final rowEntries = _entriesByChannel[_focusedRow];
     if (rowEntries.isEmpty) {
       if (delta > 0) _extendThenRetry(delta, _focusedRow, 0);

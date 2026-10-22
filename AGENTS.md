@@ -444,6 +444,26 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   logs backend`, `docker compose down`. The named volume `playheadtv-data`
   persists the SQLite file across restarts.
 
+## Performance measurement
+
+- `client/integration_test/perf_boot_epg_test.dart` measures boot, opening the
+  guide and moving around it (frame timings, CPU, RSS per phase, as JSON). In the
+  GUI container (`tool/run_gui_suites.sh perf_boot_epg_test`) it runs in debug
+  mode on software GL: only the relative change between two runs means anything.
+  On a desktop session `client/tool/run_perf.sh` runs it in profile mode
+  (`flutter drive`, which needs `test_driver/`). `WidgetTester.sendKeyEvent` fails
+  outside debug builds (it looks the physical key up by `debugName`); the perf
+  suite presses keys through `support/perf_keys.dart`.
+- A device that cannot run the suite (an Android TV box) is measured with the
+  opt-in frame trace, `lib/services/perf_trace.dart`: a build made with
+  `--dart-define=PLAYHEADTV_PERF_TRACE=true` appends one JSON line per window
+  (`epg_open`, `epg_navigate`) to `perf_trace.jsonl`, and `client/tool/mibox_perf.sh`
+  drives the guide over adb and prints them. Without the define it is a no-op.
+- `flutter build apk --profile` defaults to versionCode 1; installing over an
+  existing install needs `--build-number` equal to or above the installed one, and
+  keeps the app's data only while the signing key is the same. Back up
+  `shared_prefs` first (it holds the connection settings).
+
 ## Gotchas already hit once
 
 - SQLite (`modernc.org/sqlite`, pure Go, no CGO) is single-writer:
