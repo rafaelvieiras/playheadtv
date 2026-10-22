@@ -896,19 +896,41 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       BootTrace.mark('runtime_open');
       _streamPrefs = await StreamPreferencesService.create(_runtime.api);
       _streamPrefsReady = true;
-      // Tier 2-4 rules ride alongside the startup refresh (a failure keeps the
+      // Which channel is tuned: the one asked for (last watched, or the dart-define),
+      // else the first.
+      final wantedId = widget.initialChannelId ??
+          (AppConfig.playheadChannelIdDefine.isNotEmpty ? AppConfig.playheadChannelIdDefine : null);
+      int pickIndex(List<PlayheadChannel> list) {
+        final found = wantedId == null ? -1 : list.indexWhere((c) => c.id == wantedId);
+        return found >= 0 ? found : 0;
+      }
+
+      // Tier 2-4 stream rules ride alongside the startup refresh (a failure keeps the
       // cached rules, see StreamPreferencesService).
       final streamPrefsRefresh = _streamPrefs.refreshAll();
-      await _runtime.syncer.syncNow().timeout(startupSyncWait, onTimeout: () => SyncOutcome.offline);
-      BootTrace.mark('sync_done');
       var channels = _cache.channels();
-      if (channels.isEmpty) {
-        // Nothing cached yet (first run): the backend is the only source.
-        await _runtime.syncer.syncNow();
+      // A warm start plays from the cache at once: the guide on disk already covers
+      // the channel, and a refresh that brings something different is applied by
+      // `_onCacheChange` (reload when what is on air changed, else in place), so the
+      // network is never on the way to the picture. Only a first run, with nothing
+      // cached for the channel yet, has to wait for the backend.
+      final warm = channels.isNotEmpty &&
+          _upcomingFromCache(channels[pickIndex(channels)].id, DateTime.now().toUtc()).isNotEmpty;
+      if (!warm) {
+        await _runtime.syncer.syncNow().timeout(startupSyncWait, onTimeout: () => SyncOutcome.offline);
+        BootTrace.mark('sync_done');
         channels = _cache.channels();
+        if (channels.isEmpty) {
+          // Nothing cached yet (first run): the backend is the only source.
+          await _runtime.syncer.syncNow();
+          channels = _cache.channels();
+        }
       }
-      await streamPrefsRefresh;
-      BootTrace.mark('stream_prefs_done');
+      // The rules are only waited for when none were ever fetched (a first run): a
+      // cached copy is what the first playback decision reads, and the refresh
+      // updates it for the next one.
+      if (!warm || !_streamPrefs.hasCachedRules) await streamPrefsRefresh;
+      BootTrace.mark(warm ? 'warm_start' : 'stream_prefs_done');
       _streamPrefs.startPolling();
       _cacheSub = _cache.changes.listen(_onCacheChange);
       if (channels.isEmpty) {
@@ -921,13 +943,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         return;
       }
       final sorted = channels;
-      var index = 0;
-      final wantedId = widget.initialChannelId ??
-          (AppConfig.playheadChannelIdDefine.isNotEmpty ? AppConfig.playheadChannelIdDefine : null);
-      if (wantedId != null) {
-        final found = sorted.indexWhere((c) => c.id == wantedId);
-        if (found >= 0) index = found;
-      }
+      final index = pickIndex(sorted);
       if (!mounted) return;
       setState(() {
         _channels = sorted;

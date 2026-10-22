@@ -41,6 +41,10 @@ class RequestProxy {
   /// outage that is not a refused connection).
   int? forceStatus;
 
+  /// When set, every request waits this long before it is answered (a slow link or a
+  /// backend under load), whatever the answer is.
+  Duration? delay;
+
   HttpServer? _server;
   final http.Client _client = http.Client();
 
@@ -85,6 +89,8 @@ class RequestProxy {
     if (legacy && isEpg) query.remove('group_tail');
     final recorded = RecordedRequest(req.method, req.uri.path, Map.of(req.uri.queryParameters), ifNoneMatch: req.headers.value('if-none-match'));
     requests.add(recorded);
+    final wait = delay;
+    if (wait != null) await Future<void>.delayed(wait);
     final forced = forceStatus;
     if (forced != null) {
       recorded.status = forced;
