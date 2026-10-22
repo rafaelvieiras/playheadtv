@@ -63,6 +63,10 @@ class StreamPreferencesService {
 
   int get cachedRevision => _prefs.getInt(_revisionKey) ?? 0;
 
+  /// True once a refresh ever stored the rules (even an empty set): from then on the
+  /// first playback can read the cached copy instead of waiting for the backend.
+  bool get hasCachedRules => _prefs.containsKey(_userRulesKey);
+
   /// Initial fetch at boot/login: populates tiers 2 + 4 so the very first
   /// playback decision already has a cache to read, without waiting for the
   /// first poll tick. A failure here (e.g. this deployment's configured
