@@ -40,6 +40,7 @@ import 'widgets/update_overlay.dart';
 import 'mosaic_layout.dart' show defaultMosaicSafeMargin;
 import 'ui/ui_scale.dart';
 import 'playhead_api.dart';
+import 'services/perf_trace.dart';
 import 'services/screen_awake.dart';
 import 'services/settings_service.dart';
 import 'services/app_window.dart';
@@ -475,6 +476,7 @@ Future<void> applyStartupFullScreen() async {
 }
 
 Future<void> main() async {
+  BootTrace.mark('main');
   WidgetsFlutterBinding.ensureInitialized();
   AppConfig.loadConfigFile();
   AppConfig.applyStoredConnection((await SettingsService.create()).connection);
@@ -486,6 +488,7 @@ Future<void> main() async {
   );
   _installErrorLogging();
   await applyStartupFullScreen();
+  BootTrace.mark('fullscreen_applied');
   selectVideoEngine(resolveVideoEngineKind(
     AppConfig.videoEngineSetting ?? (await SettingsService.create()).videoEngine,
     isAndroid: Platform.isAndroid,
@@ -493,7 +496,9 @@ Future<void> main() async {
   ));
   Log.info('video', 'engine: ${videoEngine.name}');
   videoEngine.register();
+  BootTrace.mark('engine_registered');
   runApp(const PlayheadSpikeApp());
+  WidgetsBinding.instance.addPostFrameCallback((_) => BootTrace.mark('first_frame'));
   // When the launcher started this process right after an update, confirm
   // the new version once it has stayed up for the healthy window (no-op
   // otherwise); an unconfirmed update is rolled back by the next start.
@@ -882,17 +887,20 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   Future<void> _bootstrapChannels() async {
     setState(() => _status = 'loading channels…');
     Log.info('player', 'boot: loading channels');
+    BootTrace.mark('player_init');
     try {
       _settings = await SettingsService.create();
       _keyBindings = KeyBindingsService(_settings);
       Dimmer.level.value = AppConfig.configuredDimLevel(_settings);
       _runtime = await OfflineRuntime.ensure();
+      BootTrace.mark('runtime_open');
       _streamPrefs = await StreamPreferencesService.create(_runtime.api);
       _streamPrefsReady = true;
       // Tier 2-4 rules ride alongside the startup refresh (a failure keeps the
       // cached rules, see StreamPreferencesService).
       final streamPrefsRefresh = _streamPrefs.refreshAll();
       await _runtime.syncer.syncNow().timeout(startupSyncWait, onTimeout: () => SyncOutcome.offline);
+      BootTrace.mark('sync_done');
       var channels = _cache.channels();
       if (channels.isEmpty) {
         // Nothing cached yet (first run): the backend is the only source.
@@ -900,6 +908,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         channels = _cache.channels();
       }
       await streamPrefsRefresh;
+      BootTrace.mark('stream_prefs_done');
       _streamPrefs.startPolling();
       _cacheSub = _cache.changes.listen(_onCacheChange);
       if (channels.isEmpty) {
@@ -1361,6 +1370,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       return;
     }
     _screenAwake.playing = true;
+    BootTrace.mark('channel_on_air');
+    BootTrace.flush();
     Log.info('player', 'channel on air ${_loadClock.elapsedMilliseconds}ms after the load started (units=${channel.length}, seek=${initialSeek.inSeconds}s)');
     setState(() {
       _controllerA = controller;

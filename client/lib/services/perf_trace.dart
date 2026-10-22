@@ -129,6 +129,9 @@ class PerfTrace {
     });
   }
 
+  /// Appends one JSON line to the trace file.
+  static Future<void> appendLine(String line) => _append(line);
+
   static Future<void> _append(String line) async {
     try {
       var file = _file;
@@ -140,5 +143,49 @@ class PerfTrace {
     } catch (e) {
       Log.warn('perf', 'could not write the perf trace', error: e);
     }
+  }
+}
+
+/// Marks along the app's start, in milliseconds since the first mark, so a slow
+/// start can be told apart by phase. Always recorded (a handful of list appends,
+/// until [flush]); written to the perf trace as one `boot` line only when the build
+/// turns tracing on, and always logged at info level.
+class BootTrace {
+  BootTrace._();
+
+  static final Stopwatch _clock = Stopwatch();
+  static final List<(String, int)> _marks = [];
+  static bool _flushed = false;
+
+  /// The marks so far, in order (the perf suite reads them).
+  static List<(String, int)> get marks => List.unmodifiable(_marks);
+
+  static void mark(String name) {
+    if (_flushed) return;
+    if (!_clock.isRunning) _clock.start();
+    _marks.add((name, _clock.elapsedMilliseconds));
+  }
+
+  /// Ends the recording (once per process): logs the marks and, when tracing is
+  /// on, appends them to the trace file.
+  static void flush() {
+    if (_flushed || _marks.isEmpty) return;
+    _flushed = true;
+    final byName = {for (final m in _marks) m.$1: m.$2};
+    Log.info('boot', 'phases (ms since start): ${byName.entries.map((e) => '${e.key}=${e.value}').join(' ')}');
+    if (!perfTraceEnabled) return;
+    unawaited(PerfTrace.appendLine(jsonEncode({
+      'window': 'boot',
+      'at': DateTime.now().toUtc().toIso8601String(),
+      'marks_ms': byName,
+    })));
+  }
+
+  /// Starts over (tests that boot the app more than once in a process).
+  static void reset() {
+    _flushed = false;
+    _marks.clear();
+    _clock.reset();
+    _clock.stop();
   }
 }
