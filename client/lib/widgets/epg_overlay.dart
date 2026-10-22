@@ -39,6 +39,7 @@
 // focused program is live right now.
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -100,7 +101,7 @@ class EpgOverlay extends StatefulWidget {
   State<EpgOverlay> createState() => EpgOverlayState();
 }
 
-class EpgOverlayState extends State<EpgOverlay> {
+class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMixin {
   bool _loading = true;
   String? _error;
 
@@ -116,9 +117,15 @@ class EpgOverlayState extends State<EpgOverlay> {
   bool _extending = false;
   StreamSubscription<CacheChange>? _cacheSub;
 
-  int _focusedRow = 0;
-  int _focusedCol = 0;
-  bool _detailsExpanded = false;
+  // The focus lives in notifiers, never in setState: moving it repaints only the
+  // cells and rows whose look changes (docs/ARCHITECTURE.md "Guide performance").
+  final ValueNotifier<_Pos> _focus = ValueNotifier<_Pos>((row: 0, col: 0));
+  final ValueNotifier<bool> _detailsExpandedNotifier = ValueNotifier<bool>(false);
+  int get _focusedRow => _focus.value.row;
+  int get _focusedCol => _focus.value.col;
+  void _setFocus(int row, int col) => _focus.value = (row: row, col: col);
+  bool get _detailsExpanded => _detailsExpandedNotifier.value;
+  set _detailsExpanded(bool v) => _detailsExpandedNotifier.value = v;
 
   // Time the focus "sits at": moving to another row picks the program there
   // that covers this instant, so Up/Down feels like moving along the time axis.
@@ -127,12 +134,64 @@ class EpgOverlayState extends State<EpgOverlay> {
   late DateTime _anchor;
 
   // Left edge of the visible span, in minutes from _windowStart.
-  double _hOffsetMinutes = 0;
+  // The scroll target; the animation to it is a controller that only repaints the
+  // header and moves the rows' transforms.
+  late final AnimationController _hController =
+      AnimationController(vsync: this, duration: _scrollAnimation, value: 1.0);
+  double _hFrom = 0;
+  double _hTo = 0;
+  double get _hOffsetMinutes => _hTo;
+  set _hOffsetMinutes(double v) {
+    if (v == _hTo) return;
+    _hFrom = _hCurrent;
+    _hTo = v;
+    unawaited(_hController.forward(from: 0));
+  }
+
+  double get _hCurrent => _hFrom + (_hTo - _hFrom) * Curves.easeOut.transform(_hController.value);
+
+  // Jumps to the target without animating (the first layout after a load).
+  void _settleHorizontally() {
+    _hFrom = _hTo;
+    _hController.value = 1.0;
+  }
 
   // Written by the grid's LayoutBuilders (plain fields, no setState needed).
   double _rowsViewportHeight = 0;
 
-  late DateTime _now;
+  // The clock the grid shows, a notifier so a tick repaints only what reads it (the
+  // progress bars, the "now" marker, the header, the details panel).
+  late final ValueNotifier<DateTime> _nowNotifier = ValueNotifier<DateTime>(widget.clock());
+  DateTime get _now => _nowNotifier.value;
+  set _now(DateTime v) => _nowNotifier.value = v;
+
+  // The next instant a cell starts or ends: the first tick past it rebuilds the grid
+  // (a cell went live or ended); ticks before it rebuild nothing.
+  DateTime? _nextBoundary;
+
+  void _recomputeBoundary() {
+    final nowUtc = _now.toUtc();
+    DateTime? next;
+    void consider(DateTime t) {
+      if (t.isAfter(nowUtc) && (next == null || t.isBefore(next!))) next = t;
+    }
+
+    for (final row in _entriesByChannel) {
+      for (final c in row) {
+        consider(c.displayStart);
+        consider(c.displayEnd);
+      }
+    }
+    _nextBoundary = next;
+  }
+
+  void _onNowTick() {
+    if (!mounted) return;
+    final next = widget.clock();
+    _now = next;
+    final boundary = _nextBoundary;
+    if (boundary != null && !next.toUtc().isBefore(boundary)) setState(_recomputeBoundary);
+  }
   Timer? _nowTimer;
 
   Timer? _longPressTimer;
@@ -164,9 +223,7 @@ class EpgOverlayState extends State<EpgOverlay> {
     super.initState();
     PerfTrace.begin('epg_open');
     _now = widget.clock();
-    _nowTimer = Timer.periodic(_nowTickInterval, (_) {
-      if (mounted) setState(() => _now = widget.clock());
-    });
+    _nowTimer = Timer.periodic(_nowTickInterval, (_) => _onNowTick());
     unawaited(_load());
     _cacheSub = widget.cache.changes.listen((_) => _refreshFromCache());
   }
@@ -177,6 +234,10 @@ class EpgOverlayState extends State<EpgOverlay> {
     unawaited(_cacheSub?.cancel());
     _longPressTimer?.cancel();
     _verticalController.dispose();
+    _hController.dispose();
+    _focus.dispose();
+    _detailsExpandedNotifier.dispose();
+    _nowNotifier.dispose();
     super.dispose();
   }
 
@@ -210,6 +271,7 @@ class EpgOverlayState extends State<EpgOverlay> {
 
   void _rebuildCells() {
     _entriesByChannel = [for (final raw in _rawByChannel) _cellsOf(raw)];
+    _recomputeBoundary();
   }
 
   // A row's entries over the window, plus the lookback before it.
@@ -231,7 +293,7 @@ class EpgOverlayState extends State<EpgOverlay> {
       _rebuildCells();
       if (_focusedRow < _entriesByChannel.length) {
         final len = _entriesByChannel[_focusedRow].length;
-        if (_focusedCol >= len) _focusedCol = len == 0 ? 0 : len - 1;
+        if (_focusedCol >= len) _setFocus(_focusedRow, len == 0 ? 0 : len - 1);
       }
     });
   }
@@ -260,13 +322,13 @@ class EpgOverlayState extends State<EpgOverlay> {
       setState(() {
         _rawByChannel = results;
         _rebuildCells();
-        _focusedRow = initialRow;
-        _focusedCol = initialCol;
+        _setFocus(initialRow, initialCol);
         _anchor = now;
         _hOffsetMinutes = 0;
         _loading = false;
         _now = widget.clock();
         _followFocusHorizontally();
+        _settleHorizontally();
       });
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _ensureRowVisible(animate: false);
@@ -382,14 +444,11 @@ class EpgOverlayState extends State<EpgOverlay> {
       now: now,
       fromLive: focused != null && _isLive(focused, now),
     );
-    setState(() {
-      _focusedRow = newRow;
-      _focusedCol = target.index;
-      _detailsExpanded = false;
-      _followFocusHorizontally();
-      // Following the live column: keep tracking it on the next vertical move.
-      if (target.landedLive) _anchor = now;
-    });
+    _setFocus(newRow, target.index);
+    _detailsExpanded = false;
+    _followFocusHorizontally();
+    // Following the live column: keep tracking it on the next vertical move.
+    if (target.landedLive) _anchor = now;
     _ensureRowVisible();
     _maybeExtendAhead();
   }
@@ -411,11 +470,9 @@ class EpgOverlayState extends State<EpgOverlay> {
       if (delta > 0) _extendThenRetry(delta, _focusedRow, rowEntries.length);
       return;
     }
-    setState(() {
-      _focusedCol = newCol;
-      _detailsExpanded = false;
-      _followFocusHorizontally();
-    });
+    _setFocus(_focusedRow, newCol);
+    _detailsExpanded = false;
+    _followFocusHorizontally();
     _maybeExtendAhead();
   }
 
@@ -440,7 +497,7 @@ class EpgOverlayState extends State<EpgOverlay> {
       _longPressFired = false;
       _longPressTimer = Timer(_longPressThreshold, () {
         _longPressFired = true;
-        if (mounted) setState(() => _detailsExpanded = true);
+        if (mounted) _detailsExpanded = true;
       });
       return;
     }
@@ -465,120 +522,140 @@ class EpgOverlayState extends State<EpgOverlay> {
 
   Widget _darkBand({Widget? child}) => Container(color: Colors.black.withValues(alpha: 0.9), child: child);
 
-  Widget _buildCell(int rowIndex, int col, GuideCell cell, double hMin, double ppm) {
+  // A program cell, positioned in minutes from the window start: it does not
+  // depend on the horizontal scroll (the row moves as one transform) nor on the
+  // focus (a selector repaints only its own border).
+  Widget _buildCell(int rowIndex, int col, GuideCell cell, double ppm) {
     final entry = cell.entry;
     final channelObj = widget.channels[rowIndex];
     final startMin = _minutesFrom(cell.displayStart).clamp(0.0, double.infinity);
     final endMin = _minutesFrom(cell.displayEnd);
     final margin = _u(_cellMarginH);
-    final left = (startMin - hMin) * ppm + margin;
+    final left = startMin * ppm + margin;
     final width = ((endMin - startMin) * ppm - 2 * margin).clamp(4.0, double.infinity);
-    final focused = rowIndex == _focusedRow && col == _focusedCol;
-    final title = entry.displayTitle;
-    final nowUtc = _now.toUtc();
-    final live = _isLive(cell, nowUtc);
-    final progress = live
-        ? nowUtc.difference(cell.displayStart).inMilliseconds /
-              cell.displayEnd.difference(cell.displayStart).inMilliseconds
-        : 0.0;
-
-    return Positioned(
-      left: left,
-      top: _u(4),
-      width: width,
-      height: _u(_rowHeight) - _u(8),
-      child: Container(
-        key: Key('epg-cell-${channelObj.id}-${entry.id}'),
-        decoration: BoxDecoration(
-          color: Colors.grey.shade900,
-          border: Border.all(color: focused ? Colors.white : Colors.white24, width: focused ? _u(3) : 1),
-          borderRadius: BorderRadius.circular(_u(4)),
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: Stack(
-          children: [
-            if (live)
-              Positioned.fill(
-                child: Align(
+    final live = _isLive(cell, _now.toUtc());
+    final content = Stack(
+      children: [
+        if (live)
+          Positioned.fill(
+            child: ValueListenableBuilder<DateTime>(
+              valueListenable: _nowNotifier,
+              builder: (context, now, _) {
+                final nowUtc = now.toUtc();
+                final progress = nowUtc.difference(cell.displayStart).inMilliseconds /
+                    cell.displayEnd.difference(cell.displayStart).inMilliseconds;
+                return Align(
                   alignment: Alignment.centerLeft,
                   child: FractionallySizedBox(
                     widthFactor: progress.clamp(0.0, 1.0),
                     child: Container(key: Key('epg-cell-progress-${entry.id}'), color: Colors.white12),
                   ),
-                ),
-              ),
-            Padding(
-              padding: EdgeInsets.symmetric(horizontal: _u(8), vertical: _u(4)),
-              child: Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  title,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: Colors.white, fontSize: _u(16)),
-                ),
-              ),
+                );
+              },
             ),
-          ],
+          ),
+        Padding(
+          padding: EdgeInsets.symmetric(horizontal: _u(8), vertical: _u(4)),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              entry.displayTitle,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: Colors.white, fontSize: _u(16)),
+            ),
+          ),
+        ),
+      ],
+    );
+    return Positioned(
+      left: left,
+      top: _u(4),
+      width: width,
+      height: _u(_rowHeight) - _u(8),
+      child: _FocusSelector<bool>(
+        focus: _focus,
+        select: (p) => p.row == rowIndex && p.col == col,
+        child: content,
+        builder: (context, focused, child) => Container(
+          key: Key('epg-cell-${channelObj.id}-${entry.id}'),
+          decoration: BoxDecoration(
+            color: Colors.grey.shade900,
+            border: Border.all(color: focused ? Colors.white : Colors.white24, width: focused ? _u(3) : 1),
+            borderRadius: BorderRadius.circular(_u(4)),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: child,
         ),
       ),
     );
   }
 
-  Widget _buildChannelRow(int rowIndex, double hMin, double ppm) {
+  Widget _buildChannelRow(int rowIndex, double ppm) {
     final channelObj = widget.channels[rowIndex];
     final entries = _entriesByChannel[rowIndex];
-    final focusedRow = rowIndex == _focusedRow;
     final playing = channelObj.id == widget.currentChannelId;
     final cells = <Widget>[];
     for (var col = 0; col < entries.length; col++) {
       final e = entries[col];
       if (!e.displayEnd.isAfter(_windowStart)) continue;
-      cells.add(_buildCell(rowIndex, col, e, hMin, ppm));
+      cells.add(_buildCell(rowIndex, col, e, ppm));
     }
-    return Container(
-      key: Key('epg-row-${channelObj.id}'),
-      height: _u(_rowHeight),
-      color: focusedRow ? Colors.white.withValues(alpha: 0.08) : null,
-      child: Row(
-        children: [
-          SizedBox(
-            width: _u(_channelColumnWidth),
-            child: Padding(
-              padding: EdgeInsets.only(right: _u(8)),
-              child: Row(
-                children: [
-                  SizedBox(
-                    width: _u(32),
-                    child: playing
-                        ? Icon(
-                            AppIcons.play,
-                            key: Key('epg-playing-${channelObj.id}'),
-                            color: Colors.white,
-                            size: _u(24),
-                          )
-                        : null,
-                  ),
-                  Expanded(
-                    child: Text(
-                      '${channelObj.number} ${channelObj.name}',
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        color: focusedRow || playing ? Colors.white : Colors.white70,
-                        fontSize: _u(18),
-                        fontWeight: FontWeight.bold,
+    // The cells sit on one layer that the scroll only translates: no rebuild and
+    // no repaint while the time axis moves.
+    final canvas = ClipRect(
+      child: AnimatedBuilder(
+        animation: _hController,
+        builder: (context, child) => Transform.translate(offset: Offset(-_hCurrent * ppm, 0), child: child),
+        child: RepaintBoundary(child: Stack(clipBehavior: Clip.none, children: cells)),
+      ),
+    );
+    return _FocusSelector<bool>(
+      focus: _focus,
+      select: (p) => p.row == rowIndex,
+      child: canvas,
+      builder: (context, focusedRow, canvas) => Container(
+        key: Key('epg-row-${channelObj.id}'),
+        height: _u(_rowHeight),
+        color: focusedRow ? Colors.white.withValues(alpha: 0.08) : null,
+        child: Row(
+          children: [
+            SizedBox(
+              width: _u(_channelColumnWidth),
+              child: Padding(
+                padding: EdgeInsets.only(right: _u(8)),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: _u(32),
+                      child: playing
+                          ? Icon(
+                              AppIcons.play,
+                              key: Key('epg-playing-${channelObj.id}'),
+                              color: Colors.white,
+                              size: _u(24),
+                            )
+                          : null,
+                    ),
+                    Expanded(
+                      child: Text(
+                        '${channelObj.number} ${channelObj.name}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: focusedRow || playing ? Colors.white : Colors.white70,
+                          fontSize: _u(18),
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
             ),
-          ),
-          Expanded(
-            child: ClipRect(child: Stack(children: cells)),
-          ),
-        ],
+            Expanded(child: canvas!),
+          ],
+        ),
       ),
     );
   }
@@ -764,49 +841,60 @@ class EpgOverlayState extends State<EpgOverlay> {
           final channelColumn = _u(_channelColumnWidth);
           final viewportWidth = (constraints.maxWidth - channelColumn).clamp(1.0, double.infinity);
           final ppm = viewportWidth / _visibleSpan.inMinutes;
-          return TweenAnimationBuilder<double>(
-            tween: Tween<double>(end: _hOffsetMinutes),
-            duration: _scrollAnimation,
-            curve: Curves.easeOut,
-            builder: (context, hMin, _) {
-              final nowMin = _minutesFrom(_now.toUtc());
-              final nowX = channelColumn + (nowMin - hMin) * ppm;
-              final nowVisible = nowX >= channelColumn && nowX <= channelColumn + viewportWidth;
-              return Column(
-                children: [
-                  _buildTimeHeader(hMin, ppm),
-                  const Divider(color: Colors.white24, height: 1),
-                  Expanded(
-                    child: LayoutBuilder(
-                      builder: (context, rowsConstraints) {
-                        _rowsViewportHeight = rowsConstraints.maxHeight;
-                        return Stack(
-                          children: [
-                            ListView.builder(
-                              key: const Key('epg-rows'),
-                              controller: _verticalController,
-                              itemExtent: _u(_rowHeight),
-                              itemCount: widget.channels.length,
-                              itemBuilder: (context, rowIndex) => _buildChannelRow(rowIndex, hMin, ppm),
+          return Column(
+            children: [
+              // Only the header follows the scroll and the clock frame by frame.
+              AnimatedBuilder(
+                animation: Listenable.merge([_hController, _nowNotifier]),
+                builder: (context, _) => _buildTimeHeader(_hCurrent, ppm),
+              ),
+              const Divider(color: Colors.white24, height: 1),
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (context, rowsConstraints) {
+                    _rowsViewportHeight = rowsConstraints.maxHeight;
+                    return Stack(
+                      children: [
+                        ListView.builder(
+                          key: const Key('epg-rows'),
+                          controller: _verticalController,
+                          itemExtent: _u(_rowHeight),
+                          itemCount: widget.channels.length,
+                          itemBuilder: (context, rowIndex) => _buildChannelRow(rowIndex, ppm),
+                        ),
+                        Positioned(
+                          left: channelColumn,
+                          top: 0,
+                          bottom: 0,
+                          width: viewportWidth,
+                          child: IgnorePointer(
+                            child: AnimatedBuilder(
+                              animation: Listenable.merge([_hController, _nowNotifier]),
+                              builder: (context, _) {
+                                final nowX = (_minutesFrom(_now.toUtc()) - _hCurrent) * ppm;
+                                if (nowX < 0 || nowX > viewportWidth) return const SizedBox.shrink();
+                                return Stack(
+                                  clipBehavior: Clip.none,
+                                  children: [
+                                    Positioned(
+                                      left: nowX - _u(1),
+                                      top: 0,
+                                      bottom: 0,
+                                      width: _u(2),
+                                      child: Container(key: const Key('epg-now-marker'), color: Colors.redAccent),
+                                    ),
+                                  ],
+                                );
+                              },
                             ),
-                            if (nowVisible)
-                              Positioned(
-                                left: nowX - _u(1),
-                                top: 0,
-                                bottom: 0,
-                                width: _u(2),
-                                child: IgnorePointer(
-                                  child: Container(key: const Key('epg-now-marker'), color: Colors.redAccent),
-                                ),
-                              ),
-                          ],
-                        );
-                      },
-                    ),
-                  ),
-                ],
-              );
-            },
+                          ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            ],
           );
         },
       ),
@@ -828,7 +916,10 @@ class EpgOverlayState extends State<EpgOverlay> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _buildDetailsPanel(),
+        ListenableBuilder(
+          listenable: Listenable.merge([_focus, _detailsExpandedNotifier, _nowNotifier]),
+          builder: (context, _) => _buildDetailsPanel(),
+        ),
         const Divider(color: Colors.white24, height: 1),
         Expanded(child: _buildGrid()),
       ],
@@ -859,4 +950,55 @@ class EpgOverlayState extends State<EpgOverlay> {
       ],
     );
   }
+}
+
+
+typedef _Pos = ({int row, int col});
+
+/// Rebuilds [builder] only when [select] of the focus changes, so moving the
+/// focus costs the two or three widgets whose look changes, not the whole grid.
+class _FocusSelector<T> extends StatefulWidget {
+  const _FocusSelector({required this.focus, required this.select, required this.builder, this.child});
+
+  final ValueListenable<_Pos> focus;
+  final T Function(_Pos) select;
+  final Widget Function(BuildContext context, T value, Widget? child) builder;
+  final Widget? child;
+
+  @override
+  State<_FocusSelector<T>> createState() => _FocusSelectorState<T>();
+}
+
+class _FocusSelectorState<T> extends State<_FocusSelector<T>> {
+  late T _value = widget.select(widget.focus.value);
+
+  @override
+  void initState() {
+    super.initState();
+    widget.focus.addListener(_onFocus);
+  }
+
+  @override
+  void didUpdateWidget(_FocusSelector<T> old) {
+    super.didUpdateWidget(old);
+    if (old.focus != widget.focus) {
+      old.focus.removeListener(_onFocus);
+      widget.focus.addListener(_onFocus);
+    }
+    _value = widget.select(widget.focus.value);
+  }
+
+  @override
+  void dispose() {
+    widget.focus.removeListener(_onFocus);
+    super.dispose();
+  }
+
+  void _onFocus() {
+    final next = widget.select(widget.focus.value);
+    if (next != _value) setState(() => _value = next);
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(context, _value, widget.child);
 }
