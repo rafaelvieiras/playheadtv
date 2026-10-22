@@ -905,6 +905,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         return found >= 0 ? found : 0;
       }
 
+      // The channel asked for is known to the cache (or none was asked for, so the first
+      // one plays). A channel the cache has never heard of, a new one for instance,
+      // needs the refresh first: playing another channel in its place would be wrong.
+      bool knowsWanted(List<PlayheadChannel> list) => wantedId == null || list.any((c) => c.id == wantedId);
+
       // Tier 2-4 stream rules ride alongside the startup refresh (a failure keeps the
       // cached rules, see StreamPreferencesService).
       final streamPrefsRefresh = _streamPrefs.refreshAll();
@@ -915,6 +920,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       // network is never on the way to the picture. Only a first run, with nothing
       // cached for the channel yet, has to wait for the backend.
       final warm = channels.isNotEmpty &&
+          knowsWanted(channels) &&
           _upcomingFromCache(channels[pickIndex(channels)].id, DateTime.now().toUtc()).isNotEmpty;
       if (!warm) {
         await _runtime.syncer.syncNow().timeout(startupSyncWait, onTimeout: () => SyncOutcome.offline);
