@@ -8,6 +8,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:client/services/perf_trace.dart';
 import 'package:client/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -117,6 +118,8 @@ void main() {
 
       // Phase 1: process-side boot, from the first widget to the mosaic and then
       // to a channel actually tuned. Includes the first backend sync.
+      BootTrace.reset();
+      BootTrace.mark('main');
       await probe.begin('boot_to_mosaic');
       await tester.pumpWidget(const PlayheadSpikeApp());
       // The page exists from the loading state; the tiles mean it has data.
@@ -177,6 +180,7 @@ void main() {
       await probe.end();
 
       probe.extra['scenario'] = {'channels': channelCount, 'items_per_channel': itemsPerChannel, 'item_minutes': itemMs ~/ 60000};
+      probe.extra['boot_marks_ms'] = {for (final m in BootTrace.marks) m.$1: m.$2};
       probe.report();
       _enforce(probe);
     });
