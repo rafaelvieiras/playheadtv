@@ -66,6 +66,8 @@ const _extendMargin = Duration(hours: 1);
 const _nowTickInterval = Duration(seconds: 10);
 const _scrollAnimation = Duration(milliseconds: 150);
 const _longPressThreshold = Duration(milliseconds: 500);
+// How many rows get their cell titles per frame after the guide opens (see `_titleRows`).
+const _titleRowsPerFrame = 2;
 
 // Sizes are pixels at 1080p; `EpgOverlayState._u` multiplies them by the shared
 // UiScale (lib/ui/ui_scale.dart). The time axis is not part of this: the 3h
@@ -121,6 +123,32 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
   // cells and rows whose look changes (docs/ARCHITECTURE.md "Guide performance").
   final ValueNotifier<_Pos> _focus = ValueNotifier<_Pos>((row: 0, col: 0));
   final ValueNotifier<bool> _detailsExpandedNotifier = ValueNotifier<bool>(false);
+
+  // Laying out every cell title in the frame that opens the guide is the slowest frame of the
+  // whole interaction on a modest device (docs/ARCHITECTURE.md "Guide performance"). The titles
+  // come in over the next frames instead, a couple of rows per frame, nearest the focused row
+  // first: the first frame draws the cells' boxes and the rest fills in. Only a title is
+  // deferred (a leaf), never a row or a cell, so nothing is rebuilt or moves when it appears.
+  // A key press shows them all at once.
+  final ValueNotifier<int> _titleRows = ValueNotifier<int>(0);
+  int _titleOriginRow = 0;
+  bool _titleGrowthScheduled = false;
+
+  void _growTitles() {
+    if (_titleGrowthScheduled || !mounted) return;
+    if (_titleRows.value >= widget.channels.length) return;
+    _titleGrowthScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _titleGrowthScheduled = false;
+      if (!mounted) return;
+      _titleRows.value += _titleRowsPerFrame;
+      _growTitles();
+    });
+  }
+
+  void _showAllTitles() {
+    if (_titleRows.value < widget.channels.length * 2) _titleRows.value = widget.channels.length * 2;
+  }
   int get _focusedRow => _focus.value.row;
   int get _focusedCol => _focus.value.col;
   void _setFocus(int row, int col) => _focus.value = (row: row, col: col);
@@ -237,6 +265,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
     _hController.dispose();
     _focus.dispose();
     _detailsExpandedNotifier.dispose();
+    _titleRows.dispose();
     _nowNotifier.dispose();
     super.dispose();
   }
@@ -323,6 +352,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
         _rawByChannel = results;
         _rebuildCells();
         _setFocus(initialRow, initialCol);
+        _titleOriginRow = initialRow;
         _anchor = now;
         _hOffsetMinutes = 0;
         _loading = false;
@@ -333,6 +363,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _ensureRowVisible(animate: false);
         PerfTrace.end();
+        _growTitles();
       });
     } catch (e) {
       if (!mounted) return;
@@ -434,6 +465,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
   void moveRow(int delta) {
     if (_loading || _error != null || _entriesByChannel.isEmpty) return;
     PerfTrace.burst('epg_navigate');
+    _showAllTitles();
     final newRow = _focusedRow + delta;
     if (newRow < 0 || newRow >= _entriesByChannel.length) return;
     final now = widget.clock().toUtc();
@@ -459,6 +491,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
   void moveColumn(int delta) {
     if (_loading || _error != null || _entriesByChannel.isEmpty) return;
     PerfTrace.burst('epg_navigate');
+    _showAllTitles();
     final rowEntries = _entriesByChannel[_focusedRow];
     if (rowEntries.isEmpty) {
       if (delta > 0) _extendThenRetry(delta, _focusedRow, 0);
@@ -558,11 +591,16 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
           padding: EdgeInsets.symmetric(horizontal: _u(8), vertical: _u(4)),
           child: Align(
             alignment: Alignment.centerLeft,
-            child: Text(
-              entry.displayTitle,
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: Colors.white, fontSize: _u(16)),
+            child: ValueListenableBuilder<int>(
+              valueListenable: _titleRows,
+              builder: (context, reach, _) => (rowIndex - _titleOriginRow).abs() < reach
+                  ? Text(
+                      entry.displayTitle,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: Colors.white, fontSize: _u(16)),
+                    )
+                  : const SizedBox.shrink(),
             ),
           ),
         ),

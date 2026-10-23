@@ -118,6 +118,10 @@ void main() {
         );
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 400));
+        // The cell titles fill in over the next frames (EpgOverlayState._titleRows).
+        for (var i = 0; i < 10; i++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
         expect(tester.takeException(), isNull);
         await expectLater(find.byType(MaterialApp), matchesGoldenFile('goldens/epg_$name.png'));
         await tester.pumpWidget(const SizedBox());
@@ -148,6 +152,10 @@ void main() {
         );
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 400));
+        // The cell titles fill in over the next frames (EpgOverlayState._titleRows).
+        for (var i = 0; i < 10; i++) {
+          await tester.pump(const Duration(milliseconds: 50));
+        }
         final row = tester.getSize(find.byKey(const Key('epg-row-c0'))).height;
         final rows = tester.getSize(find.byKey(const Key('epg-rows')));
         // Two 30-minute ticks are 1/6 of the visible span apart.
