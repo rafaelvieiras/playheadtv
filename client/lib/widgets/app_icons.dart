@@ -24,6 +24,7 @@ abstract final class AppIcons {
   static const IconData interfaceSize = Symbols.format_size;
   static const IconData preloadLead = Symbols.hourglass_top;
   static const IconData dimmer = Symbols.brightness_medium;
+  static const IconData epgThumbnail = Symbols.picture_in_picture;
   static const IconData diagnostics = Symbols.bug_report;
   static const IconData logLevel = Symbols.tune;
   static const IconData videoEngine = Symbols.movie;

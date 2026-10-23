@@ -79,7 +79,7 @@ class EpgOverlay extends StatefulWidget {
   final List<PlayheadChannel> channels;
   final ScheduleCache cache;
   final String currentChannelId;
-  final Rect videoThumbnailRect; // SAME rectangle as _videoThumbnailRect — never draw anything opaque on top of it
+  final Rect? videoThumbnailRect; // SAME rectangle as _videoThumbnailRect — never draw anything opaque on top of it; null = no thumbnail (an opaque layer over the whole screen)
   final void Function(String channelId) onSelectLiveChannel;
   final VoidCallback onClose;
 
@@ -91,7 +91,7 @@ class EpgOverlay extends StatefulWidget {
     required this.channels,
     required this.cache,
     required this.currentChannelId,
-    required this.videoThumbnailRect,
+    this.videoThumbnailRect,
     required this.onSelectLiveChannel,
     required this.onClose,
     this.clock = DateTime.now,
@@ -931,6 +931,12 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
   @override
   Widget build(BuildContext context) {
     final rect = widget.videoThumbnailRect;
+    if (rect == null) {
+      // No thumbnail: one opaque layer, the grid gets the whole screen.
+      return Stack(key: const Key('epg-overlay'), children: [
+        Positioned.fill(child: Container(color: Colors.black, child: _buildBody())),
+      ]);
+    }
     return Stack(
       key: const Key('epg-overlay'),
       children: [

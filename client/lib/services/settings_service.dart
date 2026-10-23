@@ -42,6 +42,7 @@ class SettingsService implements UpdateNoticeStore {
   static const _uiScaleKey = 'ui_scale_override';
   static const _preloadLeadKey = 'preload_lead_seconds';
   static const _dimLevelKey = 'dim_level_percent';
+  static const _epgThumbnailKey = 'epg_thumbnail';
   static const _connectionPrefix = 'connection_'; // + a connection_settings.dart key
   static const _chosenServerUrlKey = 'chosen_server_url';
 
@@ -86,6 +87,12 @@ class SettingsService implements UpdateNoticeStore {
   /// choice wins; with none saved, [defaultValue] (the installation's
   /// `PLAYHEADTV_FULLSCREEN` / `start_fullscreen`, itself true when unset).
   bool startFullScreen(bool defaultValue) => _prefs.getBool(_startFullScreenKey) ?? defaultValue;
+
+  /// Whether the guide keeps a thumbnail of the channel on air in a corner (the default), or
+  /// uses the whole screen for the grid.
+  bool get epgThumbnail => _prefs.getBool(_epgThumbnailKey) ?? true;
+
+  Future<void> setEpgThumbnail(bool value) => _prefs.setBool(_epgThumbnailKey, value);
 
   Future<void> setStartFullScreen(bool value) => _prefs.setBool(_startFullScreenKey, value);
 
