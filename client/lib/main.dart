@@ -59,6 +59,7 @@ import 'epg_guide.dart' show guideContextLookback, isHiddenGuideKind;
 import 'osd_subject.dart';
 import 'preload_lead.dart';
 import 'dimmer.dart';
+import 'epg_thumbnail.dart';
 import 'widgets/epg_overlay.dart';
 import 'widgets/osd_overlay.dart';
 import 'widgets/debug_overlay.dart';
@@ -916,6 +917,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _settings = await SettingsService.create();
       _keyBindings = KeyBindingsService(_settings);
       Dimmer.level.value = AppConfig.configuredDimLevel(_settings);
+      EpgThumbnailSetting.enabled.value = _settings.epgThumbnail;
       _runtime = await OfflineRuntime.ensure();
       BootTrace.mark('runtime_open');
       _streamPrefs = await StreamPreferencesService.create(_runtime.api);
@@ -2847,7 +2849,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
               valueListenable: _epgOpenNotifier,
               builder: (context, epgOpen, child) {
                 final screenSize = MediaQuery.sizeOf(context);
-                final rect = epgOpen ? _videoThumbnailRect(screenSize) : Offset.zero & screenSize;
+                final rect = epgOpen && EpgThumbnailSetting.enabled.value
+                    ? _videoThumbnailRect(screenSize)
+                    : Offset.zero & screenSize;
                 return AnimatedPositioned(
                   duration: const Duration(milliseconds: 300),
                   curve: Curves.easeInOut,
@@ -3060,7 +3064,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                     channels: _channels,
                     cache: _cache,
                     currentChannelId: _channels[_channelIndex].id,
-                    videoThumbnailRect: _videoThumbnailRect(MediaQuery.sizeOf(context)),
+                    videoThumbnailRect:
+                        EpgThumbnailSetting.enabled.value ? _videoThumbnailRect(MediaQuery.sizeOf(context)) : null,
                     onSelectLiveChannel: (channelId) {
                       _epgOpenNotifier.value = false;
                       final targetIndex = _channels.indexWhere((c) => c.id == channelId);

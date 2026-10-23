@@ -14,6 +14,7 @@ import '../input/input_action.dart';
 import '../main.dart' show AppConfig;
 import '../services/app_window.dart';
 import '../dimmer.dart';
+import '../epg_thumbnail.dart';
 import '../preload_lead.dart';
 import '../services/settings_service.dart';
 import '../ui/ui_scale.dart';
@@ -100,6 +101,17 @@ class _SettingsPageState extends State<SettingsPage> {
   void _cycleLogLevel() {
     Log.setRuntimeLevel(nextLogLevelChoice(Log.level));
     setState(() {});
+  }
+
+  // Select flips whether the guide shows the channel thumbnail, and applies it at once.
+  void _toggleEpgThumbnail() {
+    final settings = _settings;
+    if (settings == null) return;
+    final next = !settings.epgThumbnail;
+    EpgThumbnailSetting.enabled.value = next;
+    unawaited(settings.setEpgThumbnail(next).then((_) {
+      if (mounted) setState(() {});
+    }));
   }
 
   // Opens the dim level dialog (six buttons) and saves the confirmed level.
@@ -221,6 +233,17 @@ class _SettingsPageState extends State<SettingsPage> {
                   key: const Key('settings-dim-level-value'),
                 ),
                 onTap: _editDimLevel,
+              ),
+            if (_settings != null)
+              ListTile(
+                key: const Key('settings-epg-thumbnail-tile'),
+                leading: const Icon(AppIcons.epgThumbnail),
+                title: const Text('Show channel thumbnail in the guide'),
+                subtitle: Text(
+                  _settings!.epgThumbnail ? 'On' : 'Off',
+                  key: const Key('settings-epg-thumbnail-value'),
+                ),
+                onTap: _toggleEpgThumbnail,
               ),
             if (_settings != null && Platform.isAndroid)
               ListTile(

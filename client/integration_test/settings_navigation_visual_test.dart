@@ -32,12 +32,15 @@ import 'support/offline_helpers.dart';
 import 'support/video_fixture.dart';
 
 const _settingsRows = [
+  'settings-connection-tile',
+  'settings-server-tile',
   'settings-controls-tile',
   'settings-offline-tile',
   'settings-fullscreen-tile',
   'settings-ui-scale-tile',
   'settings-preload-lead-tile',
   'settings-dim-level-tile',
+  'settings-epg-thumbnail-tile',
   'settings-log-level-tile',
   'settings-diagnostics-tile',
 ];
@@ -412,7 +415,8 @@ void main() {
       const first = 'settings-controls-tile';
       const last = 'settings-diagnostics-tile';
       await step(tester, 'settings_open_1920x1080', sp, _settingsRows);
-      for (var i = 1; i < _settingsRows.length; i++) {
+      // The first row holds focus at open (Connection and Server sit above it).
+      for (var i = _settingsRows.indexOf(first) + 1; i < _settingsRows.length; i++) {
         await tap(tester, LogicalKeyboardKey.arrowDown);
         await step(tester, 'down_tap_${i}_1920x1080', sp, _settingsRows);
       }
