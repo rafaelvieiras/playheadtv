@@ -2040,6 +2040,16 @@ rebuilt every visible row and every cell.
   only when a program starts or ends (`_nextBoundary`).
 - **`setState` on the overlay is now rare**: a cache refresh, a window extension and a
   program going live. Never for a key press.
+- **A held arrow keeps moving the focus** along the grid, one cell or row at a time
+  (`_epgHoldRepeat` in `lib/main.dart`): key repeats are applied at most once per
+  `epgHoldRepeatInterval` and the rest are dropped, so the pace is steady and nothing
+  queues up after the key is released. It applies to the four arrows only; Select, Back and
+  every other screen still ignore repeats.
+- **Cells are drawn without a clip layer.** `Clip.antiAlias` costs an off-screen layer per
+  cell on every repaint; the cells use `Clip.none` (the content sits inside the border).
+  On the TV box this took the raster p95 from 14-19 ms to about 13 ms. Opening the guide
+  still has one slow frame (build of the visible rows); building the rows in stages was
+  tried and made the first frames worse (more, longer frames), so it was dropped.
 - **Boot phases.** `BootTrace` (`lib/services/perf_trace.dart`) marks the phases of the
   start (`main`, `player_init`, `runtime_open`, `sync_done`/`warm_start`,
   `channel_on_air`) and logs them as one `boot` line. `PerfTrace` (opt-in, built with
