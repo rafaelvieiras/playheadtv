@@ -156,5 +156,46 @@ void main() {
       await press(tester, LogicalKeyboardKey.escape);
       await pumpUntil(tester, () => find.byKey(const Key('epg-overlay')).evaluate().isEmpty, failMessage: 'Back did not close the EPG');
     });
+
+    // Auto-repeat as a keyboard or a remote sends it: down, a repeat about every 35 ms, up.
+    Future<void> hold(WidgetTester tester, LogicalKeyboardKey key, {int ms = 900}) async {
+      await ensurePlayerFocus(tester);
+      await tester.sendKeyDownEvent(key);
+      final stop = DateTime.now().add(Duration(milliseconds: ms));
+      while (DateTime.now().isBefore(stop)) {
+        await tester.sendKeyRepeatEvent(key);
+        await tester.pump(const Duration(milliseconds: 35));
+      }
+      await tester.sendKeyUpEvent(key);
+      await tester.pump();
+    }
+
+    testWidgets('holding an arrow runs the focus along the grid, one axis at a time', (tester) async {
+      await tester.pumpWidget(const PlayheadSpikeApp());
+      await openEpg(tester);
+      expect(detailsTitle(tester), 'ONE LIVE');
+
+      // A single tap still moves exactly one row.
+      await press(tester, LogicalKeyboardKey.arrowDown);
+      expect(detailsTitle(tester), 'TWO LIVE');
+
+      // Holding Down runs through the remaining rows down to the last one.
+      await hold(tester, LogicalKeyboardKey.arrowDown);
+      expect(detailsTitle(tester), 'FOUR LIVE', reason: 'holding Down must keep moving down');
+      // Holding Up runs back to the first row.
+      await hold(tester, LogicalKeyboardKey.arrowUp);
+      expect(detailsTitle(tester), 'ONE LIVE', reason: 'holding Up must keep moving up');
+
+      // Same on the time axis, along the row of the last channel (OLDA, OLDB, LIVE).
+      await hold(tester, LogicalKeyboardKey.arrowDown);
+      expect(detailsTitle(tester), 'FOUR LIVE');
+      await hold(tester, LogicalKeyboardKey.arrowLeft);
+      expect(detailsTitle(tester), 'FOUR OLDA', reason: 'holding Left must keep moving left');
+      await hold(tester, LogicalKeyboardKey.arrowRight);
+      expect(detailsTitle(tester), 'FOUR LIVE', reason: 'holding Right must keep moving right');
+
+      await press(tester, LogicalKeyboardKey.escape);
+      await pumpUntil(tester, () => find.byKey(const Key('epg-overlay')).evaluate().isEmpty, failMessage: 'Back did not close the EPG');
+    });
   });
 }
