@@ -584,7 +584,9 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
             border: Border.all(color: focused ? Colors.white : Colors.white24, width: focused ? _u(3) : 1),
             borderRadius: BorderRadius.circular(_u(4)),
           ),
-          clipBehavior: Clip.antiAlias,
+          // No clip: the content already sits inside the border (the decoration pads it), so
+          // only the 4px corners differ, and any clip costs the raster thread on every repaint.
+          clipBehavior: Clip.none,
           child: child,
         ),
       ),
