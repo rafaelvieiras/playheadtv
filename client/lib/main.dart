@@ -430,6 +430,9 @@ const minTransitionInterval = Duration(seconds: 5);
 // before issue #9.
 const epgSyncTolerance = Duration(seconds: 2);
 
+/// Minimum time between two focus steps while an arrow is held in the EPG.
+const epgHoldRepeatInterval = Duration(milliseconds: 90);
+
 // Looping local slate shown while holding for an interior EPG gap (see
 // _holdForGap) — a schedule hole wide enough that honoring the next item's
 // real startAt means waiting, not starting it early. See
@@ -746,6 +749,27 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // "flashes" and closes). This flag makes sure that first orphan KeyUp is
   // swallowed, not forwarded.
   bool _suppressNextEpgSelectUp = false;
+
+  // Holding an arrow in the open EPG moves the focus cell by cell. The platform repeats
+  // the key faster than the grid can draw a step, so a repeat is applied at most once per
+  // `epgHoldRepeatInterval`; the rest are dropped, which keeps the pace steady instead of
+  // queueing moves that would carry on after the key is released.
+  final Stopwatch _epgLastStep = Stopwatch();
+
+  static bool _isEpgArrow(LogicalKeyboardKey key) =>
+      key == LogicalKeyboardKey.arrowUp ||
+      key == LogicalKeyboardKey.arrowDown ||
+      key == LogicalKeyboardKey.arrowLeft ||
+      key == LogicalKeyboardKey.arrowRight;
+
+  /// True when a held-arrow repeat may move the focus now (and records the step).
+  bool _epgHoldRepeat() {
+    if (_epgLastStep.isRunning && _epgLastStep.elapsed < epgHoldRepeatInterval) return false;
+    _epgLastStep
+      ..reset()
+      ..start();
+    return true;
+  }
 
   // What the client KNOWS of this channel (programs read from the offline
   // cache, already enriched: titles, source ids, art references, a tail's
@@ -2646,7 +2670,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       // key must not repeat any of these actions; the EPG's long-press is
       // measured by a Timer inside the overlay itself, not by KeyRepeatEvent.
       onKeyEvent: (event) {
-        if (event is KeyRepeatEvent) return;
+        // Holding a key repeats nothing, except an arrow in the open EPG: there it
+        // keeps moving the focus along the grid (see `_epgHoldRepeat`).
+        if (event is KeyRepeatEvent && !(_epgOpenNotifier.value && _isEpgArrow(event.logicalKey))) return;
         final action = _keyBindings.resolve(event.logicalKey);
 
         if (_epgOpenNotifier.value) {
@@ -2655,6 +2681,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
             return;
           }
           if (action == InputAction.select) {
+            if (event is KeyRepeatEvent) return;
             if (_suppressNextEpgSelectUp && event is KeyUpEvent) {
               _suppressNextEpgSelectUp = false;
               return;
@@ -2662,7 +2689,15 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
             _epgOverlayKey.currentState?.handleSelectKeyEvent(event);
             return;
           }
-          if (event is! KeyDownEvent) return;
+          if (event is KeyRepeatEvent) {
+            if (!_epgHoldRepeat()) return;
+          } else if (event is KeyDownEvent) {
+            _epgLastStep
+              ..reset()
+              ..start();
+          } else {
+            return;
+          }
           if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
             _epgOverlayKey.currentState?.moveRow(1);
           } else if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
