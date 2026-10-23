@@ -2050,6 +2050,18 @@ rebuilt every visible row and every cell.
   On the TV box this took the raster p95 from 14-19 ms to about 13 ms. Opening the guide
   still has one slow frame (build of the visible rows); building the rows in stages was
   tried and made the first frames worse (more, longer frames), so it was dropped.
+- **Cell titles fill in after the first frame.** Laying out the ~100 titles was about half of
+  the slow frame that opens the guide (measured by blanking them: worst frame ~130 ms to ~78 ms;
+  with no grid at all ~50 ms). `_titleRows` grows by `_titleRowsPerFrame` rows per frame, nearest
+  the focused row first, and any key press shows the rest. Only a title (a leaf) is deferred; a
+  row or cell deferred the same way was tried and was worse (more frames, a longer build). The
+  worst opening frame is now ~80 ms on the TV box. Tests that read titles wait a few frames after
+  the guide loads.
+- **The thumbnail is a setting** ("Show channel thumbnail in the guide", Settings, on by
+  default; `EpgThumbnailSetting`, `lib/epg_thumbnail.dart`). Off: the video is not moved into the
+  corner, the guide covers the whole screen with an opaque layer and the grid gets the height the
+  thumbnail used. The video widgets are neither moved nor rebuilt either way (the GL texture
+  gotcha). It made no difference to the slow opening frame, which is build time, not video.
 - **Boot phases.** `BootTrace` (`lib/services/perf_trace.dart`) marks the phases of the
   start (`main`, `player_init`, `runtime_open`, `sync_done`/`warm_start`,
   `channel_on_air`) and logs them as one `boot` line. `PerfTrace` (opt-in, built with

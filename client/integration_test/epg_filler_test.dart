@@ -139,6 +139,10 @@ void main() {
         () => find.byKey(const Key('epg-details-panel')).evaluate().isNotEmpty,
         failMessage: 'EPG never finished loading',
       );
+      // The cell titles fill in over the next frames (EpgOverlayState._titleRows).
+      for (var i = 0; i < 10; i++) {
+        await tester.pump(const Duration(milliseconds: 50));
+      }
     }
 
     Iterable<Element> rowCells(String channelId) => find
