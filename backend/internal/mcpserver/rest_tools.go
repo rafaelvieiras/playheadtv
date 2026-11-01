@@ -37,6 +37,11 @@ type (
 		BaseURL string `json:"base_url" jsonschema:"the Jellyfin server address, http or https, e.g. https://jellyfin.example.com"`
 		APIKey  string `json:"api_key,omitempty" jsonschema:"the Jellyfin API key (write-only); omitted keeps the stored key"`
 	}
+	channelLogoArgs struct {
+		ID          string `json:"id" jsonschema:"the channel the logo belongs to"`
+		ImageBase64 string `json:"image_base64" jsonschema:"the logo image, base64 encoded: PNG, JPEG or WebP (no SVG), at most 1 MiB decoded, validated by its content. It replaces the stored logo"`
+	}
+
 	watermarkArgs struct {
 		ID          string  `json:"id" jsonschema:"the channel or block the watermark belongs to"`
 		Mode        string  `json:"mode" jsonschema:"one of: inherit (a block uses its channel's; for a channel same as disable), disable (no watermark), override (this owner's own image and options)"`
@@ -159,6 +164,15 @@ func registerRESTTools(s *mcp.Server, db storage.DB, mux http.Handler) {
 		"List configuration problems that leave holes in a channel's guide (e.g. a criteria item whose query fails). Read only.", false)
 	addREST[idConfirmArgs](s, rc, "reset_channel_epg", "POST /channels/{id}/reset-epg",
 		"Apply a grid reset now: the materialized future and the program on air are discarded, continuous rotations restart from the beginning and the channel is regenerated before this returns; viewers switch program immediately. Use preview_channel_grid_reset first.", true)
+
+	// Channel logos (client-rendered in the guide and the OSD instead of the
+	// channel name, see docs/ARCHITECTURE.md "Channel logo").
+	addREST[idArgs](s, rc, "get_channel_logo", "GET /channels/{id}/logo",
+		"Read a channel's logo metadata. The image itself is not returned: image_id names it.", false)
+	addREST[channelLogoArgs](s, rc, "set_channel_logo", "PUT /channels/{id}/logo",
+		"Upload a channel's logo: the playback client draws it in place of the channel name in the guide and the OSD. Replaces any stored logo. Returns the stored metadata.", false)
+	addREST[idConfirmArgs](s, rc, "clear_channel_logo", "DELETE /channels/{id}/logo",
+		"Remove a channel's logo and its stored image; the client shows the channel name again.", true)
 
 	// Watermarks (client-rendered overlay, see docs/ARCHITECTURE.md "Watermark").
 	addREST[idArgs](s, rc, "get_channel_watermark", "GET /channels/{id}/watermark",

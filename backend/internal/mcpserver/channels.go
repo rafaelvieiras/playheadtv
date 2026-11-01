@@ -14,7 +14,7 @@ import (
 
 // channelColumns mirrors internal/api/channels.go's channelColumns constant
 // — duplicated rather than imported, see mcpserver.go's package comment.
-const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, schedule_id, base_schedule_id, created_at, updated_at"
+const channelColumns = "id, tenant_id, number, name, guide_art_url, logo_image_id, timezone, schedule_id, base_schedule_id, created_at, updated_at"
 
 func registerChannelTools(s *mcp.Server, db storage.DB, mat *materializer.Materializer) {
 	mcp.AddTool(s, &mcp.Tool{

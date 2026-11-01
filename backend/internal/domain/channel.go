@@ -8,6 +8,13 @@ type Channel struct {
 	Number      int     `json:"number"`
 	Name        string  `json:"name"`
 	GuideArtURL *string `json:"guide_art_url"`
+	// LogoImageID names the logo uploaded for this channel (nil: none). The
+	// bytes are at GET /channel-logos/{image_id}/image, and the id changes on
+	// every upload, so a client-cached copy never goes stale. The client draws
+	// it in place of the channel name in the guide and the OSD. It is set and
+	// cleared only through PUT/DELETE /channels/{id}/logo, never through a
+	// channel update (which leaves it alone).
+	LogoImageID *string `json:"logo_image_id"`
 	// Timezone is an IANA name, used to resolve ScheduleItem.StartTimeLocal
 	// into absolute instants during EPG materialization.
 	Timezone string `json:"timezone"`

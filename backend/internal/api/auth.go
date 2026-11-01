@@ -452,6 +452,11 @@ func isDeviceOrSessionPath(r *http.Request) bool {
 	if strings.HasPrefix(r.URL.Path, "/watermarks/") {
 		return true
 	}
+	// A channel logo, for the same reason: the client draws it in the guide and
+	// the OSD, and the id is unguessable and changes on every upload.
+	if strings.HasPrefix(r.URL.Path, "/channel-logos/") {
+		return true
+	}
 	// GET /catalog-items/{id} (lookup) is device-or-session; GET
 	// /catalog-items (search/browse, no trailing segment) is session-only,
 	// handled by falling through to the default case below.
