@@ -40,6 +40,9 @@ const _settingsRows = [
   'settings-ui-scale-tile',
   'settings-preload-lead-tile',
   'settings-dim-level-tile',
+  // The always-on clock's own row is always there; its opacity and size rows
+  // only appear once the clock is on, and this suite clears the preferences.
+  'settings-clock-tile',
   'settings-epg-thumbnail-tile',
   'settings-log-level-tile',
   'settings-diagnostics-tile',
