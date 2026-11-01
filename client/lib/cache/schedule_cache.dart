@@ -23,7 +23,7 @@ import '../playhead_api.dart';
 /// Bumped whenever the tables or the stored JSON change shape in a way an old
 /// file cannot serve: opening a file of another version recreates it empty
 /// (the next sync refills it).
-const scheduleCacheSchemaVersion = 3;
+const scheduleCacheSchemaVersion = 4;
 
 /// The window assumed for a backend that does not report one.
 const defaultBackendWindow = Duration(hours: 48);

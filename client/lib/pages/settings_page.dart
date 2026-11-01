@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 import '../input/input_action.dart';
 import '../main.dart' show AppConfig;
 import '../services/app_window.dart';
+import '../clock.dart';
 import '../dimmer.dart';
 import '../epg_thumbnail.dart';
 import '../preload_lead.dart';
@@ -110,6 +111,39 @@ class _SettingsPageState extends State<SettingsPage> {
     final next = !settings.epgThumbnail;
     EpgThumbnailSetting.enabled.value = next;
     unawaited(settings.setEpgThumbnail(next).then((_) {
+      if (mounted) setState(() {});
+    }));
+  }
+
+  // Select flips the always-on clock and applies it at once.
+  void _toggleClock() {
+    final settings = _settings;
+    if (settings == null) return;
+    final next = !settings.clockAlwaysVisible;
+    ClockOverlaySettings.alwaysVisible.value = next;
+    unawaited(settings.setClockAlwaysVisible(next).then((_) {
+      if (mounted) setState(() {});
+    }));
+  }
+
+  // Select steps through the clock's opacity choices and saves.
+  void _cycleClockOpacity() {
+    final settings = _settings;
+    if (settings == null) return;
+    final next = nextClockOpacityChoice(settings.clockOpacityPct);
+    ClockOverlaySettings.opacityPct.value = next;
+    unawaited(settings.setClockOpacityPct(next).then((_) {
+      if (mounted) setState(() {});
+    }));
+  }
+
+  // Select steps through the clock's size choices and saves.
+  void _cycleClockScale() {
+    final settings = _settings;
+    if (settings == null) return;
+    final next = nextClockScaleChoice(settings.clockScale);
+    ClockOverlaySettings.scale.value = next;
+    unawaited(settings.setClockScale(next).then((_) {
       if (mounted) setState(() {});
     }));
   }
@@ -233,6 +267,42 @@ class _SettingsPageState extends State<SettingsPage> {
                   key: const Key('settings-dim-level-value'),
                 ),
                 onTap: _editDimLevel,
+              ),
+            if (_settings != null)
+              ListTile(
+                key: const Key('settings-clock-tile'),
+                leading: const Icon(AppIcons.clock),
+                title: const Text('Always show the clock'),
+                subtitle: Text(
+                  _settings!.clockAlwaysVisible ? 'On' : 'Off',
+                  key: const Key('settings-clock-value'),
+                ),
+                onTap: _toggleClock,
+              ),
+            // The two looks only matter while the clock is on: no rows when it
+            // is off, so Settings does not offer knobs for something the player
+            // never draws.
+            if (_settings != null && _settings!.clockAlwaysVisible)
+              ListTile(
+                key: const Key('settings-clock-opacity-tile'),
+                leading: const Icon(AppIcons.clock),
+                title: const Text('Clock opacity'),
+                subtitle: Text(
+                  clockOpacityLabel(_settings!.clockOpacityPct),
+                  key: const Key('settings-clock-opacity-value'),
+                ),
+                onTap: _cycleClockOpacity,
+              ),
+            if (_settings != null && _settings!.clockAlwaysVisible)
+              ListTile(
+                key: const Key('settings-clock-scale-tile'),
+                leading: const Icon(AppIcons.clock),
+                title: const Text('Clock size'),
+                subtitle: Text(
+                  clockScaleLabel(_settings!.clockScale),
+                  key: const Key('settings-clock-scale-value'),
+                ),
+                onTap: _cycleClockScale,
               ),
             if (_settings != null)
               ListTile(

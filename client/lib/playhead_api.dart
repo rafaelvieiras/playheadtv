@@ -45,16 +45,35 @@ class PlayheadChannel {
   final String name;
   final String? guideArtUrl;
 
-  PlayheadChannel({required this.id, required this.number, required this.name, this.guideArtUrl});
+  /// The image id of the logo uploaded for this channel (null: none). The
+  /// client draws it in place of [name] in the guide and the OSD; the id
+  /// changes on every upload, so a cached copy never goes stale
+  /// (`PlayheadApi.channelLogoUrl`).
+  final String? logoImageId;
+
+  PlayheadChannel({
+    required this.id,
+    required this.number,
+    required this.name,
+    this.guideArtUrl,
+    this.logoImageId,
+  });
 
   factory PlayheadChannel.fromJson(Map<String, dynamic> json) => PlayheadChannel(
         id: json['id'] as String,
         number: json['number'] as int,
         name: json['name'] as String,
         guideArtUrl: json['guide_art_url'] as String?,
+        logoImageId: json['logo_image_id'] as String?,
       );
 
-  Map<String, dynamic> toJson() => {'id': id, 'number': number, 'name': name, 'guide_art_url': guideArtUrl};
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'number': number,
+        'name': name,
+        'guide_art_url': guideArtUrl,
+        'logo_image_id': logoImageId,
+      };
 }
 
 /// One stored tail clip inside a grouped tail [EpgEntry] — everything a
@@ -497,6 +516,10 @@ class PlayheadApi {
   /// Where a watermark image is downloaded from (`GET /watermarks/{id}/image`).
   /// The id changes whenever the image does, so a cached copy never goes stale.
   String watermarkImageUrl(String imageId) => '$_normalizedBaseUrl/watermarks/${Uri.encodeComponent(imageId)}/image';
+
+  /// Where a channel logo is downloaded from (`GET /channel-logos/{id}/image`).
+  /// Same rule as the watermark: the id changes whenever the image does.
+  String channelLogoUrl(String imageId) => '$_normalizedBaseUrl/channel-logos/${Uri.encodeComponent(imageId)}/image';
 
   /// The headers a download from this backend needs (the device token, when
   /// there is one), for what the art cache fetches on its behalf.
