@@ -501,6 +501,18 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
 - The client's video engine (`fvp`) has a `dependency_overrides` git pin in
   `pubspec.yaml` waiting on `wang-bin/fvp#390`/`#391` to ship as an official
   release — don't drop it without checking whether that landed.
+- On setups whose platform decoder rejects libmdk's surface, the `fvp` engine
+  plays sound with a black picture and the log shows `MediaCodec: Codec
+  reported err 0xfffffc0e` plus `NdkMediaCodec: sf error code: -1010`/`-38`
+  from the device's hardware decoder (`OMX.amlogic.*.decoder.awesome` is one).
+  The picture never comes back for later channel switches either, while the
+  EPG's corner thumbnail still draws frames — the debug overlay's `VIDEO`
+  block keeps reporting a codec, resolution and a read-ahead buffer, and the
+  position keeps advancing. Restarting the app or the device does not help.
+  `Settings -> Video player -> ExoPlayer` (Android only, applies at the next
+  start) does; it is the opt-in engine from `docs/ARCHITECTURE.md` "ExoPlayer
+  engine", and the debug overlay then reports `ExoPlayer (Media3)` as the
+  player. Reach for that switch before treating the symptom as an app bug.
 - The long-lived dev `docker compose` instance always
   seeds `admin@example.com` / `admin` on first boot after a fresh volume —
   `docker-compose.yml` sets `PLAYHEADTV_SEED_ADMIN_EMAIL`/
