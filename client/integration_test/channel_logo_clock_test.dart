@@ -177,7 +177,7 @@ void main() {
         reason: 'the logo replaced the name in the guide',
       );
       expect(
-        find.descendant(of: find.byKey(Key('epg-channel-name-$withoutLogoId')), matching: find.text('100 LOGO CHANNEL 200')),
+        find.descendant(of: find.byKey(Key('epg-channel-name-$withoutLogoId')), matching: find.text('200 LOGO CHANNEL 200')),
         findsOneWidget,
         reason: 'a channel without a logo still shows its number and name',
       );
