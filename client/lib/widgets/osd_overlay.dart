@@ -24,11 +24,13 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../video/video_engine.dart';
 
+import '../cache/offline_runtime.dart';
 import '../dimmer.dart';
 import '../osd_subject.dart';
 import '../ui/ui_scale.dart';
 import 'app_icons.dart';
 import 'art_image.dart';
+import 'channel_logo.dart';
 
 /// A recently watched channel offered in the OSD's "Channels" section.
 class OsdChannelShortcut {
@@ -53,6 +55,9 @@ class ChannelOsd extends StatefulWidget {
   final int channelNumber;
   final String channelName;
   final String? channelArtUrl;
+  // The image id of the channel's uploaded logo, drawn in place of the channel
+  // name (null: the name is printed, with the guide art in the leading badge).
+  final String? channelLogoImageId;
   final String itemLabel;
   final String? nextItemLabel;
   final DateTime startAt;
@@ -88,6 +93,7 @@ class ChannelOsd extends StatefulWidget {
     required this.channelNumber,
     required this.channelName,
     required this.channelArtUrl,
+    this.channelLogoImageId,
     required this.itemLabel,
     required this.nextItemLabel,
     required this.startAt,
@@ -323,6 +329,16 @@ class ChannelOsdState extends State<ChannelOsd> {
     );
   }
 
+  /// The uploaded logo's URL, or null when the channel has none (the name is
+  /// printed then, with the guide art in the leading badge).
+  String? get _logoUrl {
+    final imageId = widget.channelLogoImageId;
+    if (imageId == null || imageId.isEmpty) return null;
+    final runtime = OfflineRuntime.current;
+    if (runtime == null) return null;
+    return runtime.api.channelLogoUrl(imageId);
+  }
+
   Widget _logo() {
     Widget fallback() => Icon(AppIcons.channels, color: Colors.white, size: _u(32));
     final url = widget.channelArtUrl;
@@ -337,8 +353,33 @@ class ChannelOsdState extends State<ChannelOsd> {
     );
   }
 
+  /// The channel identity in the header: the uploaded logo when the channel
+  /// has one, otherwise its name (upper-cased, the same key either way so a
+  /// screen reader and the tests find one widget for it).
+  Widget _channelName(String? logoUrl) {
+    final name = Text(
+      widget.channelName.toUpperCase(),
+      key: const Key('osd-channel-name'),
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(color: Colors.white70, fontSize: _u(15), letterSpacing: 0.5),
+    );
+    if (logoUrl == null) return name;
+    return LogoBox(
+      maxHeight: _u(26),
+      maxWidth: _u(220),
+      child: ChannelLogo(
+        logoUrl,
+        height: _u(26),
+        imageKey: const Key('osd-channel-logo-inline'),
+        fallback: (_) => name,
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    final logoUrl = _logoUrl;
     final subject = widget.resolveSubject?.call();
     final channelOnly = subject?.channelOnly ?? false;
     final itemLabel = channelOnly ? widget.channelName : (subject?.program.displayTitle ?? widget.itemLabel);
@@ -406,8 +447,12 @@ class ChannelOsdState extends State<ChannelOsd> {
               children: [
                 Row(
                   children: [
-                    _logo(),
-                    SizedBox(width: _u(16)),
+                    // With an uploaded logo the badge is redundant: the logo
+                    // itself takes the name's place below (see _channelName).
+                    if (logoUrl == null) ...[
+                      _logo(),
+                      SizedBox(width: _u(16)),
+                    ],
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
@@ -428,15 +473,7 @@ class ChannelOsdState extends State<ChannelOsd> {
                                 style: TextStyle(color: Colors.white, fontSize: _u(15), fontWeight: FontWeight.bold),
                               ),
                               Text(' · ', style: TextStyle(color: Colors.white70, fontSize: _u(15))),
-                              Flexible(
-                                child: Text(
-                                  widget.channelName.toUpperCase(),
-                                  key: const Key('osd-channel-name'),
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(color: Colors.white70, fontSize: _u(15), letterSpacing: 0.5),
-                                ),
-                              ),
+                              Flexible(child: _channelName(logoUrl)),
                               if (!channelOnly)
                               Text(
                                 ' · ${_hhmm(startAt)}–${_hhmm(endAt)}',

@@ -956,7 +956,7 @@ exactly the on-air entry and reads only the guide; resolving server-side
 keeps the rule in one place, adds one optional object to an array it already
 downloads, needs no second request and no new cache table, and the entry
 JSON in the offline cache simply carries it (`scheduleCacheSchemaVersion` is
-3). The cost is a little repeated JSON per entry, small next to the titles
+4, moved for the channel logo). The cost is a little repeated JSON per entry, small next to the titles
 and art tags.
 
 **Compatibility.** The `watermark` field is optional on every entry. An older
@@ -997,6 +997,65 @@ Known limits: one watermark image per owner (no per-program, no animated
 image); the size is relative to the player area, not to the letterboxed
 picture inside it; changing a watermark does not reset the grid, so it takes
 effect at the next guide refresh and program change.
+
+### Channel logo (migration `0027`)
+
+A channel may carry a logo: the image the playback client draws **in place of
+the channel name**. Two places use it — the channel column of the guide and the
+OSD header — and that is the whole point of the feature: a self-hosted
+installation shows its own channel brands instead of plain text. It is not the
+watermark's sibling twice over: there is no position, opacity or size, because
+the client lays the logo out in the layout it already has.
+
+**Storage and identity.** Three columns on `channel` (`logo_image_id`,
+`logo_content_type`, `logo_image`), not a table of their own: a logo can never
+outlive its channel, deleting the channel deletes it, and no join is added to
+the channel read every client does. `channelColumns` (in `internal/api`,
+`internal/materializer` and `internal/mcpserver`) selects `logo_image_id` and
+never the bytes, so listing channels stays cheap.
+
+**Routes.** `PUT /channels/{id}/logo` takes `{"image_base64": "..."}` (PNG,
+JPEG or WebP, at most 1 MiB decoded, sniffed by content — the same rules and
+the same helpers as a watermark, `SniffImage` in `internal/api/image.go`; SVG
+is refused as a document that can carry script); `image_base64` is required,
+unlike a watermark's, since an upload without an image would only re-stamp the
+row. `GET /channels/{id}/logo` returns
+`{channel_id, image_id, content_type, updated_at}`; `DELETE /channels/{id}/logo`
+clears it; `GET /channel-logos/{image_id}/image` serves the bytes with
+`Cache-Control: private, max-age=31536000, immutable`, an `ETag`, `nosniff`, a
+`default-src 'none'; sandbox` CSP, and accepts a device token (that is how the
+playback client reads it). Uploading and clearing are authoring, so they need
+an app_user session, exactly like the channel itself.
+
+**Cache-busting is the id.** Every upload writes a fresh `logo_image_id`, which
+`GET /channels` exposes as `logo_image_id`, and that is what the client turns
+into the image URL. The art cache never revalidates a file it already has, so a
+URL that changed with the image is what makes replacing a logo visible at all;
+the previous id stops resolving (`404`).
+
+**Client.** `PlayheadChannel.logoImageId` carries it; `PlayheadApi.channelLogoUrl`
+builds the absolute URL; the syncer prefetches one file per channel into the art
+cache **with the device token** next to the posters and the watermarks, so a
+channel watched offline still draws its logo. `ChannelLogo`
+(`client/lib/widgets/channel_logo.dart`, an `ArtImage` with the backend's
+headers) replaces the name: in the guide, `number [logo]` (the number always
+stays, so the grid still reads as channels by number, and the row keeps the
+`epg-channel-name-<id>` key); in the OSD header, the logo takes the name's place
+and the leading guide-art badge is dropped, since drawing the same image twice
+in one line is noise. A channel without a logo is unchanged: `number NAME` in
+the guide, guide art plus the upper-cased name in the OSD. A logo that is not on
+disk yet and cannot be downloaded falls back to the name — the logo replaces the
+name, it never hides the channel. Storing the id in the cached channel JSON is
+why `scheduleCacheSchemaVersion` moved to 4 (an older file is recreated and
+refilled by the next sync).
+
+**Authoring.** MCP: `get_channel_logo`, `set_channel_logo` (image in
+`image_base64`) and `clear_channel_logo`. There is no web UI section for it yet.
+
+Known limits: one raster image per channel (no SVG, no animated logo, no
+per-program logo); the client scales it to fit a fixed height, so a very wide
+wordmark and a square badge share the same box; it is not drawn on the mosaic
+tiles or in the OSD's recent-channel cards, which keep their text names.
 
 ### Deco tab
 
@@ -1724,6 +1783,34 @@ The mosaic has no layer.
 - **Dialog.** Left/Down lower, Right/Up raise, Select saves, Back cancels
   (restoring the previous state). The dim shows live behind it; saving leaves
   the dimmer on. Settings -> Dim level opens the same dialog.
+
+## Client always-on clock
+
+The OSD already shows the local time in its top-right corner, but only while it
+is on screen. The always-on clock keeps it there with the OSD closed: a setting
+(`Settings -> Always show the clock`), on or off, off until chosen.
+
+- **Where.** `ClockOverlay` (`client/lib/widgets/clock_overlay.dart`) is a
+  `Positioned` child of the player's `Stack`, above the dimmer (a dimmed picture
+  is exactly when you want the time) and below the guide. It is drawn on the
+  player only, never on the mosaic or the guide.
+- **When.** It steps aside while the OSD is visible (the OSD draws its own clock
+  in the same corner) and while the full-screen guide is open (which has its own
+  time header). Both are `ValueListenables` the page already owns
+  (`_osdVisibleNotifier`, `_epgOpenNotifier`), so nothing here calls `setState`
+  on the player page (GL-texture rules).
+- **Look.** Opacity from 20 to 100% in steps of one choice (default 80) and a
+  size factor over the OSD clock's font size, 0.6 to 2.0 (default 1.0). Both are
+  percent-styled in Settings and persisted (`clock_opacity_percent`,
+  `clock_scale`); the state is `ClockOverlaySettings` (`lib/clock.dart`), seeded
+  from `SettingsService` at boot the way the dimmer's level is. The text carries
+  a black shadow so it stays readable over bright picture at low opacity; no
+  background box is drawn.
+- **Ticks.** A one-second timer that only calls `setState` when the minute it
+  shows actually changed, so the widget repaints twice an hour at most.
+- **Not configurable.** The corner is fixed (top-right, where the OSD puts its
+  own clock) and the color is the player's white: the feature exists to keep the
+  time visible, not to become a widget editor.
 
 ## Client preload lead
 

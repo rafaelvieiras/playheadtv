@@ -200,6 +200,25 @@ or LLM, and to every artifact in the repo:
 - The OSD never describes a filler: for a hidden-kind entry on air it shows the
   program the guide attributes it to, over that program's displayed span
   (`lib/osd_subject.dart`, same `buildGuideCells` rule as the EPG).
+- A channel logo is an uploaded image (`PUT /channels/{id}/logo`, bytes on the
+  `channel` row, served at `GET /channel-logos/{image_id}/image` and readable
+  with a device token) drawn **in place of the channel name**: `number [logo]`
+  in the guide's channel column, the logo instead of the name in the OSD header
+  (which drops its leading guide-art badge there). `ChannelLogo`
+  (`lib/widgets/channel_logo.dart`) resolves it through the art cache — the
+  syncer prefetches one file per channel with the device token — and a channel
+  without one keeps the text name; a logo that cannot be loaded falls back to
+  the name, never to an empty space. Reach for `channelLogoUrl(channel)`
+  instead of building the URL by hand, and keep the widget findable by a stable
+  key (`epg-channel-name-<id>`, `osd-channel-name`). See
+  `docs/ARCHITECTURE.md` "Channel logo".
+- The always-on clock (`lib/clock.dart`, `widgets/clock_overlay.dart`) is the
+  OSD's time kept on screen with the OSD closed: top-right, above the dimmer
+  and below the guide. It steps aside while the OSD or the guide is open (they
+  draw their own), and its opacity and size are Settings choices
+  (`clock_opacity_percent`, `clock_scale`) seeded into `ClockOverlaySettings` at
+  boot like `Dimmer.level`. Never drive it with `setState` on the player page.
+  See `docs/ARCHITECTURE.md` "Client always-on clock".
 - `select`'s default binding is `Enter` (not `I`). The channel OSD
   (`lib/widgets/osd_overlay.dart`) has three states, read off
   `_osdVisibleNotifier`/`_osdArmed`/`_osdFocusNotifier`: merely *displayed*

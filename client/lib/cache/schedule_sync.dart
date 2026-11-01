@@ -231,6 +231,13 @@ class ScheduleSyncer {
     // per image): downloaded with the backend's credentials, so a channel that
     // is watched offline still draws its watermark.
     final backendUrls = <String>{};
+    // The channel logos the guide and the OSD draw in place of the channel
+    // name: one small file per channel, so a channel watched offline still
+    // shows its logo.
+    for (final channel in cache.channels()) {
+      final logoImageId = channel.logoImageId;
+      if (logoImageId != null && logoImageId.isNotEmpty) backendUrls.add(api.channelLogoUrl(logoImageId));
+    }
     for (final channel in cache.channels()) {
       for (final e in cache.entries(channel.id, now, cache.horizonEnd)) {
         final w = e.watermark;

@@ -51,6 +51,7 @@ import '../services/perf_trace.dart';
 import '../ui/ui_scale.dart';
 import 'app_icons.dart';
 import 'art_image.dart';
+import 'channel_logo.dart';
 
 // How much time the grid shows at once; pixels per minute follow from the
 // available width.
@@ -678,16 +679,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
                           : null,
                     ),
                     Expanded(
-                      child: Text(
-                        '${channelObj.number} ${channelObj.name}',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: focusedRow || playing ? Colors.white : Colors.white70,
-                          fontSize: _u(18),
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
+                      child: _channelLabel(channelObj, highlighted: focusedRow || playing),
                     ),
                   ],
                 ),
@@ -697,6 +689,48 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
           ],
         ),
       ),
+    );
+  }
+
+  /// The channel column label: `number name`, or `number [logo]` when the
+  /// channel has an uploaded logo (see docs/ARCHITECTURE.md "Channel logo").
+  /// The number stays either way, so the guide is still navigable by number and
+  /// the row keeps reading as the same channel.
+  Widget _channelLabel(PlayheadChannel channel, {required bool highlighted}) {
+    final style = TextStyle(
+      color: highlighted ? Colors.white : Colors.white70,
+      fontSize: _u(18),
+      fontWeight: FontWeight.bold,
+    );
+    final name = Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
+    final logoUrl = channelLogoUrl(channel);
+    if (logoUrl == null) {
+      return Text(
+        '${channel.number} ${channel.name}',
+        key: Key('epg-channel-name-${channel.id}'),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: style,
+      );
+    }
+    return Row(
+      key: Key('epg-channel-name-${channel.id}'),
+      children: [
+        Text('${channel.number}', style: style),
+        SizedBox(width: _u(8)),
+        Flexible(
+          child: LogoBox(
+            maxHeight: _u(30),
+            maxWidth: _u(150),
+            child: ChannelLogo(
+              logoUrl,
+              height: _u(30),
+              imageKey: Key('epg-channel-logo-${channel.id}'),
+              fallback: (_) => name,
+            ),
+          ),
+        ),
+      ],
     );
   }
 

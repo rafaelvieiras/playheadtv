@@ -15,10 +15,22 @@ class ArtImage extends StatefulWidget {
   /// Key given to the inner [Image] (tests find it by key).
   final Key? imageKey;
 
+  /// Headers for the network path: an image served by the Playhead TV backend
+  /// (a channel logo) needs the device token; art on the media server does
+  /// not. They are not part of the cache key.
+  final Map<String, String> headers;
+
   /// Shown when the image cannot be loaded.
   final WidgetBuilder fallback;
 
-  const ArtImage(this.url, {super.key, this.imageKey, this.fit = BoxFit.cover, required this.fallback});
+  const ArtImage(
+    this.url, {
+    super.key,
+    this.imageKey,
+    this.fit = BoxFit.cover,
+    this.headers = const {},
+    required this.fallback,
+  });
 
   @override
   State<ArtImage> createState() => _ArtImageState();
@@ -38,11 +50,12 @@ class _ArtImageState extends State<ArtImage> {
       );
     }
     // Not cached yet: show it from the network and keep a copy.
-    if (art != null) unawaited(art.fetch(widget.url));
+    if (art != null) unawaited(art.fetch(widget.url, headers: widget.headers));
     return Image.network(
       widget.url,
       key: widget.imageKey,
       fit: widget.fit,
+      headers: widget.headers.isEmpty ? null : widget.headers,
       errorBuilder: (context, error, stack) => widget.fallback(context),
     );
   }

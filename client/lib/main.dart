@@ -58,12 +58,14 @@ import 'epg_guide.dart' as guide show defaultTailAttributionCap, tailAttribution
 import 'epg_guide.dart' show guideContextLookback, isHiddenGuideKind;
 import 'osd_subject.dart';
 import 'preload_lead.dart';
+import 'clock.dart';
 import 'dimmer.dart';
 import 'epg_thumbnail.dart';
 import 'widgets/epg_overlay.dart';
 import 'widgets/osd_overlay.dart';
 import 'widgets/debug_overlay.dart';
 import 'widgets/track_selector_overlay.dart';
+import 'widgets/clock_overlay.dart';
 import 'widgets/dimmer_overlay.dart';
 import 'widgets/dimmer_level_dialog.dart';
 import 'widgets/watermark_overlay.dart';
@@ -918,6 +920,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _keyBindings = KeyBindingsService(_settings);
       Dimmer.level.value = AppConfig.configuredDimLevel(_settings);
       EpgThumbnailSetting.enabled.value = _settings.epgThumbnail;
+      ClockOverlaySettings.alwaysVisible.value = _settings.clockAlwaysVisible;
+      ClockOverlaySettings.opacityPct.value = _settings.clockOpacityPct;
+      ClockOverlaySettings.scale.value = _settings.clockScale;
       _runtime = await OfflineRuntime.ensure();
       BootTrace.mark('runtime_open');
       _streamPrefs = await StreamPreferencesService.create(_runtime.api);
@@ -2962,6 +2967,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                     channelNumber: _channels[_channelIndex].number,
                     channelName: _channels[_channelIndex].name,
                     channelArtUrl: _channels[_channelIndex].guideArtUrl,
+                    channelLogoImageId: _channels[_channelIndex].logoImageId,
                     itemLabel: osd?.program.displayTitle ?? channel[_currentIndex].programLabel,
                     nextItemLabel: osd?.next?.displayTitle,
                     startAt: osd?.start ?? channel[_currentIndex].programStartAt,
@@ -3141,6 +3147,13 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
             ),
             // Dimmer: above everything, including the EPG and the pickers.
             const DimmerOverlay(),
+            // The always-on clock sits above the dimmer (a dimmed picture is
+            // exactly when you want the time) and steps aside while the OSD is
+            // open, since the OSD draws it in the same corner.
+            ClockOverlay(
+              osdVisible: _osdVisibleNotifier,
+              guideOpen: _epgOpenNotifier,
+            ),
           ],
         ),
       ),

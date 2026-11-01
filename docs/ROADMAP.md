@@ -1265,3 +1265,19 @@ Design: `ARCHITECTURE.md` "Releases and updates"; procedures: `RELEASING.md` and
       the player page), global level 10-80% (default 50, Settings and
       `dim_level_percent`), level dialog reachable with six buttons
       (`docs/ARCHITECTURE.md` "Client dimmer"). Not checked on a real display.
+
+- [x] Channel logos: an uploaded image per channel (`PUT /channels/{id}/logo`,
+      bytes on the `channel` row, `GET /channel-logos/{image_id}/image` with an
+      immutable URL keyed by the image id), drawn in place of the channel name
+      in the guide's channel column and in the OSD header, cached on the client
+      with the other art (`docs/ARCHITECTURE.md` "Channel logo"). MCP:
+      `get_channel_logo` / `set_channel_logo` / `clear_channel_logo`. Not done:
+      no web UI section for it yet, and the mosaic tiles and the OSD's
+      recent-channel cards keep text names.
+- [x] Always-on clock: Settings -> "Always show the clock" keeps the local time
+      in the player's top-right corner with the OSD closed, with its own opacity
+      (20-100%) and size (0.6-2.0x the OSD clock), stepping aside while the OSD
+      or the guide is open (`docs/ARCHITECTURE.md` "Client always-on clock").
+      Tests: `client/test/clock_test.dart`,
+      `client/integration_test/channel_logo_clock_test.dart`. Not checked on a
+      real display beyond the headless GUI container.

@@ -380,6 +380,11 @@ class BackendFixture {
         'size_pct': ?sizePct,
       });
 
+  /// PUT /channels/{id}/logo: uploads the channel's logo (base64 in the body,
+  /// same shape as the watermark). Returns the stored metadata (`image_id`).
+  Future<Map<String, dynamic>> setChannelLogo({required String channelId, required List<int> png}) =>
+      _putJson('/channels/$channelId/logo', {'image_base64': base64Encode(png)});
+
   /// POST /channels/{id}/reset-epg: the admin's grid reset of one channel.
   Future<void> resetChannelEpg(String channelId) async {
     await _postJson('/channels/$channelId/reset-epg', {});

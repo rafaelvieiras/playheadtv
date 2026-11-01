@@ -1,5 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../clock.dart';
 import '../config/connection_settings.dart';
 import '../dimmer.dart';
 import '../preload_lead.dart';
@@ -43,6 +44,9 @@ class SettingsService implements UpdateNoticeStore {
   static const _preloadLeadKey = 'preload_lead_seconds';
   static const _dimLevelKey = 'dim_level_percent';
   static const _epgThumbnailKey = 'epg_thumbnail';
+  static const _clockAlwaysVisibleKey = 'clock_always_visible';
+  static const _clockOpacityKey = 'clock_opacity_percent';
+  static const _clockScaleKey = 'clock_scale';
   static const _connectionPrefix = 'connection_'; // + a connection_settings.dart key
   static const _chosenServerUrlKey = 'chosen_server_url';
 
@@ -93,6 +97,23 @@ class SettingsService implements UpdateNoticeStore {
   bool get epgThumbnail => _prefs.getBool(_epgThumbnailKey) ?? true;
 
   Future<void> setEpgThumbnail(bool value) => _prefs.setBool(_epgThumbnailKey, value);
+
+  /// Whether the player always draws the clock in its top-right corner, even
+  /// with the OSD closed (see clock.dart). Off until chosen.
+  bool get clockAlwaysVisible => _prefs.getBool(_clockAlwaysVisibleKey) ?? defaultClockAlwaysVisible;
+
+  Future<void> setClockAlwaysVisible(bool value) => _prefs.setBool(_clockAlwaysVisibleKey, value);
+
+  /// The always-on clock's opacity (percent, one of `clockOpacityChoices`).
+  int get clockOpacityPct => sanitizeClockOpacityPct(_prefs.getInt(_clockOpacityKey));
+
+  Future<void> setClockOpacityPct(int percent) => _prefs.setInt(_clockOpacityKey, sanitizeClockOpacityPct(percent));
+
+  /// The always-on clock's size, as a factor of the OSD clock's font size (one
+  /// of `clockScaleChoices`).
+  double get clockScale => sanitizeClockScale(_prefs.getDouble(_clockScaleKey));
+
+  Future<void> setClockScale(double scale) => _prefs.setDouble(_clockScaleKey, sanitizeClockScale(scale));
 
   Future<void> setStartFullScreen(bool value) => _prefs.setBool(_startFullScreenKey, value);
 
