@@ -23,6 +23,7 @@ func Register(mux Router, db storage.DB, mat *materializer.Materializer, sync *p
 	registerPairing(mux, db, encKey)
 	registerServerConfig(mux, db, encKey)
 	registerChannels(mux, db, mat)
+	registerChannelLogos(mux, db)
 	registerMediaSources(mux, db, mat, sync, encKey)
 	registerCatalogItems(mux, db)
 	registerSeries(mux, db)

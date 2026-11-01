@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
@@ -15,23 +14,15 @@ import (
 
 // Watermark limits. The image is uploaded inside a JSON body as base64 (so the
 // web UI and the MCP tool share one route) and validated by its content, never
-// by a file extension or the declared type.
+// by a file extension or the declared type — see SniffImage, shared with the
+// channel logo.
 const (
 	// MaxWatermarkImageBytes caps the decoded image.
-	MaxWatermarkImageBytes = 1 << 20
+	MaxWatermarkImageBytes = MaxImageBytes
 	// watermarkBodyLimit caps the JSON request body (the base64 of the cap
 	// plus headroom for the other fields).
-	watermarkBodyLimit = MaxWatermarkImageBytes*4/3 + 4096
+	watermarkBodyLimit = bodyLimitForImage
 )
-
-// watermarkImageTypes are the accepted content types, as http.DetectContentType
-// names them from the first bytes. SVG is deliberately absent: it is a document
-// that can carry script.
-var watermarkImageTypes = map[string]bool{
-	"image/png":  true,
-	"image/jpeg": true,
-	"image/webp": true,
-}
 
 func registerWatermarks(mux Router, db storage.DB) {
 	mux.HandleFunc("GET /channels/{id}/watermark", getWatermark(db, "channel"))
@@ -109,23 +100,6 @@ type watermarkRequest struct {
 	ImageBase64 *string `json:"image_base64"`
 }
 
-// SniffWatermarkImage validates image bytes and returns their content type.
-func SniffWatermarkImage(data []byte) (string, error) {
-	if len(data) == 0 {
-		return "", fmt.Errorf("the image is empty")
-	}
-	if len(data) > MaxWatermarkImageBytes {
-		return "", errWatermarkTooLarge
-	}
-	ct := http.DetectContentType(data)
-	if !watermarkImageTypes[ct] {
-		return "", fmt.Errorf("the image must be PNG, JPEG or WebP (SVG is not accepted)")
-	}
-	return ct, nil
-}
-
-var errWatermarkTooLarge = fmt.Errorf("the image is larger than %d KiB", MaxWatermarkImageBytes>>10)
-
 func putWatermark(db storage.DB, ownerType string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -142,7 +116,7 @@ func putWatermark(db storage.DB, ownerType string) http.HandlerFunc {
 		var req watermarkRequest
 		if err := decodeJSON(r, &req); err != nil {
 			if strings.Contains(err.Error(), "too large") {
-				writeError(w, http.StatusRequestEntityTooLarge, errWatermarkTooLarge.Error())
+				writeError(w, http.StatusRequestEntityTooLarge, errImageTooLarge.Error())
 				return
 			}
 			writeError(w, http.StatusBadRequest, "invalid request body")
@@ -189,22 +163,10 @@ func putWatermark(db storage.DB, ownerType string) http.HandlerFunc {
 		var image []byte
 		replaceImage := false
 		if req.ImageBase64 != nil {
-			// Refuse an oversized payload before decoding it.
-			if base64.StdEncoding.DecodedLen(len(*req.ImageBase64)) > MaxWatermarkImageBytes+3 {
-				writeError(w, http.StatusRequestEntityTooLarge, errWatermarkTooLarge.Error())
-				return
-			}
-			image, err = base64.StdEncoding.DecodeString(*req.ImageBase64)
+			var status int
+			var ct string
+			image, ct, status, err = decodeImageBase64(*req.ImageBase64)
 			if err != nil {
-				writeError(w, http.StatusBadRequest, "image_base64 is not valid base64")
-				return
-			}
-			ct, err := SniffWatermarkImage(image)
-			if err != nil {
-				status := http.StatusUnsupportedMediaType
-				if err == errWatermarkTooLarge {
-					status = http.StatusRequestEntityTooLarge
-				}
 				writeError(w, status, err.Error())
 				return
 			}

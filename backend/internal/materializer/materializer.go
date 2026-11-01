@@ -68,7 +68,7 @@ const scheduleItemColumns = "id, tenant_id, schedule_id, block_id, recurrence_ty
 const fillerRuleColumns = "id, tenant_id, scope_type AS scope, scope_id, kind, filler_pool_id, selection_strategy AS selection, position, max_fit_attempts, created_at"
 const blockItemColumns = "id, block_id, position, item_type, COALESCE(catalog_item_id, '') AS catalog_item_id, trim_duration_ms, spec"
 const fillerPoolItemColumns = "id, filler_pool_id, catalog_item_id, weight"
-const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, schedule_id, base_schedule_id, created_at, updated_at"
+const channelColumns = "id, tenant_id, number, name, guide_art_url, logo_image_id, timezone, schedule_id, base_schedule_id, created_at, updated_at"
 
 // Materializer owns the background EPG regeneration loop.
 type Materializer struct {

@@ -24,7 +24,7 @@ func registerChannels(mux Router, db storage.DB, mat *materializer.Materializer)
 	mux.HandleFunc("POST /channels/{id}/reset-epg", resetChannelEPG(db, mat))
 }
 
-const channelColumns = "id, tenant_id, number, name, guide_art_url, timezone, schedule_id, base_schedule_id, created_at, updated_at"
+const channelColumns = "id, tenant_id, number, name, guide_art_url, logo_image_id, timezone, schedule_id, base_schedule_id, created_at, updated_at"
 
 type channelRequest struct {
 	Number      int     `json:"number"`

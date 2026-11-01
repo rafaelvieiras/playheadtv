@@ -18,6 +18,11 @@ var RouteTools = map[string]string{
 	"GET /channels/{id}/epg-preview":  "preview_channel_grid_reset",
 	"GET /channels/{id}/epg-warnings": "get_channel_epg_warnings",
 
+	// Channel logos.
+	"GET /channels/{id}/logo":    "get_channel_logo",
+	"PUT /channels/{id}/logo":    "set_channel_logo",
+	"DELETE /channels/{id}/logo": "clear_channel_logo",
+
 	// Watermarks.
 	"GET /channels/{id}/watermark":    "get_channel_watermark",
 	"PUT /channels/{id}/watermark":    "set_channel_watermark",
@@ -126,15 +131,16 @@ var RouteTools = map[string]string{
 // each with the reason. Keep it short: a route belongs here only when a tool
 // would be meaningless or unsafe, never because it was not written yet.
 var NoMCPCounterpart = map[string]string{
-	"POST /app-users":                  "bootstraps the tenant's one user with a password; an MCP caller is already an authenticated session, and minting credentials is not authoring",
-	"POST /sessions":                   "logs in; the MCP transport authenticates with the session token this returns, so a tool for it would be circular",
-	"DELETE /sessions":                 "logs the calling session out; ending the transport's own credential from inside it is not an authoring operation",
-	"POST /password-resets/consume":    "unauthenticated by design, credentialed by a single-use token that an operator mints at the server console; MCP requires an authenticated session, and a password reset must not be drivable by an agent",
-	"GET /me":                          "returns the session's own user (e-mail); there is nothing to author, and the identity is already implied by the session",
-	"GET /watermarks/{image_id}/image": "serves the binary image bytes to the playback client (what the guide's watermark image_id names); an MCP tool result is JSON, and the settings tools already return image_id and content_type",
-	"GET /stream-preferences/meta":     "the playback client's cheap staleness poll over the preference rows; the preference tools already read the data itself",
-	"POST /pair":                       "an unconfigured device bootstraps its first credential here; minting a PIN for a device that has no session yet is device provisioning, not authoring",
-	"POST /pair/poll":                  "the second half of the device bootstrap handshake, credentialed only by the one-time poll secret the device just received; there is no authenticated session to drive it from",
-	"POST /pin/approve":                "a human approves the pairing from a browser with app_user credentials; an MCP tool would bypass the out-of-band human confirmation this flow exists to require",
-	"GET /pin":                         "the human-facing HTML form a browser loads to approve a pairing; it has no session and only posts back to /pin/approve, so there is nothing an authenticated MCP tool could call",
+	"POST /app-users":                     "bootstraps the tenant's one user with a password; an MCP caller is already an authenticated session, and minting credentials is not authoring",
+	"POST /sessions":                      "logs in; the MCP transport authenticates with the session token this returns, so a tool for it would be circular",
+	"DELETE /sessions":                    "logs the calling session out; ending the transport's own credential from inside it is not an authoring operation",
+	"POST /password-resets/consume":       "unauthenticated by design, credentialed by a single-use token that an operator mints at the server console; MCP requires an authenticated session, and a password reset must not be drivable by an agent",
+	"GET /me":                             "returns the session's own user (e-mail); there is nothing to author, and the identity is already implied by the session",
+	"GET /watermarks/{image_id}/image":    "serves the binary image bytes to the playback client (what the guide's watermark image_id names); an MCP tool result is JSON, and the settings tools already return image_id and content_type",
+	"GET /channel-logos/{image_id}/image": "serves the binary logo bytes to the playback client (what get_channel_logo's image_id names); an MCP tool result is JSON, and get_channel_logo already returns image_id and content_type",
+	"GET /stream-preferences/meta":        "the playback client's cheap staleness poll over the preference rows; the preference tools already read the data itself",
+	"POST /pair":                          "an unconfigured device bootstraps its first credential here; minting a PIN for a device that has no session yet is device provisioning, not authoring",
+	"POST /pair/poll":                     "the second half of the device bootstrap handshake, credentialed only by the one-time poll secret the device just received; there is no authenticated session to drive it from",
+	"POST /pin/approve":                   "a human approves the pairing from a browser with app_user credentials; an MCP tool would bypass the out-of-band human confirmation this flow exists to require",
+	"GET /pin":                            "the human-facing HTML form a browser loads to approve a pairing; it has no session and only posts back to /pin/approve, so there is nothing an authenticated MCP tool could call",
 }
