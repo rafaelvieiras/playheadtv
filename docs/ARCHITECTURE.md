@@ -1791,9 +1791,10 @@ is on screen. The always-on clock keeps it there with the OSD closed: a setting
 (`Settings -> Always show the clock`), on or off, off until chosen.
 
 - **Where.** `ClockOverlay` (`client/lib/widgets/clock_overlay.dart`) is a
-  `Positioned` child of the player's `Stack`, above the dimmer (a dimmed picture
-  is exactly when you want the time) and below the guide. It is drawn on the
-  player only, never on the mosaic or the guide.
+  `Positioned` child of the player's `Stack`, last but one: above the video, the
+  watermark, the OSD, the guide and the dimmer (a dimmed picture is exactly when
+  you want the time). It is drawn on the player only, never on the mosaic, and
+  it stays hidden whenever it would duplicate one of those.
 - **When.** It steps aside while the OSD is visible (the OSD draws its own clock
   in the same corner) and while the full-screen guide is open (which has its own
   time header). Both are `ValueListenables` the page already owns

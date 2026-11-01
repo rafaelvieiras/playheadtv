@@ -62,6 +62,7 @@ void main() {
           {
             'external_id': 'logo-$number-a',
             'kind': 'episode',
+            'title': 'PROGRAM $number A',
             // duration_ms far above the real 40s clip and the whole suite's
             // running time, so the first item stays "live" for every test.
             'duration_ms': 1800000,

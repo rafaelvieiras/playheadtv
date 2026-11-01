@@ -214,8 +214,8 @@ or LLM, and to every artifact in the repo:
   `docs/ARCHITECTURE.md` "Channel logo".
 - The always-on clock (`lib/clock.dart`, `widgets/clock_overlay.dart`) is the
   OSD's time kept on screen with the OSD closed: top-right, above the dimmer
-  and below the guide. It steps aside while the OSD or the guide is open (they
-  draw their own), and its opacity and size are Settings choices
+  and the guide. It steps aside while the OSD or the guide is open (they draw
+  their own), and its opacity and size are Settings choices
   (`clock_opacity_percent`, `clock_scale`) seeded into `ClockOverlaySettings` at
   boot like `Dimmer.level`. Never drive it with `setState` on the player page.
   See `docs/ARCHITECTURE.md` "Client always-on clock".
