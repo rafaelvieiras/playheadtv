@@ -167,6 +167,12 @@ void main() {
         failMessage: 'EPG never finished loading',
       );
 
+      // ignore: avoid_print
+      print('[debug] rows=${find.byKey(Key('epg-channel-name-$withLogoId')).evaluate().length}/'
+          '${find.byKey(Key('epg-channel-name-$withoutLogoId')).evaluate().length} '
+          'logo=${find.byKey(Key('epg-channel-logo-$withLogoId')).evaluate().length}/'
+          '${find.byKey(Key('epg-channel-logo-$withoutLogoId')).evaluate().length} '
+          'texts=${[for (final w in find.byType(Text).evaluate()) (w.widget as Text).data].where((t) => t != null && (t.contains('LOGO') || t.contains('200') || t.contains('100'))).toList()}');
       expect(find.byKey(Key('epg-channel-logo-$withLogoId')), findsOneWidget,
           reason: 'the guide should draw the logo of the channel that has one');
       expect(find.byKey(Key('epg-channel-name-$withLogoId')), findsOneWidget,
