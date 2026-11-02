@@ -1268,6 +1268,12 @@ repo never contains.
 - [x] Settings -> "Plugins": the union of what the registry offers and what this
       device has, installed by selecting a row (with download progress), plus a
       dialog to turn one off or remove it. Six-button only.
+- [x] End-to-end with a real playlist (196 videos, "History"): 177 items synced
+      (the 19 dropped are premieres, which the plugin already filters),
+      `GET /catalog-items/{id}/play` answers a `remux` URL in 12 s (extraction
+      plus the first segment), the URL is rewritten to the address the client
+      used, and the segment carries h264 720p + aac — one stream, so a client that
+      cannot merge a pair is fine.
 - [x] Backend-served playback (`GET /catalog-items/{id}/play`): the backend asks
       the plugin for a `remux` stream, rewrites the loopback host to the address
       the client used, and answers `no-store`. The client only fetches segments.
