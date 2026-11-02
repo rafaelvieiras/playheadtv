@@ -1363,9 +1363,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
     final runtime = await OfflineRuntime.ensure();
     final position = entry.itemOffset + (seekTo ?? Duration.zero);
+    // Not [entry.id]: that is the source's own id (a YouTube video id), which only
+    // a plugin understands. The play route is the backend's, and names the catalog
+    // row the guide was built from.
+    final itemId = program?.catalogItemId;
+    if (itemId == null || itemId.isEmpty) {
+      throw StateError('entry ${entry.id} needs a plugin but carries no catalog item');
+    }
     // The position travels with the request: the plugin starts its stream there,
     // so a viewer who tuned in 20 minutes into a program does not wait for it.
-    final uri = await runtime.api.playUrl(entry.id, startAt: position);
+    final uri = await runtime.api.playUrl(itemId, startAt: position);
     Log.debug('player', 'item ${entry.id} resolved by "${requires.first.id}" '
         '(start=${position.inSeconds}s)');
     // A stream the plugin produced from a start offset already begins there.
