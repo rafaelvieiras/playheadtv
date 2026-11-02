@@ -23,7 +23,8 @@ import (
 // mat.Trigger() call inside SyncOne not to panic, not an actual
 // materialization run.
 func newSyncer(db *storage.SQLite) *Syncer {
-	return New(db, testEncKey, materializer.New(db, time.Hour))
+	// No plugin host: these tests exercise the Jellyfin pull path.
+	return New(db, testEncKey, materializer.New(db, time.Hour), nil)
 }
 
 var testEncKey = [32]byte{
@@ -83,7 +84,7 @@ func seedJellyfinSource(t *testing.T, db *storage.SQLite, id, baseURL, credentia
 	}
 }
 
-func TestSyncOneRejectsNonPullJellyfin(t *testing.T) {
+func TestSyncOneRejectsNonPullSource(t *testing.T) {
 	db := newTestDB(t)
 	now := time.Now().UnixMilli()
 	if err := db.Exec(context.Background(),
@@ -98,8 +99,8 @@ func TestSyncOneRejectsNonPullJellyfin(t *testing.T) {
 	_, err := s.SyncOne(context.Background(), domain.MediaSource{
 		ID: "nas", TenantID: testTenantID, Type: domain.SourceLocalFolder, SyncMode: domain.SyncPush,
 	})
-	if !errors.Is(err, ErrNotPullJellyfin) {
-		t.Errorf("err = %v, want ErrNotPullJellyfin", err)
+	if !errors.Is(err, ErrNotPullSource) {
+		t.Errorf("err = %v, want ErrNotPullSource", err)
 	}
 }
 

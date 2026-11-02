@@ -1217,6 +1217,48 @@ Design: `ARCHITECTURE.md` "Releases and updates"; procedures: `RELEASING.md` and
 - [ ] An in-app setting for auto-update; today it is the `auto_update` key of
       the config file.
 
+## Plugins (external content sources)
+
+Design and contract: [`docs/PLUGINS.md`](PLUGINS.md). The core implements the
+host half only; a site-specific extractor is an external artifact that this
+repo never contains.
+
+- [x] Protocol contract: manifest, JSON-RPC over stdio (`info`,
+      `catalog.list`, `media.resolve`, `shutdown`), artifact layout, registry
+      index schema, trust rules (SHA-256 always, Ed25519 optional), Android
+      `apk-service` transport reserved.
+- [x] Backend host (`internal/pluginhost`): registry fetch/cache, artifact
+      download with hash verification, `tar.gz`/`zip` extraction with traversal
+      and size guards, process lifecycle with per-call timeouts, paged
+      `catalog.list` mapped onto the same item shape as the push sync.
+- [x] Schema (`0028_plugin.sql`): `plugin` table, `media_source` rebuilt with
+      `type = 'plugin'`, `plugin_id`, `plugin_min_version`,
+      `plugin_config_json`, and a check that both halves agree.
+- [x] Plugin-backed sources in the pull sync, so the grid materializes without a
+      client online; a missing or disabled plugin only costs its own sources.
+- [x] `GET /plugins` as a caching mirror (artifact URLs rewritten, ETag = hash,
+      immutable) plus `POST /plugins/{id}/install`, `PUT /plugins/{id}`,
+      `DELETE /plugins/{id}`, `GET /plugins/{id}/{version}/{os}-{arch}`; MCP
+      tools `list_plugins`, `install_plugin`, `set_plugin_enabled`,
+      `delete_plugin`, and `register_media_source`/`update_media_source` accept
+      plugin sources.
+- [x] `GET /epg` entries carry `requires` (plugin id + minimum version) per
+      entry, and tail groups carry the union of their clips.
+- [ ] First real plugin: a separate repository that wraps an external
+      extractor, publishes a per-platform registry document (SHA-256 per
+      artifact), and implements `catalog.list` + `media.resolve`. Nothing in
+      this repo changes for it.
+- [ ] Client side: plugin manager in Settings (list required plugins, download
+      from the backend registry, verify hash, install/remove/enable), a channel
+      filter that hides channels whose plugin is missing plus the Settings
+      notice, and a `media.resolve` call in the playback path (preload, tune-in
+      and resync all resolve fresh — a resolved URL is never cached).
+- [ ] Android: plugin as an external APK bound as a `Service` (W^X forbids
+      executing a downloaded file since API 29). Protocol 2 candidate; the
+      payloads do not change.
+- [ ] Web UI: a Plugins page (installed, available, install/remove/enable) and
+      the plugin fields in the media source form.
+
 ## Backlog / cleanup
 
 - [x] GUI integration suites headless in containers

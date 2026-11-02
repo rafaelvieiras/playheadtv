@@ -52,6 +52,10 @@ type epgItem struct {
 	// watermark_resolve.go); omitted when none applies, which is also all an
 	// older backend sends.
 	Watermark *domain.WatermarkRef `json:"watermark,omitempty"`
+
+	// Requires lists the plugins a client must have installed to play this
+	// entry; empty for an item from a source the core talks to directly.
+	Requires []pluginRequirement `json:"requires,omitempty"`
 }
 
 // epgTailClip is one stored tail entry inside a tail group: all a player
@@ -64,6 +68,8 @@ type epgTailClip struct {
 	StartAt       int64   `json:"start_at"`
 	EndAt         int64   `json:"end_at"`
 	DurationMs    *int64  `json:"duration_ms,omitempty"`
+	// Requires lists the plugins this clip needs, same meaning as on epgItem.
+	Requires []pluginRequirement `json:"requires,omitempty"`
 }
 
 // epgTailGroup replaces a run of consecutive, back-to-back tail entries of
@@ -85,6 +91,10 @@ type epgTailGroup struct {
 	// Watermark is resolved from the group's first clip (every clip of a run
 	// decorates the same block).
 	Watermark *domain.WatermarkRef `json:"watermark,omitempty"`
+
+	// Requires lists the plugins a client must have installed to play this
+	// entry; empty for an item from a source the core talks to directly.
+	Requires []pluginRequirement `json:"requires,omitempty"`
 }
 
 type catalogBrief struct {
@@ -95,7 +105,21 @@ type catalogBrief struct {
 	Title         string
 	SeriesTitle   *string
 	DurationMs    int64
+	// Set only when the item's source is a plugin-backed one: what a client
+	// needs to know before it can play the entry (docs/PLUGINS.md
+	// "Requirements in the guide").
+	PluginID         *string
+	PluginMinVersion *string
 	domain.CatalogMetadata
+}
+
+// pluginRequirement is one plugin an entry needs to play. It is per entry
+// rather than per channel so a single EPG payload (and the client's cached
+// copy of it) carries everything a client needs to decide which channels to
+// hide: the client aggregates across a channel's entries itself.
+type pluginRequirement struct {
+	ID         string  `json:"id"`
+	MinVersion *string `json:"min_version,omitempty"`
 }
 
 // catalogLookupChunk bounds the number of ids in one IN (...) list.
@@ -113,10 +137,12 @@ func loadCatalogBriefs(ctx context.Context, db storage.DB, ids []string) (map[st
 		}
 		var rows []catalogBrief
 		err := db.Query(ctx, &rows,
-			"SELECT id, media_source_id, external_id, kind AS item_kind, title, series_title, duration_ms,"+
-				" season_number, episode_number, episode_number_end, series_external_id,"+
-				" image_primary_tag, image_backdrop_tag, image_thumb_tag, series_image_primary_tag"+
-				" FROM catalog_item WHERE tenant_id = ? AND id IN ("+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+")",
+			"SELECT ci.id, ci.media_source_id, ci.external_id, ci.kind AS item_kind, ci.title, ci.series_title,"+
+				" ci.duration_ms, ci.season_number, ci.episode_number, ci.episode_number_end, ci.series_external_id,"+
+				" ci.image_primary_tag, ci.image_backdrop_tag, ci.image_thumb_tag, ci.series_image_primary_tag,"+
+				" ms.plugin_id, ms.plugin_min_version"+
+				" FROM catalog_item ci LEFT JOIN media_source ms ON ms.id = ci.media_source_id"+
+				" WHERE ci.tenant_id = ? AND ci.id IN ("+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+")",
 			args...)
 		if err != nil {
 			return nil, err
@@ -252,6 +278,7 @@ func buildEPGView(ctx context.Context, db storage.DB, entries []domain.EpgEntry,
 	var groupLast domain.EpgEntry
 	flush := func() {
 		if group != nil {
+			group.Requires = unionRequirements(group.Clips)
 			out = append(out, *group)
 			group = nil
 		}
@@ -269,6 +296,7 @@ func buildEPGView(ctx context.Context, db storage.DB, entries []domain.EpgEntry,
 				clip.ExternalID = strPtr(b.ExternalID)
 				clip.Title = strPtr(b.Title)
 				clip.DurationMs = i64Ptr(b.DurationMs)
+				clip.Requires = requirementFor(b)
 			}
 			if group == nil {
 				group = &epgTailGroup{
@@ -299,11 +327,39 @@ func buildEPGView(ctx context.Context, db storage.DB, entries []domain.EpgEntry,
 			item.ImageBackdropTag = b.ImageBackdropTag
 			item.ImageThumbTag = b.ImageThumbTag
 			item.SeriesImagePrimaryTag = b.SeriesImagePrimaryTag
+			item.Requires = requirementFor(b)
 		}
 		out = append(out, item)
 	}
 	flush()
 	return out, nil
+}
+
+// unionRequirements is the set of plugins a tail group needs: a run of clips
+// can mix sources, and playing any of them needs its own plugin. Order follows
+// first appearance so the payload is stable for the same run.
+func unionRequirements(clips []epgTailClip) []pluginRequirement {
+	var out []pluginRequirement
+	seen := make(map[string]bool, len(clips))
+	for _, c := range clips {
+		for _, r := range c.Requires {
+			if seen[r.ID] {
+				continue
+			}
+			seen[r.ID] = true
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// requirementFor turns a brief's plugin columns into the requirement list a
+// client acts on.
+func requirementFor(b catalogBrief) []pluginRequirement {
+	if b.PluginID == nil || *b.PluginID == "" {
+		return nil
+	}
+	return []pluginRequirement{{ID: *b.PluginID, MinVersion: b.PluginMinVersion}}
 }
 
 func wantsTailGroups(r *http.Request) bool {

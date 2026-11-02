@@ -11,6 +11,10 @@ const (
 	SourceJellyfin    SourceType = "jellyfin"
 	SourcePlex        SourceType = "plex"         // not implemented in v1
 	SourceLocalFolder SourceType = "local_folder" // not implemented in v1
+	// SourcePlugin is a source listed by an installed plugin (docs/PLUGINS.md):
+	// PluginID names which one, PluginConfigJSON is its own configuration. The
+	// core has no code for what the plugin actually talks to.
+	SourcePlugin SourceType = "plugin"
 )
 
 // SyncMode is decided automatically by a reachability probe when the source
@@ -35,7 +39,16 @@ type MediaSource struct {
 	// serialized back to a client as plaintext.
 	CredentialCipher []byte   `json:"-"`
 	SyncMode         SyncMode `json:"sync_mode"`
-	LastProbeAt      *int64   `json:"last_probe_at"`
+
+	// Plugin fields, set only when Type is SourcePlugin (docs/PLUGINS.md).
+	// PluginConfigJSON is the plugin's own configuration, stored as opaque
+	// JSON text and handed back to the plugin verbatim as `config`; it is
+	// plain text and never a place for a secret.
+	PluginID         *string `json:"plugin_id,omitempty"`
+	PluginMinVersion *string `json:"plugin_min_version,omitempty"`
+	PluginConfigJSON *string `json:"plugin_config_json,omitempty"`
+
+	LastProbeAt      *int64 `json:"last_probe_at"`
 	LastProbeOK      *bool    `json:"last_probe_ok"`
 	LastSyncedAt     *int64   `json:"last_synced_at"` // last successful sync, push or pull
 	CreatedAt        int64    `json:"created_at"`

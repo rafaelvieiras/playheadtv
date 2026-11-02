@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/pluginhost"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/pullsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 	"github.com/rafaelvieiras/playheadtv/backend/migrations"
@@ -117,8 +118,11 @@ func newTestDBWithMaterializer(t *testing.T) (*storage.SQLite, *http.ServeMux, *
 	// (Start is never called on either), so plain instances are enough to
 	// satisfy Register.
 	mat := materializer.New(db, time.Hour)
-	sync := pullsync.New(db, testEncKey, mat)
-	Register(inner, db, mat, sync, testEncKey)
+	// Plugin tests build their own mux with a host they can reach; the shared
+	// helper only needs a host that exists (no registry, nothing installed).
+	host := pluginhost.New(db, filepath.Join(filepath.Dir(dbPath), "plugins"), "")
+	sync := pullsync.New(db, testEncKey, mat, host)
+	Register(inner, db, mat, sync, testEncKey, host)
 
 	outer := http.NewServeMux()
 	outer.Handle("/", RequireAuth(db, inner))

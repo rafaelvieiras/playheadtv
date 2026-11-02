@@ -103,11 +103,22 @@ type (
 	}
 
 	mediaSourceUpdateArgs struct {
-		ID         string  `json:"id" jsonschema:"the media source to replace"`
-		Type       string  `json:"type" jsonschema:"one of: jellyfin, plex, local_folder"`
-		Name       string  `json:"name" jsonschema:"display name"`
-		BaseURL    *string `json:"base_url,omitempty" jsonschema:"server base URL; required unless type is local_folder"`
-		Credential *string `json:"credential,omitempty" jsonschema:"new API key/token, encrypted at rest; omitted keeps the stored one. Never returned by any tool"`
+		ID               string         `json:"id" jsonschema:"the media source to replace"`
+		Type             string         `json:"type" jsonschema:"one of: jellyfin, plex, local_folder, plugin"`
+		Name             string         `json:"name" jsonschema:"display name"`
+		BaseURL          *string        `json:"base_url,omitempty" jsonschema:"server base URL; required unless type is local_folder or plugin"`
+		Credential       *string        `json:"credential,omitempty" jsonschema:"new API key/token, encrypted at rest; omitted keeps the stored one. Never returned by any tool"`
+		PluginID         *string        `json:"plugin_id,omitempty" jsonschema:"only for type plugin: the installed plugin that lists this source (see list_plugins)"`
+		PluginMinVersion *string        `json:"plugin_min_version,omitempty" jsonschema:"only for type plugin: oldest plugin version that can read plugin_config"`
+		PluginConfig     map[string]any `json:"plugin_config,omitempty" jsonschema:"only for type plugin: the plugin's own configuration, passed back to it verbatim. It is stored as plain text: never put a secret here"`
+	}
+	pluginInstallArgs struct {
+		ID      string `json:"id" jsonschema:"the plugin id, as listed by list_plugins"`
+		Version string `json:"version,omitempty" jsonschema:"the exact version to install; omitted installs the newest this backend can run"`
+	}
+	pluginEnableArgs struct {
+		ID      string `json:"id" jsonschema:"the installed plugin"`
+		Enabled bool   `json:"enabled" jsonschema:"true to let its sources list again, false to stop it without uninstalling"`
 	}
 	catalogSyncArgs struct {
 		ID                 string           `json:"id" jsonschema:"the push-mode media source"`
@@ -250,7 +261,19 @@ func registerRESTTools(s *mcp.Server, db storage.DB, mux http.Handler) {
 	addREST[catalogSyncArgs](s, rc, "sync_media_source_catalog", "POST /media-sources/{id}/catalog-sync",
 		"Push catalog items to a push-mode media source (upsert items, remove deleted_external_ids). Triggers EPG regeneration.", false)
 	addREST[idArgs](s, rc, "pull_sync_media_source", "POST /media-sources/{id}/pull-sync",
-		"Run a pull sync of a Jellyfin source in pull mode now and wait for it; returns the media source and the sync result.", false)
+		"Run a pull sync of a Jellyfin or plugin source in pull mode now and wait for it; returns the media source and the sync result.", false)
+
+	// Plugins (docs/PLUGINS.md). The core has no site-specific code: it installs
+	// an artifact from the configured registry, verifies its hash, runs it and
+	// talks to it over a documented protocol.
+	addREST[noArgs](s, rc, "list_plugins", "GET /plugins",
+		"List installed plugins and every plugin/version the configured registry offers, with artifact URLs pointing at this backend. registry_configured=false means this deployment has no registry URL and nothing can be installed.", false)
+	addREST[pluginInstallArgs](s, rc, "install_plugin", "POST /plugins/{id}/install",
+		"Download a plugin artifact for this backend's platform, verify its SHA-256 against the registry, extract it and install it (replacing any other version). Plugins are external code: install one only from a registry you trust.", false)
+	addREST[pluginEnableArgs](s, rc, "set_plugin_enabled", "PUT /plugins/{id}",
+		"Enable or disable an installed plugin. A disabled plugin is not run, and its sources list no items until it is enabled again.", false)
+	addREST[idConfirmArgs](s, rc, "delete_plugin", "DELETE /plugins/{id}",
+		"Uninstall a plugin: stop its process, delete its row and remove its extracted files. Its media sources stay and report that the plugin is missing.", true)
 
 	// Devices (playback client tokens).
 	addREST[noArgs](s, rc, "list_devices", "GET /devices", "List the paired playback devices. Tokens are never returned. The result is {items: [...]}.", false)

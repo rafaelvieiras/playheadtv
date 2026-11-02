@@ -146,12 +146,44 @@ database (a missing file is an error) and applies migrations only when the
 
 ## Media sources
 
-A `media_source` is a Jellyfin/Plex/local-folder library. Only `jellyfin` is
-implemented in v1; the `type` column and `catalog_item` cache are already
-source-agnostic so adding Plex/local-folder later doesn't touch scheduling
-tables at all. **A channel can mix items from different media sources in the
-same schedule** — every scheduling table (`block_item`, `filler_pool_item`)
-references `catalog_item.id`, never a source's native ID.
+A `media_source` is a Jellyfin/Plex/local-folder library, or a **plugin-backed**
+source (below). Only `jellyfin` and `plugin` are implemented in v1; the `type`
+column and `catalog_item` cache are already source-agnostic so adding
+Plex/local-folder later doesn't touch scheduling tables at all. **A channel can
+mix items from different media sources in the same schedule** — every
+scheduling table (`block_item`, `filler_pool_item`) references `catalog_item.id`,
+never a source's native ID.
+
+### Plugins (migration `0028`)
+
+Some sources cannot be implemented in this repository: taking video from a
+third-party site means an extractor that site changes constantly, and its legal
+footing is not this project's to grant. The core therefore implements the
+*host* half only — install, verify, run and talk to an out-of-process plugin —
+and never any site-specific code. The full contract is
+[`docs/PLUGINS.md`](PLUGINS.md); what matters architecturally:
+
+- A plugin artifact is a `tar.gz` with a `plugin.json` manifest and an
+  executable. Its SHA-256 (from the registry) is verified before extraction,
+  and the manifest's id/version must match the registry entry that named it.
+- The host protocol is JSON-RPC over the plugin's stdin/stdout: `info`,
+  `catalog.list` (paged, shaped exactly like the push-sync payload),
+  `media.resolve` (a short-lived playable URL), `shutdown`.
+- `media_source.type = 'plugin'` names `plugin_id` (plus an optional
+  `plugin_min_version` and its own `plugin_config_json`), and is always a
+  **pull** source: the backend lists it on the same sweep that lists Jellyfin,
+  so the grid materializes with no client online. The backend image never
+  ships an extractor; installing a plugin is what adds one, at runtime.
+- The backend is also a **caching mirror** of the registry: `GET /plugins`
+  rewrites artifact URLs to `/plugins/{id}/{version}/{os}-{arch}`, which serves
+  the verified bytes (ETag = SHA-256, immutable), so a desktop client installs
+  from the backend it is already paired with.
+- Because the client resolves URLs at playback time, `GET /epg` carries a
+  `requires` list per entry (the plugin and minimum version behind its catalog
+  item). A client without that plugin hides the channel instead of tuning into
+  an error, and says so in Settings. Android cannot execute a downloaded file
+  (W^X since API 29), so there the plugin is a separate APK the client binds to
+  — reserved in the contract, not implemented yet.
 
 ### Reachability: pull vs push
 
