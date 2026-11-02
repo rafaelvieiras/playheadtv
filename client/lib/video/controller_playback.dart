@@ -5,13 +5,35 @@
 import 'package:flutter/widgets.dart';
 import 'package:video_player/video_player.dart';
 
+import '../log/log.dart';
 import 'video_engine.dart';
 
 abstract class ControllerPlayback implements VideoPlayback {
   @protected
   final VideoPlayerController controller;
 
-  ControllerPlayback(this.controller);
+  ControllerPlayback(this.controller) {
+    // An engine that fails under a playing picture leaves no other trace: the
+    // player only sees a position that stopped moving. The engine's own reason
+    // (a bad segment, a closed stream) is worth keeping, with the url reduced to
+    // its host so a token never reaches the log.
+    controller.addListener(_logEngineError);
+  }
+
+  /// The last error already reported, so one failure is logged once.
+  String? _reportedError;
+
+  void _logEngineError() {
+    final v = controller.value;
+    if (!v.hasError) {
+      _reportedError = null;
+      return;
+    }
+    final description = v.errorDescription ?? 'no description';
+    if (description == _reportedError) return;
+    _reportedError = description;
+    Log.error('controller', 'the video engine failed: $description (host ${Uri.tryParse(controller.dataSource)?.host})');
+  }
 
   @override
   String get source => controller.dataSource;
