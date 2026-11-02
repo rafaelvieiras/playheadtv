@@ -94,8 +94,15 @@ or LLM, and to every artifact in the repo:
   `remux` (the plugin produces the stream itself, offered only where the engine
   cannot merge). No path in the client may transcode, and none may name a site.
 - `EpgEntry.requires` (from `GET /epg`, kept in the offline cache) is how the
-  client learns a channel needs a plugin. A channel whose plugin is missing or
-  too old is hidden, never tuned into an error.
+  client learns a channel needs a plugin, and it carries the source's config so
+  resolving needs no second lookup. A channel whose plugin is missing or too old
+  is hidden, never tuned into an error.
+- Plugin playback resolves **per open**, never from a cache: `_entrySource` in
+  `main.dart` asks again for every preload, tune-in and resync, because those
+  urls expire and a `remux` url is produced while it plays. `playbackPluginModes`
+  is `single,remux` until the player can merge a `pair` (then Android adds it).
+  A stream resolved from a start offset already begins there, so the client does
+  not seek a second time — `_prepareController(alreadyPositioned:)`.
 - **No site-specific source code, ever.** Some sources (a video-sharing site,
   anything that needs an extractor) are not implemented here: they are
   external plugins, and the core only implements the host half — install,

@@ -464,6 +464,13 @@ const epgFreezeMarginFallback = Duration(hours: 3);
 const playbackBufferMinMs = 2000;
 const playbackBufferMaxMs = 30000;
 
+// What this client's player can do with a plugin's answer (docs/PLUGINS.md
+// "Modes"). `pair` is missing on purpose: the engine seam still opens one url,
+// so asking for two tracks would get an answer nothing can play. `remux` is the
+// plugin feeding a stream it copies, never transcodes, which is what makes a
+// plugin channel playable here at all.
+const playbackPluginModes = ['single', 'remux'];
+
 String streamUrl(String itemId) =>
     '${AppConfig.jellyfinUrl}/Videos/$itemId/stream?Static=true&ApiKey=${AppConfig.jellyfinApiKey}';
 
@@ -1306,11 +1313,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   }
 
   Future<VideoPlayback> _createControllerOnce(ChannelEntry entry, {Duration? seekTo}) async {
-    final controller = trackController(videoEngine.createNetwork(Uri.parse(streamUrl(entry.id))));
+    // Where this unit plays from, and whether that source already starts at the
+    // requested position (a plugin asked for a start offset produces a stream
+    // that begins there, so seeking again would skip twice).
+    final source = await _entrySource(entry, seekTo: seekTo);
+    final controller = trackController(videoEngine.createNetwork(source.uri));
     final clock = Stopwatch()..start();
     Log.debug('player', 'opening item ${entry.id} (seek=${seekTo?.inSeconds ?? 0}s, offset=${entry.itemOffset.inSeconds}s)');
     try {
-      final prepared = await _prepareController(controller, entry, seekTo);
+      final prepared = await _prepareController(controller, entry, seekTo,
+          alreadyPositioned: source.prePositioned);
       Log.debug('player', 'item ${entry.id} opened in ${clock.elapsedMilliseconds}ms');
       return prepared;
     } catch (e) {
@@ -1320,7 +1332,47 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     }
   }
 
-  Future<VideoPlayback> _prepareController(VideoPlayback controller, ChannelEntry entry, Duration? seekTo) async {
+  /// The url this unit plays from.
+  ///
+  /// A media-server item is a plain url. An item from a plugin-backed source has
+  /// no media-server id at all: the plugin hands out a url, and it is asked
+  /// again for **every** open (preload, tune-in, resync) because those urls
+  /// expire and a `remux` url is produced while it plays. Nothing here is ever
+  /// cached or written down.
+  Future<({Uri uri, bool prePositioned})> _entrySource(ChannelEntry entry, {Duration? seekTo}) async {
+    final program = entry.program;
+    final requires = program?.requires ?? const <EpgRequirement>[];
+    if (requires.isEmpty) {
+      return (uri: Uri.parse(streamUrl(entry.id)), prePositioned: false);
+    }
+
+    final requirement = requires.first;
+    final position = entry.itemOffset + (seekTo ?? Duration.zero);
+    final runtime = await OfflineRuntime.ensure();
+    final resolution = await runtime.plugins.resolve(
+      requirement: requirement,
+      // The source's own id, not ours: the plugin only knows its own namespace.
+      externalId: program?.externalId ?? entry.id,
+      config: requirement.config,
+      durationMs: program?.durationMs ?? entry.clipDuration.inMilliseconds,
+      startAtMs: position.inMilliseconds,
+      modes: playbackPluginModes,
+    );
+
+    final uri = resolution.url;
+    if (uri == null) {
+      // Two tracks: the plugin ignored `modes`. Saying so beats handing the
+      // player a url that is not there.
+      throw StateError('the "${requirement.id}" plugin answered with ${resolution.sources.length} '
+          'tracks, which this player cannot merge yet');
+    }
+    Log.debug('player', 'item ${entry.id} resolved by "${requirement.id}" as ${resolution.mode}');
+    // A stream the plugin produced from a start offset already begins there.
+    return (uri: uri, prePositioned: resolution.live || position > Duration.zero);
+  }
+
+  Future<VideoPlayback> _prepareController(VideoPlayback controller, ChannelEntry entry, Duration? seekTo,
+      {bool alreadyPositioned = false}) async {
     await controller.open();
     // `seekTo` is a position within the entry (the "TV turned on" in the
     // middle of a program); the entry itself starts at its item offset, so the
@@ -1328,7 +1380,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // positioned at its resume point as soon as it is prepared, long before it
     // is shown. A whole item has offset zero and is only seeked for a tune-in.
     final position = entry.itemOffset + (seekTo ?? Duration.zero);
-    if (position > Duration.zero) {
+    if (!alreadyPositioned && position > Duration.zero) {
       await controller.seekTo(position);
     }
     // Resolve the stream (audio/subtitle) selection cascade (tiers 2-4 —
