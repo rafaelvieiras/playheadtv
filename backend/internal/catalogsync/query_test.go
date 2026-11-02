@@ -170,6 +170,9 @@ func TestQueryOperators(t *testing.T) {
 		// Enumerations: exact.
 		{"kind equals episode", tree(cond("kind", "equals", `"episode"`)), []string{"pilot", "special"}},
 		{"kind in", tree(cond("kind", "in", `["episode","movie"]`)), allExt},
+		// A whole source at once: how a channel is built from a plugin-backed one.
+		{"media source equals", tree(cond("media_source_id", "equals", `"ms1"`)), allExt},
+		{"media source is exact", tree(cond("media_source_id", "equals", `"ms2"`)), nil},
 		{"content rating equals", tree(cond("content_rating", "equals", `"PG"`)), []string{"airplane"}},
 		{"content rating is exact", tree(cond("content_rating", "equals", `"P"`)), nil},
 		{"content rating in", tree(cond("content_rating", "in", `["PG","R"]`)), []string{"airplane", "alien", "amelie"}},
