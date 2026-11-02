@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:client/cache/schedule_cache.dart';
 import 'package:client/playhead_api.dart';
 import 'package:client/plugin/channel_filter.dart';
-import 'package:client/plugin/plugin_manifest.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';

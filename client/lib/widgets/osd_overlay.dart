@@ -101,6 +101,7 @@ class ChannelOsd extends StatefulWidget {
     this.progressByClock = false,
     this.resolveSubject,
     this.playhead,
+    this.positionOffset = Duration.zero,
     required this.controller,
     required this.focusMode,
     required this.onOpenSubtitles,
@@ -112,8 +113,22 @@ class ChannelOsd extends StatefulWidget {
     this.now = DateTime.now,
   }) : super(key: key);
 
+  /// Where the playback started inside the item; added to the engine's own
+  /// position (see `_playbackOffset` in the player).
+  final Duration positionOffset;
+
   @override
   State<ChannelOsd> createState() => ChannelOsdState();
+}
+
+/// The position the OSD shows. A playback whose source already began at an
+/// offset reports its position from that stream's own zero, so the offset is
+/// added back and the result never runs past the end.
+Duration osdPosition({required Duration engine, required Duration offset, required Duration duration}) {
+  final sum = engine + offset;
+  if (sum.isNegative) return Duration.zero;
+  if (duration > Duration.zero && sum > duration) return duration;
+  return sum;
 }
 
 class ChannelOsdState extends State<ChannelOsd> {
@@ -397,7 +412,11 @@ class ChannelOsdState extends State<ChannelOsd> {
       final elapsed = (widget.playhead?.call() ?? widget.now()).toUtc().difference(startAt);
       position = elapsed.isNegative ? Duration.zero : (elapsed > duration ? duration : elapsed);
     } else {
-      position = widget.controller?.state.position ?? Duration.zero;
+      position = osdPosition(
+        engine: widget.controller?.state.position ?? Duration.zero,
+        offset: widget.positionOffset,
+        duration: widget.controller?.state.duration ?? Duration.zero,
+      );
       duration = widget.controller?.state.duration ?? Duration.zero;
     }
     final progress =
