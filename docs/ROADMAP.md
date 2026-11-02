@@ -1268,11 +1268,13 @@ repo never contains.
 - [x] Settings -> "Plugins": the union of what the registry offers and what this
       device has, installed by selecting a row (with download progress), plus a
       dialog to turn one off or remove it. Six-button only.
-- [ ] (superseded) Client side: plugin manager in Settings (list required plugins, download
-      from the backend registry, verify hash, install/remove/enable), a channel
-      filter that hides channels whose plugin is missing plus the Settings
-      notice, and a `media.resolve` call in the playback path (preload, tune-in
-      and resync all resolve fresh — a resolved URL is never cached).
+- [ ] Hide the channels this device cannot play, and say why in Settings. The
+      filter belongs where the channel list enters the player and the mosaic
+      (`_cache.channels()` call sites): `_channelIndex` and the working set hold
+      indexes into that list, so it filters once at load (and after a sync that
+      changes the answer), never mid-playback. Requirements come from the cached
+      guide (`EpgEntry.requires`); a channel with no cached entries yet stays
+      visible, because hiding it on a cold start would look like data loss.
 - [ ] Client playback of a `pair`: the engine needs to merge a video and an
       audio source (ExoPlayer can; `fvp`/FFmpeg cannot merge two inputs through
       its Dart binding, so desktop declares `single`+`remux` for now). Until
