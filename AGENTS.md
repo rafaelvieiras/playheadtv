@@ -85,35 +85,24 @@ or LLM, and to every artifact in the repo:
   route with neither a tool nor a justified `NoMCPCounterpart` entry.
 - `storage.DB` is the only interface the rest of the backend sees — never
   branch on "self-hosted vs cloud-sync" outside `internal/storage`.
-- `client/lib/plugin/` is the client half of that host: it installs an artifact
-  from the backend's registry mirror (SHA-256 verified before extraction, tar
-  with traversal/size guards, staged install with an atomic swap) and drives the
-  process over protocol 1. It never lists a catalog (the backend owns the grid)
-  and never trusts plugin output. A resolve answer arrives in a **mode**:
-  `single`, `pair` (the player merges two tracks; the default, and free) or
-  `remux` (the plugin produces the stream itself, offered only where the engine
-  cannot merge). No path in the client may transcode, and none may name a site.
-- Settings -> "Plugins" (`lib/pages/plugins_page.dart`) is the only place that can
-  install one: a channel whose plugin is missing is not shown, so nothing else
-  offers it. Rows are the union of what the backend's registry offers and what is
-  installed here (a plugin the registry stopped offering still has to be
-  removable). Six buttons only: Select installs a missing plugin or opens the
-  installed one's dialog, never a hidden second tap target.
-- `EpgEntry.requires` (from `GET /epg`, kept in the offline cache) is how the
-  client learns a channel needs a plugin, and it carries the source's config so
-  resolving needs no second lookup. A channel whose plugin is missing or too old
-  is hidden, never tuned into an error: `client/lib/plugin/channel_filter.dart`
-  filters the channel list where it enters the player and the mosaic, using a
-  `PluginAvailability` snapshot (`OfflineRuntime.availability`) because that path
-  is synchronous — including the cache-change callback. Refresh the snapshot from
-  anything that changes what is installed (Settings does) and after a sync, never
-  from the filter itself.
-- Plugin playback resolves **per open**, never from a cache: `_entrySource` in
-  `main.dart` asks again for every preload, tune-in and resync, because those
-  urls expire and a `remux` url is produced while it plays. `playbackPluginModes`
-  is `single,remux` until the player can merge a `pair` (then Android adds it).
-  A stream resolved from a start offset already begins there, so the client does
-  not seek a second time — `_prepareController(alreadyPositioned:)`.
+- **A plugin runs on the backend, never on the client.** It needs an extractor and
+  a remuxer, and the devices this client targets cannot run them (a TV box cannot
+  execute a downloaded binary, and the extractor is Python). `client/lib/plugin/`
+  therefore holds only what a client needs to *ask*: the registry types and the
+  channel filter. Playback asks the backend — `GET /catalog-items/{id}/play?start_ms=`
+  — and opens the URL it gets back, on every open (preload, tune-in, resync),
+  never cached: the URL carries the plugin's token, expires, and a `remux` stream
+  lives only while its process does. `playbackPluginModes` on the client is gone
+  with the local host; the backend asks for `remux` because a client that cannot
+  run the plugin is a client that cannot merge a `pair` either.
+- The backend does not serve the bytes: it asks the plugin, rewrites the host of
+  the URL to the address the client used (the port, path and token stay the
+  plugin's) and answers `no-store`. That keeps "the backend never processes video"
+  true — it hands out a link, it does not pipe or decode. A plugin that runs
+  beside the backend listens on loopback by default; `PLAYHEADTV_PLUGIN_LISTEN`
+  moves it, and a remux stream is produced at playback speed (`-re`) so its
+  sliding window never runs ahead of the player and deletes what it has not
+  fetched yet.
 - **No site-specific source code, ever.** Some sources (a video-sharing site,
   anything that needs an extractor) are not implemented here: they are
   external plugins, and the core only implements the host half — install,

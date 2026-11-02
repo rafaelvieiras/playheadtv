@@ -596,6 +596,74 @@ class PlayheadApi {
   /// relative to.
   Uri get backendBase => Uri.parse(_normalizedBaseUrl);
 
+  /// Where a player should fetch an item whose source is a plugin
+  /// (`GET /catalog-items/{id}/play`).
+  ///
+  /// The URL comes from the plugin and carries its own token, so it is asked for
+  /// on every open and never stored: it expires, and a `remux` stream exists only
+  /// while its process runs.
+  Future<Uri> playUrl(String catalogItemId, {Duration startAt = Duration.zero}) async {
+    final uri = Uri.parse('$_normalizedBaseUrl/catalog-items/${Uri.encodeComponent(catalogItemId)}/play')
+        .replace(queryParameters: startAt > Duration.zero ? {'start_ms': '${startAt.inMilliseconds}'} : null);
+    final data = await _getJson(uri);
+    if (data is! Map<String, dynamic>) {
+      throw Exception('GET /catalog-items/{id}/play: expected an object, got ${data.runtimeType}');
+    }
+    final url = data['url'];
+    if (url is! String || url.isEmpty) {
+      throw Exception('GET /catalog-items/{id}/play: no url in the answer');
+    }
+    return Uri.parse(url);
+  }
+
+  /// Installs a plugin on the backend (`POST /plugins/{id}/install`).
+  ///
+  /// The plugin runs where the content is resolved, which is the backend: a
+  /// client that cannot run the tools (a TV box) only ever fetches a stream.
+  Future<void> installPlugin(String id, {String? version}) async {
+    await _sendWrite(
+      'POST',
+      Uri.parse('$_normalizedBaseUrl/plugins/${Uri.encodeComponent(id)}/install'),
+      body: {'version': ?version},
+    );
+  }
+
+  /// Turns an installed plugin on or off on the backend.
+  Future<void> setPluginEnabled(String id, bool enabled) async {
+    await _sendWrite(
+      'PUT',
+      Uri.parse('$_normalizedBaseUrl/plugins/${Uri.encodeComponent(id)}'),
+      body: {'enabled': enabled},
+    );
+  }
+
+  Future<void> deletePlugin(String id) async {
+    await _sendWrite('DELETE', Uri.parse('$_normalizedBaseUrl/plugins/${Uri.encodeComponent(id)}'));
+  }
+
+  /// A write that only needs to know whether it worked. Installs and archive
+  /// downloads take minutes, hence the long bound.
+  Future<void> _sendWrite(String method, Uri uri, {Map<String, dynamic>? body}) async {
+    await _acquire();
+    try {
+      final request = http.Request(method, uri)
+        ..headers.addAll(_headers)
+        ..headers['Content-Type'] = 'application/json';
+      if (body != null) request.body = jsonEncode(body);
+      final response = await http.Response.fromStream(
+        await _client.send(request).timeout(const Duration(minutes: 10)),
+      );
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw PlayheadHttpException(uri, response.statusCode, response.body);
+      }
+    } catch (e) {
+      if (e is PlayheadHttpException) rethrow;
+      throw PlayheadConnectionException(uri, e);
+    } finally {
+      _release();
+    }
+  }
+
   /// What this backend's registry mirror offers (`GET /plugins`).
   ///
   /// Display only: which plugins the *client* has installed is its own business

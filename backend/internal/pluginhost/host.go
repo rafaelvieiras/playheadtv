@@ -35,6 +35,18 @@ const registryTimeout = 20 * time.Second
 // alternative to waiting is a source that never populates.
 const catalogPageTimeout = 90 * time.Second
 
+// resolveTimeout bounds one media.resolve. An extractor has to fetch the item's
+// page and plan formats, and a stream it produces is already running when it
+// answers, so this is deliberately longer than a catalog page.
+const resolveTimeout = 120 * time.Second
+
+// The modes a plugin may answer in (docs/PLUGINS.md "Modes").
+const (
+	ModeSingle = "single"
+	ModePair   = "pair"
+	ModeRemux  = "remux"
+)
+
 // catalogPageLimit is the page size the host asks for; a plugin may return any
 // number it likes.
 const catalogPageLimit = 50
@@ -431,6 +443,76 @@ func (h *Host) ListSource(ctx context.Context, ms domain.MediaSource) ([]catalog
 		cursor = resp.NextCursor
 	}
 	return items, nil
+}
+
+// Resolve asks a plugin for something a player can open
+// (docs/PLUGINS.md "media.resolve").
+//
+// [modes] is what the caller's player can actually play, cheapest first. The
+// answer names the mode the plugin used, and its url is the plugin's own: a
+// plugin running on this machine names 127.0.0.1, so a host that serves a player
+// elsewhere rewrites the host part and leaves the rest alone (the port and the
+// token are the plugin's).
+func (h *Host) Resolve(ctx context.Context, pluginID string, config json.RawMessage,
+	externalID string, durationMs, startAtMs int64, modes []string) (json.RawMessage, error) {
+	installed, err := h.ResolveCapable(ctx, pluginID)
+	if err != nil {
+		return nil, err
+	}
+	proc, err := h.processFor(ctx, installed)
+	if err != nil {
+		return nil, err
+	}
+	if len(modes) == 0 {
+		modes = []string{ModeSingle, ModePair}
+	}
+	var req struct {
+		Config json.RawMessage `json:"config"`
+		Item   struct {
+			ExternalID string `json:"external_id"`
+			DurationMs int64  `json:"duration_ms,omitempty"`
+		} `json:"item"`
+		StartAtMs int64    `json:"start_at_ms,omitempty"`
+		Modes     []string `json:"modes"`
+	}
+	req.Config = config
+	req.Item.ExternalID = externalID
+	req.Item.DurationMs = durationMs
+	req.StartAtMs = startAtMs
+	req.Modes = modes
+
+	var resp json.RawMessage
+	callCtx, cancel := context.WithTimeout(ctx, resolveTimeout)
+	defer cancel()
+	if err := proc.Call(callCtx, "media.resolve", req, &resp); err != nil {
+		return nil, fmt.Errorf("pluginhost: %s media.resolve: %w", installed.ID, err)
+	}
+	if !json.Valid(resp) {
+		return nil, fmt.Errorf("pluginhost: %s media.resolve returned invalid JSON", installed.ID)
+	}
+	return resp, nil
+}
+
+// ResolveCapable returns the installed plugin, refusing one that cannot resolve
+// playback (missing, disabled, too old, or without the capability).
+func (h *Host) ResolveCapable(ctx context.Context, pluginID string) (domain.Plugin, error) {
+	if pluginID == "" {
+		return domain.Plugin{}, fmt.Errorf("pluginhost: no plugin named")
+	}
+	installed, err := h.Installed(ctx, pluginID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return domain.Plugin{}, fmt.Errorf("%w: %s", ErrNotInstalled, pluginID)
+		}
+		return domain.Plugin{}, err
+	}
+	if !installed.Enabled {
+		return domain.Plugin{}, fmt.Errorf("%w: %s is disabled", ErrNotInstalled, installed.ID)
+	}
+	if !hasCapability(installed.Capabilities, CapabilityMediaResolve) {
+		return domain.Plugin{}, fmt.Errorf("pluginhost: %s does not provide %s", installed.ID, CapabilityMediaResolve)
+	}
+	return installed, nil
 }
 
 // wireItem is the catalog item shape a plugin returns, identical to the push

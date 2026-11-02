@@ -1268,6 +1268,11 @@ repo never contains.
 - [x] Settings -> "Plugins": the union of what the registry offers and what this
       device has, installed by selecting a row (with download progress), plus a
       dialog to turn one off or remove it. Six-button only.
+- [x] Backend-served playback (`GET /catalog-items/{id}/play`): the backend asks
+      the plugin for a `remux` stream, rewrites the loopback host to the address
+      the client used, and answers `no-store`. The client only fetches segments.
+      This replaced the client-side plugin host, which could never work on the
+      devices this app targets.
 - [x] Hide the channels this device cannot play
       (`client/lib/plugin/channel_filter.dart`). `PluginAvailability` computes the
       answer once (one directory read, plus a bounded registry lookup), and
@@ -1275,7 +1280,7 @@ repo never contains.
       enters the player and the mosaic. A channel with no cached guide stays
       visible, and when everything is hidden both screens say which plugin to
       install instead of claiming the backend has no channels.
-- [ ] Client playback of a `pair`: the engine needs to merge a video and an
+- [ ] (deferred) Client playback of a `pair`: the engine needs to merge a video and an
       audio source (ExoPlayer can; `fvp`/FFmpeg cannot merge two inputs through
       its Dart binding, so desktop declares `single`+`remux` for now). Until
       this lands, a channel built from a pair-only source plays on Android TV
