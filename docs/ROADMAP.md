@@ -1244,15 +1244,27 @@ repo never contains.
       plugin sources.
 - [x] `GET /epg` entries carry `requires` (plugin id + minimum version) per
       entry, and tail groups carry the union of their clips.
-- [ ] First real plugin: a separate repository that wraps an external
-      extractor, publishes a per-platform registry document (SHA-256 per
-      artifact), and implements `catalog.list` + `media.resolve`. Nothing in
-      this repo changes for it.
+- [x] First real plugin (`playheadtv-plugin-youtube`, separate repository):
+      wraps an external extractor, publishes a per-platform registry document
+      (SHA-256 per artifact), implements `catalog.list` + `media.resolve`.
+      Verified end to end against a running backend: install from the registry,
+      pull sync of a real channel, catalog rows with titles and durations.
+      Nothing in this repo changed for it.
+- [x] Protocol 1 amended after reality: the site stopped serving one file with
+      both tracks, so `media.resolve` declares a mode — `single` (free), `pair`
+      (video + audio, merged by the player, free) or `remux` (produced by the
+      plugin, opt-in only). No plugin may transcode; `remux` is `-c copy` over a
+      bounded window.
 - [ ] Client side: plugin manager in Settings (list required plugins, download
       from the backend registry, verify hash, install/remove/enable), a channel
       filter that hides channels whose plugin is missing plus the Settings
       notice, and a `media.resolve` call in the playback path (preload, tune-in
       and resync all resolve fresh — a resolved URL is never cached).
+- [ ] Client playback of a `pair`: the engine needs to merge a video and an
+      audio source (ExoPlayer can; `fvp`/FFmpeg cannot merge two inputs through
+      its Dart binding, so desktop declares `single`+`remux` for now). Until
+      this lands, a channel built from a pair-only source plays on Android TV
+      only.
 - [ ] Android: plugin as an external APK bound as a `Service` (W^X forbids
       executing a downloaded file since API 29). Protocol 2 candidate; the
       payloads do not change.
