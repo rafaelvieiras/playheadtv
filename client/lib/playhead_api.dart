@@ -562,6 +562,10 @@ class PlayheadApi {
   /// The whole-window download is the one request that can be big.
   final Duration snapshotTimeout;
 
+  /// What a plugin takes to answer with a playable stream: extracting the item
+  /// plus producing the first segment. Not a network timeout — a real workflow.
+  static const playResolveTimeout = Duration(seconds: 90);
+
   // Only the fallback against a backend without the enriched GET /epg fans
   // out one request per EPG entry (a channel of short items can mean
   // hundreds), and every in-flight request holds a socket: unbounded, that
@@ -605,7 +609,11 @@ class PlayheadApi {
   Future<Uri> playUrl(String catalogItemId, {Duration startAt = Duration.zero}) async {
     final uri = Uri.parse('$_normalizedBaseUrl/catalog-items/${Uri.encodeComponent(catalogItemId)}/play')
         .replace(queryParameters: startAt > Duration.zero ? {'start_ms': '${startAt.inMilliseconds}'} : null);
-    final data = await _getJson(uri);
+    // Bounded, not the default 10s: this answer waits for an extractor to resolve
+    // the item and for the plugin to produce a first segment, which measured
+    // 9-12s on a real host. Too short and every tune-in fails while the work is
+    // already done.
+    final data = await _getJson(uri, timeout: playResolveTimeout);
     if (data is! Map<String, dynamic>) {
       throw Exception('GET /catalog-items/{id}/play: expected an object, got ${data.runtimeType}');
     }
@@ -713,8 +721,8 @@ class PlayheadApi {
     }
   }
 
-  Future<dynamic> _getJson(Uri uri) async {
-    final response = await _send(uri);
+  Future<dynamic> _getJson(Uri uri, {Duration? timeout}) async {
+    final response = await _send(uri, timeout: timeout);
     if (response.statusCode != 200) {
       throw PlayheadHttpException(uri, response.statusCode, response.body);
     }

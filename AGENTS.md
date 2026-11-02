@@ -103,6 +103,12 @@ or LLM, and to every artifact in the repo:
   moves it, and a remux stream is produced at playback speed (`-re`) so its
   sliding window never runs ahead of the player and deletes what it has not
   fetched yet.
+- A plugin-backed entry is played by its **catalog item id**, never by the source's
+  own id (`entry.program.catalogItemId`, not `entry.id`, which is what a Jellyfin
+  stream URL wants). And the play request is not a normal API call: it waits for an
+  extractor to resolve the item and for the plugin to produce a first segment
+  (9-12 s measured), so it uses `PlayheadApi.playResolveTimeout`, not the default
+  10 s — with the default, every tune-in failed while the work was already done.
 - **The backend image has to be able to run a plugin.** It is not distroless:
   `debian:bookworm-slim` with `ca-certificates`. A plugin is an arbitrary external
   program, and each of these was a real failure in order: `distroless/static` has no
