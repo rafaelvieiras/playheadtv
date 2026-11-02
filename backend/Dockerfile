@@ -34,11 +34,13 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
       -X github.com/rafaelvieiras/playheadtv/backend/internal/buildinfo.Commit=${COMMIT}" \
     -o /out/server ./cmd/server
 
-# cc-debian12, not static: a plugin is an external program (an extractor and a
-# remuxer, both dynamically linked to glibc), and the backend runs it. A static
-# image has no loader, so every plugin failed with "fork/exec ...: no such file or
-# directory" while the file was right there.
-FROM gcr.io/distroless/cc-debian12
+# Not distroless: a plugin is an arbitrary external program that this backend
+# runs, and what it needs cannot be guessed. distroless/static has no loader
+# ("fork/exec ...: no such file or directory" for a file that is right there) and
+# cc-debian12 still lacked libz. A slim Debian is the smallest base where an
+# extractor and a remuxer just work; the image grows by ~30 MB and the attack
+# surface is the same one a plugin already has.
+FROM debian:bookworm-slim
 COPY --from=build /out/server /server
 
 ENV PLAYHEADTV_DB_PATH=/data/playheadtv.db
