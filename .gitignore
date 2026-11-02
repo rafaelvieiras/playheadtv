@@ -45,3 +45,7 @@ Thumbs.db
 
 # Browser automation artifacts
 .playwright-mcp/
+
+# Local agent tooling: task logs, worktrees and scratch state, never part of the project
+.claude/
+.pi/
