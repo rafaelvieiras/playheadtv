@@ -155,14 +155,47 @@ Turns one item into something a player can open **now**.
 ```json
 {
   "config": {"url": "https://example.com/some-channel"},
-  "item": {"external_id": "abc123", "duration_ms": 1320000}
+  "item": {"external_id": "abc123", "duration_ms": 1320000},
+  "start_at_ms": 0,
+  "modes": ["single", "pair"]
 }
 ```
 
-Result:
+`start_at_ms` (optional) is where in the item playback begins: a channel tunes
+into the middle of a program. `modes` (optional) is what the host's player can
+play; absent means `["single", "pair"]`.
+
+### Modes: the plugin never makes the player's work heavier than it must
+
+Some sources no longer serve one file that carries both video and audio. The
+answer must still be one thing a player can open, so a response declares which
+shape it chose:
+
+| mode | result | who does the work |
+| --- | --- | --- |
+| `single` | `url` | nobody: the player opens the source's own file or manifest |
+| `pair` | `sources[]`, one `video` and one `audio` | the **player**, by merging two tracks it already knows how to play |
+| `remux` | `url` on the plugin itself | the **plugin**, by rewriting the container |
+
+- **A plugin must never transcode.** No decoding and re-encoding, in any mode.
+  These hosts are often a 2 GB set-top box or a single-board computer, and the
+  core cannot undo a plugin that spends CPU per second of video.
+- `single` and `pair` cost the plugin nothing: it only reports URLs that point
+  at the source's own bytes. A host should offer both, and a plugin must prefer
+  `single` when the source has it.
+- `remux` exists for a host whose engine cannot merge a pair. It is `-c copy`
+  (container rewrite, no re-encode) and it must be bounded: a sliding window of
+  segments, deleted as it advances, so one playback never holds an unbounded
+  amount of media on disk. A plugin must only use it when the host names it in
+  `modes`, so no host pays for it by accident.
+- A host that cannot play what the plugin can offer gets `unsupported`; it must
+  then hide the channel rather than play an error.
+
+Result, `single` or `remux`:
 
 ```json
 {
+  "mode": "single",
   "url": "https://media.example.com/…",
   "mime": "video/mp4",
   "expires_at": 1793003600000,
@@ -170,18 +203,31 @@ Result:
 }
 ```
 
-- `url` must be directly playable (progressive file or an HLS/DASH manifest)
-  by the client's engine. A plugin must not stream the bytes through the host
-  or wrap them in its own proxy: the backend never touches video, and neither
-  does the core.
+Result, `pair`:
+
+```json
+{
+  "mode": "pair",
+  "sources": [
+    {"type": "video", "url": "https://media.example.com/v.mp4", "mime": "video/mp4", "expires_at": 1793003600000},
+    {"type": "audio", "url": "https://media.example.com/a.m4a", "mime": "audio/mp4", "expires_at": 1793003600000}
+  ]
+}
+```
+
+- `url` must be directly playable (progressive file or an HLS/DASH manifest) by
+  the client's engine, and a `pair` must be two tracks of the same instant of
+  the same item. Neither may be bytes streamed through the backend: the backend
+  never touches video. A `remux` URL is produced by the plugin process, on the
+  machine that plays it, and exists only for that playback.
 - `expires_at` (Unix ms, optional but strongly recommended) is when the URL
   stops working. The host must not reuse a URL past `expires_at + 60s`, and a
-  client must never persist a resolved URL anywhere — the guide stores
-  catalog metadata only.
+  client must never persist a resolved URL anywhere — the guide stores catalog
+  metadata only.
 - `headers` are sent verbatim by the player, and may be refreshed on every
   resolve.
-- The host calls this **per playback** (a channel switch, a preload, a
-  resync), never once per EPG entry.
+- The host calls this **per playback** (a channel switch, a preload, a resync),
+  never once per EPG entry.
 
 ### `shutdown`
 
@@ -338,3 +384,8 @@ disambiguate, so no wire change is planned for it.
   level check.
 - Let a plugin failure break a channel that does not need it: a failed plugin
   means *its* sources have no items, not that the materializer stops.
+- Ask for `remux` by default. A host lists the modes its engine actually
+  supports, and `single`/`pair` come first; the expensive mode is chosen only
+  when nothing cheaper can play.
+- Assume a `pair` can be played everywhere. A host that cannot merge two tracks
+  says so in `modes` instead of silently playing a video track with no audio.
