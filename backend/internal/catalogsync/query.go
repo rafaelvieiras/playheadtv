@@ -116,6 +116,9 @@ var queryFields = map[string]fieldSpec{
 	"episode_number":    {typ: typeNumber, column: "episode_number", integer: true},
 	"premiere_date":     {typ: typeDate, column: "premiere_date"},
 	"date_added":        {typ: typeDate, column: "date_added"},
+	// Everything one source brought in, which is how a channel is built from a
+	// plugin-backed source without listing its items one by one.
+	"media_source_id": {typ: typeEnum, column: "media_source_id", maxLen: 64},
 }
 
 // QueryFieldNames lists the queryable fields, for error messages and docs.
@@ -123,7 +126,7 @@ func QueryFieldNames() []string {
 	return []string{
 		"genre", "studio", "tag", "audio_language", "subtitle_language", "title", "overview", "person", "actor", "director",
 		"kind", "content_rating", "year", "duration", "community_rating", "critic_rating",
-		"season_number", "episode_number", "premiere_date", "date_added",
+		"season_number", "episode_number", "premiere_date", "date_added", "media_source_id",
 	}
 }
 
