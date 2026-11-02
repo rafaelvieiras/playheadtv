@@ -168,8 +168,55 @@ func TestEPGEntryCarriesItsPluginRequirement(t *testing.T) {
 	if req["id"] != "fake" || req["min_version"] != "1.2.0" {
 		t.Errorf("requirement = %v, want fake >= 1.2.0", req)
 	}
+	// The client resolves playback itself, so the source's configuration has to
+	// reach it with the entry instead of in a separate lookup.
+	config, _ := req["config"].(map[string]any)
+	if config["url"] != "https://example.test/channel" {
+		t.Errorf("requirement config = %v, want the source's own config", req["config"])
+	}
 
 	if _, present := byItem["item-jf"]["requires"]; present {
 		t.Errorf("a Jellyfin item must not require a plugin: %v", byItem["item-jf"]["requires"])
+	}
+}
+
+// A source with no configuration still names the plugin it needs, without an
+// empty object the client would have to special-case.
+func TestEPGPluginRequirementOmitsAnAbsentConfig(t *testing.T) {
+	db, mux := newTestDB(t)
+	ctx := context.Background()
+	now := time.Now().UnixMilli()
+
+	seedPluginSource(t, db, "ms-plugin", "fake", nil)
+	if err := db.Exec(ctx, `UPDATE media_source SET plugin_config_json = NULL WHERE id = 'ms-plugin'`); err != nil {
+		t.Fatalf("clear config: %v", err)
+	}
+	if err := db.Exec(ctx, `INSERT INTO catalog_item (id, tenant_id, media_source_id, external_id, kind, title, duration_ms, synced_at)
+		VALUES ('item-plugin', ?, 'ms-plugin', 'ext', 'movie', 'From a plugin', 600000, ?)`, DefaultTenantID, now); err != nil {
+		t.Fatalf("seed catalog item: %v", err)
+	}
+	if err := db.Exec(ctx, `INSERT INTO channel (id, tenant_id, number, name, timezone, created_at, updated_at)
+		VALUES ('c1', ?, 1, 'C1', 'UTC', ?, ?)`, DefaultTenantID, now, now); err != nil {
+		t.Fatalf("seed channel: %v", err)
+	}
+	if err := db.Exec(ctx, `INSERT INTO epg_entry (id, tenant_id, channel_id, kind, catalog_item_id, start_at, end_at, generated_at)
+		VALUES ('e1', ?, 'c1', 'program', 'item-plugin', ?, ?, 1)`, DefaultTenantID, now, now+600000); err != nil {
+		t.Fatalf("seed epg entry: %v", err)
+	}
+
+	entries := getEPGJSON(t, mux, "/epg")
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1", len(entries))
+	}
+	requires, _ := entries[0]["requires"].([]any)
+	if len(requires) != 1 {
+		t.Fatalf("requires = %v, want one requirement", entries[0]["requires"])
+	}
+	req := requires[0].(map[string]any)
+	if req["id"] != "fake" {
+		t.Errorf("requirement = %v, want the plugin id", req)
+	}
+	if _, present := req["config"]; present {
+		t.Errorf("an absent config must be omitted: %v", req)
 	}
 }

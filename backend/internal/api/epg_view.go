@@ -110,6 +110,10 @@ type catalogBrief struct {
 	// "Requirements in the guide").
 	PluginID         *string
 	PluginMinVersion *string
+	// PluginConfig is the source's own configuration for that plugin, verbatim.
+	// It travels with the entry because the client resolves playback itself: it
+	// is the only one that knows what to ask the plugin for.
+	PluginConfig *string
 	domain.CatalogMetadata
 }
 
@@ -120,6 +124,9 @@ type catalogBrief struct {
 type pluginRequirement struct {
 	ID         string  `json:"id"`
 	MinVersion *string `json:"min_version,omitempty"`
+	// Config is what the plugin needs to find the source's items. Plain text on
+	// purpose: it is never a secret (docs/PLUGINS.md).
+	Config json.RawMessage `json:"config,omitempty"`
 }
 
 // catalogLookupChunk bounds the number of ids in one IN (...) list.
@@ -140,7 +147,7 @@ func loadCatalogBriefs(ctx context.Context, db storage.DB, ids []string) (map[st
 			"SELECT ci.id, ci.media_source_id, ci.external_id, ci.kind AS item_kind, ci.title, ci.series_title,"+
 				" ci.duration_ms, ci.season_number, ci.episode_number, ci.episode_number_end, ci.series_external_id,"+
 				" ci.image_primary_tag, ci.image_backdrop_tag, ci.image_thumb_tag, ci.series_image_primary_tag,"+
-				" ms.plugin_id, ms.plugin_min_version"+
+				" ms.plugin_id, ms.plugin_min_version, ms.plugin_config_json AS plugin_config"+
 				" FROM catalog_item ci LEFT JOIN media_source ms ON ms.id = ci.media_source_id"+
 				" WHERE ci.tenant_id = ? AND ci.id IN ("+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+")",
 			args...)
@@ -359,7 +366,13 @@ func requirementFor(b catalogBrief) []pluginRequirement {
 	if b.PluginID == nil || *b.PluginID == "" {
 		return nil
 	}
-	return []pluginRequirement{{ID: *b.PluginID, MinVersion: b.PluginMinVersion}}
+	requirement := pluginRequirement{ID: *b.PluginID, MinVersion: b.PluginMinVersion}
+	// Only a well-formed object is forwarded: one bad row must not make the whole
+	// guide unserialisable.
+	if b.PluginConfig != nil && json.Valid([]byte(*b.PluginConfig)) {
+		requirement.Config = json.RawMessage(*b.PluginConfig)
+	}
+	return []pluginRequirement{requirement}
 }
 
 func wantsTailGroups(r *http.Request) bool {
