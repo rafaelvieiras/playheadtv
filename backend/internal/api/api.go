@@ -24,6 +24,7 @@ import (
 func Register(mux Router, db storage.DB, mat *materializer.Materializer, sync *pullsync.Syncer, encKey [32]byte, plugins *pluginhost.Host) {
 	registerAuth(mux, db)
 	registerPlugins(mux, db, plugins)
+	registerPluginPlayback(mux, db, plugins)
 	registerPairing(mux, db, encKey)
 	registerServerConfig(mux, db, encKey)
 	registerChannels(mux, db, mat)

@@ -1348,11 +1348,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
   /// The url this unit plays from.
   ///
-  /// A media-server item is a plain url. An item from a plugin-backed source has
-  /// no media-server id at all: the plugin hands out a url, and it is asked
-  /// again for **every** open (preload, tune-in, resync) because those urls
-  /// expire and a `remux` url is produced while it plays. Nothing here is ever
-  /// cached or written down.
+  /// A media-server item is a plain url. An item whose source is a plugin has no
+  /// media-server id at all: the plugin runs where its tools exist (the backend
+  /// host), so the client asks the backend for a url and plays that. The url is
+  /// asked for on **every** open (preload, tune-in, resync) and never stored: it
+  /// carries the plugin's own token and expires, and a `remux` stream exists only
+  /// while its process runs.
   Future<({Uri uri, bool prePositioned})> _entrySource(ChannelEntry entry, {Duration? seekTo}) async {
     final program = entry.program;
     final requires = program?.requires ?? const <EpgRequirement>[];
@@ -1360,29 +1361,15 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       return (uri: Uri.parse(streamUrl(entry.id)), prePositioned: false);
     }
 
-    final requirement = requires.first;
-    final position = entry.itemOffset + (seekTo ?? Duration.zero);
     final runtime = await OfflineRuntime.ensure();
-    final resolution = await runtime.plugins.resolve(
-      requirement: requirement,
-      // The source's own id, not ours: the plugin only knows its own namespace.
-      externalId: program?.externalId ?? entry.id,
-      config: requirement.config,
-      durationMs: program?.durationMs ?? entry.clipDuration.inMilliseconds,
-      startAtMs: position.inMilliseconds,
-      modes: playbackPluginModes,
-    );
-
-    final uri = resolution.url;
-    if (uri == null) {
-      // Two tracks: the plugin ignored `modes`. Saying so beats handing the
-      // player a url that is not there.
-      throw StateError('the "${requirement.id}" plugin answered with ${resolution.sources.length} '
-          'tracks, which this player cannot merge yet');
-    }
-    Log.debug('player', 'item ${entry.id} resolved by "${requirement.id}" as ${resolution.mode}');
+    final position = entry.itemOffset + (seekTo ?? Duration.zero);
+    // The position travels with the request: the plugin starts its stream there,
+    // so a viewer who tuned in 20 minutes into a program does not wait for it.
+    final uri = await runtime.api.playUrl(entry.id, startAt: position);
+    Log.debug('player', 'item ${entry.id} resolved by "${requires.first.id}" '
+        '(start=${position.inSeconds}s)');
     // A stream the plugin produced from a start offset already begins there.
-    return (uri: uri, prePositioned: resolution.live || position > Duration.zero);
+    return (uri: uri, prePositioned: position > Duration.zero);
   }
 
   Future<VideoPlayback> _prepareController(VideoPlayback controller, ChannelEntry entry, Duration? seekTo,

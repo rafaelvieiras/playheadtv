@@ -16,8 +16,49 @@
 // a cold start would look like data loss, and the first sync fills the cache in.
 import '../cache/schedule_cache.dart';
 import '../playhead_api.dart';
-import 'plugin_manager.dart';
 import 'plugin_manifest.dart';
+
+/// Why a channel cannot be played: a plugin the backend lacks, cannot use, or has
+/// turned off.
+class MissingPlugin {
+  final String id;
+  final String? minVersion;
+
+  /// What the backend has installed, when it has something.
+  final String? installedVersion;
+
+  /// True when the plugin is installed but switched off on the backend.
+  final bool disabled;
+
+  /// True when the registry does not offer this plugin at all, which no amount of
+  /// retrying fixes.
+  final bool unsupportedHere;
+
+  const MissingPlugin({
+    required this.id,
+    this.minVersion,
+    this.installedVersion,
+    this.disabled = false,
+    this.unsupportedHere = false,
+  });
+
+  /// Installed, but older than the guide requires.
+  bool get tooOld {
+    final have = installedVersion;
+    final want = minVersion;
+    if (have == null || want == null) return false;
+    return comparePluginVersions(have, want) < 0;
+  }
+
+  /// One line for Settings and for the "why is this channel missing" notice.
+  String describe() {
+    if (disabled) return 'The "$id" plugin is installed on the backend but turned off.';
+    if (tooOld) return 'The "$id" plugin needs an update (version $minVersion or newer).';
+    if (installedVersion != null) return 'The "$id" plugin is installed but cannot be used.';
+    if (unsupportedHere) return 'The "$id" plugin is not offered by this backend.';
+    return 'The "$id" plugin is not installed on the backend.';
+  }
+}
 
 /// A channel the viewer does not see, and why.
 class HiddenChannel {
@@ -82,16 +123,21 @@ class PluginAvailability {
     return null;
   }
 
-  /// Recomputes the answer from what is installed and what the cached guide
-  /// requires of every channel.
+  /// Recomputes the answer from what the **backend** has installed and what the
+  /// cached guide requires of every channel.
   ///
-  /// One [PluginManager.missingFor] call covers every requirement at once, so
-  /// this costs one directory read no matter how many channels there are, and a
-  /// plugin id required by two channels is checked once.
+  /// The backend is the authority, not this device: a plugin runs where the
+  /// content is resolved (it needs the extractor and the remuxer), and the client
+  /// only fetches the stream the backend points it at
+  /// (`GET /catalog-items/{id}/play`). A plugin installed on the TV box would do
+  /// nothing for playback.
+  ///
+  /// One `GET /plugins` covers every requirement at once, and the guide scan is
+  /// local, so this costs one request no matter how many channels there are.
   static Future<PluginAvailability> compute(
     ScheduleCache cache,
     List<PlayheadChannel> channels,
-    PluginManager? plugins,
+    PlayheadApi? api,
   ) async {
     final requirements = <String, EpgRequirement>{};
     for (final channel in channels) {
@@ -107,17 +153,44 @@ class PluginAvailability {
     }
     if (requirements.isEmpty) return allUsable;
 
-    if (plugins == null) {
-      // No manager yet: nothing that needs a plugin can be offered.
-      return PluginAvailability._(
-        {for (final id in requirements.keys) id},
-        {for (final id in requirements.keys) id: MissingPlugin(id: id)},
-      );
+    PluginRegistry? registry;
+    try {
+      registry = await api?.getPlugins();
+    } on Object {
+      // An unreachable backend leaves the answer as "unknown", which hides the
+      // channels: offering one that then cannot play is the worse outcome, and
+      // the next refresh fixes it.
+      registry = null;
     }
-    final missing = await plugins.missingFor(requirements.values);
+
+    final missingIds = <String, MissingPlugin>{};
+    for (final entry in requirements.entries) {
+      final id = entry.key;
+      final required = entry.value;
+      final installed = registry?.installedById(id);
+      if (installed == null) {
+        final offered = registry?.offeringById(id) != null;
+        missingIds[id] = MissingPlugin(
+          id: id,
+          minVersion: required.minVersion,
+          // "Not offered" and "no build for anything" are different reasons, and
+          // only the registry can tell them apart.
+          unsupportedHere: registry != null && !offered,
+        );
+        continue;
+      }
+      if (!installed.enabled) {
+        missingIds[id] = MissingPlugin(id: id, installedVersion: installed.version, disabled: true);
+        continue;
+      }
+      final minimum = required.minVersion;
+      if (minimum != null && comparePluginVersions(installed.version, minimum) < 0) {
+        missingIds[id] = MissingPlugin(id: id, minVersion: minimum, installedVersion: installed.version);
+      }
+    }
     return PluginAvailability._(
-      {for (final m in missing) m.id},
-      {for (final m in missing) m.id: m},
+      {for (final id in missingIds.keys) id},
+      missingIds,
     );
   }
 }

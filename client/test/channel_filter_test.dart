@@ -4,8 +4,6 @@ import 'dart:io';
 import 'package:client/cache/schedule_cache.dart';
 import 'package:client/playhead_api.dart';
 import 'package:client/plugin/channel_filter.dart';
-import 'package:client/plugin/plugin_installer.dart';
-import 'package:client/plugin/plugin_manager.dart';
 import 'package:client/plugin/plugin_manifest.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
@@ -77,10 +75,7 @@ void main() {
   });
 
   test('a channel needing a plugin that is not installed is hidden', () async {
-    final manager = await _managerWithoutPlugins();
-    addTearDown(manager.close);
-
-    final availability = await PluginAvailability.compute(cache, cache.channels(), manager);
+    final availability = await PluginAvailability.compute(cache, cache.channels(), _api(installed: const []));
     final result = playableChannels(cache, cache.channels(), availability);
 
     expect(result.visible.map((c) => c.id), isNot(contains('plugin')));
@@ -90,21 +85,15 @@ void main() {
   });
 
   test('a channel needing an installed plugin stays visible', () async {
-    final manager = await _managerWithoutPlugins();
-    addTearDown(manager.close);
-    await _installRecord(manager, version: '1.2.0');
-
-    final availability = await PluginAvailability.compute(cache, cache.channels(), manager);
+    final availability = await PluginAvailability.compute(
+        cache, cache.channels(), _api(installed: _installedSection('1.2.0')));
     expect(availability.isEmpty, isTrue);
     expect(playableChannels(cache, cache.channels(), availability).hidden, isEmpty);
   });
 
   test('an installed plugin older than the guide needs hides the channel', () async {
-    final manager = await _managerWithoutPlugins();
-    addTearDown(manager.close);
-    await _installRecord(manager, version: '0.9.0');
-
-    final availability = await PluginAvailability.compute(cache, cache.channels(), manager);
+    final availability = await PluginAvailability.compute(
+        cache, cache.channels(), _api(installed: _installedSection('0.9.0')));
     final result = playableChannels(cache, cache.channels(), availability);
     expect(result.hidden.single.reason, contains('1.0.0'));
   });
@@ -125,38 +114,50 @@ void main() {
   });
 }
 
-Future<PluginManager> _managerWithoutPlugins() async {
-  final root = Directory.systemTemp.createTempSync('channel_filter_plugins_');
-  final client = MockClient((request) async =>
-      http.Response('{"registry_configured":true,"installed":[],"plugins":[]}', 200));
-  return PluginManager(
-    backend: Uri.parse('http://backend.test:9394'),
-    installer: PluginInstaller(
-      root: root,
-      client: client,
-      platform: () async => const PluginPlatform('linux', 'amd64'),
-    ),
-    client: client,
-  );
+/// A backend that answers `GET /plugins` with the given installed plugins.
+PlayheadApi _api({required List<Map<String, dynamic>> installed, bool configured = true}) {
+  final client = MockClient((request) async => http.Response(
+        jsonEncode({
+          'registry_configured': configured,
+          'installed': installed,
+          'plugins': [
+            {
+              'id': 'fake',
+              'name': 'Fake',
+              'description': '',
+              'versions': [
+                {
+                  'version': '1.2.0',
+                  'protocol': 1,
+                  'artifacts': [
+                    {
+                      'os': 'linux',
+                      'arch': 'amd64',
+                      'url': '/plugins/fake/1.2.0/linux-amd64',
+                      'sha256': 'a' * 64,
+                      'size': 1,
+                    },
+                  ],
+                },
+              ],
+            },
+          ],
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      ));
+  return PlayheadApi(baseUrl: 'http://backend.test:9394', client: client);
 }
 
-/// Puts a plugin record on disk the way a successful install would have.
-Future<void> _installRecord(PluginManager manager, {required String version}) async {
-  final dir = Directory('${manager.installer.root.path}/fake');
-  await dir.create(recursive: true);
-  final record = InstalledPluginRecord(
-    id: 'fake',
-    version: version,
-    protocol: 1,
-    name: 'Fake',
-    description: '',
-    entrypoint: 'plugin-fake',
-    capabilities: const ['media.resolve'],
-    sha256: 'a' * 64,
-    os: 'linux',
-    arch: 'amd64',
-    enabled: true,
-    directory: dir,
-  );
-  await File('${dir.path}/installed.json').writeAsString(jsonEncode(record.toJson()));
-}
+List<Map<String, dynamic>> _installedSection(String version) => [
+      {
+        'id': 'fake',
+        'version': version,
+        'protocol': 1,
+        'name': 'Fake',
+        'capabilities': 'media.resolve',
+        'enabled': true,
+        'os': 'linux',
+        'arch': 'amd64',
+      },
+    ];
