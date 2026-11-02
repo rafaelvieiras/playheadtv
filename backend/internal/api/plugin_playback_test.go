@@ -52,7 +52,7 @@ func TestReachableURLRewritesOnlyTheHost(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			r := httptest.NewRequest("GET", "http://example.test/catalog-items/x/play", nil)
 			r.Host = c.host
-			got, err := reachableURL(c.url, r)
+			got, err := reachableURL(c.url, r, "")
 			if err != nil {
 				t.Fatalf("reachableURL: %v", err)
 			}
@@ -63,9 +63,28 @@ func TestReachableURLRewritesOnlyTheHost(t *testing.T) {
 	}
 }
 
+// A client behind a proxy cannot reach the plugin's ephemeral port on the proxy,
+// so the host to advertise is configurable.
+func TestReachableURLUsesTheConfiguredStreamHost(t *testing.T) {
+	r := httptest.NewRequest("GET", "http://example.test/x", nil)
+	r.Host = "tv.example.test"
+	got, err := reachableURL("http://127.0.0.1:41234/s/index.m3u8", r, "192.168.1.10")
+	if err != nil {
+		t.Fatalf("reachableURL: %v", err)
+	}
+	if got != "http://192.168.1.10:41234/s/index.m3u8" {
+		t.Errorf("got %q, want the configured host with the plugin's own port", got)
+	}
+	// A url that already names somewhere else is still the plugin's business.
+	got, err = reachableURL("https://cdn.example.test/v.mp4", r, "192.168.1.10")
+	if err != nil || got != "https://cdn.example.test/v.mp4" {
+		t.Errorf("a remote url must not be rewritten: %q, %v", got, err)
+	}
+}
+
 func TestReachableURLRejectsNonsense(t *testing.T) {
 	r := httptest.NewRequest("GET", "http://example.test/x", nil)
-	if _, err := reachableURL("not a url", r); err == nil {
+	if _, err := reachableURL("not a url", r, ""); err == nil {
 		t.Fatal("an unreadable url must be an error, not a link the player cannot open")
 	}
 }

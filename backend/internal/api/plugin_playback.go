@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 
@@ -28,7 +29,13 @@ import (
 // The answer is never cached: a plugin's URL carries a token and an expiry, and a
 // remux stream lives as long as its process.
 func registerPluginPlayback(mux Router, db storage.DB, host *pluginhost.Host) {
-	mux.HandleFunc("GET /catalog-items/{id}/play", pluginPlay(db, host))
+	// Where a client can reach this machine's plugin streams, when it is not the
+	// address the client used to reach the API. A client that talks to the backend
+	// through a reverse proxy (a domain, a VPN) would otherwise be handed
+	// "https://<proxy>:<ephemeral port>", which nothing serves: the proxy knows
+	// nothing about the plugin's port, and the plugin is on this LAN.
+	streamHost := strings.TrimSpace(os.Getenv("PLAYHEADTV_PLUGIN_STREAM_HOST"))
+	mux.HandleFunc("GET /catalog-items/{id}/play", pluginPlay(db, host, streamHost))
 }
 
 type pluginPlayback struct {
@@ -40,7 +47,7 @@ type pluginPlayback struct {
 	Mode2     string `json:"-"`
 }
 
-func pluginPlay(db storage.DB, host *pluginhost.Host) http.HandlerFunc {
+func pluginPlay(db storage.DB, host *pluginhost.Host, streamHost string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if host == nil {
 			writeError(w, http.StatusServiceUnavailable, "this backend was started without a plugin host")
@@ -123,7 +130,7 @@ func pluginPlay(db storage.DB, host *pluginhost.Host) http.HandlerFunc {
 				fmt.Sprintf("the plugin answered in mode %q with no playable url", answer.Mode))
 			return
 		}
-		reachable, err := reachableURL(answer.URL, r)
+		reachable, err := reachableURL(answer.URL, r, streamHost)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
@@ -158,7 +165,7 @@ func parseStartMs(raw string) (int64, error) {
 // so the host has to change while the port, the path and the token stay the
 // plugin's own. A URL that already names something else is left alone: only the
 // plugin knows where its stream really is.
-func reachableURL(raw string, r *http.Request) (string, error) {
+func reachableURL(raw string, r *http.Request, overrideHost string) (string, error) {
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Host == "" {
 		return "", fmt.Errorf("the plugin answered with an unreadable url")
@@ -166,9 +173,12 @@ func reachableURL(raw string, r *http.Request) (string, error) {
 	if !isLoopbackHost(parsed.Hostname()) {
 		return raw, nil
 	}
-	host := r.Host
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
+	host := overrideHost
+	if host == "" {
+		host = r.Host
+		if h, _, err := net.SplitHostPort(host); err == nil {
+			host = h
+		}
 	}
 	if host == "" || isLoopbackHost(host) {
 		// Asked from loopback itself (a client on this machine, or a test): the
