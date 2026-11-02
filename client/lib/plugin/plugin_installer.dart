@@ -165,11 +165,17 @@ class PluginInstaller {
   Directory _pluginDir(String id) => Directory('${root.path}${Platform.pathSeparator}$id');
 
   /// Downloads, verifies and installs one release. Returns the record on disk.
+  ///
+  /// [headers] carries the backend's own auth (the artifact route is behind the
+  /// same device token as everything else), and [onProgress] reports bytes as
+  /// they arrive, because an archive is tens of megabytes on a slow link.
   Future<InstalledPluginRecord> install({
     required PluginOffering offering,
     required PluginRelease release,
     required PluginArtifact artifact,
     Uri? backend,
+    Map<String, String> headers = const {},
+    void Function(int received, int total)? onProgress,
   }) async {
     await root.create(recursive: true);
 
@@ -180,7 +186,7 @@ class PluginInstaller {
 
     final archive = File('${staging.path}${Platform.pathSeparator}artifact.tgz');
     try {
-      await _download(url, archive, artifact.sha256);
+      await _download(url, archive, artifact.sha256, headers: headers, onProgress: onProgress);
 
       final content = Directory('${staging.path}${Platform.pathSeparator}content');
       await content.create(recursive: true);
@@ -259,8 +265,15 @@ class PluginInstaller {
 
   /// Streams [url] into [target] while hashing it, so a 70 MB archive never
   /// sits in memory on a small device.
-  Future<void> _download(Uri url, File target, String expectedSha) async {
+  Future<void> _download(
+    Uri url,
+    File target,
+    String expectedSha, {
+    Map<String, String> headers = const {},
+    void Function(int received, int total)? onProgress,
+  }) async {
     final request = http.Request('GET', url);
+    request.headers.addAll(headers);
     final response = await _client.send(request).timeout(timeout);
     if (response.statusCode != 200) {
       throw PluginFormatException('download $url failed: HTTP ${response.statusCode}');
@@ -270,6 +283,8 @@ class PluginInstaller {
     final digest = _DigestSink();
     final hasher = sha256.startChunkedConversion(digest);
     var total = 0;
+    // 0 when the server did not say how big the archive is.
+    final expected = response.contentLength ?? 0;
     try {
       await for (final chunk in response.stream.timeout(timeout)) {
         total += chunk.length;
@@ -278,6 +293,7 @@ class PluginInstaller {
         }
         hasher.add(chunk);
         sink.add(chunk);
+        onProgress?.call(total, expected);
       }
     } finally {
       hasher.close();
