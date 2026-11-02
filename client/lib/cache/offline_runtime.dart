@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../main.dart' show AppConfig, jellyfinImageUrl;
 import '../playhead_api.dart';
+import '../plugin/channel_filter.dart';
 import '../plugin/plugin_installer.dart';
 import '../plugin/plugin_manager.dart';
 import '../services/settings_service.dart';
@@ -27,6 +28,13 @@ class OfflineRuntime {
   /// Plugins this device has, and the ones it runs to resolve playback. Shared
   /// like everything else here: one process per plugin, for the app's lifetime.
   final PluginManager plugins;
+
+  /// Which channels this device can play, as of the last [refreshAvailability].
+  ///
+  /// Filtering the channel list is synchronous (it happens inside the cache-change
+  /// callback too), so the answer is computed here and held, never looked up on
+  /// the path that reads it.
+  PluginAvailability availability = PluginAvailability.allUsable;
 
   OfflineRuntime._(this.api, this.cache, this.art, this.syncer, this.settings, this.plugins);
 
@@ -97,7 +105,14 @@ class OfflineRuntime {
       authHeaders: () => api.authHeaders,
       installer: PluginInstaller(root: pluginDir),
     );
-    return OfflineRuntime._(api, cache, art, syncer, settings, plugins);
+    final runtime = OfflineRuntime._(api, cache, art, syncer, settings, plugins);
+    // Bounded: deciding "no build for this device" is the only step that needs the
+    // backend, and a backend that is down must not hold up the first picture. A
+    // plugin that is simply not installed is answered from the disk.
+    await runtime
+        .refreshAvailability()
+        .timeout(const Duration(seconds: 5), onTimeout: () {});
+    return runtime;
   }
 
   /// Stops the syncer and closes the cache file (a test starting a new app
@@ -115,6 +130,13 @@ class OfflineRuntime {
       // runtime that owns it would be an orphan with no one to shut it down.
       unawaited(runtime.plugins.close());
     }
+  }
+
+  /// Recomputes which channels this device can play. Called when what is
+  /// installed changes (Settings) and after a sync that may have brought new
+  /// requirements.
+  Future<void> refreshAvailability() async {
+    availability = await PluginAvailability.compute(cache, cache.channels(), plugins);
   }
 
   /// Applies a new cache window limit (Settings): the cached window follows it

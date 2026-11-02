@@ -102,7 +102,12 @@ or LLM, and to every artifact in the repo:
 - `EpgEntry.requires` (from `GET /epg`, kept in the offline cache) is how the
   client learns a channel needs a plugin, and it carries the source's config so
   resolving needs no second lookup. A channel whose plugin is missing or too old
-  is hidden, never tuned into an error.
+  is hidden, never tuned into an error: `client/lib/plugin/channel_filter.dart`
+  filters the channel list where it enters the player and the mosaic, using a
+  `PluginAvailability` snapshot (`OfflineRuntime.availability`) because that path
+  is synchronous — including the cache-change callback. Refresh the snapshot from
+  anything that changes what is installed (Settings does) and after a sync, never
+  from the filter itself.
 - Plugin playback resolves **per open**, never from a cache: `_entrySource` in
   `main.dart` asks again for every preload, tune-in and resync, because those
   urls expire and a `remux` url is produced while it plays. `playbackPluginModes`
