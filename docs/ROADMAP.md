@@ -1255,6 +1255,10 @@ repo never contains.
       (video + audio, merged by the player, free) or `remux` (produced by the
       plugin, opt-in only). No plugin may transcode; `remux` is `-c copy` over a
       bounded window.
+- [x] Client plugin host (`client/lib/plugin/`): registry mirror client,
+      hash-verified streaming install with a staged swap, protocol 1 process
+      with per-call bounds, and a resolve that reports single/pair/remux.
+      `EpgEntry.requires` carries a channel's plugin through the offline cache.
 - [ ] Client side: plugin manager in Settings (list required plugins, download
       from the backend registry, verify hash, install/remove/enable), a channel
       filter that hides channels whose plugin is missing plus the Settings
