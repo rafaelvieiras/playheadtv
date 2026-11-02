@@ -428,6 +428,13 @@ const crossfadeDuration = Duration(milliseconds: 800);
 // normal playback: every real clip duration is comfortably above it.
 const minTransitionInterval = Duration(seconds: 5);
 
+/// How many units the player gives up on before it reports that the channel
+/// cannot start at all. A 24/7 channel must not die because one item of its
+/// guide became unplayable: the source behind an item can disappear (a removed
+/// video, an extractor the site now challenges), and the honest answer is to
+/// keep the channel on air with the next program it has.
+const int channelLoadSkips = 3;
+
 // How far `now` may drift from a ChannelEntry's real `startAt` (either way)
 // before _crossfadeTo treats it as something to correct, rather than normal
 // jitter (network latency, the ~30-step crossfade ramp itself, preload
@@ -885,6 +892,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // the cache exhausted by a long outage) — repeats the check until something
   // turns up and playback resumes on its own.
   Timer? _gapRetryTimer;
+  // Units this session already failed to start. Only the load path reads it,
+  // and only to skip what it knows is broken; cleared on a channel switch, a new
+  // channel being a fresh set of sources.
+  final Set<String> _unplayable = <String>{};
   // Set while the channel plays the degraded fallback of an exhausted cache
   // (see _Degraded): any later cache change that brings real programming
   // reloads the channel out of it.
@@ -1131,6 +1142,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _stallTimer?.cancel();
     _stallTimer = null;
     _stall.reset();
+    _unplayable.clear();
     _osdHideTimer?.cancel();
     _osdHideTimer = null;
     _gapRetryTimer?.cancel();
@@ -1364,32 +1376,47 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         return;
       }
 
-      // "TV turned on" joins the middle of the first program if it already
-      // started, rather than going back to its beginning — only the first
-      // item gets this seek.
-      var initialSeek = now.difference(loaded.first.startAt);
-      if (initialSeek < Duration.zero) initialSeek = Duration.zero;
-      if (initialSeek > loaded.first.clipDuration) initialSeek = loaded.first.clipDuration;
-
-      if (!mounted || generation != _loadGeneration) return;
-      setState(() {
-        channel = loaded;
-      });
-      // Separate try/catch from the backend fetch above: _startChannel opens
-      // the actual video stream against Jellyfin (controller.initialize()),
-      // a completely different failure mode (Jellyfin unreachable, item
-      // deleted, unsupported codec) from "the backend didn't answer" —
-      // reporting both under one generic "failed to load schedule from
-      // backend" message sent whoever's reading it chasing the wrong system
-      // (reproduced 2026-09-30: Jellyfin was down, and the error read as a
-      // backend/schedule problem instead).
-      try {
-        await _startChannel(initialSeek: initialSeek, generation: generation);
-      } catch (e, st) {
-        Log.error('player', 'channel load failed: could not start playback after ${_loadClock.elapsedMilliseconds}ms', error: e, stack: st);
+      // A unit that cannot start is dropped and the next one is tried, a few
+      // times at most. The alternative (one error card, channel stopped) leaves a
+      // live channel dead until somebody touches the remote because a single item
+      // of its guide vanished — the source of an item is not under this app's
+      // control, and the guide usually has another program ready.
+      var head = loaded;
+      Object? lastError;
+      StackTrace? lastStack;
+      for (var attempt = 0; attempt < channelLoadSkips && head.isNotEmpty; attempt++) {
+        // "TV turned on" joins the middle of the program on air if it already
+        // started, rather than going back to its beginning — only the head unit
+        // gets this seek.
+        var initialSeek = now.difference(head.first.startAt);
+        if (initialSeek < Duration.zero) initialSeek = Duration.zero;
+        if (initialSeek > head.first.clipDuration) initialSeek = head.first.clipDuration;
         if (!mounted || generation != _loadGeneration) return;
-        setState(() => _status = 'ERROR: could not start playback — is Jellyfin reachable? ($e)');
+        setState(() {
+          channel = head;
+        });
+        // Separate try/catch from the backend fetch above: _startChannel opens
+        // the actual video stream (controller.initialize()), a completely
+        // different failure mode (media server unreachable, item deleted, its
+        // source refusing to resolve, unsupported codec) from "the backend didn't
+        // answer".
+        try {
+          await _startChannel(initialSeek: initialSeek, generation: generation);
+          return;
+        } catch (e, st) {
+          lastError = e;
+          lastStack = st;
+          if (!mounted || generation != _loadGeneration) return;
+          _unplayable.add(head.first.id);
+          Log.warn('player', 'unit ${head.first.id} cannot start; skipping to the next one '
+              '(attempt ${attempt + 1} of $channelLoadSkips)', error: e);
+          head = head.where((entry) => !_unplayable.contains(entry.id)).toList();
+        }
       }
+      Log.error('player', 'channel load failed: could not start playback after ${_loadClock.elapsedMilliseconds}ms',
+          error: lastError, stack: lastStack);
+      if (!mounted || generation != _loadGeneration) return;
+      setState(() => _status = 'ERROR: could not start playback ($lastError)');
     } catch (e, st) {
       Log.error('player', 'channel load failed: could not load the schedule', error: e, stack: st);
       if (!mounted || generation != _loadGeneration) return;
