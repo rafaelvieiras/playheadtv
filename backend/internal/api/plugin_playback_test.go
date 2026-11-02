@@ -28,6 +28,13 @@ func TestReachableURLRewritesOnlyTheHost(t *testing.T) {
 			expect: "http://telly.lan:8000/s/seg00001.ts",
 		},
 		{
+			// What a listener bound to every interface reports as its own address.
+			name:   "an unspecified host is this machine too",
+			url:    "http://[::]:42597/s/index.m3u8",
+			host:   "192.0.2.10:9394",
+			expect: "http://192.0.2.10:42597/s/index.m3u8",
+		},
+		{
 			name:   "asked from loopback: leave it alone",
 			url:    "http://127.0.0.1:41234/s/index.m3u8",
 			host:   "127.0.0.1:9394",
