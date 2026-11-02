@@ -57,6 +57,7 @@ import 'util/open_retry.dart';
 import 'epg_guide.dart' as guide show defaultTailAttributionCap, tailAttributionCap;
 import 'epg_guide.dart' show guideContextLookback, isHiddenGuideKind;
 import 'osd_subject.dart';
+import 'playback_stall.dart';
 import 'preload_lead.dart';
 import 'clock.dart';
 import 'plugin/channel_filter.dart';
@@ -507,6 +508,9 @@ Future<void> main() async {
     secrets: [AppConfig.jellyfinApiKey, AppConfig.playheadDeviceToken],
   );
   _installErrorLogging();
+  // A device with no reachable log file needs the log on screen to be readable
+  // at all, so the peek build also records every level.
+  if (logPeekEnabled) Log.setRuntimeLevel(LogLevel.debug);
   await applyStartupFullScreen();
   BootTrace.mark('fullscreen_applied');
   selectVideoEngine(resolveVideoEngineKind(
@@ -674,6 +678,65 @@ class ChannelPlayerPage extends StatefulWidget {
   State<ChannelPlayerPage> createState() => _ChannelPlayerPageState();
 }
 
+/// On a device with no reachable log file (a television), the in-memory log is
+/// the only evidence of a failure. A build with
+/// `--dart-define=PLAYHEADTV_LOG_PEEK=true` draws its last lines over the
+/// picture; without the define this widget is never built and the app behaves
+/// exactly as a release does.
+const bool logPeekEnabled = bool.fromEnvironment('PLAYHEADTV_LOG_PEEK');
+
+class _LogPeek extends StatefulWidget {
+  const _LogPeek();
+
+  @override
+  State<_LogPeek> createState() => _LogPeekState();
+}
+
+class _LogPeekState extends State<_LogPeek> {
+  Timer? _timer;
+  List<String> _lines = const <String>[];
+
+  @override
+  void initState() {
+    super.initState();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
+      setState(() => _lines = Log.tail(7));
+    });
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      left: 8,
+      right: 8,
+      bottom: 8,
+      child: IgnorePointer(
+        child: Container(
+          color: const Color(0xDD000000),
+          padding: const EdgeInsets.all(6),
+          child: DefaultTextStyle(
+            style: const TextStyle(color: Colors.white, fontSize: 11, height: 1.2),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: <Widget>[
+                for (final String line in _lines) Text(line, maxLines: 2, overflow: TextOverflow.ellipsis),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindingObserver {
   // Each slot holds the VideoPlayback of the item that is playing
   // (active) or being preloaded (inactive). Unlike media_kit, video_player/fvp
@@ -698,6 +761,13 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   VideoPlayback? _headController;
   int _headIndex = -1;
   String _status = 'starting…';
+  // A picture that stops without an error (the source behind it ended) is
+  // invisible to the engine: it just waits for frames. `_stallTimer` samples the
+  // playing position and `_stallResyncs` bounds how many times the channel is
+  // reopened before the failure is reported instead (see playback_stall.dart).
+  final StallWatcher _stall = StallWatcher();
+  Timer? _stallTimer;
+  int _stallResyncs = 0;
   Timer? _advanceTimer;
   Timer? _volumeRampTimer;
   final FocusNode _focusNode = FocusNode();
@@ -1058,6 +1128,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _advanceTimer?.cancel();
     _resetPreload();
     _volumeRampTimer?.cancel();
+    _stallTimer?.cancel();
+    _stallTimer = null;
+    _stall.reset();
     _osdHideTimer?.cancel();
     _osdHideTimer = null;
     _gapRetryTimer?.cancel();
@@ -1545,12 +1618,66 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // clipDuration - initialSeek of real playback remains — scheduling by the
     // full clipDuration would leave the video parked on the last frame for
     // initialSeek before the crossfade fires.
+    _armStallWatch(generation);
     _scheduleTransitions(0, remaining: entry.clipDuration - initialSeek, generation: generation);
     unawaited(_maybeExtendGrid(0, generation));
     if (_reconcilePending) {
       _reconcilePending = false;
       unawaited(_reconcileWithCache());
     }
+  }
+
+  // Samples the playing position while this generation of the channel is on
+  // air and reopens the channel when it stops advancing. A source that ends
+  // under a player (a remux that died, a live edge that closed) leaves the
+  // engine waiting for frames that never arrive: no error, no state change, one
+  // frozen picture forever. Reopening resolves the item again at the position
+  // the guide has reached, which is what makes a long channel survive a source
+  // that dies mid-item.
+  void _armStallWatch(int generation) {
+    _stallTimer?.cancel();
+    _stall.reset();
+    _stallTimer = Timer.periodic(playbackStallCheck, (Timer _) {
+      if (!mounted || generation != _loadGeneration) return;
+      // A gap hold plays the local slate on purpose; the next item is parked
+      // outside the two slots, so the position it reports is not the channel's.
+      if (_gapHoldTimer != null || _gapHoldPending != null) return;
+      final head = _headController;
+      if (head == null || _currentIndex < 0 || _currentIndex >= channel.length) {
+        _stall.reset();
+        return;
+      }
+      final active = _aIsActive ? _controllerA : _controllerB;
+      if (!identical(head, active)) {
+        _stall.reset();
+        return;
+      }
+      final state = head.state;
+      if (!state.isInitialized) return;
+      final verdict = _stall.observe(
+        position: state.position,
+        playing: state.isPlaying && !state.isBuffering,
+        now: DateTime.now(),
+      );
+      if (verdict == StallState.progressing) {
+        _stallResyncs = 0;
+        return;
+      }
+      if (verdict != StallState.stalled) return;
+      _stall.reset();
+      if (_stallResyncs >= playbackStallResyncsBeforeGivingUp) {
+        Log.error('player', 'picture stopped again at ${state.position.inSeconds}s after $_stallResyncs reopen(s); giving up');
+        setState(() => _status = 'ERROR: the picture stopped and reopening it did not help. '
+            'Press Back and pick the channel again.');
+        _stallTimer?.cancel();
+        _stallTimer = null;
+        return;
+      }
+      _stallResyncs++;
+      Log.warn('player', 'picture stopped at ${state.position.inSeconds}s; reopening the channel '
+          '(attempt $_stallResyncs of $playbackStallResyncsBeforeGivingUp)');
+      unawaited(_switchToChannelIndex(_channelIndex));
+    });
   }
 
   // Schedules the preload of the next item BEFORE the end of the current clip
@@ -2999,6 +3126,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
             // the dimmer (children after this one); pointer-transparent and
             // never focusable.
             WatermarkOverlay(source: _watermarkNotifier),
+            if (logPeekEnabled) const _LogPeek(),
             // Loading a channel (boot or switch): a spinner in the middle of the
             // screen until playback starts. Errors keep the plain status card.
             if (!hasContent && !_status.startsWith('ERROR') && !_status.startsWith('HOLD'))
