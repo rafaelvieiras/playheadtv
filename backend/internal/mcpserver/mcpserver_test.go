@@ -29,6 +29,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/mcpserver"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/pluginhost"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/pullsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 	"github.com/rafaelvieiras/playheadtv/backend/migrations"
@@ -75,10 +76,11 @@ func newHarness(t *testing.T) *httptest.Server {
 	// items via the push catalog-sync endpoint, out of MCP v1 scope, same as
 	// the doJSON comment below already explains; a plain instance is enough
 	// to satisfy api.Register.
-	sync := pullsync.New(db, encKey, mat)
+	host := pluginhost.New(db, t.TempDir(), "")
+	sync := pullsync.New(db, encKey, mat, host)
 
 	mux := http.NewServeMux()
-	api.Register(mux, db, mat, sync, encKey)
+	api.Register(mux, db, mat, sync, encKey, host)
 	mcpserver.Register(mux, db, mat, encKey)
 
 	outer := http.NewServeMux()

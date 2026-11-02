@@ -28,12 +28,13 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/pluginhost"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
 
 // mediaSourceColumns mirrors internal/api/media_sources.go's constant of the
 // same name — duplicated rather than imported, see the package doc comment.
-const mediaSourceColumns = "id, tenant_id, type, name, base_url, credential_cipher, sync_mode, last_probe_at, last_probe_ok, last_synced_at, created_at, updated_at"
+const mediaSourceColumns = "id, tenant_id, type, name, base_url, credential_cipher, sync_mode, plugin_id, plugin_min_version, plugin_config_json, last_probe_at, last_probe_ok, last_synced_at, created_at, updated_at"
 
 // pullInterval is the "light periodic refresh" docs/ARCHITECTURE.md's pull
 // section calls for — fixed, not env-configurable (same rationale as
@@ -48,19 +49,21 @@ const pullInterval = 15 * time.Minute
 // a source's name right after registering it) into a single sweep.
 const triggerDebounce = 2 * time.Second
 
-// runTimeout bounds one full sweep across every pull-mode Jellyfin source
-// for every tenant. Generous vs materializer's 30s because this is
-// network-bound (a real Jellyfin round trip per page), not local-DB-bound.
-const runTimeout = 2 * time.Minute
+// runTimeout bounds one full sweep across every pull-mode source for every
+// tenant. Generous vs materializer's 30s because this is network-bound (a real
+// Jellyfin round trip per page, and a plugin may have to page through a remote
+// site), not local-DB-bound.
+const runTimeout = 5 * time.Minute
 
 // httpTimeout bounds a single HTTP request to one Jellyfin server.
 const httpTimeout = 10 * time.Second
 
-// ErrNotPullJellyfin is returned by SyncOne when called with a media source
-// that isn't a jellyfin source in pull mode — the single source of truth for
-// this guard, so internal/api's manual endpoint doesn't have to duplicate
-// the condition informally (it maps this error to 409).
-var ErrNotPullJellyfin = errors.New("pullsync: media source is not a jellyfin source in pull mode")
+// ErrNotPullSource is returned by SyncOne when called with a media source that
+// this sweeper does not pull: only jellyfin and plugin sources that are in pull
+// mode are listable from the backend. It is the single source of truth for this
+// guard, so internal/api's manual endpoint doesn't duplicate the condition
+// informally (it maps this error to 409).
+var ErrNotPullSource = errors.New("pullsync: media source is not a pull-mode jellyfin or plugin source")
 
 // Syncer owns the background pull-sync loop, mirroring
 // materializer.Materializer's shape.
@@ -70,6 +73,10 @@ type Syncer struct {
 	client  *http.Client
 	trigger chan struct{}
 	mat     *materializer.Materializer
+	// host lists plugin-backed sources. It is never nil in a real deployment;
+	// a nil host (tests that only exercise Jellyfin) makes those sources
+	// report ErrNotInstalled instead of panicking.
+	host *pluginhost.Host
 }
 
 // New creates a Syncer. encKey decrypts media_source.credential_cipher —
@@ -79,13 +86,14 @@ type Syncer struct {
 // built on a dynamic pool's fallback picks up newly pulled content without a
 // separate manual step — see internal/materializer, no import cycle since it
 // only imports domain/storage.
-func New(db storage.DB, encKey [32]byte, mat *materializer.Materializer) *Syncer {
+func New(db storage.DB, encKey [32]byte, mat *materializer.Materializer, host *pluginhost.Host) *Syncer {
 	return &Syncer{
 		db:      db,
 		encKey:  encKey,
 		client:  &http.Client{Timeout: httpTimeout},
 		trigger: make(chan struct{}, 1),
 		mat:     mat,
+		host:    host,
 	}
 }
 
@@ -168,8 +176,8 @@ func (s *Syncer) Run(ctx context.Context) error {
 func (s *Syncer) runTenant(ctx context.Context, tenantID string) {
 	var sources []domain.MediaSource
 	if err := s.db.Query(ctx, &sources,
-		"SELECT "+mediaSourceColumns+" FROM media_source WHERE tenant_id = ? AND type = ? AND sync_mode = ?",
-		tenantID, string(domain.SourceJellyfin), string(domain.SyncPull),
+		"SELECT "+mediaSourceColumns+" FROM media_source WHERE tenant_id = ? AND sync_mode = ? AND type IN (?, ?)",
+		tenantID, string(domain.SyncPull), string(domain.SourceJellyfin), string(domain.SourcePlugin),
 	); err != nil {
 		logging.Errorf("pullsync: tenant %s: list media sources: %v", tenantID, err)
 		return
@@ -205,30 +213,54 @@ type SyncResult struct {
 // less efficient than a real incremental sync would be for a very large
 // library.
 func (s *Syncer) SyncOne(ctx context.Context, ms domain.MediaSource) (SyncResult, error) {
-	if ms.Type != domain.SourceJellyfin || ms.SyncMode != domain.SyncPull {
-		return SyncResult{}, ErrNotPullJellyfin
+	if ms.SyncMode != domain.SyncPull {
+		return SyncResult{}, ErrNotPullSource
 	}
+	var (
+		items []catalogsync.Item
+		err   error
+	)
+	switch ms.Type {
+	case domain.SourceJellyfin:
+		items, err = s.listJellyfin(ctx, ms)
+	case domain.SourcePlugin:
+		items, err = s.listPlugin(ctx, ms)
+	default:
+		return SyncResult{}, ErrNotPullSource
+	}
+	if err != nil {
+		return SyncResult{}, err
+	}
+	return s.apply(ctx, ms, items)
+}
+
+// listPlugin asks the installed plugin behind a plugin-backed source for its
+// whole catalog. Everything site-specific happens in the plugin
+// (docs/PLUGINS.md): this side only knows the protocol.
+func (s *Syncer) listPlugin(ctx context.Context, ms domain.MediaSource) ([]catalogsync.Item, error) {
+	if s.host == nil {
+		return nil, fmt.Errorf("pullsync: plugin sources need a plugin host")
+	}
+	return s.host.ListSource(ctx, ms)
+}
+
+// listJellyfin fetches a Jellyfin source's entire library and maps it to the
+// source-agnostic item shape, resolving series-level metadata and cut segments.
+func (s *Syncer) listJellyfin(ctx context.Context, ms domain.MediaSource) ([]catalogsync.Item, error) {
 	if ms.BaseURL == nil || *ms.BaseURL == "" {
-		return SyncResult{}, fmt.Errorf("pullsync: media source %s has no base_url", ms.ID)
+		return nil, fmt.Errorf("pullsync: media source %s has no base_url", ms.ID)
 	}
 	apiKey, err := s.decryptCredential(ms)
 	if err != nil {
-		return SyncResult{}, err
+		return nil, err
 	}
 
 	remote, err := fetchAllItems(ctx, s.client, *ms.BaseURL, apiKey)
 	if err != nil {
 		if errors.Is(err, ErrJellyfinAuth) {
-			return SyncResult{}, fmt.Errorf("pullsync: %w", err)
+			return nil, fmt.Errorf("pullsync: %w", err)
 		}
-		return SyncResult{}, fmt.Errorf("pullsync: fetch jellyfin items: %w", err)
-	}
-
-	var existingExternalIDs []string
-	if err := s.db.Query(ctx, &existingExternalIDs,
-		"SELECT external_id FROM catalog_item WHERE media_source_id = ?", ms.ID,
-	); err != nil {
-		return SyncResult{}, fmt.Errorf("pullsync: list existing catalog_item: %w", err)
+		return nil, fmt.Errorf("pullsync: fetch jellyfin items: %w", err)
 	}
 
 	// Collect each episode's unique SeriesId up front so genre and other
@@ -246,15 +278,35 @@ func (s *Syncer) SyncOne(ctx context.Context, ms domain.MediaSource) (SyncResult
 
 	now := time.Now().UnixMilli()
 	segments := s.resolveSegments(ctx, ms, apiKey, remote, now)
-	seen := make(map[string]struct{}, len(remote))
-	upserted := 0
+	items := make([]catalogsync.Item, 0, len(remote))
 	for _, ri := range remote {
 		item, ok := mapJellyfinItem(ri, series)
 		if !ok {
 			continue // unsupported/malformed item — skip, don't fail the whole sync
 		}
-		seen[item.ExternalID] = struct{}{}
 		item.Segments = segments[item.ExternalID]
+		items = append(items, item)
+	}
+	return items, nil
+}
+
+// apply diffs a freshly listed catalog against what catalog_item already holds
+// for this source: new and changed items are upserted, items no longer present
+// are deleted, and dynamic collections are resolved so a channel built on a
+// dynamic pool or block picks the change up without another manual step.
+func (s *Syncer) apply(ctx context.Context, ms domain.MediaSource, items []catalogsync.Item) (SyncResult, error) {
+	var existingExternalIDs []string
+	if err := s.db.Query(ctx, &existingExternalIDs,
+		"SELECT external_id FROM catalog_item WHERE media_source_id = ?", ms.ID,
+	); err != nil {
+		return SyncResult{}, fmt.Errorf("pullsync: list existing catalog_item: %w", err)
+	}
+
+	now := time.Now().UnixMilli()
+	seen := make(map[string]struct{}, len(items))
+	upserted := 0
+	for _, item := range items {
+		seen[item.ExternalID] = struct{}{}
 		if err := catalogsync.Upsert(ctx, s.db, ms.TenantID, ms.ID, item, now); err != nil {
 			return SyncResult{}, fmt.Errorf("pullsync: upsert %s: %w", item.ExternalID, err)
 		}

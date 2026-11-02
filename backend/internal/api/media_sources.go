@@ -1,6 +1,8 @@
 package api
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -11,6 +13,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/pluginhost"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/pullsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
@@ -25,7 +28,7 @@ func registerMediaSources(mux Router, db storage.DB, mat *materializer.Materiali
 	mux.HandleFunc("POST /media-sources/{id}/pull-sync", pullSyncHandler(db, sync))
 }
 
-const mediaSourceColumns = "id, tenant_id, type, name, base_url, credential_cipher, sync_mode, last_probe_at, last_probe_ok, last_synced_at, created_at, updated_at"
+const mediaSourceColumns = "id, tenant_id, type, name, base_url, credential_cipher, sync_mode, plugin_id, plugin_min_version, plugin_config_json, last_probe_at, last_probe_ok, last_synced_at, created_at, updated_at"
 
 // probeClient is a short-timeout HTTP client for the real registration
 // probe; tests inject their own client/base URL instead of relying on it.
@@ -49,6 +52,45 @@ type mediaSourceRequest struct {
 	Name       string  `json:"name"`
 	BaseURL    *string `json:"base_url"`
 	Credential *string `json:"credential"`
+
+	// Plugin fields, valid only for type "plugin" (docs/PLUGINS.md). Config is
+	// opaque JSON the plugin itself interprets and receives back verbatim; it
+	// is stored as text and must never hold a secret.
+	PluginID         *string         `json:"plugin_id"`
+	PluginMinVersion *string         `json:"plugin_min_version"`
+	PluginConfig     json.RawMessage `json:"plugin_config"`
+}
+
+// pluginColumns validates a plugin-typed request and returns the three stored
+// values. A non-plugin request must not carry any of them (a leftover field
+// would otherwise silently change nothing), and a plugin request must name a
+// plugin and carry a JSON object it can be handed back.
+func pluginColumns(req mediaSourceRequest) (id, minVersion, config *string, err error) {
+	isPlugin := domain.SourceType(req.Type) == domain.SourcePlugin
+	if !isPlugin {
+		if req.PluginID != nil || req.PluginMinVersion != nil || len(req.PluginConfig) > 0 {
+			return nil, nil, nil, errors.New("plugin_id, plugin_min_version and plugin_config are only valid for type plugin")
+		}
+		return nil, nil, nil, nil
+	}
+	if req.PluginID == nil || !pluginhost.ValidID(*req.PluginID) {
+		return nil, nil, nil, errors.New("plugin_id is required for type plugin and must be a lowercase id")
+	}
+	if req.PluginMinVersion != nil && *req.PluginMinVersion != "" {
+		if !pluginhost.ValidVersion(*req.PluginMinVersion) {
+			return nil, nil, nil, errors.New("plugin_min_version must look like a version (e.g. 1.4.0 or 2026.10.26)")
+		}
+		minVersion = req.PluginMinVersion
+	}
+	if len(req.PluginConfig) > 0 {
+		var obj map[string]any
+		if err := json.Unmarshal(req.PluginConfig, &obj); err != nil || obj == nil {
+			return nil, nil, nil, errors.New("plugin_config must be a JSON object")
+		}
+		v := string(req.PluginConfig)
+		config = &v
+	}
+	return req.PluginID, minVersion, config, nil
 }
 
 func fetchMediaSource(db storage.DB, r *http.Request, id string) (domain.MediaSource, error) {
@@ -72,27 +114,36 @@ func createMediaSource(db storage.DB, sync *pullsync.Syncer, encKey [32]byte) ht
 			return
 		}
 		switch domain.SourceType(req.Type) {
-		case domain.SourceJellyfin, domain.SourcePlex, domain.SourceLocalFolder:
+		case domain.SourceJellyfin, domain.SourcePlex, domain.SourceLocalFolder, domain.SourcePlugin:
 		default:
-			writeError(w, http.StatusBadRequest, "type must be one of jellyfin, plex, local_folder")
+			writeError(w, http.StatusBadRequest, "type must be one of jellyfin, plex, local_folder, plugin")
 			return
 		}
 		isLocalFolder := domain.SourceType(req.Type) == domain.SourceLocalFolder
-		if !isLocalFolder && (req.BaseURL == nil || *req.BaseURL == "") {
-			writeError(w, http.StatusBadRequest, "base_url is required unless type is local_folder")
+		isPlugin := domain.SourceType(req.Type) == domain.SourcePlugin
+		if !isLocalFolder && !isPlugin && (req.BaseURL == nil || *req.BaseURL == "") {
+			writeError(w, http.StatusBadRequest, "base_url is required unless type is local_folder or plugin")
+			return
+		}
+		pluginID, pluginMinVersion, pluginConfig, err := pluginColumns(req)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
 		now := time.Now().UnixMilli()
 		ms := domain.MediaSource{
-			ID:        uuid.NewString(),
-			TenantID:  DefaultTenantID,
-			Type:      domain.SourceType(req.Type),
-			Name:      req.Name,
-			BaseURL:   req.BaseURL,
-			SyncMode:  domain.SyncPush,
-			CreatedAt: now,
-			UpdatedAt: now,
+			ID:               uuid.NewString(),
+			TenantID:         DefaultTenantID,
+			Type:             domain.SourceType(req.Type),
+			Name:             req.Name,
+			BaseURL:          req.BaseURL,
+			SyncMode:         domain.SyncPush,
+			PluginID:         pluginID,
+			PluginMinVersion: pluginMinVersion,
+			PluginConfigJSON: pluginConfig,
+			CreatedAt:        now,
+			UpdatedAt:        now,
 		}
 		if req.Credential != nil {
 			sealed, err := crypto.Encrypt(encKey, []byte(*req.Credential))
@@ -104,7 +155,8 @@ func createMediaSource(db storage.DB, sync *pullsync.Syncer, encKey [32]byte) ht
 			ms.CredentialCipher = sealed
 		}
 
-		if domain.SourceType(req.Type) == domain.SourceJellyfin {
+		switch domain.SourceType(req.Type) {
+		case domain.SourceJellyfin:
 			// Only Jellyfin has a real probe endpoint; Plex isn't implemented
 			// in v1 (see domain.SourcePlex) so it stays push without one.
 			ok := probeJellyfin(*req.BaseURL, probeClient)
@@ -113,22 +165,29 @@ func createMediaSource(db storage.DB, sync *pullsync.Syncer, encKey [32]byte) ht
 			if ok {
 				ms.SyncMode = domain.SyncPull
 			}
+		case domain.SourcePlugin:
+			// A plugin source is always listed by this backend (pull): there
+			// is no remote server to probe, and the plugin's own health is
+			// reported by the sync that uses it.
+			ms.SyncMode = domain.SyncPull
 		}
 
-		err := db.Exec(r.Context(),
-			`INSERT INTO media_source (id, tenant_id, type, name, base_url, credential_cipher, sync_mode, last_probe_at, last_probe_ok, last_synced_at, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		err = db.Exec(r.Context(),
+			`INSERT INTO media_source (id, tenant_id, type, name, base_url, credential_cipher, sync_mode,
+			  plugin_id, plugin_min_version, plugin_config_json, last_probe_at, last_probe_ok, last_synced_at, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			ms.ID, ms.TenantID, string(ms.Type), ms.Name, ms.BaseURL, ms.CredentialCipher, string(ms.SyncMode),
+			ms.PluginID, ms.PluginMinVersion, ms.PluginConfigJSON,
 			ms.LastProbeAt, ms.LastProbeOK, ms.LastSyncedAt, ms.CreatedAt, ms.UpdatedAt,
 		)
 		if err != nil {
 			handleDBError(w, err)
 			return
 		}
-		if ms.Type == domain.SourceJellyfin && ms.SyncMode == domain.SyncPull {
+		if ms.SyncMode == domain.SyncPull {
 			// Non-blocking: populates catalog_item in the background within
 			// seconds, without holding this create request open for however
-			// long a full Jellyfin library listing takes.
+			// long a full Jellyfin library or plugin listing takes.
 			sync.Trigger()
 		}
 		writeJSON(w, http.StatusCreated, ms)
@@ -180,14 +239,20 @@ func updateMediaSource(db storage.DB, sync *pullsync.Syncer, encKey [32]byte) ht
 			return
 		}
 		switch domain.SourceType(req.Type) {
-		case domain.SourceJellyfin, domain.SourcePlex, domain.SourceLocalFolder:
+		case domain.SourceJellyfin, domain.SourcePlex, domain.SourceLocalFolder, domain.SourcePlugin:
 		default:
-			writeError(w, http.StatusBadRequest, "type must be one of jellyfin, plex, local_folder")
+			writeError(w, http.StatusBadRequest, "type must be one of jellyfin, plex, local_folder, plugin")
 			return
 		}
 		isLocalFolder := domain.SourceType(req.Type) == domain.SourceLocalFolder
-		if !isLocalFolder && (req.BaseURL == nil || *req.BaseURL == "") {
-			writeError(w, http.StatusBadRequest, "base_url is required unless type is local_folder")
+		isPlugin := domain.SourceType(req.Type) == domain.SourcePlugin
+		if !isLocalFolder && !isPlugin && (req.BaseURL == nil || *req.BaseURL == "") {
+			writeError(w, http.StatusBadRequest, "base_url is required unless type is local_folder or plugin")
+			return
+		}
+		pluginID, pluginMinVersion, pluginConfig, err := pluginColumns(req)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 
@@ -200,6 +265,9 @@ func updateMediaSource(db storage.DB, sync *pullsync.Syncer, encKey [32]byte) ht
 			BaseURL:          req.BaseURL,
 			CredentialCipher: existing.CredentialCipher,
 			SyncMode:         existing.SyncMode,
+			PluginID:         pluginID,
+			PluginMinVersion: pluginMinVersion,
+			PluginConfigJSON: pluginConfig,
 			LastProbeAt:      existing.LastProbeAt,
 			LastProbeOK:      existing.LastProbeOK,
 			LastSyncedAt:     existing.LastSyncedAt,
@@ -224,6 +292,12 @@ func updateMediaSource(db storage.DB, sync *pullsync.Syncer, encKey [32]byte) ht
 			ms.SyncMode = domain.SyncPush
 			ms.LastProbeAt = nil
 			ms.LastProbeOK = nil
+		case isPlugin:
+			// Symmetric with create: a plugin source is always pulled by this
+			// backend, and it has no server probe of its own.
+			ms.SyncMode = domain.SyncPull
+			ms.LastProbeAt = nil
+			ms.LastProbeOK = nil
 		case domain.SourceType(req.Type) == domain.SourceJellyfin && (baseURLChanged || existing.Type != domain.SourceJellyfin):
 			// Only Jellyfin has a real probe endpoint (see the analogous
 			// comment in createMediaSource); also re-probe when switching
@@ -244,15 +318,17 @@ func updateMediaSource(db storage.DB, sync *pullsync.Syncer, encKey [32]byte) ht
 
 		err = db.Exec(r.Context(),
 			`UPDATE media_source SET type = ?, name = ?, base_url = ?, credential_cipher = ?, sync_mode = ?,
+			 plugin_id = ?, plugin_min_version = ?, plugin_config_json = ?,
 			 last_probe_at = ?, last_probe_ok = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`,
 			string(ms.Type), ms.Name, ms.BaseURL, ms.CredentialCipher, string(ms.SyncMode),
+			ms.PluginID, ms.PluginMinVersion, ms.PluginConfigJSON,
 			ms.LastProbeAt, ms.LastProbeOK, ms.UpdatedAt, DefaultTenantID, id,
 		)
 		if err != nil {
 			handleDBError(w, err)
 			return
 		}
-		if ms.Type == domain.SourceJellyfin && ms.SyncMode == domain.SyncPull {
+		if ms.SyncMode == domain.SyncPull {
 			// Same rationale as createMediaSource's trigger: covers both a
 			// source that just became pull and one that already was, in
 			// case its name/URL edit is otherwise never followed by a sync.
@@ -389,15 +465,16 @@ func pullSyncHandler(db storage.DB, sync *pullsync.Syncer) http.HandlerFunc {
 			handleDBError(w, err)
 			return
 		}
-		if ms.Type != domain.SourceJellyfin || ms.SyncMode != domain.SyncPull {
-			writeError(w, http.StatusConflict, "pull-sync is only allowed for jellyfin sources in pull mode")
+		if ms.SyncMode != domain.SyncPull ||
+			(ms.Type != domain.SourceJellyfin && ms.Type != domain.SourcePlugin) {
+			writeError(w, http.StatusConflict, "pull-sync is only allowed for jellyfin and plugin sources in pull mode")
 			return
 		}
 
 		result, err := sync.SyncOne(r.Context(), ms)
 		if err != nil {
 			logging.Errorf("api: pull-sync media source %s: %v", id, err)
-			writeError(w, http.StatusBadGateway, "failed to sync with jellyfin: "+err.Error())
+			writeError(w, http.StatusBadGateway, "failed to sync the media source: "+err.Error())
 			return
 		}
 

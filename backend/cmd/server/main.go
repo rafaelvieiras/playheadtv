@@ -27,6 +27,7 @@ import (
 	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/mcpserver"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/pluginhost"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/pullsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/webui"
@@ -214,7 +215,19 @@ func run() error {
 	// allowed to delay startup on a slow/unreachable one. Start's own
 	// goroutine runs the first sweep immediately, just not blocking this
 	// function.
-	sync := pullsync.New(db, encKey, mat)
+	// Plugins (docs/PLUGINS.md): an out-of-process artifact that provides a
+	// content source the core does not implement. Installed artifacts live next
+	// to the database, like the encryption key, so one backup covers both. With
+	// no registry URL configured, nothing is installable and a plugin-backed
+	// source simply reports its plugin as missing.
+	pluginDir := filepath.Join(filepath.Dir(dbPath), "plugins")
+	plugins := pluginhost.New(db, pluginDir, os.Getenv("PLAYHEADTV_PLUGIN_REGISTRY_URL"))
+	defer plugins.Close()
+	if !plugins.RegistryConfigured() {
+		logging.Infof("plugins: no PLAYHEADTV_PLUGIN_REGISTRY_URL configured, plugin installs are disabled")
+	}
+
+	sync := pullsync.New(db, encKey, mat, plugins)
 	syncCtx, syncCancel := context.WithCancel(context.Background())
 	defer syncCancel()
 	sync.Start(syncCtx)
@@ -225,7 +238,7 @@ func run() error {
 		w.Write([]byte("ok"))
 	})
 	mux.HandleFunc("GET /version", api.VersionHandler())
-	api.Register(mux, db, mat, sync, encKey)
+	api.Register(mux, db, mat, sync, encKey, plugins)
 	// MCP surface (docs/ROADMAP.md Phase 2): same db/mat/encKey as the REST
 	// API above, mounted at /mcp. It falls into RequireAuth's default
 	// session-only branch by exclusion (see internal/mcpserver's package

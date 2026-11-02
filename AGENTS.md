@@ -85,6 +85,13 @@ or LLM, and to every artifact in the repo:
   route with neither a tool nor a justified `NoMCPCounterpart` entry.
 - `storage.DB` is the only interface the rest of the backend sees — never
   branch on "self-hosted vs cloud-sync" outside `internal/storage`.
+- **No site-specific source code, ever.** Some sources (a video-sharing site,
+  anything that needs an extractor) are not implemented here: they are
+  external plugins, and the core only implements the host half — install,
+  verify, run, JSON-RPC (`docs/PLUGINS.md`, `backend/internal/pluginhost`).
+  A change that would put URL patterns, extractor logic or that site's name in
+  the polling/decode path belongs in the plugin repo instead. This is a legal
+  and store-publication boundary, not a style preference.
 - No auth yet: every API handler runs under one fixed tenant
   (`api.DefaultTenantID = "default"`). Don't build real multi-tenant logic
   until the Auth roadmap item exists.
@@ -493,6 +500,18 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   in `0001_init.sql`), so `splitStatements` strips line comments before
   splitting. A new migration with a comment like that is already handled —
   no need to rephrase the comment.
+- `mediaSourceColumns` is duplicated in three packages (`internal/api`,
+  `internal/pullsync`, `internal/mcpserver`), each with its own copy of the
+  list. Adding a `media_source` column and updating only one of them leaves
+  the others scanning NULL into the new field — a plugin source silently
+  reported "names no plugin" because `pullsync`'s copy still had the old
+  columns (hit when `0028_plugin.sql` landed). Grep for the constant name
+  after any `media_source` change.
+- A plugin registry/artifact is untrusted input: `internal/pluginhost` verifies
+  the archive's SHA-256 before extracting, refuses archive entries that escape
+  the target directory, caps extracted size and entry count, and kills a plugin
+  process that misses its call timeout. Don't add a path that skips any of
+  those because "it's the same host".
 - `internal/storage/scan.go` maps a Go field to its column via automatic
   CamelCase→snake_case. When a domain field's name doesn't spell out to its
   column (e.g. `FillerRule.Scope` vs column `scope_type`), the `SELECT`

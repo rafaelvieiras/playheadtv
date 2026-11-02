@@ -1,0 +1,479 @@
+package pluginhost
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/logging"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
+)
+
+// registryTTL is how long a fetched registry index is reused before the host
+// asks for it again. It only affects how quickly a newly published plugin
+// version becomes installable, so minutes are plenty and a registry that is
+// briefly down keeps working from the cached copy.
+const registryTTL = 5 * time.Minute
+
+// registryTimeout bounds one registry fetch.
+const registryTimeout = 20 * time.Second
+
+// catalogPageTimeout bounds one `catalog.list` call. It is generous on purpose:
+// a plugin that lists a remote channel may have to page through a site, and the
+// alternative to waiting is a source that never populates.
+const catalogPageTimeout = 90 * time.Second
+
+// catalogPageLimit is the page size the host asks for; a plugin may return any
+// number it likes.
+const catalogPageLimit = 50
+
+// catalogMaxPages bounds a single listing. 200 pages × 50 items is 10k items
+// for one source — far above a sane channel or playlist, and low enough that a
+// plugin stuck on a repeating cursor cannot loop forever.
+const catalogMaxPages = 200
+
+// ErrNotInstalled is returned when a source names a plugin this host does not
+// have (or has disabled).
+var ErrNotInstalled = errors.New("pluginhost: plugin is not installed")
+
+// Host owns the installed plugins of one deployment: the registry it can install
+// from, the extracted artifacts on disk, and the child processes currently
+// running. Both the backend and a desktop client use this same shape (the client
+// has its own implementation in Dart).
+type Host struct {
+	db       storage.DB
+	dir      string
+	client   *http.Client
+	indexURL string
+
+	indexMu  sync.Mutex
+	index    *Index
+	indexRaw []byte
+	indexAt  time.Time
+
+	installMu sync.Mutex
+
+	procMu sync.Mutex
+	procs  map[string]*Process
+}
+
+// New creates a Host. dir is the directory plugins are installed under (created
+// on demand); indexURL is the registry document, empty for "no registry" (the
+// host then installs nothing and reports every plugin source as not installed).
+func New(db storage.DB, dir, indexURL string) *Host {
+	return &Host{
+		db:       db,
+		dir:      dir,
+		client:   &http.Client{Timeout: registryTimeout},
+		indexURL: strings.TrimSpace(indexURL),
+		procs:    make(map[string]*Process),
+	}
+}
+
+// RegistryConfigured reports whether the host has a registry to install from.
+func (h *Host) RegistryConfigured() bool { return h.indexURL != "" }
+
+// InstalledDir is where artifacts are extracted, exposed so callers (and tests)
+// can point a process at a plugin without going through the DB.
+func (h *Host) InstalledDir(id, version string) string {
+	return filepath.Join(h.dir, "installed", id, version)
+}
+
+func (h *Host) cacheDir() string { return filepath.Join(h.dir, "cache", "artifacts") }
+
+// Index returns the registry document and its raw bytes, fetching and caching
+// as needed. The raw bytes are what GET /plugins serves, so a client installs
+// from exactly the registry this backend validated.
+func (h *Host) Index(ctx context.Context) (Index, []byte, error) {
+	if !h.RegistryConfigured() {
+		return Index{Schema: 1}, []byte(`{"schema":1,"plugins":[]}`), nil
+	}
+	h.indexMu.Lock()
+	defer h.indexMu.Unlock()
+	if h.index != nil && time.Since(h.indexAt) < registryTTL {
+		return *h.index, h.indexRaw, nil
+	}
+
+	reqCtx, cancel := context.WithTimeout(ctx, registryTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, h.indexURL, nil)
+	if err != nil {
+		return Index{}, nil, err
+	}
+	resp, err := h.client.Do(req)
+	if err != nil {
+		return Index{}, nil, fmt.Errorf("pluginhost: fetch registry: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return Index{}, nil, fmt.Errorf("pluginhost: fetch registry: %s", resp.Status)
+	}
+	raw, err := readAllLimited(resp.Body, 4<<20)
+	if err != nil {
+		return Index{}, nil, fmt.Errorf("pluginhost: read registry: %w", err)
+	}
+	idx, err := ParseIndex(raw)
+	if err != nil {
+		return Index{}, nil, err
+	}
+	h.index, h.indexRaw, h.indexAt = &idx, raw, time.Now()
+	return idx, raw, nil
+}
+
+func readAllLimited(r io.Reader, limit int64) ([]byte, error) {
+	buf, err := io.ReadAll(io.LimitReader(r, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(buf)) > limit {
+		return nil, fmt.Errorf("response exceeds %d bytes", limit)
+	}
+	return buf, nil
+}
+
+// ListInstalled returns every installed plugin row.
+func (h *Host) ListInstalled(ctx context.Context) ([]domain.Plugin, error) {
+	var plugins []domain.Plugin
+	err := h.db.Query(ctx, &plugins, "SELECT "+pluginColumns+" FROM plugin ORDER BY id")
+	return plugins, err
+}
+
+// Installed returns one plugin row.
+func (h *Host) Installed(ctx context.Context, id string) (domain.Plugin, error) {
+	var p domain.Plugin
+	if err := h.db.Query(ctx, &p, "SELECT "+pluginColumns+" FROM plugin WHERE id = ?", id); err != nil {
+		return domain.Plugin{}, err
+	}
+	return p, nil
+}
+
+// Install downloads, verifies and extracts one plugin version (empty version
+// means the newest the host can run), then records it. Installing a second
+// version replaces the first: one row and one extracted directory per plugin.
+func (h *Host) Install(ctx context.Context, id, version string) (domain.Plugin, error) {
+	h.installMu.Lock()
+	defer h.installMu.Unlock()
+
+	idx, _, err := h.Index(ctx)
+	if err != nil {
+		return domain.Plugin{}, err
+	}
+	entry, ok := idx.Find(id)
+	if !ok {
+		return domain.Plugin{}, fmt.Errorf("%w: no plugin %q", ErrNotFound, id)
+	}
+	ver, ok := entry.VersionByNumber(version)
+	if !ok {
+		return domain.Plugin{}, fmt.Errorf("%w: %s has no version %q", ErrNotFound, id, version)
+	}
+	artifact, ok := ver.ArtifactFor(runtime.GOOS, runtime.GOARCH)
+	if !ok {
+		return domain.Plugin{}, fmt.Errorf("%w: %s %s ships nothing for %s/%s",
+			ErrNoArtifact, id, ver.Version, runtime.GOOS, runtime.GOARCH)
+	}
+
+	archive, err := h.downloadArtifact(ctx, artifact)
+	if err != nil {
+		return domain.Plugin{}, err
+	}
+
+	parent := filepath.Dir(h.InstalledDir(id, ver.Version))
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return domain.Plugin{}, fmt.Errorf("pluginhost: create plugin directory: %w", err)
+	}
+	staging, err := os.MkdirTemp(parent, ".staging-*")
+	if err != nil {
+		return domain.Plugin{}, err
+	}
+	defer os.RemoveAll(staging)
+
+	if err := extractArtifact(archive, staging); err != nil {
+		return domain.Plugin{}, err
+	}
+	manifest, err := readManifest(staging)
+	if err != nil {
+		return domain.Plugin{}, err
+	}
+	if manifest.ID != id || manifest.Version != ver.Version {
+		return domain.Plugin{}, fmt.Errorf("%w: artifact is %s %s, registry said %s %s",
+			ErrIncompatible, manifest.ID, manifest.Version, id, ver.Version)
+	}
+
+	target := h.InstalledDir(id, ver.Version)
+	if err := os.RemoveAll(target); err != nil {
+		return domain.Plugin{}, err
+	}
+	if err := os.Rename(staging, target); err != nil {
+		return domain.Plugin{}, fmt.Errorf("pluginhost: install plugin: %w", err)
+	}
+
+	now := time.Now().UnixMilli()
+	_, err = h.Installed(ctx, id)
+	exists := err == nil
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return domain.Plugin{}, err
+	}
+	if exists {
+		err = h.db.Exec(ctx,
+			`UPDATE plugin SET version = ?, protocol = ?, os = ?, arch = ?, artifact_sha256 = ?,
+			 entrypoint = ?, capabilities = ?, enabled = 1, updated_at = ? WHERE id = ?`,
+			manifest.Version, manifest.Protocol, artifact.OS, artifact.Arch, artifact.SHA256,
+			manifest.Entrypoint, strings.Join(manifest.Capabilities, ","), now, id)
+	} else {
+		err = h.db.Exec(ctx,
+			`INSERT INTO plugin (id, version, protocol, os, arch, artifact_sha256, entrypoint, capabilities, enabled, installed_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+			id, manifest.Version, manifest.Protocol, artifact.OS, artifact.Arch, artifact.SHA256,
+			manifest.Entrypoint, strings.Join(manifest.Capabilities, ","), now, now)
+	}
+	if err != nil {
+		return domain.Plugin{}, err
+	}
+
+	// A replaced version leaves its directory behind; remove every sibling so
+	// the disk only ever holds what the row says.
+	h.pruneVersions(id, manifest.Version)
+	h.stop(id)
+
+	logging.Infof("pluginhost: installed %s %s (%s/%s)", id, manifest.Version, artifact.OS, artifact.Arch)
+	return h.Installed(ctx, id)
+}
+
+// pruneVersions removes every extracted version of id except keep.
+func (h *Host) pruneVersions(id, keep string) {
+	dir := filepath.Join(h.dir, "installed", id)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	for _, e := range entries {
+		if e.Name() == keep {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(dir, e.Name())); err != nil {
+			logging.Warnf("pluginhost: remove old version %s/%s: %v", id, e.Name(), err)
+		}
+	}
+}
+
+// Uninstall removes the row, the extracted artifact and any running process.
+func (h *Host) Uninstall(ctx context.Context, id string) error {
+	h.installMu.Lock()
+	defer h.installMu.Unlock()
+
+	h.stop(id)
+	if err := h.db.Exec(ctx, "DELETE FROM plugin WHERE id = ?", id); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(filepath.Join(h.dir, "installed", id)); err != nil {
+		return fmt.Errorf("pluginhost: remove plugin directory: %w", err)
+	}
+	return nil
+}
+
+// SetEnabled toggles a plugin without removing it: a disabled plugin is not
+// started, and its sources report no items.
+func (h *Host) SetEnabled(ctx context.Context, id string, enabled bool) error {
+	if _, err := h.Installed(ctx, id); err != nil {
+		return err
+	}
+	if !enabled {
+		h.stop(id)
+	}
+	return h.db.Exec(ctx,
+		"UPDATE plugin SET enabled = ?, updated_at = ? WHERE id = ?",
+		enabled, time.Now().UnixMilli(), id)
+}
+
+// Close stops every running plugin process.
+func (h *Host) Close() {
+	h.procMu.Lock()
+	procs := h.procs
+	h.procs = make(map[string]*Process)
+	h.procMu.Unlock()
+	for _, p := range procs {
+		p.Close()
+	}
+}
+
+// stop closes one plugin's process, if running.
+func (h *Host) stop(id string) {
+	h.procMu.Lock()
+	p := h.procs[id]
+	delete(h.procs, id)
+	h.procMu.Unlock()
+	if p != nil {
+		p.Close()
+	}
+}
+
+// processFor returns the running process for an installed plugin, starting it
+// when needed.
+func (h *Host) processFor(ctx context.Context, installed domain.Plugin) (*Process, error) {
+	h.procMu.Lock()
+	defer h.procMu.Unlock()
+	if p, ok := h.procs[installed.ID]; ok {
+		select {
+		case <-p.exited:
+			delete(h.procs, installed.ID) // crashed since last use; start a new one
+		default:
+			return p, nil
+		}
+	}
+	dir := h.InstalledDir(installed.ID, installed.Version)
+	manifest, err := readManifest(dir)
+	if err != nil {
+		return nil, err
+	}
+	p, err := Start(ctx, dir, manifest)
+	if err != nil {
+		return nil, err
+	}
+	h.procs[installed.ID] = p
+	return p, nil
+}
+
+// ArtifactPath returns a local path holding the artifact's verified bytes,
+// downloading it into the cache when it is not there yet. The API's artifact
+// endpoint serves this file, so a client installs from the same bytes this host
+// would.
+func (h *Host) ArtifactPath(ctx context.Context, a Artifact) (string, error) {
+	return h.downloadArtifact(ctx, a)
+}
+
+// ListSource lists every item behind one plugin-backed media source, paging the
+// plugin until it reports no more. It returns catalogsync.Item values so the
+// caller's upsert/delete diff is identical to the Jellyfin pull path.
+func (h *Host) ListSource(ctx context.Context, ms domain.MediaSource) ([]catalogsync.Item, error) {
+	if ms.Type != domain.SourcePlugin {
+		return nil, fmt.Errorf("pluginhost: media source %s is not a plugin source", ms.ID)
+	}
+	if ms.PluginID == nil || *ms.PluginID == "" {
+		return nil, fmt.Errorf("pluginhost: media source %s names no plugin", ms.ID)
+	}
+	installed, err := h.Installed(ctx, *ms.PluginID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, fmt.Errorf("%w: %s", ErrNotInstalled, *ms.PluginID)
+		}
+		return nil, err
+	}
+	if !installed.Enabled {
+		return nil, fmt.Errorf("%w: %s is disabled", ErrNotInstalled, installed.ID)
+	}
+	if min := ms.PluginMinVersion; min != nil && *min != "" && compareVersions(installed.Version, *min) < 0 {
+		return nil, fmt.Errorf("pluginhost: %s %s is older than the source's minimum %s",
+			installed.ID, installed.Version, *min)
+	}
+	if !hasCapability(installed.Capabilities, CapabilityCatalogList) {
+		return nil, fmt.Errorf("pluginhost: %s does not provide %s", installed.ID, CapabilityCatalogList)
+	}
+
+	proc, err := h.processFor(ctx, installed)
+	if err != nil {
+		return nil, err
+	}
+
+	config := json.RawMessage("null")
+	if ms.PluginConfigJSON != nil && strings.TrimSpace(*ms.PluginConfigJSON) != "" {
+		if !json.Valid([]byte(*ms.PluginConfigJSON)) {
+			return nil, fmt.Errorf("pluginhost: media source %s has invalid plugin_config_json", ms.ID)
+		}
+		config = json.RawMessage(*ms.PluginConfigJSON)
+	}
+
+	items := make([]catalogsync.Item, 0, 64)
+	cursor := ""
+	for page := 0; page < catalogMaxPages; page++ {
+		var req struct {
+			Config json.RawMessage `json:"config"`
+			Cursor string          `json:"cursor"`
+			Limit  int             `json:"limit"`
+		}
+		req.Config, req.Cursor, req.Limit = config, cursor, catalogPageLimit
+
+		var resp struct {
+			Items      []wireItem `json:"items"`
+			NextCursor string     `json:"next_cursor"`
+		}
+		pageCtx, cancel := context.WithTimeout(ctx, catalogPageTimeout)
+		err := proc.Call(pageCtx, "catalog.list", req, &resp)
+		cancel()
+		if err != nil {
+			return nil, fmt.Errorf("pluginhost: %s catalog.list: %w", installed.ID, err)
+		}
+		if len(resp.Items) == 0 && resp.NextCursor != "" {
+			return nil, fmt.Errorf("pluginhost: %s returned an empty page with a cursor", installed.ID)
+		}
+		for _, wi := range resp.Items {
+			item, ok := wi.toCatalogItem()
+			if !ok {
+				logging.Warnf("pluginhost: %s: skipping invalid item %q", installed.ID, wi.ExternalID)
+				continue
+			}
+			items = append(items, item)
+		}
+		if resp.NextCursor == "" {
+			return items, nil
+		}
+		cursor = resp.NextCursor
+	}
+	return items, nil
+}
+
+// wireItem is the catalog item shape a plugin returns, identical to the push
+// sync payload (internal/api's catalogSyncItem) so both directions agree.
+type wireItem struct {
+	ExternalID       string  `json:"external_id"`
+	Kind             string  `json:"kind"`
+	Title            string  `json:"title"`
+	SeriesTitle      *string `json:"series_title"`
+	DurationMs       int64   `json:"duration_ms"`
+	SourceModifiedAt *int64  `json:"source_modified_at"`
+	Genres           string  `json:"genres"`
+	ProductionYear   *int64  `json:"production_year"`
+	domain.CatalogMetadata
+}
+
+func (w wireItem) toCatalogItem() (catalogsync.Item, bool) {
+	if strings.TrimSpace(w.ExternalID) == "" || strings.TrimSpace(w.Title) == "" || w.DurationMs <= 0 {
+		return catalogsync.Item{}, false
+	}
+	kind := domain.CatalogItemKind(w.Kind)
+	switch kind {
+	case domain.CatalogMovie, domain.CatalogEpisode, domain.CatalogOther:
+	case "":
+		kind = domain.CatalogOther
+	default:
+		return catalogsync.Item{}, false
+	}
+	item := catalogsync.Item{
+		ExternalID:       w.ExternalID,
+		Kind:             kind,
+		Title:            w.Title,
+		DurationMs:       w.DurationMs,
+		SourceModifiedAt: w.SourceModifiedAt,
+		Genres:           w.Genres,
+		ProductionYear:   w.ProductionYear,
+		CatalogMetadata:  w.CatalogMetadata,
+	}
+	if kind == domain.CatalogEpisode {
+		item.SeriesTitle = w.SeriesTitle
+	}
+	return item, true
+}
+
+// pluginColumns pins the column order the scanner expects for domain.Plugin.
+const pluginColumns = "id, version, protocol, os, arch, artifact_sha256, entrypoint, capabilities, enabled, installed_at, updated_at"

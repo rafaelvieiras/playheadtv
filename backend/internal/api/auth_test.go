@@ -45,8 +45,8 @@ func newBareTestDB(t *testing.T) (*storage.SQLite, *http.ServeMux) {
 
 	inner := http.NewServeMux()
 	mat := materializer.New(db, time.Hour)
-	sync := pullsync.New(db, testEncKey, mat)
-	Register(inner, db, mat, sync, testEncKey)
+	sync := pullsync.New(db, testEncKey, mat, nil)
+	Register(inner, db, mat, sync, testEncKey, nil)
 
 	outer := http.NewServeMux()
 	outer.Handle("/", RequireAuth(db, inner))

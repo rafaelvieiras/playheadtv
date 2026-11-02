@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/pluginhost"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/pullsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
 )
@@ -18,8 +19,11 @@ import (
 // call sync.Trigger()). encKey encrypts/decrypts data-at-rest fields
 // (currently just media_source.credential_cipher); see
 // internal/crypto.LoadOrGenerateKey for how callers should obtain it.
-func Register(mux Router, db storage.DB, mat *materializer.Materializer, sync *pullsync.Syncer, encKey [32]byte) {
+// plugins is the installed-plugin host (docs/PLUGINS.md); its REST surface is
+// mounted here like any other resource.
+func Register(mux Router, db storage.DB, mat *materializer.Materializer, sync *pullsync.Syncer, encKey [32]byte, plugins *pluginhost.Host) {
 	registerAuth(mux, db)
+	registerPlugins(mux, db, plugins)
 	registerPairing(mux, db, encKey)
 	registerServerConfig(mux, db, encKey)
 	registerChannels(mux, db, mat)
@@ -56,7 +60,7 @@ func (rr *routeRecorder) HandleFunc(pattern string, _ func(http.ResponseWriter, 
 // internal/mcpserver) is built on it.
 func Routes() []string {
 	rr := &routeRecorder{}
-	Register(rr, nil, nil, nil, [32]byte{})
+	Register(rr, nil, nil, nil, [32]byte{}, nil)
 	sort.Strings(rr.patterns)
 	return rr.patterns
 }
