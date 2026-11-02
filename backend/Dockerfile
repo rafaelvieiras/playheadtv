@@ -41,6 +41,12 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
 # extractor and a remuxer just work; the image grows by ~30 MB and the attack
 # surface is the same one a plugin already has.
 FROM debian:bookworm-slim
+# CA certificates: a plugin fetches media over TLS, and a bare slim image has no
+# trust store, so every fetch failed with "certificate verify failed" (an
+# extractor carries its own, which is why the listing worked and playback did not).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 COPY --from=build /out/server /server
 
 ENV PLAYHEADTV_DB_PATH=/data/playheadtv.db
