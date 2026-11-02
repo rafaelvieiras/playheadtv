@@ -26,14 +26,19 @@ COPY backend/ .
 # index.html embed.go embeds (see internal/webui/embed.go).
 COPY --from=webui-build /src/backend/internal/webui/dist ./internal/webui/dist
 # CGO disabled: modernc.org/sqlite is pure Go, so the binary is fully static
-# and runs unmodified on the distroless image below.
+# and runs unmodified on the distroless image below (which is the "cc" variant
+# only for what a plugin needs).
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build \
     -ldflags "-s -w \
       -X github.com/rafaelvieiras/playheadtv/backend/internal/buildinfo.Version=${VERSION} \
       -X github.com/rafaelvieiras/playheadtv/backend/internal/buildinfo.Commit=${COMMIT}" \
     -o /out/server ./cmd/server
 
-FROM gcr.io/distroless/static-debian12
+# cc-debian12, not static: a plugin is an external program (an extractor and a
+# remuxer, both dynamically linked to glibc), and the backend runs it. A static
+# image has no loader, so every plugin failed with "fork/exec ...: no such file or
+# directory" while the file was right there.
+FROM gcr.io/distroless/cc-debian12
 COPY --from=build /out/server /server
 
 ENV PLAYHEADTV_DB_PATH=/data/playheadtv.db
