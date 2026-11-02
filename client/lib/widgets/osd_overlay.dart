@@ -101,7 +101,7 @@ class ChannelOsd extends StatefulWidget {
     this.progressByClock = false,
     this.resolveSubject,
     this.playhead,
-    this.positionOffset = Duration.zero,
+    this.positionOffset,
     required this.controller,
     required this.focusMode,
     required this.onOpenSubtitles,
@@ -113,9 +113,11 @@ class ChannelOsd extends StatefulWidget {
     this.now = DateTime.now,
   }) : super(key: key);
 
-  /// Where the playback started inside the item; added to the engine's own
-  /// position (see `_playbackOffset` in the player).
-  final Duration positionOffset;
+  /// Where the playback started inside the item, read on every build: a
+  /// callback, not a value, because this widget is built once and kept across
+  /// the player's rebuilds (AGENTS.md, "Client app structure") — a value passed
+  /// at construction would stay at whatever it was on the first frame.
+  final Duration Function()? positionOffset;
 
   @override
   State<ChannelOsd> createState() => ChannelOsdState();
@@ -414,7 +416,7 @@ class ChannelOsdState extends State<ChannelOsd> {
     } else {
       position = osdPosition(
         engine: widget.controller?.state.position ?? Duration.zero,
-        offset: widget.positionOffset,
+        offset: widget.positionOffset?.call() ?? Duration.zero,
         duration: widget.controller?.state.duration ?? Duration.zero,
       );
       duration = widget.controller?.state.duration ?? Duration.zero;
