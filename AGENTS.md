@@ -103,6 +103,22 @@ or LLM, and to every artifact in the repo:
   moves it, and a remux stream is produced at playback speed (`-re`) so its
   sliding window never runs ahead of the player and deletes what it has not
   fetched yet.
+- **The backend image has to be able to run a plugin.** It is not distroless:
+  `debian:bookworm-slim` with `ca-certificates`. A plugin is an arbitrary external
+  program, and each of these was a real failure in order: `distroless/static` has no
+  loader ("fork/exec ...: no such file or directory" for a file that is right there),
+  `cc-debian12` still lacks `libz`, and a bare slim image has no trust store, so
+  ffmpeg failed with "certificate verify failed" while the extractor worked (it
+  carries its own). Keep the image able to start an unknown binary with TLS.
+- A plugin listener bound to every interface reports `[::]:port` (or
+  `0.0.0.0:port`) as its own address, which no player can open. The play route
+  rewrites loopback **and** unspecified hosts to the address the client used; the
+  plugin itself always advertises loopback with the real port.
+- `media_source_id` is a queryable field (`internal/catalogsync/query.go`), so a
+  channel can be built from a whole plugin-backed source: a collection whose query
+  is `{"version":1,"all":[{"field":"media_source_id","op":"equals","value":"<id>"}]}`, a
+  block with a `criteria` item (`amount.mode: "all"`) and a schedule with one
+  `continuous` item. Listing 177 items by hand is not a programming decision.
 - **No site-specific source code, ever.** Some sources (a video-sharing site,
   anything that needs an extractor) are not implemented here: they are
   external plugins, and the core only implements the host half — install,
