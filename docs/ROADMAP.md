@@ -1259,6 +1259,12 @@ repo never contains.
       hash-verified streaming install with a staged swap, protocol 1 process
       with per-call bounds, and a resolve that reports single/pair/remux.
       `EpgEntry.requires` carries a channel's plugin through the offline cache.
+- [x] Playback resolves through the plugin: `_entrySource` asks for a fresh
+      url on every open (preload, tune-in, resync), passes the position as
+      `start_at_ms`, and skips the client-side seek when the stream already
+      starts there. `playbackPluginModes` is `single,remux` today, because the
+      engine seam still opens one url; `pair` joins it when the player can merge
+      two tracks.
 - [ ] Client side: plugin manager in Settings (list required plugins, download
       from the backend registry, verify hash, install/remove/enable), a channel
       filter that hides channels whose plugin is missing plus the Settings

@@ -10,6 +10,8 @@ import 'package:path_provider/path_provider.dart';
 
 import '../main.dart' show AppConfig, jellyfinImageUrl;
 import '../playhead_api.dart';
+import '../plugin/plugin_installer.dart';
+import '../plugin/plugin_manager.dart';
 import '../services/settings_service.dart';
 import 'art_cache.dart';
 import 'schedule_cache.dart';
@@ -22,7 +24,11 @@ class OfflineRuntime {
   final ScheduleSyncer syncer;
   final SettingsService settings;
 
-  OfflineRuntime._(this.api, this.cache, this.art, this.syncer, this.settings);
+  /// Plugins this device has, and the ones it runs to resolve playback. Shared
+  /// like everything else here: one process per plugin, for the app's lifetime.
+  final PluginManager plugins;
+
+  OfflineRuntime._(this.api, this.cache, this.art, this.syncer, this.settings, this.plugins);
 
   static OfflineRuntime? _current;
   static Future<OfflineRuntime>? _opening;
@@ -55,15 +61,18 @@ class OfflineRuntime {
     final override = AppConfig.cacheDirOverride;
     final Directory dataDir;
     final Directory artDir;
+    final Directory pluginDir;
     if (override != null) {
       dataDir = Directory('$override/data');
       artDir = Directory('$override/art');
+      pluginDir = Directory('$override/plugins');
     } else {
       // The schedule must survive; the OS may reclaim the art folder.
       // Two platform round trips, independent of each other: asked together.
       final (support, cache) = await (getApplicationSupportDirectory(), getApplicationCacheDirectory()).wait;
       dataDir = Directory('${support.path}/schedule_cache');
       artDir = Directory('${cache.path}/art');
+      pluginDir = Directory('${support.path}/plugins');
     }
     // One file per backend address: pointing the app at another backend never
     // shows (or wipes) the schedule of the first.
@@ -80,7 +89,15 @@ class OfflineRuntime {
       artUrlOf: (itemId, tag) => jellyfinImageUrl(itemId, tag),
     );
     syncer.start();
-    return OfflineRuntime._(api, cache, art, syncer, settings);
+    // Plugins live beside the schedule: they survive a cache clear (uninstalling
+    // one is an explicit action) and are per-backend like everything else, since
+    // an artifact is fetched from the backend that mirrors the registry.
+    final plugins = PluginManager(
+      backend: api.backendBase,
+      authHeaders: () => api.authHeaders,
+      installer: PluginInstaller(root: pluginDir),
+    );
+    return OfflineRuntime._(api, cache, art, syncer, settings, plugins);
   }
 
   /// Stops the syncer and closes the cache file (a test starting a new app
@@ -94,6 +111,9 @@ class OfflineRuntime {
       runtime.syncer.stop();
       runtime.cache.close();
       runtime.art.close();
+      // Stops any plugin process this runtime started; a plugin outliving the
+      // runtime that owns it would be an orphan with no one to shut it down.
+      unawaited(runtime.plugins.close());
     }
   }
 

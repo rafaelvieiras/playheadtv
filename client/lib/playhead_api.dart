@@ -148,7 +148,11 @@ class EpgRequirement {
   final String id;
   final String? minVersion;
 
-  const EpgRequirement({required this.id, this.minVersion});
+  /// What the source was configured with (a channel url, a playlist id, ...).
+  /// It travels with the guide so resolving needs no second lookup.
+  final Map<String, dynamic> config;
+
+  const EpgRequirement({required this.id, this.minVersion, this.config = const {}});
 
   /// Tolerant on purpose: an entry whose `requires` cannot be read is treated as
   /// having no requirement, so an unknown future shape never hides a channel.
@@ -160,7 +164,12 @@ class EpgRequirement {
       final id = item['id'];
       if (id is! String || id.isEmpty) continue;
       final min = item['min_version'];
-      out.add(EpgRequirement(id: id, minVersion: min is String && min.isNotEmpty ? min : null));
+      final config = item['config'];
+      out.add(EpgRequirement(
+        id: id,
+        minVersion: min is String && min.isNotEmpty ? min : null,
+        config: config is Map ? Map<String, dynamic>.from(config) : const {},
+      ));
     }
     return out;
   }
@@ -168,14 +177,26 @@ class EpgRequirement {
   Map<String, dynamic> toJson() => {
         'id': id,
         if (minVersion != null) 'min_version': minVersion,
+        if (config.isNotEmpty) 'config': config,
       };
 
   @override
   bool operator ==(Object other) =>
-      other is EpgRequirement && other.id == id && other.minVersion == minVersion;
+      other is EpgRequirement &&
+      other.id == id &&
+      other.minVersion == minVersion &&
+      _sameConfig(other.config, config);
 
   @override
-  int get hashCode => Object.hash(id, minVersion);
+  int get hashCode => Object.hash(id, minVersion, config.length);
+
+  static bool _sameConfig(Map<String, dynamic> a, Map<String, dynamic> b) {
+    if (a.length != b.length) return false;
+    for (final entry in a.entries) {
+      if (b[entry.key] != entry.value) return false;
+    }
+    return true;
+  }
 
   @override
   String toString() => 'EpgRequirement($id, min: ${minVersion ?? 'any'})';
