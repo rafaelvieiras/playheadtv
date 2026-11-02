@@ -59,6 +59,7 @@ import 'epg_guide.dart' show guideContextLookback, isHiddenGuideKind;
 import 'osd_subject.dart';
 import 'preload_lead.dart';
 import 'clock.dart';
+import 'plugin/channel_filter.dart';
 import 'dimmer.dart';
 import 'epg_thumbnail.dart';
 import 'widgets/epg_overlay.dart';
@@ -977,8 +978,21 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       BootTrace.mark(warm ? 'warm_start' : 'stream_prefs_done');
       _streamPrefs.startPolling();
       _cacheSub = _cache.changes.listen(_onCacheChange);
+      // A channel whose plugin this device does not have is left out: offering it
+      // would only produce an error screen (lib/plugin/channel_filter.dart).
+      final playable = playableChannels(_cache, channels, _runtime.availability);
+      if (playable.allHiddenByPlugins) {
+        Log.warn('player', 'boot: every channel needs a plugin this device lacks');
+      }
+      channels = playable.visible;
       if (channels.isEmpty) {
         Log.error('player', 'boot: no channels available (sync ok=${_runtime.syncer.status.value.lastSucceeded})');
+        if (playable.allHiddenByPlugins) {
+          if (!mounted) return;
+          setState(() => _status = 'ERROR: no channel can play on this device yet. '
+              '${playable.reasons.join(' ')} Install it in Settings > Plugins.');
+          return;
+        }
         if (!mounted) return;
         final error = _runtime.syncer.status.value.lastError;
         setState(() => _status = _runtime.syncer.status.value.lastSucceeded
@@ -2119,7 +2133,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   void _onCacheChange(CacheChange change) {
     if (!mounted || _channels.isEmpty) return;
     if (change.channelsChanged) {
-      final fresh = _cache.channels();
+      // The availability snapshot is refreshed off this path; until it lands, the
+      // list is filtered with the answer that was current a moment ago.
+      unawaited(_runtime.refreshAvailability());
+      final fresh = playableChannels(_cache, _cache.channels(), _runtime.availability).visible;
       if (fresh.isNotEmpty) {
         final currentId = _channels[_channelIndex].id;
         final at = fresh.indexWhere((c) => c.id == currentId);

@@ -28,6 +28,7 @@ import '../video/video_engine.dart';
 import '../util/controller_lifecycle.dart';
 
 import '../cache/offline_runtime.dart';
+import '../plugin/channel_filter.dart';
 import '../cache/schedule_sync.dart';
 import '../main.dart';
 import '../playhead_api.dart';
@@ -136,14 +137,22 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
         await _runtime.syncer.syncNow();
         channels = _runtime.cache.channels();
       }
+      // The same refresh the backend just did may have brought a channel whose
+      // source needs a plugin.
+      await _runtime.refreshAvailability();
+      final playable = playableChannels(_runtime.cache, channels, _runtime.availability);
+      channels = playable.visible;
       if (!mounted) return;
       if (channels.isEmpty) {
         final status = _runtime.syncer.status.value;
         setState(() {
           _loading = false;
-          _error = status.lastSucceeded
-              ? 'ERROR: no channels configured on the backend (GET /channels is empty)'
-              : 'ERROR: failed to load channels: ${status.lastError}';
+          _error = playable.allHiddenByPlugins
+              ? 'No channel can play on this device yet. ${playable.reasons.join(' ')} '
+                  'Install it in Settings > Plugins.'
+              : status.lastSucceeded
+                  ? 'ERROR: no channels configured on the backend (GET /channels is empty)'
+                  : 'ERROR: failed to load channels: ${status.lastError}';
         });
         return;
       }

@@ -89,6 +89,10 @@ class _PluginsPageState extends State<PluginsPage> {
   Future<void> _reload() async {
     final runtime = _runtime;
     if (runtime == null) return;
+    // What is installed decides which channels this device can play, so the
+    // answer every other screen filters with is recomputed here, right after a
+    // change on this page.
+    await runtime.refreshAvailability();
     final installed = await runtime.plugins.installed();
     final platform = await runtime.plugins.installer.platform();
     PluginRegistry? registry;
