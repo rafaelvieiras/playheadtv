@@ -138,6 +138,48 @@ class EpgClip {
 /// it is only there when the backend sends the enriched `GET /epg`, and a
 /// missing one makes the client fall back to a per-item catalog lookup
 /// ([PlayheadApi.resolveCatalog]).
+/// A plugin an entry needs to be playable (`requires` on `GET /epg`).
+///
+/// The client asks its own plugin manager whether that plugin is installed and
+/// new enough before a channel is offered: a guide entry whose plugin is missing
+/// would tune into an error, so the channel is hidden instead (docs/PLUGINS.md).
+class EpgRequirement {
+  final String id;
+  final String? minVersion;
+
+  const EpgRequirement({required this.id, this.minVersion});
+
+  /// Tolerant on purpose: an entry whose `requires` cannot be read is treated as
+  /// having no requirement, so an unknown future shape never hides a channel.
+  static List<EpgRequirement> parseList(Object? raw) {
+    if (raw is! List) return const [];
+    final out = <EpgRequirement>[];
+    for (final item in raw) {
+      if (item is! Map) continue;
+      final id = item['id'];
+      if (id is! String || id.isEmpty) continue;
+      final min = item['min_version'];
+      out.add(EpgRequirement(id: id, minVersion: min is String && min.isNotEmpty ? min : null));
+    }
+    return out;
+  }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        if (minVersion != null) 'min_version': minVersion,
+      };
+
+  @override
+  bool operator ==(Object other) =>
+      other is EpgRequirement && other.id == id && other.minVersion == minVersion;
+
+  @override
+  int get hashCode => Object.hash(id, minVersion);
+
+  @override
+  String toString() => 'EpgRequirement($id, min: ${minVersion ?? 'any'})';
+}
+
 class EpgEntry {
   final String id;
   final String kind;
@@ -181,6 +223,10 @@ class EpgEntry {
   /// clips, in playing order. [catalogItemId] is then the first clip's.
   final List<EpgClip> clips;
 
+  /// Plugins this entry needs in order to play (empty for a normal Jellyfin
+  /// item). See [EpgRequirement].
+  final List<EpgRequirement> requires;
+
   const EpgEntry({
     required this.id,
     required this.kind,
@@ -204,6 +250,7 @@ class EpgEntry {
     this.splitGroup,
     this.watermark,
     this.clips = const [],
+    this.requires = const [],
   });
 
   factory EpgEntry.fromJson(Map<String, dynamic> json) {
@@ -233,6 +280,7 @@ class EpgEntry {
       splitGroup: json['split_group'] as String?,
       watermark: EpgWatermark.tryParse(json['watermark']),
       clips: clips,
+      requires: EpgRequirement.parseList(json['requires']),
     );
   }
 
@@ -261,6 +309,7 @@ class EpgEntry {
         if (splitGroup != null) 'split_group': splitGroup,
         if (watermark != null) 'watermark': watermark!.toJson(),
         if (isTailGroup) 'clips': [for (final c in clips) c.toJson()],
+        if (requires.isNotEmpty) 'requires': [for (final r in requires) r.toJson()],
       };
 
   bool get isTailGroup => clips.isNotEmpty;
