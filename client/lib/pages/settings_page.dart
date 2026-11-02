@@ -24,6 +24,7 @@ import '../log/log.dart';
 import 'controls_mapping_page.dart';
 import 'diagnostics_page.dart';
 import 'offline_cache_page.dart';
+import 'plugins_page.dart';
 import 'server_url_page.dart';
 import 'setup_page.dart';
 import '../widgets/app_icons.dart';
@@ -220,6 +221,15 @@ class _SettingsPageState extends State<SettingsPage> {
               title: const Text('Offline cache'),
               onTap: () {
                 Navigator.of(context).push(MaterialPageRoute(builder: (_) => const OfflineCachePage()));
+              },
+            ),
+            ListTile(
+              key: const Key('settings-plugins-tile'),
+              leading: const Icon(AppIcons.plugin),
+              title: const Text('Plugins'),
+              subtitle: const Text('Content sources outside the media server'),
+              onTap: () {
+                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PluginsPage()));
               },
             ),
             // The window is not the app's to resize on Android (always full

@@ -93,6 +93,12 @@ or LLM, and to every artifact in the repo:
   `single`, `pair` (the player merges two tracks; the default, and free) or
   `remux` (the plugin produces the stream itself, offered only where the engine
   cannot merge). No path in the client may transcode, and none may name a site.
+- Settings -> "Plugins" (`lib/pages/plugins_page.dart`) is the only place that can
+  install one: a channel whose plugin is missing is not shown, so nothing else
+  offers it. Rows are the union of what the backend's registry offers and what is
+  installed here (a plugin the registry stopped offering still has to be
+  removable). Six buttons only: Select installs a missing plugin or opens the
+  installed one's dialog, never a hidden second tap target.
 - `EpgEntry.requires` (from `GET /epg`, kept in the offline cache) is how the
   client learns a channel needs a plugin, and it carries the source's config so
   resolving needs no second lookup. A channel whose plugin is missing or too old

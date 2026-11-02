@@ -51,8 +51,10 @@ void main() {
       home: const SettingsPage(),
     ));
     await tester.pumpAndSettle();
-    // Down until the Interface size row (last) has the focus.
-    final rows = FullScreenController.shared.supported ? 3 : 2; // rows above the last
+    // Down until the Interface size row has the focus. The count is the rows
+    // between the autofocused one (Remap controls) and this row: adding a row
+    // there means changing it, which is the point of a reachability test.
+    final rows = FullScreenController.shared.supported ? 4 : 3;
     for (var i = 0; i < rows; i++) {
       await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
     }
