@@ -11,6 +11,7 @@ import 'dart:isolate';
 
 import 'package:http/http.dart' as http;
 
+import 'plugin/plugin_manifest.dart';
 import 'watermark.dart';
 
 /// The backend answered, with a status other than the one expected. 401/403
@@ -569,6 +570,19 @@ class PlayheadApi {
   /// Where a channel logo is downloaded from (`GET /channel-logos/{id}/image`).
   /// Same rule as the watermark: the id changes whenever the image does.
   String channelLogoUrl(String imageId) => '$_normalizedBaseUrl/channel-logos/${Uri.encodeComponent(imageId)}/image';
+
+  /// This backend's own address, which the plugin registry's artifact paths are
+  /// relative to.
+  Uri get backendBase => Uri.parse(_normalizedBaseUrl);
+
+  /// What this backend's registry mirror offers (`GET /plugins`).
+  ///
+  /// Display only: which plugins the *client* has installed is its own business
+  /// (`PluginManager`), and the backend's list is about its own catalog work.
+  Future<PluginRegistry> getPlugins() async {
+    final data = await _getJson(Uri.parse('$_normalizedBaseUrl/plugins'));
+    return PluginRegistry.fromJson(data);
+  }
 
   /// The headers a download from this backend needs (the device token, when
   /// there is one), for what the art cache fetches on its behalf.
