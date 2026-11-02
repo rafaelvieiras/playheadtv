@@ -714,6 +714,30 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   stall path must keep all three working (`loading_navigation_test.dart`). The
   GL queue valve (`glOpQueueTimeout`, 20s) still bounds how long a switch can
   wait behind a stuck `initialize()`.
+- A plugin stream is only as good as its HLS shape, and the shape has three
+  rules that were each learned the hard way on a set-top box: fragmented MP4
+  segments, never MPEG-TS (the sources are fMP4; TS repackaging makes a player
+  reverse PES packets and Annex-B access units, and it loses the stream when a
+  segment is cut mid-packet); an `event` playlist, never a sliding live window (at
+  the moment a player opens it a fresh stream lists one segment, and a player that
+  follows a live edge has no cushion and stops as soon as it played what was
+  listed); and **no `-re`** — a remux paced to real time hands the player one
+  segment at a time and keeps it permanently at the edge, so any hiccup leaves the
+  picture frozen for a moment and it never gets a cushion back. Reading ahead is
+  only safe because the playlist is `event` and keeps what it produced; the cost is
+  disk, proportional to the part of the item already fetched. Symptom of all
+  three, from the client's side, is the same: the picture stops after ~6-12 s (one
+  segment) with no error.
+- A frozen picture has three possible witnesses and they are not interchangeable.
+  The engine may fail loudly (`VideoPlayerValue.hasError`, logged by
+  `ControllerPlayback`), it may say nothing while the position stops (the player
+  page's `StallWatcher` in `lib/playback_stall.dart`, which reopens the channel at
+  the position the guide has reached, three times at most), or it may sit in a
+  state the app cannot see. On a television there is no log file to read
+  (`logDirectory` has no Android target), so a build made with
+  `--dart-define=PLAYHEADTV_LOG_PEEK=true` draws the in-memory log over the
+  picture; that flag is what made every diagnosis in this area possible, and it
+  must stay opt-in so a release build never shows it.
 - A catalog item with a non-positive duration (reproduced 2026-09-30: a
   Jellyfin library item synced with `RunTimeTicks: 0`, missing/unprobed
   metadata) breaks the entire channel-assembly model if it ever reaches a
