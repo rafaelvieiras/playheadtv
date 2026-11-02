@@ -31,3 +31,6 @@ void main() {
     );
   });
 }
+
+// The player adds where the stream began before converting a position into a
+// playhead: see _picturePlayhead in main.dart.

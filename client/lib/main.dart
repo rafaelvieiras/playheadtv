@@ -2367,7 +2367,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     if (_currentIndex < 0 || _currentIndex >= channel.length) return null;
     final value = head.state;
     if (!value.isInitialized) return null;
-    return picturePlayheadAt(channel[_currentIndex].startAt, channel[_currentIndex].itemOffset, channel[_currentIndex].clipDuration, value.position);
+    // The engine counts from the stream's own zero, which for a source that
+    // already began at an offset (a plugin stream) is not the file's zero:
+    // without `_playbackOffset` the OSD would claim the viewer is at the start of
+    // the program while the picture is far into it.
+    return picturePlayheadAt(channel[_currentIndex].startAt, channel[_currentIndex].itemOffset,
+        channel[_currentIndex].clipDuration, value.position + _playbackOffset);
   }
 
   // What the OSD describes for unit `index` of `channel`: the guide program
@@ -3090,7 +3095,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                     progressByClock: osd != null,
                     resolveSubject: () => _osdSubjectAt(_currentIndex),
                     playhead: _picturePlayhead,
-                    positionOffset: _playbackOffset,
+                    positionOffset: () => _playbackOffset,
                     controller: _aIsActive ? _controllerA : _controllerB,
                     focusMode: _osdFocusNotifier,
                     onOpenSubtitles: () => _openTrackPicker(TrackSelectorPanel.subtitle, singlePanel: true),
