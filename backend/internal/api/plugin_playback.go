@@ -183,9 +183,13 @@ func reachableURL(raw string, r *http.Request) (string, error) {
 	return parsed.String(), nil
 }
 
+// isLoopbackHost reports whether a host names this machine: loopback, or the
+// unspecified address a listener that bound to every interface reports as its own
+// (Go's net.Listener.Addr() for "0.0.0.0:0" or "[::]:0"). Both mean "the plugin is
+// here", so the host part is the host's to fill in.
 func isLoopbackHost(host string) bool {
 	switch strings.ToLower(host) {
-	case "127.0.0.1", "localhost", "::1", "[::1]":
+	case "127.0.0.1", "localhost", "::1", "[::1]", "0.0.0.0", "::", "[::]":
 		return true
 	}
 	if ip := net.ParseIP(host); ip != nil {
