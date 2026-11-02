@@ -1,0 +1,405 @@
+// What a plugin is, as the backend's registry mirror describes it
+// (docs/PLUGINS.md in the repository, protocol 1).
+//
+// The client never fetches the upstream registry itself: GET /plugins on the
+// backend is a cached mirror whose artifact URLs already point back at it, so a
+// client that can reach its backend can install a plugin even when it cannot
+// reach the internet.
+import 'dart:io';
+
+/// Raised when a registry document, a manifest or an installation is malformed.
+/// A malformed registry must never be half-applied: the caller gets this and
+/// keeps whatever was installed before.
+class PluginFormatException implements Exception {
+  final String message;
+  const PluginFormatException(this.message);
+  @override
+  String toString() => 'PluginFormatException: $message';
+}
+
+/// The manifest a plugin ships as `plugin.json`, and reports from `info`.
+class PluginManifest {
+  final String id;
+  final String name;
+  final String description;
+  final String version;
+  final int protocol;
+  final String entrypoint;
+  final List<String> capabilities;
+
+  const PluginManifest({
+    required this.id,
+    required this.name,
+    required this.version,
+    required this.protocol,
+    required this.entrypoint,
+    required this.capabilities,
+    this.description = '',
+  });
+
+  static final _idPattern = RegExp(r'^[a-z0-9][a-z0-9-]*$');
+  static final _versionPattern = RegExp(r'^[A-Za-z0-9._+-]+$');
+
+  factory PluginManifest.fromJson(Object? json) {
+    if (json is! Map<String, dynamic>) {
+      throw const PluginFormatException('manifest is not a JSON object');
+    }
+    return PluginManifest(
+      id: _string(json['id'], 'id'),
+      name: _string(json['name'], 'name'),
+      description: json['description'] is String ? json['description'] as String : '',
+      version: _string(json['version'], 'version'),
+      protocol: _int(json['protocol'], 'protocol'),
+      entrypoint: _string(json['entrypoint'], 'entrypoint'),
+      capabilities: _stringList(json['capabilities'], 'capabilities'),
+    );
+  }
+
+  /// Rejects a manifest the client cannot run or must not trust.
+  void validate({int requiredProtocol = pluginProtocol}) {
+    if (!_idPattern.hasMatch(id)) {
+      throw PluginFormatException('id "$id" is not lowercase [a-z0-9-]');
+    }
+    if (name.trim().isEmpty) throw const PluginFormatException('name is empty');
+    if (!_versionPattern.hasMatch(version)) {
+      throw PluginFormatException('version "$version" is not an orderable version');
+    }
+    if (protocol < 1) throw PluginFormatException('protocol $protocol is not a version');
+    if (protocol > requiredProtocol) {
+      // A plugin newer than the client is fine as long as it speaks a protocol
+      // this client knows; it said so with its own number.
+      throw PluginFormatException('protocol $protocol is newer than $requiredProtocol');
+    }
+    if (entrypoint.isEmpty || entrypoint.startsWith('/') || entrypoint.contains('..')) {
+      throw PluginFormatException('entrypoint "$entrypoint" must be a relative path inside the artifact');
+    }
+    if (capabilities.isEmpty) throw const PluginFormatException('no capabilities');
+    for (final capability in capabilities) {
+      if (!pluginCapabilities.contains(capability)) {
+        throw PluginFormatException('unknown capability "$capability"');
+      }
+    }
+  }
+
+  bool has(String capability) => capabilities.contains(capability);
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'name': name,
+        if (description.isNotEmpty) 'description': description,
+        'version': version,
+        'protocol': protocol,
+        'entrypoint': entrypoint,
+        'capabilities': capabilities,
+      };
+}
+
+/// Protocol this client speaks.
+const pluginProtocol = 1;
+
+/// Capabilities a manifest may declare.
+const pluginCapabilities = {'catalog.list', 'media.resolve'};
+
+/// One downloadable archive.
+class PluginArtifact {
+  final String os;
+  final String arch;
+  final String url;
+  final String sha256;
+  final int size;
+
+  const PluginArtifact({
+    required this.os,
+    required this.arch,
+    required this.url,
+    required this.sha256,
+    required this.size,
+  });
+
+  factory PluginArtifact.fromJson(Object? json) {
+    if (json is! Map<String, dynamic>) {
+      throw const PluginFormatException('artifact is not a JSON object');
+    }
+    final url = _string(json['url'], 'artifact url');
+    // The backend rewrites artifact urls to a path on itself, so both an
+    // absolute url and a server-relative path are valid here; anything else
+    // would be resolved against nothing.
+    final absolute = url.startsWith('http://') || url.startsWith('https://');
+    if (!absolute && !url.startsWith('/')) {
+      throw PluginFormatException('artifact url "$url" is neither absolute nor a server path');
+    }
+    final sha = _string(json['sha256'], 'artifact sha256').toLowerCase();
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(sha)) {
+      // An artifact with no hash is never installed: the hash is the identity.
+      throw PluginFormatException('artifact sha256 "$sha" is not 64 hex characters');
+    }
+    return PluginArtifact(
+      os: _string(json['os'], 'artifact os'),
+      arch: _string(json['arch'], 'artifact arch'),
+      url: url,
+      sha256: sha,
+      size: json['size'] is num ? (json['size'] as num).toInt() : 0,
+    );
+  }
+
+  /// The URL to actually fetch: the backend rewrites it to a path on itself.
+  Uri resolveAgainst(Uri backend) =>
+      url.startsWith('http://') || url.startsWith('https://') ? Uri.parse(url) : backend.resolve(url);
+}
+
+/// One released version of a plugin.
+class PluginRelease {
+  final String version;
+  final int protocol;
+  final List<PluginArtifact> artifacts;
+
+  const PluginRelease({required this.version, required this.protocol, required this.artifacts});
+
+  factory PluginRelease.fromJson(Object? json) {
+    if (json is! Map<String, dynamic>) {
+      throw const PluginFormatException('release is not a JSON object');
+    }
+    final artifacts = (json['artifacts'] as List? ?? const [])
+        .map(PluginArtifact.fromJson)
+        .toList(growable: false);
+    return PluginRelease(
+      version: _string(json['version'], 'release version'),
+      protocol: _int(json['protocol'], 'release protocol'),
+      artifacts: artifacts,
+    );
+  }
+
+  /// This platform's archive, or null when the release does not build for it.
+  PluginArtifact? forPlatform(PluginPlatform platform) {
+    for (final artifact in artifacts) {
+      if (artifact.os == platform.os && artifact.arch == platform.arch) return artifact;
+    }
+    return null;
+  }
+}
+
+/// A plugin the registry offers.
+class PluginOffering {
+  final String id;
+  final String name;
+  final String description;
+  final List<PluginRelease> releases;
+
+  const PluginOffering({
+    required this.id,
+    required this.name,
+    required this.releases,
+    this.description = '',
+  });
+
+  factory PluginOffering.fromJson(Object? json) {
+    if (json is! Map<String, dynamic>) {
+      throw const PluginFormatException('plugin is not a JSON object');
+    }
+    return PluginOffering(
+      id: _string(json['id'], 'plugin id'),
+      name: _string(json['name'], 'plugin name'),
+      description: json['description'] is String ? json['description'] as String : '',
+      releases: (json['versions'] as List? ?? const [])
+          .map(PluginRelease.fromJson)
+          .toList(growable: false),
+    );
+  }
+
+  /// The newest release that speaks [pluginProtocol] and has a build for
+  /// [platform]; null when the plugin cannot run here at all.
+  PluginRelease? latestFor(PluginPlatform platform, {int protocol = pluginProtocol}) {
+    PluginRelease? best;
+    for (final release in releases) {
+      if (release.protocol != protocol) continue;
+      if (release.forPlatform(platform) == null) continue;
+      if (best == null || comparePluginVersions(release.version, best.version) > 0) {
+        best = release;
+      }
+    }
+    return best;
+  }
+}
+
+/// A plugin this backend has installed.
+class InstalledPlugin {
+  final String id;
+  final String version;
+  final int protocol;
+  final String os;
+  final String arch;
+  final String capabilities;
+  final bool enabled;
+
+  const InstalledPlugin({
+    required this.id,
+    required this.version,
+    required this.protocol,
+    required this.os,
+    required this.arch,
+    required this.capabilities,
+    required this.enabled,
+  });
+
+  factory InstalledPlugin.fromJson(Object? json) {
+    if (json is! Map<String, dynamic>) {
+      throw const PluginFormatException('installed plugin is not a JSON object');
+    }
+    return InstalledPlugin(
+      id: _string(json['id'], 'installed id'),
+      version: _string(json['version'], 'installed version'),
+      protocol: _int(json['protocol'], 'installed protocol'),
+      os: json['os'] is String ? json['os'] as String : '',
+      arch: json['arch'] is String ? json['arch'] as String : '',
+      capabilities: json['capabilities'] is String ? json['capabilities'] as String : '',
+      enabled: json['enabled'] == true,
+    );
+  }
+
+  List<String> get capabilityList =>
+      capabilities.split(',').map((c) => c.trim()).where((c) => c.isNotEmpty).toList(growable: false);
+}
+
+/// The answer to `GET /plugins`.
+class PluginRegistry {
+  final bool registryConfigured;
+  final List<InstalledPlugin> installed;
+  final List<PluginOffering> plugins;
+
+  const PluginRegistry({
+    required this.registryConfigured,
+    required this.installed,
+    required this.plugins,
+  });
+
+  factory PluginRegistry.fromJson(Object? json) {
+    if (json is! Map<String, dynamic>) {
+      throw const PluginFormatException('registry response is not a JSON object');
+    }
+    return PluginRegistry(
+      registryConfigured: json['registry_configured'] == true,
+      installed: (json['installed'] as List? ?? const [])
+          .map(InstalledPlugin.fromJson)
+          .toList(growable: false),
+      plugins: (json['plugins'] as List? ?? const [])
+          .map(PluginOffering.fromJson)
+          .toList(growable: false),
+    );
+  }
+
+  InstalledPlugin? installedById(String id) {
+    for (final plugin in installed) {
+      if (plugin.id == id) return plugin;
+    }
+    return null;
+  }
+
+  PluginOffering? offeringById(String id) {
+    for (final plugin in plugins) {
+      if (plugin.id == id) return plugin;
+    }
+    return null;
+  }
+}
+
+/// Where this client runs, in the registry's own naming, so no translation
+/// happens on the host side.
+class PluginPlatform {
+  final String os;
+  final String arch;
+  const PluginPlatform(this.os, this.arch);
+
+  @override
+  String toString() => '$os-$arch';
+}
+
+/// The platform this process is running on.
+///
+/// Dart exposes the OS but not the CPU architecture, so on Linux and Android
+/// (where plugin archives matter most) `uname -m` answers it, and elsewhere the
+/// version string is parsed. [override] exists for tests.
+Future<PluginPlatform> hostPlatform({String? override}) async {
+  if (override != null) {
+    final parts = override.split('-');
+    if (parts.length != 2) {
+      throw PluginFormatException('platform override "$override" is not <os>-<arch>');
+    }
+    return PluginPlatform(parts[0], parts[1]);
+  }
+
+  final os = switch (Platform.operatingSystem) {
+    'macos' => 'darwin',
+    final other => other, // linux, windows, android
+  };
+
+  final arch = await _hostArch();
+  return PluginPlatform(os, arch);
+}
+
+Future<String> _hostArch() async {
+  for (final varname in const ['PLAYHEADTV_ARCH']) {
+    final value = Platform.environment[varname];
+    if (value != null && value.isNotEmpty) return _normaliseArch(value);
+  }
+  if (Platform.isLinux || Platform.isAndroid) {
+    try {
+      final result = await Process.run('uname', ['-m']);
+      if (result.exitCode == 0) {
+        final machine = (result.stdout as String).trim();
+        if (machine.isNotEmpty) return _normaliseArch(machine);
+      }
+    } on ProcessException {
+      // Fall through to the guess below rather than fail a whole install.
+    }
+  }
+  final guess = Platform.version.contains('arm64') || Platform.version.contains('aarch64')
+      ? 'arm64'
+      : 'amd64';
+  return guess;
+}
+
+String _normaliseArch(String raw) => switch (raw.trim().toLowerCase()) {
+      'x86_64' || 'amd64' || 'x64' => 'amd64',
+      'aarch64' || 'arm64' => 'arm64',
+      'armv7l' || 'armv6l' || 'arm' => 'arm',
+      final other => other,
+    };
+
+/// Compares two plugin versions, treating digit runs as numbers so
+/// `2026.10.26` sorts above `2026.9.30`.
+int comparePluginVersions(String a, String b) {
+  final left = _versionParts(a);
+  final right = _versionParts(b);
+  for (var i = 0; i < left.length || i < right.length; i++) {
+    final l = i < left.length ? left[i] : 0;
+    final r = i < right.length ? right[i] : 0;
+    if (l != r) return l < r ? -1 : 1;
+  }
+  return 0;
+}
+
+List<int> _versionParts(String version) => RegExp(r'\d+')
+    .allMatches(version)
+    .map((m) => int.parse(m.group(0)!))
+    .toList(growable: false);
+
+String _string(Object? value, String field) {
+  if (value is String && value.trim().isNotEmpty) return value;
+  throw PluginFormatException('"$field" is missing or not a string');
+}
+
+int _int(Object? value, String field) {
+  if (value is int) return value;
+  if (value is num) return value.toInt();
+  throw PluginFormatException('"$field" is missing or not a number');
+}
+
+List<String> _stringList(Object? value, String field) {
+  if (value is List && value.isNotEmpty) {
+    return value.map((v) {
+      if (v is String) return v;
+      throw PluginFormatException('"$field" has a non-string entry');
+    }).toList(growable: false);
+  }
+  throw PluginFormatException('"$field" is missing or empty');
+}
