@@ -97,3 +97,15 @@ Duration preloadRetryDelay(int failures, Duration base) {
 
 /// The default [base] of [preloadRetryDelay]: 1s, 2s, 4s, 8s, then 16s.
 const defaultPreloadRetryBase = Duration(seconds: 1);
+
+/// The floor for a source that costs the host real work per attempt. Resolving a
+/// plugin source runs an extractor and starts a remux for the item, so retrying
+/// it every couple of seconds spends the host's CPU on attempts that just failed.
+const costlySourceRetryFloor = Duration(seconds: 15);
+
+/// [preloadRetryDelay] for a source that is expensive to ask again (see
+/// [costlySourceRetryFloor]).
+Duration preloadRetryDelayFor({required int failures, required Duration base, required bool costlySource}) {
+  final delay = preloadRetryDelay(failures, base);
+  return costlySource && delay < costlySourceRetryFloor ? costlySourceRetryFloor : delay;
+}

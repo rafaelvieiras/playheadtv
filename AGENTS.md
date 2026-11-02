@@ -103,6 +103,15 @@ or LLM, and to every artifact in the repo:
   moves it, and a remux stream is produced at playback speed (`-re`) so its
   sliding window never runs ahead of the player and deletes what it has not
   fetched yet.
+- A plugin stream begins where the backend was told to start it, so the engine
+  counts its position from that stream's own zero. Everything that reads a
+  position has to add `_playbackOffset` back (the OSD does, through
+  `osdPosition`); without it a viewer who tuned in 20 minutes into a program sees
+  a clock stuck at the first seconds while the picture is right.
+- Resolving is not free: each answer starts an extractor run and a `-re` remux on
+  the host, so the client keeps a resolved url for `pluginStreamReuse` and drops
+  it the moment an open with it fails, and a failing **plugin** preload backs off
+  to `costlySourceRetryFloor` instead of the 1-2s a cheap source gets.
 - A plugin-backed entry is played by its **catalog item id**, never by the source's
   own id (`entry.program.catalogItemId`, not `entry.id`, which is what a Jellyfin
   stream URL wants). And the play request is not a normal API call: it waits for an

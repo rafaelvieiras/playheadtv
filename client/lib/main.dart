@@ -434,6 +434,12 @@ const minTransitionInterval = Duration(seconds: 5);
 // before issue #9.
 const epgSyncTolerance = Duration(seconds: 2);
 
+/// How long a url resolved for a plugin source is reused. Resolving is not free:
+/// the host runs an extractor and starts a second remux for the same item, so a
+/// retry of the same open must reuse the answer while the stream it names is
+/// still alive. Short enough that a dead stream is re-resolved soon.
+const pluginStreamReuse = Duration(seconds: 45);
+
 /// Minimum time between two focus steps while an arrow is held in the EPG.
 const epgHoldRepeatInterval = Duration(milliseconds: 90);
 
@@ -680,6 +686,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   double _opacityA = 1;
   double _opacityB = 0;
   int _currentIndex = -1;
+
+  /// Where the item on air began playing inside itself, when the source already
+  /// started there (a plugin stream). The engine counts from that stream's own
+  /// zero, so the OSD adds this back — without it a viewer who tuned in 20
+  /// minutes into a program sees a clock stuck at the first seconds.
+  Duration _playbackOffset = Duration.zero;
   // The controller that is the picture of `channel[_headIndex]` (set together
   // with `_currentIndex` whenever an item takes over). `_picturePlayhead` reads
   // where the viewer really is in the schedule from it.
@@ -1336,29 +1348,47 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     Log.debug('player', 'opening item ${entry.id} (seek=${seekTo?.inSeconds ?? 0}s, offset=${entry.itemOffset.inSeconds}s)');
     try {
       final prepared = await _prepareController(controller, entry, seekTo,
-          alreadyPositioned: source.prePositioned);
+          alreadyPositioned: source.startOffset > Duration.zero);
       Log.debug('player', 'item ${entry.id} opened in ${clock.elapsedMilliseconds}ms');
       return prepared;
     } catch (e) {
       Log.debug('player', 'item ${entry.id} failed to open after ${clock.elapsedMilliseconds}ms', error: e);
+      // Whatever url was used may be the reason: never reuse it for the retry.
+      _resolvedStreams.remove(_streamKey(entry, entry.itemOffset + (seekTo ?? Duration.zero)));
       unawaited(disposeController(controller));
       rethrow;
     }
   }
 
-  /// The url this unit plays from.
+  // A url resolved for a plugin source, kept for [pluginStreamReuse]. Never
+  // handed to another item (the key carries the item and the exact position).
+  final Map<String, ({Uri uri, DateTime at})> _resolvedStreams = {};
+
+  String _streamKey(ChannelEntry entry, Duration position) => '${entry.id}|${position.inMilliseconds}';
+
+  /// True when this unit has no media-server item of its own and can only be
+  /// played by asking a plugin for a url (see `_entrySource`).
+  bool _needsPlugin(ChannelEntry entry) => (entry.program?.requires ?? const <EpgRequirement>[]).isNotEmpty;
+
+  /// The url this unit plays from, and where inside the item that url begins.
   ///
   /// A media-server item is a plain url. An item whose source is a plugin has no
   /// media-server id at all: the plugin runs where its tools exist (the backend
-  /// host), so the client asks the backend for a url and plays that. The url is
-  /// asked for on **every** open (preload, tune-in, resync) and never stored: it
-  /// carries the plugin's own token and expires, and a `remux` stream exists only
-  /// while its process runs.
-  Future<({Uri uri, bool prePositioned})> _entrySource(ChannelEntry entry, {Duration? seekTo}) async {
+  /// host), so the client asks the backend for a url and plays that. The url
+  /// carries the plugin's own token and expires, and a `remux` stream exists
+  /// only while its process runs — but asking twice for the same item starts a
+  /// second extractor and a second remux on the host, so an answer is kept for
+  /// [pluginStreamReuse] and dropped the moment an open with it fails.
+  ///
+  /// `startOffset` is non-zero only when the source itself begins at a position
+  /// (the plugin starts its stream there). The engine then counts from that
+  /// stream's own zero, so everything that reads a position has to add the
+  /// offset back — see `_playbackOffset`.
+  Future<({Uri uri, Duration startOffset})> _entrySource(ChannelEntry entry, {Duration? seekTo}) async {
     final program = entry.program;
     final requires = program?.requires ?? const <EpgRequirement>[];
     if (requires.isEmpty) {
-      return (uri: Uri.parse(streamUrl(entry.id)), prePositioned: false);
+      return (uri: Uri.parse(streamUrl(entry.id)), startOffset: Duration.zero);
     }
 
     final runtime = await OfflineRuntime.ensure();
@@ -1372,11 +1402,24 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     }
     // The position travels with the request: the plugin starts its stream there,
     // so a viewer who tuned in 20 minutes into a program does not wait for it.
+    final key = _streamKey(entry, position);
+    final cached = _resolvedStreams[key];
+    final startOffset = position > Duration.zero ? position : Duration.zero;
+    if (cached != null && DateTime.now().difference(cached.at) < pluginStreamReuse) {
+      Log.debug('player', 'item ${entry.id} reusing the url resolved '
+          '${DateTime.now().difference(cached.at).inSeconds}s ago (start=${position.inSeconds}s)');
+      return (uri: cached.uri, startOffset: startOffset);
+    }
     final uri = await runtime.api.playUrl(itemId, startAt: position);
     Log.debug('player', 'item ${entry.id} resolved by "${requires.first.id}" '
         '(start=${position.inSeconds}s)');
+    // Bounded: an entry that can no longer be reused is dropped on every insert,
+    // so a long session that hops channels never accumulates urls.
+    final now = DateTime.now();
+    _resolvedStreams.removeWhere((_, v) => now.difference(v.at) >= pluginStreamReuse);
+    _resolvedStreams[key] = (uri: uri, at: now);
     // A stream the plugin produced from a start offset already begins there.
-    return (uri: uri, prePositioned: position > Duration.zero);
+    return (uri: uri, startOffset: startOffset);
   }
 
   Future<VideoPlayback> _prepareController(VideoPlayback controller, ChannelEntry entry, Duration? seekTo,
@@ -1460,6 +1503,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
   Future<void> _startChannel({Duration initialSeek = Duration.zero, required int generation}) async {
     final entry = channel[0];
+    // A plugin stream begins where the backend was told to start it, so the
+    // engine's position counts from that stream's zero, not the item's.
+    _playbackOffset = _needsPlugin(entry) ? entry.itemOffset + initialSeek : Duration.zero;
     final controller = await _createController(entry, seekTo: initialSeek);
     if (generation != _loadGeneration || !mounted) {
       Log.debug('player', 'channel start abandoned after the controller opened (generation $generation, mounted=$mounted)');
@@ -1590,7 +1636,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
           if (failures == preloadAttemptsBeforeError) Log.error('preload', 'item $nextIndex failed $failures times; still retrying', error: e);
           setState(() => _status = 'ERROR: preload of ${nextEntry.label} failed, retrying… ($e)');
         }
-        await Future<void>.delayed(preloadRetryDelay(failures, AppConfig.preloadRetryBase));
+        await Future<void>.delayed(preloadRetryDelayFor(
+          failures: failures,
+          base: AppConfig.preloadRetryBase,
+          costlySource: _needsPlugin(nextEntry),
+        ));
         continue;
       }
       clock.stop();
@@ -1769,6 +1819,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _currentIndex = nextIndex;
       _headController = incoming;
       _headIndex = nextIndex;
+      _playbackOffset = Duration.zero;
       _status = 'playing: ${nextEntry.label}';
     });
     _syncWatermark();
@@ -2014,6 +2065,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _currentIndex = index;
       _headController = controller;
       _headIndex = index;
+      _playbackOffset = Duration.zero;
       _status = 'playing: ${entry.label}';
     });
     _syncWatermark();
@@ -3038,6 +3090,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                     progressByClock: osd != null,
                     resolveSubject: () => _osdSubjectAt(_currentIndex),
                     playhead: _picturePlayhead,
+                    positionOffset: _playbackOffset,
                     controller: _aIsActive ? _controllerA : _controllerB,
                     focusMode: _osdFocusNotifier,
                     onOpenSubtitles: () => _openTrackPicker(TrackSelectorPanel.subtitle, singlePanel: true),

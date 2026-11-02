@@ -109,4 +109,27 @@ void main() {
       expect(preloadAttemptsBeforeError, greaterThan(1));
     });
   });
+
+  group('preloadRetryDelayFor', () {
+    test('a cheap source keeps the plain growth', () {
+      expect(preloadRetryDelayFor(failures: 1, base: const Duration(seconds: 1), costlySource: false),
+          const Duration(seconds: 1));
+      expect(preloadRetryDelayFor(failures: 3, base: const Duration(seconds: 1), costlySource: false),
+          const Duration(seconds: 4));
+    });
+
+    test('an expensive source never retries sooner than the floor', () {
+      for (var failures = 1; failures <= 6; failures++) {
+        final delay = preloadRetryDelayFor(failures: failures, base: const Duration(seconds: 1), costlySource: true);
+        expect(delay, greaterThanOrEqualTo(costlySourceRetryFloor), reason: 'failure $failures');
+      }
+    });
+
+    test('the floor does not shorten a longer backoff', () {
+      expect(preloadRetryDelayFor(failures: 30, base: const Duration(seconds: 1), costlySource: true),
+          preloadRetryDelay(30, const Duration(seconds: 1)));
+    });
+  });
+
 }
+
