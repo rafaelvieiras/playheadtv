@@ -41,6 +41,13 @@ class Log {
   static const maxMessageLength = 4000;
   static void Function(String line)? _extraSink;
 
+  /// Mirrors every line to [sink] as well (the file, when there is one).
+  /// Installed by a peek build so `adb logcat` sees what the app logged on a
+  /// device whose log file is not reachable; null in every normal build.
+  static void mirrorTo(void Function(String line)? sink) {
+    _extraSink = sink;
+  }
+
   /// The level in force right now.
   static LogLevel get level => _level;
 

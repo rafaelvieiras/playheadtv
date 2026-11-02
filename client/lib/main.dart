@@ -517,7 +517,13 @@ Future<void> main() async {
   _installErrorLogging();
   // A device with no reachable log file needs the log on screen to be readable
   // at all, so the peek build also records every level.
-  if (logPeekEnabled) Log.setRuntimeLevel(LogLevel.debug);
+  if (logPeekEnabled) {
+    Log.setRuntimeLevel(LogLevel.debug);
+    // The platform console is the only channel a device without a reachable log
+    // file has, so a peek build writes there too (debugPrint, not print: the
+    // analyzer's avoid_print exists to keep app code off the console).
+    Log.mirrorTo(debugPrint);
+  }
   await applyStartupFullScreen();
   BootTrace.mark('fullscreen_applied');
   selectVideoEngine(resolveVideoEngineKind(
@@ -1701,7 +1707,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         return;
       }
       _stallResyncs++;
-      Log.warn('player', 'picture stopped at ${state.position.inSeconds}s; reopening the channel '
+      // The buffer at the moment it stopped tells apart the two ways a picture
+      // stops: a source that ended (nothing buffered ahead) from a decoder that
+      // will not advance (plenty buffered, still frozen).
+      Log.warn('player', 'picture stopped at ${state.position.inSeconds}s '
+          '(buffered ahead ${state.bufferedUntil == null ? 'unknown' : '${(state.bufferedUntil! - state.position).inSeconds}s'}, '
+          'playing ${state.isPlaying}, buffering ${state.isBuffering}); reopening the channel '
           '(attempt $_stallResyncs of $playbackStallResyncsBeforeGivingUp)');
       unawaited(_switchToChannelIndex(_channelIndex));
     });

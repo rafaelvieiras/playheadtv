@@ -714,20 +714,23 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   stall path must keep all three working (`loading_navigation_test.dart`). The
   GL queue valve (`glOpQueueTimeout`, 20s) still bounds how long a switch can
   wait behind a stuck `initialize()`.
-- A plugin stream is only as good as its HLS shape, and the shape has three
-  rules that were each learned the hard way on a set-top box: fragmented MP4
-  segments, never MPEG-TS (the sources are fMP4; TS repackaging makes a player
-  reverse PES packets and Annex-B access units, and it loses the stream when a
-  segment is cut mid-packet); an `event` playlist, never a sliding live window (at
-  the moment a player opens it a fresh stream lists one segment, and a player that
-  follows a live edge has no cushion and stops as soon as it played what was
-  listed); and **no `-re`** — a remux paced to real time hands the player one
-  segment at a time and keeps it permanently at the edge, so any hiccup leaves the
-  picture frozen for a moment and it never gets a cushion back. Reading ahead is
-  only safe because the playlist is `event` and keeps what it produced; the cost is
-  disk, proportional to the part of the item already fetched. Symptom of all
-  three, from the client's side, is the same: the picture stops after ~6-12 s (one
-  segment) with no error.
+- A plugin stream that arrives as HLS has no shape that survives contact with a
+  `-c copy` remux, and that is why the plugin serves **one continuous fragmented
+  MP4 body** instead (no segments, no playlist, no disk). The muxer cannot cut
+  where it wants: video only on keyframes, audio anywhere, so one stream ends up
+  with segments of 3.0s, 12.28s and 0.13s and audio starting seconds after the
+  video — measured, and the reason every earlier shape failed one after another
+  (MPEG-TS stalled on PES reassembly, a sliding window left a fresh player with
+  one segment and no cushion, `-re` kept the player permanently at the edge). A
+  single body has no boundaries to disagree about, and its pacing is the player's
+  own read speed: the write into the HTTP response blocks when the player stops
+  reading, which backpressures the muxer. Two rules are load-bearing and easy to
+  undo by accident: the body is `-movflags +frag_keyframe+empty_moov
+  +default_base_moof` (playable from its first bytes, never finished), and both
+  inputs are cut at the **same keyframe** (a probe finds it; without it the video
+  keeps its earlier keyframe while the audio is cut at the requested time, and the
+  first seconds have picture and no sound). Symptom when either breaks is the one
+  below: a picture that stops seconds in, with data already buffered.
 - A frozen picture has three possible witnesses and they are not interchangeable.
   The engine may fail loudly (`VideoPlayerValue.hasError`, logged by
   `ControllerPlayback`), it may say nothing while the position stops (the player
