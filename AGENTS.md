@@ -85,6 +85,17 @@ or LLM, and to every artifact in the repo:
   route with neither a tool nor a justified `NoMCPCounterpart` entry.
 - `storage.DB` is the only interface the rest of the backend sees — never
   branch on "self-hosted vs cloud-sync" outside `internal/storage`.
+- `client/lib/plugin/` is the client half of that host: it installs an artifact
+  from the backend's registry mirror (SHA-256 verified before extraction, tar
+  with traversal/size guards, staged install with an atomic swap) and drives the
+  process over protocol 1. It never lists a catalog (the backend owns the grid)
+  and never trusts plugin output. A resolve answer arrives in a **mode**:
+  `single`, `pair` (the player merges two tracks; the default, and free) or
+  `remux` (the plugin produces the stream itself, offered only where the engine
+  cannot merge). No path in the client may transcode, and none may name a site.
+- `EpgEntry.requires` (from `GET /epg`, kept in the offline cache) is how the
+  client learns a channel needs a plugin. A channel whose plugin is missing or
+  too old is hidden, never tuned into an error.
 - **No site-specific source code, ever.** Some sources (a video-sharing site,
   anything that needs an extractor) are not implemented here: they are
   external plugins, and the core only implements the host half — install,
