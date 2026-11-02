@@ -36,6 +36,7 @@ const _settingsRows = [
   'settings-server-tile',
   'settings-controls-tile',
   'settings-offline-tile',
+  'settings-plugins-tile',
   'settings-fullscreen-tile',
   'settings-ui-scale-tile',
   'settings-preload-lead-tile',

@@ -28,4 +28,7 @@ abstract final class AppIcons {
   static const IconData diagnostics = Symbols.bug_report;
   static const IconData logLevel = Symbols.tune;
   static const IconData videoEngine = Symbols.movie;
+  static const IconData plugin = Symbols.extension;
+  static const IconData pluginOff = Symbols.extension_off;
+  static const IconData pluginMissing = Symbols.extension_off;
 }

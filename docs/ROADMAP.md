@@ -1265,7 +1265,10 @@ repo never contains.
       starts there. `playbackPluginModes` is `single,remux` today, because the
       engine seam still opens one url; `pair` joins it when the player can merge
       two tracks.
-- [ ] Client side: plugin manager in Settings (list required plugins, download
+- [x] Settings -> "Plugins": the union of what the registry offers and what this
+      device has, installed by selecting a row (with download progress), plus a
+      dialog to turn one off or remove it. Six-button only.
+- [ ] (superseded) Client side: plugin manager in Settings (list required plugins, download
       from the backend registry, verify hash, install/remove/enable), a channel
       filter that hides channels whose plugin is missing plus the Settings
       notice, and a `media.resolve` call in the playback path (preload, tune-in
