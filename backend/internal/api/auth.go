@@ -393,6 +393,12 @@ var deviceOrSessionGET = map[string]bool{
 	"/epg":      true,
 	"/epg/meta": true,
 	"/channels": true,
+	// Which plugins exist, and whether this backend has one installed and on. A
+	// playback client needs it to know that a channel it was given can actually be
+	// played here: it decides what to show from its guide, and the guide names the
+	// plugin per entry. Read-only and no secret; installing and removing stay
+	// session-only.
+	"/plugins": true,
 }
 
 // isOpenPath reports whether the request needs no authentication at all.

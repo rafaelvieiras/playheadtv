@@ -246,6 +246,18 @@ func TestDeviceTokenAuthorizesEPGAndRevocationInvalidatesIt(t *testing.T) {
 		t.Fatalf("GET /epg with device token: status = %d, body = %s", rec2.Code, rec2.Body.String())
 	}
 
+	// A playback client also reads which plugins exist: that is how it knows a
+	// channel from its guide can be played here at all.
+	for _, path := range []string{"/plugins"} {
+		req := httptest.NewRequest("GET", path, nil)
+		req.Header.Set("Authorization", "Bearer "+createResp.Token)
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s with device token: status = %d, body = %s", path, rec.Code, rec.Body.String())
+		}
+	}
+
 	del := doRequest(t, mux, "DELETE", "/devices/"+createResp.Device.ID, "")
 	if del.Code != http.StatusNoContent {
 		t.Fatalf("delete device: status = %d, body = %s", del.Code, del.Body.String())
