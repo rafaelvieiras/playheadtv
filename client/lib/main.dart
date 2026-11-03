@@ -781,8 +781,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   final StallWatcher _stall = StallWatcher();
   Timer? _stallTimer;
   int _stallResyncs = 0;
-  // In-place nudges of a stopped clock; reset whenever the position moves again.
-  int _stallNudges = 0;
+  // A stopped position that had media buffered ahead: reported once, not acted on.
+  bool _stallBufferedReported = false;
   Timer? _advanceTimer;
   Timer? _volumeRampTimer;
   final FocusNode _focusNode = FocusNode();
@@ -1696,7 +1696,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       );
       if (verdict == StallState.progressing) {
         _stallResyncs = 0;
-        _stallNudges = 0;
+        _stallBufferedReported = false;
         return;
       }
       if (verdict != StallState.stalled) return;
@@ -1709,18 +1709,20 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         _stallTimer = null;
         return;
       }
-      // A position that stops with data already buffered is the engine's clock,
-      // not the source: on this class of device the platform's audio timestamps
-      // are reported as spurious and the position freezes while the picture keeps
-      // moving. Nudging the position forward flushes the renderers and costs
-      // nothing; resolving the item again costs a stream, and used to make the
-      // channel reload every half minute for a clock that was only confused.
+      // A position that stops with media already ahead of it is not a source
+      // that ended, and both remedies tried here made it worse. Seeking restarts
+      // the stream where it is: a device reports `buffering` for as long as a
+      // growing playlist is followed, the position froze with fifty seconds
+      // buffered, and every nudge replayed the same twenty seconds. Reopening
+      // resolves the same item again. Both were chasing a clock, not a picture —
+      // so the picture is left alone and the disagreement is logged once.
       final ahead = state.bufferedUntil == null ? Duration.zero : state.bufferedUntil! - state.position;
-      if (ahead > playbackStallBufferedAhead && _stallNudges < playbackStallNudgesBeforeReopen) {
-        _stallNudges++;
-        Log.warn('player', 'the clock stopped at ${state.position.inSeconds}s with ${ahead.inSeconds}s buffered; '
-            'nudging it forward (nudge $_stallNudges of $playbackStallNudgesBeforeReopen)');
-        unawaited(head.seekTo(state.position + const Duration(milliseconds: 750)));
+      if (ahead > playbackStallBufferedAhead) {
+        if (!_stallBufferedReported) {
+          _stallBufferedReported = true;
+          Log.warn('player', 'the reported position stopped at ${state.position.inSeconds}s with '
+              '${ahead.inSeconds}s already buffered; leaving the picture alone');
+        }
         return;
       }
 

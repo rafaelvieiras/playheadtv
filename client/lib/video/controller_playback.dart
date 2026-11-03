@@ -55,7 +55,6 @@ abstract class ControllerPlayback implements VideoPlayback {
       position: _clock.advance(
         engine: v.position,
         playing: v.isPlaying,
-        buffering: v.isBuffering,
         bufferedUntil: bufferedUntil,
         duration: v.duration,
       ),

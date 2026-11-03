@@ -748,15 +748,20 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   fourth witness (`lib/video/playhead_clock.dart`). Measured on a device whose
   audio timestamps come back as `Spurious audio timestamp (system clock
   mismatch)`: the position froze at 7.7s while the picture kept moving and 60-80s
-  sat buffered, so every reader believed playback had stopped — the OSD clock
-  stopped counting and the stall guard reopened the channel every half minute for
-  a stream that was fine. `ControllerPlayback.state` now adds wall time itself
-  while the engine is playing and not buffering, takes the engine's answer as the
-  anchor whenever it advances, and never runs past the furthest point buffered.
-  That cap is what keeps the guard honest: a source that really dies stops
-  buffering, the clock stops at the cap, and the guard still fires. Don't read the
-  raw engine position anywhere else, and don't drop the cap to keep the clock
-  smooth — a dead channel would then look alive forever.
+  sat buffered, so every reader believed playback had stopped. `ControllerPlayback.state`
+  now adds wall time itself while the engine is playing, takes the engine's answer
+  as the anchor whenever it advances, and never runs past the furthest point
+  buffered. That cap is what keeps the guard honest: a source that really dies
+  stops buffering, the clock stops at the cap, and the guard still fires. Don't
+  read the raw engine position anywhere else, and don't drop the cap to keep the
+  clock smooth — a dead channel would then look alive forever. Two rules were
+  learned the hard way on top of that. `isBuffering` is not a witness on a stream
+  that grows (a followed event playlist reports buffering for as long as it is
+  followed), so time passes on `isPlaying` alone. And a stopped position **with
+  media buffered ahead of it** is left alone: both remedies tried first made it
+  worse — a seek restarts the stream where it is, so every nudge replayed the same
+  twenty seconds while the picture was fine, and a reopen resolves the same item
+  again. 
 - A catalog item with a non-positive duration (reproduced 2026-09-30: a
   Jellyfin library item synced with `RunTimeTicks: 0`, missing/unprobed
   metadata) breaks the entire channel-assembly model if it ever reaches a

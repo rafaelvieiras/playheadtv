@@ -10,8 +10,8 @@
 /// the guide, the stall guard) then believes playback has stopped.
 ///
 /// This clock keeps the engine's answer as the anchor and only runs on its own
-/// where the engine has stopped advancing: while it is playing and not
-/// buffering, wall time is added since the last sample. It never runs past what
+/// where the engine has stopped advancing: while it is playing, wall time is
+/// added since the last sample. It never runs past what
 /// is already buffered or past the end of the media, so a source that really
 /// died still reports a position that stops moving, and the stall guard keeps
 /// working.
@@ -32,7 +32,7 @@ class PlayheadClock {
   bool _anchored = false;
 
   /// When [_reported] was last computed, null while time is not passing (paused,
-  /// buffering, closed).
+  /// closed).
   DateTime? _sampledAt;
 
   /// The furthest point ever reported as buffered since the engine last
@@ -45,11 +45,14 @@ class PlayheadClock {
   ///
   /// [engine] is what the engine answered just now, [bufferedUntil] the end of
   /// what it has buffered (null when unknown) and [duration] the length of the
-  /// media (zero when unknown).
+  /// media (zero when unknown). Only [playing] stops time: an engine that claims
+  /// to be buffering while it is playing is not evidence of anything (a growing
+  /// playlist reports that for as long as it is followed), and the buffer cap
+  /// below already holds the position where the media ends, which is the case
+  /// that matters.
   Duration advance({
     required Duration engine,
     required bool playing,
-    required bool buffering,
     Duration? bufferedUntil,
     Duration duration = Duration.zero,
   }) {
@@ -73,8 +76,7 @@ class PlayheadClock {
       _bufferCeiling = bufferedUntil;
     }
 
-    final passing = playing && !buffering;
-    if (!passing) {
+    if (!playing) {
       _sampledAt = null;
       return _reported;
     }
