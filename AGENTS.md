@@ -201,6 +201,14 @@ or LLM, and to every artifact in the repo:
   `BackKeyGuard` (above the Navigator) consumes any Back a page left unhandled,
   so the platform default (finish the activity) can never skip the exit dialog;
   a new page that reacts to Back still handles it itself.
+- The mosaic's featured-tile preview plays whatever the channel is airing, from
+  the offline cache: a media-server item as a plain url, and an item behind a
+  plugin through the backend's play route, exactly as the player does (the url
+  already begins at the position asked for, so the preview must not seek it).
+  Resolving a plugin url costs the host a process, so the preview waits
+  `mosaicPluginPreviewDwell` before asking — a visit that lasts a second (Back,
+  then straight into another channel) starts nothing — and an item that cannot
+  be resolved leaves the tile's placeholder instead of blocking the screen.
 - The mosaic frame fills the screen height (`lib/mosaic_layout.dart`) and its
   focus moves spatially (`lib/mosaic_nav.dart`, pure: the opposite arrow returns
   to the origin, empty slots are skipped). Text, icons, paddings and focus rings
