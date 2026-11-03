@@ -1689,10 +1689,6 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       }
       final state = head.state;
       if (!state.isInitialized) return;
-      // TEMPORARY instrument: what the engine reports every check, so a frozen
-      // position can be told apart from a frozen picture.
-      Log.debug('player', 'tick pos=${state.position.inSeconds} buf=${state.bufferedUntil?.inSeconds} '
-          'playing=${state.isPlaying} buffering=${state.isBuffering}');
       final verdict = _stall.observe(
         position: state.position,
         playing: state.isPlaying && !state.isBuffering,

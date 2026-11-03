@@ -99,16 +99,14 @@ or LLM, and to every artifact in the repo:
   the URL to the address the client used (the port, path and token stay the
   plugin's) and answers `no-store`. That keeps "the backend never processes video"
   true — it hands out a link, it does not pipe or decode. A plugin that runs
-  beside the backend listens on loopback by default; `PLAYHEADTV_PLUGIN_LISTEN`
-  moves it, and a remux stream is produced at playback speed (`-re`) so its
-  sliding window never runs ahead of the player and deletes what it has not
-  fetched yet.
+  beside the backend listens on loopback by default and `PLAYHEADTV_PLUGIN_LISTEN`
+  moves it.
 - A plugin stream begins where the backend was told to start it, so the engine
   counts its position from that stream's own zero. Everything that reads a
   position has to add `_playbackOffset` back (the OSD does, through
   `osdPosition`); without it a viewer who tuned in 20 minutes into a program sees
   a clock stuck at the first seconds while the picture is right.
-- Resolving is not free: each answer starts an extractor run and a `-re` remux on
+- Resolving is not free: each answer starts an extractor run and a remux on
   the host, so the client keeps a resolved url for `pluginStreamReuse` and drops
   it the moment an open with it fails, and a failing **plugin** preload backs off
   to `costlySourceRetryFloor` instead of the 1-2s a cheap source gets.
@@ -714,23 +712,28 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   stall path must keep all three working (`loading_navigation_test.dart`). The
   GL queue valve (`glOpQueueTimeout`, 20s) still bounds how long a switch can
   wait behind a stuck `initialize()`.
-- A plugin stream that arrives as HLS has no shape that survives contact with a
-  `-c copy` remux, and that is why the plugin serves **one continuous fragmented
-  MP4 body** instead (no segments, no playlist, no disk). The muxer cannot cut
-  where it wants: video only on keyframes, audio anywhere, so one stream ends up
-  with segments of 3.0s, 12.28s and 0.13s and audio starting seconds after the
-  video — measured, and the reason every earlier shape failed one after another
-  (MPEG-TS stalled on PES reassembly, a sliding window left a fresh player with
-  one segment and no cushion, `-re` kept the player permanently at the edge). A
-  single body has no boundaries to disagree about, and its pacing is the player's
-  own read speed: the write into the HTTP response blocks when the player stops
-  reading, which backpressures the muxer. Two rules are load-bearing and easy to
-  undo by accident: the body is `-movflags +frag_keyframe+empty_moov
-  +default_base_moof` (playable from its first bytes, never finished), and both
-  inputs are cut at the **same keyframe** (a probe finds it; without it the video
-  keeps its earlier keyframe while the audio is cut at the requested time, and the
-  first seconds have picture and no sound). Symptom when either breaks is the one
-  below: a picture that stops seconds in, with data already buffered.
+- A `-c copy` remux shapes the stream, so the shape the plugin serves is HLS
+  with **one playlist per track** — `v0/index.m3u8` and `audio/index.m3u8` under
+  one `master.m3u8` that the plugin writes itself — and one ffmpeg process per
+  track. Measured reasons, each one a shape that failed before this: the muxer
+  cannot cut where it wants (video only on keyframes, audio anywhere), so a
+  single two-input process spends segments of 3.0s, 12.28s and 0.13s with audio
+  starting seconds after the video, and the audio variant then trails the video's
+  by one segment while a stream can sit at one segment with no cushion. A
+  repeated `-re` (pacing the remux to playback speed) leaves the player
+  permanently at the edge; without it the remux reads ahead. Rules that are
+  load-bearing and easy to undo by accident: both inputs are cut at the **same
+  keyframe** (a probe finds it; without it the video keeps its earlier keyframe
+  while the audio is cut at the requested time, and the first seconds have
+  picture and no sound); the remux runs under `exec.Command`, never
+  `exec.CommandContext` with the resolve caller's context, which killed every
+  stream one segment in; a playlist is only served once it is **complete** (ffmpeg
+  rewrites it in place, so a reader can catch it half-written); and the remux
+  takes the host's `modes` and answers HLS because a client cannot merge a
+  `pair` and media3 refuses a body without a length (`Content-Length` is what its
+  MP4 reader seeks back through, so a single streamed MP4 body never opened).
+  Symptom when any of this breaks is the one below: a picture that stops seconds
+  in, with data already buffered.
 - A frozen picture has three possible witnesses and they are not interchangeable.
   The engine may fail loudly (`VideoPlayerValue.hasError`, logged by
   `ControllerPlayback`), it may say nothing while the position stops (the player
@@ -741,6 +744,19 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   `--dart-define=PLAYHEADTV_LOG_PEEK=true` draws the in-memory log over the
   picture; that flag is what made every diagnosis in this area possible, and it
   must stay opt-in so a release build never shows it.
+- The position an engine reports can itself be wrong, and the clock is the
+  fourth witness (`lib/video/playhead_clock.dart`). Measured on a device whose
+  audio timestamps come back as `Spurious audio timestamp (system clock
+  mismatch)`: the position froze at 7.7s while the picture kept moving and 60-80s
+  sat buffered, so every reader believed playback had stopped — the OSD clock
+  stopped counting and the stall guard reopened the channel every half minute for
+  a stream that was fine. `ControllerPlayback.state` now adds wall time itself
+  while the engine is playing and not buffering, takes the engine's answer as the
+  anchor whenever it advances, and never runs past the furthest point buffered.
+  That cap is what keeps the guard honest: a source that really dies stops
+  buffering, the clock stops at the cap, and the guard still fires. Don't read the
+  raw engine position anywhere else, and don't drop the cap to keep the clock
+  smooth — a dead channel would then look alive forever.
 - A catalog item with a non-positive duration (reproduced 2026-09-30: a
   Jellyfin library item synced with `RunTimeTicks: 0`, missing/unprobed
   metadata) breaks the entire channel-assembly model if it ever reaches a
