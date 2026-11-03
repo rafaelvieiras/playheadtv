@@ -61,6 +61,23 @@ class _PluginSourceSettingsDialogState extends State<PluginSourceSettingsDialog>
   bool _saving = false;
   String? _error;
 
+  /// One node per setting, so the focus stays on the row being changed. Without
+  /// it the list is rebuilt after every write and the focus falls away, which on
+  /// a remote looks like the buttons stopped working.
+  late final List<FocusNode> _nodes = [
+    for (var i = 0; i < widget.fields.length; i++)
+      FocusNode(debugLabel: 'plugin-setting-${widget.fields[i].key}'),
+  ];
+  int _focused = 0;
+
+  @override
+  void dispose() {
+    for (final node in _nodes) {
+      node.dispose();
+    }
+    super.dispose();
+  }
+
   Future<void> _write(Object key, Object? value) async {
     setState(() {
       _saving = true;
@@ -74,13 +91,22 @@ class _PluginSourceSettingsDialogState extends State<PluginSourceSettingsDialog>
       if (!mounted) return;
       setState(() => _error = 'Could not save: $e');
     } finally {
-      if (mounted) setState(() => _saving = false);
+      if (mounted) {
+        setState(() => _saving = false);
+        if (_nodes.isNotEmpty) {
+          _nodes[_focused.clamp(0, _nodes.length - 1)].requestFocus();
+        }
+      }
     }
   }
 
   /// What Select does on one setting: the next value a `choice` offers, the
   /// other state of a `bool`, and the keyboard for anything typed.
   Future<void> _activate(PluginConfigField field) async {
+    // One write at a time. The tile stays enabled rather than being disabled
+    // while it saves: a disabled ListTile is not focusable, so the focus would
+    // fall off the row the user is changing and the next press would go nowhere.
+    if (_saving) return;
     final current = _source.settings[field.key];
     switch (field.type) {
       case 'choice':
@@ -169,7 +195,7 @@ class _PluginSourceSettingsDialogState extends State<PluginSourceSettingsDialog>
                   shrinkWrap: true,
                   children: [
                     for (var i = 0; i < widget.fields.length; i++)
-                      _fieldTile(widget.fields[i], autofocus: i == 0),
+                      _fieldTile(widget.fields[i], index: i),
                     if (_error != null)
                       ListTile(
                         key: const Key('plugin-settings-error'),
@@ -206,18 +232,22 @@ class _PluginSourceSettingsDialogState extends State<PluginSourceSettingsDialog>
     );
   }
 
-  Widget _fieldTile(PluginConfigField field, {required bool autofocus}) {
+  Widget _fieldTile(PluginConfigField field, {required int index}) {
     final help = field.help;
     return ListTile(
       key: Key('plugin-setting-${field.key}'),
-      autofocus: autofocus,
+      focusNode: _nodes[index],
+      autofocus: index == 0,
+      onFocusChange: (hasFocus) {
+        if (hasFocus) _focused = index;
+      },
       title: Text(field.label),
       subtitle: Text(
         help == null ? _valueLabel(field) : '${_valueLabel(field)} · $help',
         key: Key('plugin-setting-value-${field.key}'),
       ),
-      trailing: _saving ? null : const Icon(AppIcons.plugin),
-      onTap: _saving ? null : () => _activate(field),
+      trailing: const Icon(AppIcons.plugin),
+      onTap: () => _activate(field),
     );
   }
 }
