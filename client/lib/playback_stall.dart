@@ -18,6 +18,19 @@ const Duration playbackStallCheck = Duration(seconds: 3);
 /// into a loop of resolves.
 const int playbackStallResyncsBeforeGivingUp = 3;
 
+/// Data buffered ahead above which a stopped position is the engine's clock and
+/// not the source. Measured on a device whose audio timestamps are unreliable
+/// (the platform reports them as "spurious", and the position freezes while the
+/// picture keeps moving): the channel does not need a new stream, it needs its
+/// clock moved.
+const Duration playbackStallBufferedAhead = Duration(seconds: 3);
+
+/// How many times a stopped clock is nudged forward before the channel is
+/// reopened instead. A nudge is local and instant; a reopen costs a resolve and
+/// a fresh stream, so the cheap remedy is tried first, and a position that keeps
+/// stopping even after many nudges is not going to heal.
+const int playbackStallNudgesBeforeReopen = 20;
+
 /// What one observation of the playing position says.
 enum StallState {
   /// The position moved since the previous observation.
