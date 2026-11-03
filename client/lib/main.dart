@@ -781,6 +781,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   final StallWatcher _stall = StallWatcher();
   Timer? _stallTimer;
   int _stallResyncs = 0;
+  // In-place nudges of a stopped clock; reset whenever the position moves again.
+  int _stallNudges = 0;
   Timer? _advanceTimer;
   Timer? _volumeRampTimer;
   final FocusNode _focusNode = FocusNode();
@@ -1687,6 +1689,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       }
       final state = head.state;
       if (!state.isInitialized) return;
+      // TEMPORARY instrument: what the engine reports every check, so a frozen
+      // position can be told apart from a frozen picture.
+      Log.debug('player', 'tick pos=${state.position.inSeconds} buf=${state.bufferedUntil?.inSeconds} '
+          'playing=${state.isPlaying} buffering=${state.isBuffering}');
       final verdict = _stall.observe(
         position: state.position,
         playing: state.isPlaying && !state.isBuffering,
@@ -1694,6 +1700,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       );
       if (verdict == StallState.progressing) {
         _stallResyncs = 0;
+        _stallNudges = 0;
         return;
       }
       if (verdict != StallState.stalled) return;
@@ -1706,6 +1713,21 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         _stallTimer = null;
         return;
       }
+      // A position that stops with data already buffered is the engine's clock,
+      // not the source: on this class of device the platform's audio timestamps
+      // are reported as spurious and the position freezes while the picture keeps
+      // moving. Nudging the position forward flushes the renderers and costs
+      // nothing; resolving the item again costs a stream, and used to make the
+      // channel reload every half minute for a clock that was only confused.
+      final ahead = state.bufferedUntil == null ? Duration.zero : state.bufferedUntil! - state.position;
+      if (ahead > playbackStallBufferedAhead && _stallNudges < playbackStallNudgesBeforeReopen) {
+        _stallNudges++;
+        Log.warn('player', 'the clock stopped at ${state.position.inSeconds}s with ${ahead.inSeconds}s buffered; '
+            'nudging it forward (nudge $_stallNudges of $playbackStallNudgesBeforeReopen)');
+        unawaited(head.seekTo(state.position + const Duration(milliseconds: 750)));
+        return;
+      }
+
       _stallResyncs++;
       // The buffer at the moment it stopped tells apart the two ways a picture
       // stops: a source that ended (nothing buffered ahead) from a decoder that
