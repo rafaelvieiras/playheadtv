@@ -116,6 +116,10 @@ type (
 		ID      string `json:"id" jsonschema:"the plugin id, as listed by list_plugins"`
 		Version string `json:"version,omitempty" jsonschema:"the exact version to install; omitted installs the newest this backend can run"`
 	}
+	pluginSourceSettingsArgs struct {
+		ID       string         `json:"id" jsonschema:"the plugin-backed media source, as listed by list_plugin_sources"`
+		Settings map[string]any `json:"settings" jsonschema:"settings to change, keyed by the name its plugin declares; a key not sent keeps its value"`
+	}
 	pluginEnableArgs struct {
 		ID      string `json:"id" jsonschema:"the installed plugin"`
 		Enabled bool   `json:"enabled" jsonschema:"true to let its sources list again, false to stop it without uninstalling"`
@@ -266,6 +270,13 @@ func registerRESTTools(s *mcp.Server, db storage.DB, mux http.Handler) {
 	// Plugins (docs/PLUGINS.md). The core has no site-specific code: it installs
 	// an artifact from the configured registry, verifies its hash, runs it and
 	// talks to it over a documented protocol.
+	// The narrow door a playback client uses on a plugin source: the settings
+	// each plugin declares for it (docs/PLUGINS.md "Declared settings"), never
+	// the rest of the config.
+	addREST[noArgs](s, rc, "list_plugin_sources", "GET /plugin-sources",
+		"List plugin-backed media sources with the settings their plugins declare and the values those settings currently hold. The rest of each source's config is not returned.", false)
+	addREST[pluginSourceSettingsArgs](s, rc, "update_plugin_source_settings", "PUT /plugin-sources/{id}/settings",
+		"Change declared settings of a plugin-backed media source. Keys must be the ones the plugin's manifest declares; a key not sent keeps its value.", false)
 	addREST[noArgs](s, rc, "list_plugins", "GET /plugins",
 		"List installed plugins and every plugin/version the configured registry offers, with artifact URLs pointing at this backend. registry_configured=false means this deployment has no registry URL and nothing can be installed.", false)
 	addREST[pluginInstallArgs](s, rc, "install_plugin", "POST /plugins/{id}/install",

@@ -25,6 +25,7 @@ func Register(mux Router, db storage.DB, mat *materializer.Materializer, sync *p
 	registerAuth(mux, db)
 	registerPlugins(mux, db, plugins)
 	registerPluginPlayback(mux, db, plugins)
+	registerPluginSettings(mux, db, plugins)
 	registerPairing(mux, db, encKey)
 	registerServerConfig(mux, db, encKey)
 	registerChannels(mux, db, mat)

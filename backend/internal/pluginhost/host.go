@@ -171,6 +171,22 @@ func (h *Host) Installed(ctx context.Context, id string) (domain.Plugin, error) 
 	return p, nil
 }
 
+// Manifest reads the installed plugin's own plugin.json, so a caller can show
+// what the plugin declares without knowing anything about it. The second return
+// is false when the row exists but its files are gone: the plugin cannot run,
+// and its declared settings are not worth guessing at.
+func (h *Host) Manifest(ctx context.Context, id string) (Manifest, bool) {
+	installed, err := h.Installed(ctx, id)
+	if err != nil {
+		return Manifest{}, false
+	}
+	manifest, err := readManifest(h.InstalledDir(installed.ID, installed.Version))
+	if err != nil {
+		return Manifest{}, false
+	}
+	return manifest, true
+}
+
 // Install downloads, verifies and extracts one plugin version (empty version
 // means the newest the host can run), then records it. Installing a second
 // version replaces the first: one row and one extracted directory per plugin.

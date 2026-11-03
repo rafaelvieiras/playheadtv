@@ -222,6 +222,68 @@ class PluginOffering {
 }
 
 /// A plugin this backend has installed.
+/// One setting a plugin declares for the sources of it (protocol 1, `config`).
+///
+/// The plugin says what a source of it can be configured with, so this client can
+/// build a settings screen without knowing a single one of the plugin's keys —
+/// and without the core learning them either.
+class PluginConfigField {
+  final String key;
+  final String label;
+
+  /// `choice`, `bool`, `number` or `text`; it says how the value is written into
+  /// the source's config.
+  final String type;
+  final String? help;
+
+  /// The values a `choice` offers, in the order to offer them. Empty for every
+  /// other type.
+  final List<PluginConfigOption> options;
+
+  const PluginConfigField({
+    required this.key,
+    required this.label,
+    required this.type,
+    this.help,
+    this.options = const [],
+  });
+
+  factory PluginConfigField.fromJson(Object? json) {
+    if (json is! Map<String, dynamic>) {
+      throw const PluginFormatException('plugin config field is not a JSON object');
+    }
+    return PluginConfigField(
+      key: _string(json['key'], 'config key'),
+      label: json['label'] is String ? json['label'] as String : _string(json['key'], 'config key'),
+      type: json['type'] is String ? json['type'] as String : 'text',
+      help: json['help'] is String && (json['help'] as String).trim().isNotEmpty ? json['help'] as String : null,
+      options: (json['options'] as List? ?? const [])
+          .map(PluginConfigOption.fromJson)
+          .toList(growable: false),
+    );
+  }
+}
+
+/// One value of a [PluginConfigField] of type `choice`.
+class PluginConfigOption {
+  /// Written into the source's config exactly as declared: a number for a
+  /// numeric setting, a string for a textual one.
+  final Object? value;
+  final String label;
+
+  const PluginConfigOption({required this.value, required this.label});
+
+  factory PluginConfigOption.fromJson(Object? json) {
+    if (json is! Map<String, dynamic>) {
+      throw const PluginFormatException('plugin config option is not a JSON object');
+    }
+    return PluginConfigOption(
+      value: json['value'],
+      label: json['label'] is String ? json['label'] as String : '${json['value']}',
+    );
+  }
+}
+
 class InstalledPlugin {
   final String id;
   final String version;
@@ -231,6 +293,10 @@ class InstalledPlugin {
   final String capabilities;
   final bool enabled;
 
+  /// What this plugin declares a source of it can be configured with; empty when
+  /// it declares nothing (or its files are gone).
+  final List<PluginConfigField> configFields;
+
   const InstalledPlugin({
     required this.id,
     required this.version,
@@ -239,6 +305,7 @@ class InstalledPlugin {
     required this.arch,
     required this.capabilities,
     required this.enabled,
+    this.configFields = const [],
   });
 
   factory InstalledPlugin.fromJson(Object? json) {
@@ -253,11 +320,66 @@ class InstalledPlugin {
       arch: json['arch'] is String ? json['arch'] as String : '',
       capabilities: json['capabilities'] is String ? json['capabilities'] as String : '',
       enabled: json['enabled'] == true,
+      configFields: (json['config_fields'] as List? ?? const [])
+          .map(PluginConfigField.fromJson)
+          .toList(growable: false),
     );
   }
 
   List<String> get capabilityList =>
       capabilities.split(',').map((c) => c.trim()).where((c) => c.isNotEmpty).toList(growable: false);
+}
+
+/// One plugin-backed media source, as `GET /plugin-sources` reports it: which
+/// plugin lists it and the values of the settings that plugin declared.
+class PluginSource {
+  final String id;
+  final String name;
+  final String pluginId;
+  final bool enabled;
+  final Map<String, Object?> settings;
+
+  const PluginSource({
+    required this.id,
+    required this.name,
+    required this.pluginId,
+    required this.enabled,
+    required this.settings,
+  });
+
+  factory PluginSource.fromJson(Object? json) {
+    if (json is! Map<String, dynamic>) {
+      throw const PluginFormatException('plugin source is not a JSON object');
+    }
+    final settings = json['settings'];
+    return PluginSource(
+      id: _string(json['id'], 'source id'),
+      name: json['name'] is String ? json['name'] as String : '',
+      pluginId: json['plugin_id'] is String ? json['plugin_id'] as String : '',
+      enabled: json['enabled'] == true,
+      settings: settings is Map<String, dynamic> ? Map<String, Object?>.from(settings) : const {},
+    );
+  }
+
+  /// The label to show for one setting: the option's label when the value is one
+  /// a choice offers, the raw value otherwise.
+  String settingLabel(PluginConfigField field) {
+    final value = settings[field.key];
+    if (value == null) return 'not set';
+    for (final option in field.options) {
+      if (_sameValue(option.value, value)) return option.label;
+    }
+    if (value is bool) return value ? 'on' : 'off';
+    return '$value';
+  }
+}
+
+/// JSON numbers arrive as `int` or `double` depending on who wrote them, and
+/// `1080 == 1080.0` is true in Dart but `'1080' != 1080` is what a choice has to
+/// compare, so the comparison is made explicit.
+bool _sameValue(Object? a, Object? b) {
+  if (a is num && b is num) return a.toDouble() == b.toDouble();
+  return a == b;
 }
 
 /// The answer to `GET /plugins`.

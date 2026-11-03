@@ -67,6 +67,38 @@ and it is distributed inside the plugin's own release.
 | `protocol` | yes | Host protocol the plugin speaks. **1** is the only version so far. |
 | `entrypoint` | yes | Path of the executable inside the artifact, relative to its root. |
 | `capabilities` | yes | Subset of `["catalog.list", "media.resolve"]`. A host may drive a plugin with only one of them (the backend only lists; a client only resolves). |
+| `config` | no | The settings a source of this plugin takes, so a screen can be built from the plugin's own description. See below. |
+
+### Declared settings (`config`)
+
+A plugin's source configuration is its own: the host stores it as opaque JSON
+and hands it back verbatim. That leaves nothing to build a settings screen
+from — unless the plugin says what it accepts. `config` is that declaration:
+
+```json
+"config": [
+  {"key": "max_height", "label": "Quality", "type": "choice",
+   "help": "The tallest the stream may be.",
+   "options": [{"value": "1080", "label": "1080p"},
+               {"value": "720", "label": "720p"}]},
+  {"key": "max_items", "label": "Items to list", "type": "number"},
+  {"key": "audio_only", "label": "Audio only", "type": "bool"}
+]
+```
+
+| field | required | meaning |
+| --- | --- | --- |
+| `key` | yes | The config member the value is written to. `[a-z][a-z0-9_]*`, unique within the list. |
+| `label` | yes | Shown next to the setting. |
+| `type` | yes | `choice`, `bool`, `number` or `text`. It says how the value is written into the config: a `number` field as a JSON number, `bool` as a boolean, everything else as a string. |
+| `options` | for `choice` | The values to offer, in the order to offer them: `{"value": "<written>", "label": "<shown>"}`. |
+| `help` | no | One line of plain text under the setting. |
+
+The declaration is a promise about the plugin's own config, and a host may
+reject a manifest that cannot be rendered (an unknown `type`, a `choice` with
+no options, a key that is not a member name). It says nothing about *values*:
+the plugin still validates what it is given at resolve and list time, because a
+config can also be written by an older screen or by hand.
 
 ## Protocol
 

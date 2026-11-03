@@ -119,6 +119,52 @@ func testManifest() Manifest {
 	}
 }
 
+func TestAManifestDeclaresTheSettingsItsSourcesTake(t *testing.T) {
+	// A settings screen is built from this, so a field nobody could render is a
+	// broken release rather than an empty row on the client.
+	m := testManifest()
+	m.Config = []ConfigField{
+		{Key: "max_height", Label: "Quality", Type: ConfigTypeChoice,
+			Options: []ConfigOption{
+				{Value: json.RawMessage("1080"), Label: "1080p"},
+				{Value: json.RawMessage("720"), Label: "720p"},
+			}},
+		{Key: "audio_only", Label: "Audio only", Type: ConfigTypeBool},
+	}
+	if err := m.Validate(); err != nil {
+		t.Fatalf("a declared settings list was refused: %v", err)
+	}
+
+	broken := map[string]ConfigField{
+		"a choice with no options":        {Key: "quality", Label: "Quality", Type: ConfigTypeChoice},
+		"a key that is not a member name": {Key: "Max Height", Label: "Quality", Type: ConfigTypeText},
+		"a field with no label":           {Key: "quality", Type: ConfigTypeText},
+		"an unknown type":                 {Key: "quality", Label: "Quality", Type: "slider"},
+		"a choice option with no value": {Key: "quality", Label: "Quality", Type: ConfigTypeChoice,
+			Options: []ConfigOption{{Label: "1080p"}}},
+	}
+	for name, field := range broken {
+		t.Run(name, func(t *testing.T) {
+			m := testManifest()
+			m.Config = []ConfigField{field}
+			if err := m.Validate(); !errors.Is(err, ErrIncompatible) {
+				t.Fatalf("validate = %v, want an incompatible-plugin error", err)
+			}
+		})
+	}
+
+	t.Run("the same key twice", func(t *testing.T) {
+		m := testManifest()
+		m.Config = []ConfigField{
+			{Key: "quality", Label: "Quality", Type: ConfigTypeText},
+			{Key: "quality", Label: "Quality again", Type: ConfigTypeText},
+		}
+		if err := m.Validate(); !errors.Is(err, ErrIncompatible) {
+			t.Fatalf("validate = %v, want an incompatible-plugin error", err)
+		}
+	})
+}
+
 // registryServer serves an index and one artifact. It is the smallest thing a
 // host can install from, and it also records how many times each path was
 // fetched so a test can assert the cache was used.

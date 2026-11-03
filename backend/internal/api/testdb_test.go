@@ -72,6 +72,22 @@ func newTestDB(t *testing.T) (*storage.SQLite, *http.ServeMux) {
 // the API was registered with, for tests that run or start it.
 func newTestDBWithMaterializer(t *testing.T) (*storage.SQLite, *http.ServeMux, *materializer.Materializer) {
 	t.Helper()
+	db, mux, mat, _ := newTestDBWithDeps(t)
+	return db, mux, mat
+}
+
+// newTestDBWithPluginHost is newTestDB that also hands back the plugin host the
+// API was registered with, for tests that install an artifact's files on disk.
+func newTestDBWithPluginHost(t *testing.T) (*storage.SQLite, *http.ServeMux, *pluginhost.Host) {
+	t.Helper()
+	db, mux, _, host := newTestDBWithDeps(t)
+	return db, mux, host
+}
+
+// newTestDBWithDeps is newTestDB with everything it built, so the wrappers above
+// can hand out whichever piece a test needs.
+func newTestDBWithDeps(t *testing.T) (*storage.SQLite, *http.ServeMux, *materializer.Materializer, *pluginhost.Host) {
+	t.Helper()
 	ctx := context.Background()
 
 	dbPath := filepath.Join(t.TempDir(), "playheadtv.db")
@@ -126,7 +142,7 @@ func newTestDBWithMaterializer(t *testing.T) (*storage.SQLite, *http.ServeMux, *
 
 	outer := http.NewServeMux()
 	outer.Handle("/", RequireAuth(db, inner))
-	return db, outer, mat
+	return db, outer, mat, host
 }
 
 // doRequest always authenticates as the fixed test session (see

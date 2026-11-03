@@ -399,6 +399,22 @@ var deviceOrSessionGET = map[string]bool{
 	// plugin per entry. Read-only and no secret; installing and removing stay
 	// session-only.
 	"/plugins": true,
+	// The plugin sources and the settings their plugins declare: a playback
+	// client's Settings screen shows them and can change them through
+	// PUT /plugin-sources/{id}/settings, which exposes exactly the members each
+	// plugin declared (see plugin_settings.go). Every other field of a source
+	// stays on the session-only authoring routes.
+	"/plugin-sources": true,
+}
+
+// isPluginSettingsPath matches PUT /plugin-sources/{id}/settings.
+func isPluginSettingsPath(path string) bool {
+	rest, ok := strings.CutPrefix(path, "/plugin-sources/")
+	if !ok {
+		return false
+	}
+	id, tail, ok := strings.Cut(rest, "/")
+	return ok && id != "" && tail == "settings"
 }
 
 // isOpenPath reports whether the request needs no authentication at all.
@@ -444,6 +460,11 @@ func isOpenPath(r *http.Request) bool {
 // device token may authenticate this request — always a GET, and always
 // data a "dumb", not-logged-in playback client needs to resolve/play.
 func isDeviceOrSessionPath(r *http.Request) bool {
+	if r.Method == http.MethodPut && isPluginSettingsPath(r.URL.Path) {
+		// The one write a paired playback device may make: the settings a plugin
+		// declares for its own sources, and nothing else about the source.
+		return true
+	}
 	if r.Method != http.MethodGet {
 		return false
 	}
