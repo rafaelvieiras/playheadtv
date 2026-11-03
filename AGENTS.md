@@ -457,6 +457,25 @@ keep in mind when touching `client/`:
   `offline_coldstart_test.dart` (2), `offline_reconcile_test.dart` (2),
   `offline_exhausted_test.dart` (2), `settings_offline_test.dart` (1).
 
+## Plugin settings in the client
+
+A plugin declares the settings its sources take (`config` in its manifest,
+`docs/PLUGINS.md`), and the client's Settings -> Plugins draws the screen from
+that declaration (`lib/widgets/plugin_source_settings_dialog.dart`): it knows no
+plugin's keys, and a new plugin gets a settings screen without a line of client
+code. `Settings -> Plugins` lists one row per plugin source whose plugin declares
+anything; a `choice` cycles through the declared values, a `bool` toggles,
+`number`/`text` open the keyboard, and each change is written immediately (a
+form with a Save step has to define what a half-filled form means, which is worse
+on a remote than an immediate write). The write goes to
+`PUT /plugin-sources/{id}/settings`, the one route a device token may write, and
+the backend checks every key against the plugin's declaration and every value
+against its declared type — so the screen cannot store something the plugin
+cannot read back. Two rules learned here: keep the focused row focusable while it
+saves (a disabled `ListTile` is not focusable, so the focus fell away and the
+next Select went nowhere — the whole dialog stopped responding after one change),
+and keep one `FocusNode` per row so the focus stays put across the rebuild.
+
 ## Logging
 
 Design: `docs/ARCHITECTURE.md` "Client logging".
