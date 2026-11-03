@@ -1266,9 +1266,11 @@ repo never contains.
       starts there. `playbackPluginModes` is `single,remux` today, because the
       engine seam still opens one url; `pair` joins it when the player can merge
       two tracks.
-- [x] Settings -> "Plugins": the union of what the registry offers and what this
-      device has, installed by selecting a row (with download progress), plus a
-      dialog to turn one off or remove it. Six-button only.
+- [x] Settings -> "Plugins" on the playback client: what the backend has, what
+      it offers, and the settings a plugin declares for its sources. Six-button
+      only. The client cannot install (that downloads and runs a program on the
+      backend, session-only); it turns an installed plugin off and on and
+      removes it, and a row for a plugin the backend lacks says who installs it.
 - [x] End-to-end with a real playlist (196 videos, "History"): 177 items synced
       (the 19 dropped are premieres, which the plugin already filters),
       `GET /catalog-items/{id}/play` answers a `remux` URL in 12 s (extraction
@@ -1280,6 +1282,11 @@ repo never contains.
       the client used, and answers `no-store`. The client only fetches segments.
       This replaced the client-side plugin host, which could never work on the
       devices this app targets.
+- [x] Admin web UI: a Plugins page for the session-only half — install a
+      version the registry offers, update an installed one, turn it off or on,
+      remove it, and edit the settings each plugin declares for its sources. The
+      page draws its forms from the plugin's own `config` declaration, so a
+      plugin's new setting needs no change here.
 - [x] Hide the channels this device cannot play
       (`client/lib/plugin/channel_filter.dart`). `PluginAvailability` computes the
       answer once (one directory read, plus a bounded registry lookup), and
