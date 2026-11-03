@@ -129,6 +129,47 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
     await disposeController(preview);
   }
 
+  // Settings can change the channel list under this screen: turning a plugin off
+  // takes away the channels it feeds, and clearing the cache empties the list.
+  // Rebuilding the frame on return is what stops the mosaic from offering — and
+  // previewing — a channel that can no longer play. Nothing is touched when the
+  // set is the same, so a visit that changed nothing costs no preview restart.
+  Future<void> _reloadAfterSettings() async {
+    final runtime = _runtime;
+    await runtime.refreshAvailability();
+    if (!mounted) return;
+    final playable = playableChannels(runtime.cache, runtime.cache.channels(), runtime.availability);
+    final visible = playable.visible;
+    final before = {for (final channel in _allChannels) channel.id};
+    final after = {for (final channel in visible) channel.id};
+    if (before.length == after.length && before.containsAll(after)) return;
+    _previewGeneration++;
+    await _stopPreview();
+    if (!mounted) return;
+    if (visible.isEmpty) {
+      final status = runtime.syncer.status.value;
+      setState(() {
+        _allChannels = const [];
+        _tiles = const [];
+        _featured = null;
+        _error = playable.allHiddenByPlugins
+            ? 'No channel can play on this device yet. ${playable.reasons.join(' ')} '
+                '${playable.nextStep ?? ''}'
+                .trimRight()
+            : status.lastSucceeded
+                ? 'ERROR: no channels configured on the backend (GET /channels is empty)'
+                : 'ERROR: failed to load channels: ${status.lastError}';
+      });
+      return;
+    }
+    setState(() {
+      _error = null;
+      _allChannels = visible;
+      _resolveTiles();
+    });
+    unawaited(_startPreview());
+  }
+
   Future<void> _bootstrap() async {
     try {
       final settings = await SettingsService.create();
@@ -361,7 +402,9 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
   Future<void> _activateFocused() async {
     final tile = _tiles[_focusedIndex];
     if (tile.isSettings) {
-      Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsPage()));
+      await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsPage()));
+      if (!mounted) return;
+      await _reloadAfterSettings();
       return;
     }
     final channelId = tile.channel!.id;
