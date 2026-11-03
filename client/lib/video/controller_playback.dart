@@ -6,11 +6,15 @@ import 'package:flutter/widgets.dart';
 import 'package:video_player/video_player.dart';
 
 import '../log/log.dart';
+import 'playhead_clock.dart';
 import 'video_engine.dart';
 
 abstract class ControllerPlayback implements VideoPlayback {
   @protected
   final VideoPlayerController controller;
+
+  /// What to report as the position while the engine's own answer is unusable.
+  final PlayheadClock _clock = PlayheadClock();
 
   ControllerPlayback(this.controller) {
     // An engine that fails under a playing picture leaves no other trace: the
@@ -41,13 +45,22 @@ abstract class ControllerPlayback implements VideoPlayback {
   @override
   PlaybackState get state {
     final v = controller.value;
+    final bufferedUntil = v.buffered.isEmpty ? null : v.buffered.last.end;
     return PlaybackState(
       isInitialized: v.isInitialized,
       isPlaying: v.isPlaying,
       isBuffering: v.isBuffering,
-      position: v.position,
+      // Some devices freeze this while the picture keeps moving; the clock keeps
+      // time on its own only where the engine stopped advancing.
+      position: _clock.advance(
+        engine: v.position,
+        playing: v.isPlaying,
+        buffering: v.isBuffering,
+        bufferedUntil: bufferedUntil,
+        duration: v.duration,
+      ),
       duration: v.duration,
-      bufferedUntil: v.buffered.isEmpty ? null : v.buffered.last.end,
+      bufferedUntil: bufferedUntil,
       size: v.size,
       volume: v.volume,
     );
@@ -60,7 +73,10 @@ abstract class ControllerPlayback implements VideoPlayback {
   Future<void> pause() => controller.pause();
 
   @override
-  Future<void> seekTo(Duration position) => controller.seekTo(position);
+  Future<void> seekTo(Duration position) {
+    _clock.restart(position);
+    return controller.seekTo(position);
+  }
 
   @override
   Future<void> setVolume(double volume) => controller.setVolume(volume);
