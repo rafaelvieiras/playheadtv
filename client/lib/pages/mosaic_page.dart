@@ -60,6 +60,13 @@ class MosaicPage extends StatefulWidget {
   State<MosaicPage> createState() => _MosaicPageState();
 }
 
+/// How long the mosaic waits before asking a plugin for the featured channel's
+/// stream. A plugin-backed preview is not free: the host starts an extractor and
+/// a remux for it, so a visit that lasts a second (Back, then straight into
+/// another channel) must not start one. Long enough to skip a passing look,
+/// short enough that a viewer who stays gets the picture.
+const mosaicPluginPreviewDwell = Duration(milliseconds: 2500);
+
 class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
   late OfflineRuntime _runtime;
   late SettingsService _settings;
@@ -244,12 +251,41 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
         itemStart = clip.startAt;
         itemEnd = clip.endAt;
       }
-      if (!mounted || externalId == null) return;
+      if (!mounted) return;
 
-      final controller = trackController(videoEngine.createNetwork(Uri.parse(streamUrl(externalId))));
+      // An item whose source is a plugin has no media-server id at all, exactly
+      // as in the player (`_entrySource` in main.dart): the url comes from the
+      // backend, which runs the plugin, and it already begins at the position
+      // asked for. Resolving costs the host a process, hence the dwell, and a
+      // failure (plugin unreachable, item withdrawn) stays a placeholder.
+      final requires = entry.requires;
+      Uri source;
+      var alreadyPositioned = false;
+      if (requires.isEmpty) {
+        if (externalId == null) return;
+        source = Uri.parse(streamUrl(externalId));
+      } else {
+        // Not `entry.externalId`: that is the source's own id (the id a plugin
+        // understands), while the play route names the catalog row the guide
+        // was built from.
+        final catalogItemId = entry.catalogItemId;
+        if (catalogItemId.isEmpty) return;
+        var position = now.difference(itemStart);
+        if (position < Duration.zero) position = Duration.zero;
+        if (position > itemEnd.difference(itemStart)) position = itemEnd.difference(itemStart);
+        position += Duration(milliseconds: entry.itemOffsetMs);
+        await Future<void>.delayed(mosaicPluginPreviewDwell);
+        if (!mounted || _appHidden || generation != _previewGeneration) return;
+        source = await _runtime.api.playUrl(catalogItemId, startAt: position);
+        alreadyPositioned = true;
+        if (!mounted || _appHidden || generation != _previewGeneration) return;
+        Log.debug('mosaic', 'preview resolved by "${requires.first.id}" (start=${position.inSeconds}s)');
+      }
+
+      final controller = trackController(videoEngine.createNetwork(source));
       final clock = Stopwatch()..start();
       try {
-        await _openPreview(controller, now, itemStart, itemEnd);
+        await _openPreview(controller, now, itemStart, itemEnd, alreadyPositioned: alreadyPositioned);
         Log.debug('mosaic', 'preview opened in ${clock.elapsedMilliseconds}ms');
       } catch (e) {
         Log.warn('mosaic', 'preview failed to open after ${clock.elapsedMilliseconds}ms', error: e);
@@ -269,11 +305,15 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _openPreview(VideoPlayback controller, DateTime now, DateTime itemStart, DateTime itemEnd) async {
+  Future<void> _openPreview(VideoPlayback controller, DateTime now, DateTime itemStart, DateTime itemEnd,
+      {bool alreadyPositioned = false}) async {
     await controller.open(label: 'initialize-preview');
     if (!mounted) return;
 
-    var seek = now.difference(itemStart);
+    // A plugin stream was asked to begin at that position, so seeking again
+    // would restart it where it already is (see `_playbackOffset` in main.dart
+    // for the same rule in the player).
+    var seek = alreadyPositioned ? Duration.zero : now.difference(itemStart);
     final clipDuration = itemEnd.difference(itemStart);
     if (seek < Duration.zero) seek = Duration.zero;
     if (seek > clipDuration) seek = clipDuration;
