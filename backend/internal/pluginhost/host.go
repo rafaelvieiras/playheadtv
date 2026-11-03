@@ -30,6 +30,12 @@ const registryTTL = 5 * time.Minute
 // registryTimeout bounds one registry fetch.
 const registryTimeout = 20 * time.Second
 
+// registryForceFloor keeps an install that is looking for an unlisted version
+// from re-fetching the registry on every retry. The first miss re-fetches, so
+// the copy in hand is already the answer, and a second miss inside this window
+// would only ask the same question again.
+const registryForceFloor = 5 * time.Second
+
 // catalogPageTimeout bounds one `catalog.list` call. It is generous on purpose:
 // a plugin that lists a remote channel may have to page through a site, and the
 // alternative to waiting is a source that never populates.
@@ -70,10 +76,11 @@ type Host struct {
 	client   *http.Client
 	indexURL string
 
-	indexMu  sync.Mutex
-	index    *Index
-	indexRaw []byte
-	indexAt  time.Time
+	indexMu      sync.Mutex
+	index        *Index
+	indexRaw     []byte
+	indexAt      time.Time
+	indexForceAt time.Time
 
 	installMu sync.Mutex
 
@@ -117,12 +124,45 @@ func (h *Host) Index(ctx context.Context) (Index, []byte, error) {
 	if h.index != nil && time.Since(h.indexAt) < registryTTL {
 		return *h.index, h.indexRaw, nil
 	}
+	return h.fetchIndex(ctx, false)
+}
 
+// IndexFresh fetches the registry now instead of waiting for the TTL to expire,
+// and replaces the cached copy with it. It exists for the one case where the
+// cached copy gives a wrong answer: an install naming a version that was
+// published minutes ago and is not in the cache yet (docs/PLUGINS.md "Install").
+//
+// A round of install misses therefore costs one fetch, not one per miss:
+// registryForceFloor reuses the copy the previous miss just fetched.
+func (h *Host) IndexFresh(ctx context.Context) (Index, []byte, error) {
+	if !h.RegistryConfigured() {
+		return Index{Schema: 1}, []byte(`{"schema":1,"plugins":[]}`), nil
+	}
+	h.indexMu.Lock()
+	defer h.indexMu.Unlock()
+	if h.index != nil && time.Since(h.indexForceAt) < registryForceFloor {
+		return *h.index, h.indexRaw, nil
+	}
+	idx, raw, err := h.fetchIndex(ctx, true)
+	if err != nil {
+		return idx, raw, err
+	}
+	h.indexForceAt = time.Now()
+	return idx, raw, nil
+}
+
+// fetchIndex is the actual registry read. Callers hold indexMu. revalidate asks
+// any cache in the way to answer with the document it has now instead of the one
+// it holds: the point of the forced read is that the held copy is what is wrong.
+func (h *Host) fetchIndex(ctx context.Context, revalidate bool) (Index, []byte, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, registryTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, h.indexURL, nil)
 	if err != nil {
 		return Index{}, nil, err
+	}
+	if revalidate {
+		req.Header.Set("Cache-Control", "no-cache")
 	}
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -190,26 +230,75 @@ func (h *Host) Manifest(ctx context.Context, id string) (Manifest, bool) {
 // Install downloads, verifies and extracts one plugin version (empty version
 // means the newest the host can run), then records it. Installing a second
 // version replaces the first: one row and one extracted directory per plugin.
+// artifactToInstall resolves what to download for id; an empty version means the
+// latest one the registry lists. It answers from the cached registry copy when
+// that copy knows the version, and asks the registry again when it does not: a
+// version published minutes ago is exactly the case an install exists for, and a
+// copy that predates it would otherwise report it as absent until registryTTL
+// expired. The error therefore comes from the fresh copy, never the stale one.
+func (h *Host) artifactToInstall(ctx context.Context, id, version string) (Version, Artifact, error) {
+	idx, _, err := h.Index(ctx)
+	if err != nil {
+		return Version{}, Artifact{}, err
+	}
+	ver, artifact, ok := installTarget(idx, id, version)
+	if ok {
+		return ver, artifact, nil
+	}
+	wanted := version
+	if wanted == "" {
+		wanted = "latest"
+	}
+	logging.Infof("pluginhost: %s %s is not in the registry copy in hand, reading it again", id, wanted)
+	fresh, _, err := h.IndexFresh(ctx)
+	if err != nil {
+		return Version{}, Artifact{}, err
+	}
+	if ver, artifact, ok := installTarget(fresh, id, version); ok {
+		return ver, artifact, nil
+	}
+	return Version{}, Artifact{}, installTargetError(fresh, id, version)
+}
+
+// installTarget resolves the version and this platform's artifact for it.
+func installTarget(idx Index, id, version string) (Version, Artifact, bool) {
+	entry, ok := idx.Find(id)
+	if !ok {
+		return Version{}, Artifact{}, false
+	}
+	ver, ok := entry.VersionByNumber(version)
+	if !ok {
+		return Version{}, Artifact{}, false
+	}
+	artifact, ok := ver.ArtifactFor(runtime.GOOS, runtime.GOARCH)
+	if !ok {
+		return Version{}, Artifact{}, false
+	}
+	return ver, artifact, true
+}
+
+// installTargetError says why nothing can be installed, in the order an operator
+// can act on it: unknown plugin, unknown version, wrong platform.
+func installTargetError(idx Index, id, version string) error {
+	entry, ok := idx.Find(id)
+	if !ok {
+		return fmt.Errorf("%w: no plugin %q", ErrNotFound, id)
+	}
+	ver, ok := entry.VersionByNumber(version)
+	if !ok {
+		return fmt.Errorf("%w: %s has no version %q", ErrNotFound, id, version)
+	}
+	return fmt.Errorf("%w: %s %s ships nothing for %s/%s",
+		ErrNoArtifact, id, ver.Version, runtime.GOOS, runtime.GOARCH)
+}
+
 func (h *Host) Install(ctx context.Context, id, version string) (domain.Plugin, error) {
 	h.installMu.Lock()
 	defer h.installMu.Unlock()
 
-	idx, _, err := h.Index(ctx)
+	ver, artifact, err := h.artifactToInstall(ctx, id, version)
 	if err != nil {
 		return domain.Plugin{}, err
-	}
-	entry, ok := idx.Find(id)
-	if !ok {
-		return domain.Plugin{}, fmt.Errorf("%w: no plugin %q", ErrNotFound, id)
-	}
-	ver, ok := entry.VersionByNumber(version)
-	if !ok {
-		return domain.Plugin{}, fmt.Errorf("%w: %s has no version %q", ErrNotFound, id, version)
-	}
-	artifact, ok := ver.ArtifactFor(runtime.GOOS, runtime.GOARCH)
-	if !ok {
-		return domain.Plugin{}, fmt.Errorf("%w: %s %s ships nothing for %s/%s",
-			ErrNoArtifact, id, ver.Version, runtime.GOOS, runtime.GOARCH)
 	}
 
 	archive, err := h.downloadArtifact(ctx, artifact)
