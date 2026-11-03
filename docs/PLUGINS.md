@@ -336,6 +336,14 @@ The backend is a **caching mirror**, not a publisher:
 A backend with no registry configured serves an empty list, and a plugin
 source then simply reports "plugin not installed". Nothing else breaks.
 
+The cached document expires after a few minutes, which is plenty for a
+listing. An **install** does not wait for that: if the copy in hand does not
+list the version being installed, the host reads the registry again once
+(`Cache-Control: no-cache`, so no cache in the way can answer with the copy it
+already had) and installs from that. Installing a version published a minute
+ago therefore works without a restart, and a run of retries costs one read, not
+one per attempt.
+
 ### Trust
 
 The archive hash protects integrity in transit and in cache. When the
