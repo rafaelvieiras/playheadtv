@@ -933,3 +933,82 @@ export interface ApplyReviewResponse {
   created: boolean
   collection: Collection
 }
+
+// Mirrors backend/internal/domain.Plugin and the views in
+// backend/internal/api/plugins.go (GET /plugins). A plugin is installed on the
+// backend, which runs it: the admin page is the only way to install one.
+export interface InstalledPlugin {
+  id: string
+  version: string
+  protocol: number
+  os: string
+  arch: string
+  artifact_sha256: string
+  entrypoint: string
+  capabilities: string
+  enabled: boolean
+  installed_at: number
+  updated_at: number
+  // The settings this plugin declares for its own sources (docs/PLUGINS.md
+  // "Declared settings"), so this page can build that form without knowing a
+  // single one of the plugin's keys.
+  config_fields: PluginConfigField[]
+}
+
+export interface PluginArtifact {
+  os: string
+  arch: string
+  url: string
+  sha256: string
+  size?: number
+}
+
+export interface PluginVersion {
+  version: string
+  protocol: number
+  artifacts: PluginArtifact[]
+}
+
+// One plugin the registry offers, with every version it can install.
+export interface PluginOffering {
+  id: string
+  name: string
+  description?: string
+  versions: PluginVersion[]
+}
+
+export type PluginConfigType = 'choice' | 'bool' | 'number' | 'text'
+
+// One declared setting. `value` of a choice is whatever the plugin declared —
+// a number for a numeric setting, a string for a textual one — and is written
+// into the source's config exactly as it arrives.
+export interface PluginConfigOption {
+  value: unknown
+  label: string
+}
+
+export interface PluginConfigField {
+  key: string
+  label: string
+  type: PluginConfigType
+  options?: PluginConfigOption[]
+  help?: string
+}
+
+// Response of GET /plugins. registry_configured false means nothing can be
+// installed here at all: this deployment has no registry URL.
+export interface PluginList {
+  registry_configured: boolean
+  installed: InstalledPlugin[]
+  plugins: PluginOffering[]
+}
+
+// One plugin-backed media source (GET /plugin-sources): which plugin lists it,
+// and the values of the settings that plugin declared.
+export interface PluginSource {
+  id: string
+  name: string
+  plugin_id: string
+  enabled: boolean
+  settings: Record<string, unknown>
+}

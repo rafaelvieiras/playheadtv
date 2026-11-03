@@ -10,6 +10,7 @@ import {
   Radio,
   Scissors,
   Server,
+  Puzzle,
   Smartphone,
 } from 'lucide-react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
@@ -31,6 +32,7 @@ const NAV_ITEMS = [
   { to: '/stream-selector', label: 'Stream selector', icon: Languages, end: false },
   { to: '/media-sources', label: 'Media sources', icon: Server, end: false },
   { to: '/devices', label: 'Devices', icon: Smartphone, end: false },
+  { to: '/plugins', label: 'Plugins', icon: Puzzle, end: false },
 ]
 
 export function Layout() {

@@ -21,6 +21,7 @@ import { FillerRulesPage } from '@/pages/FillerRulesPage'
 import { LoginPage } from '@/pages/LoginPage'
 import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 import { MediaSourcesPage } from '@/pages/MediaSourcesPage'
+import { PluginsPage } from '@/pages/PluginsPage'
 import { StreamSelectorPage } from '@/pages/StreamSelectorPage'
 
 export default function App() {
@@ -56,6 +57,7 @@ export default function App() {
         <Route path="/stream-selector" element={<StreamSelectorPage />} />
         <Route path="/media-sources" element={<MediaSourcesPage />} />
         <Route path="/devices" element={<DevicesPage />} />
+        <Route path="/plugins" element={<PluginsPage />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

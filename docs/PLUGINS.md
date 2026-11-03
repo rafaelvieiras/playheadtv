@@ -423,6 +423,11 @@ filter.
   download that serves it. A client that offers an install would be offering a
   call the backend refuses; `client/lib/pages/plugins_page.dart` says who
   installs instead.
+- **The admin web UI** carries the session-only half: *Plugins*
+  (`webui/src/pages/PluginsPage.tsx`) installs a version the registry offers,
+  updates an installed one, turns it off or on, removes it, and edits the
+  settings each plugin declares for its sources — the form is built from that
+  declaration, so a plugin that adds a setting needs nothing here.
 
 ## What a host must never do
 
