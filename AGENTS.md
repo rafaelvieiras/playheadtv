@@ -142,6 +142,15 @@ or LLM, and to every artifact in the repo:
 - No auth yet: every API handler runs under one fixed tenant
   (`api.DefaultTenantID = "default"`). Don't build real multi-tenant logic
   until the Auth roadmap item exists.
+- A **device token** reads playback data and writes exactly one thing:
+  declared plugin source settings (`GET /plugin-sources`,
+  `PUT /plugin-sources/{id}/settings`). The settings a device may change are
+  the ones the plugin's manifest declares (`config`, docs/PLUGINS.md) — the
+  plugin names its own keys, the host never learns them, and a value of the
+  wrong type or a key the plugin did not declare is refused. Everything else
+  about a source stays on `/media-sources`, which is session-only. Don't move
+  that route into `isDeviceOrSessionPath`'s broad cases to "make the client
+  work": a settings screen is not a reason to hand a TV the authoring API.
 - Catalog queries live in `collection`s: dynamic blocks, filler pools and
   criteria items reference one by `collection_id` and never carry an inline
   query. The old `criteria` columns are deprecated snapshots, read only for a

@@ -50,13 +50,21 @@ type pluginCatalogView struct {
 	Versions    []pluginVersionView `json:"versions"`
 }
 
+// installedPluginView is one installed plugin plus the settings its manifest
+// declares, so a client can build a config screen without the core knowing a
+// single one of the plugin's keys (docs/PLUGINS.md).
+type installedPluginView struct {
+	domain.Plugin
+	ConfigFields []pluginhost.ConfigField `json:"config_fields"`
+}
+
 type pluginListResponse struct {
 	// RegistryConfigured is false when the deployment has no registry URL:
 	// nothing can be installed, and a client should say so rather than offer a
 	// button that always fails.
-	RegistryConfigured bool                `json:"registry_configured"`
-	Installed          []domain.Plugin     `json:"installed"`
-	Plugins            []pluginCatalogView `json:"plugins"`
+	RegistryConfigured bool                  `json:"registry_configured"`
+	Installed          []installedPluginView `json:"installed"`
+	Plugins            []pluginCatalogView   `json:"plugins"`
 }
 
 func listPlugins(db storage.DB, host *pluginhost.Host) http.HandlerFunc {
@@ -66,8 +74,16 @@ func listPlugins(db storage.DB, host *pluginhost.Host) http.HandlerFunc {
 			handleDBError(w, err)
 			return
 		}
-		if installed == nil {
-			installed = []domain.Plugin{}
+		installedViews := make([]installedPluginView, 0, len(installed))
+		for _, p := range installed {
+			view := installedPluginView{Plugin: p}
+			if manifest, ok := host.Manifest(r.Context(), p.ID); ok {
+				view.ConfigFields = manifest.Config
+			}
+			if view.ConfigFields == nil {
+				view.ConfigFields = []pluginhost.ConfigField{}
+			}
+			installedViews = append(installedViews, view)
 		}
 		idx, _, err := host.Index(r.Context())
 		if err != nil {
@@ -75,7 +91,7 @@ func listPlugins(db storage.DB, host *pluginhost.Host) http.HandlerFunc {
 			// plugins still work, so report what is installed and no catalog.
 			writeJSON(w, http.StatusOK, pluginListResponse{
 				RegistryConfigured: host.RegistryConfigured(),
-				Installed:          installed,
+				Installed:          installedViews,
 				Plugins:            []pluginCatalogView{},
 			})
 			return
@@ -97,7 +113,7 @@ func listPlugins(db storage.DB, host *pluginhost.Host) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, pluginListResponse{
 			RegistryConfigured: host.RegistryConfigured(),
-			Installed:          installed,
+			Installed:          installedViews,
 			Plugins:            views,
 		})
 	}

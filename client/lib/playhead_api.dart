@@ -672,6 +672,30 @@ class PlayheadApi {
     }
   }
 
+  /// A write whose answer is worth reading (`PUT /plugin-sources/{id}/settings`
+  /// returns the source with the settings it now holds).
+  Future<dynamic> _sendJson(String method, Uri uri, Map<String, dynamic> body) async {
+    await _acquire();
+    try {
+      final request = http.Request(method, uri)
+        ..headers.addAll(_headers)
+        ..headers['Content-Type'] = 'application/json';
+      request.body = jsonEncode(body);
+      final response = await http.Response.fromStream(
+        await _client.send(request).timeout(const Duration(seconds: 30)),
+      );
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw PlayheadHttpException(uri, response.statusCode, response.body);
+      }
+      return response.body.isEmpty ? null : jsonDecode(response.body);
+    } catch (e) {
+      if (e is PlayheadHttpException) rethrow;
+      throw PlayheadConnectionException(uri, e);
+    } finally {
+      _release();
+    }
+  }
+
   /// What this backend's registry mirror offers (`GET /plugins`).
   ///
   /// Display only: which plugins the *client* has installed is its own business
@@ -679,6 +703,30 @@ class PlayheadApi {
   Future<PluginRegistry> getPlugins() async {
     final data = await _getJson(Uri.parse('$_normalizedBaseUrl/plugins'));
     return PluginRegistry.fromJson(data);
+  }
+
+  /// The plugin-backed sources this backend has, with the settings their
+  /// plugins declare (`GET /plugin-sources`).
+  ///
+  /// The rest of a source's config is authoring and never comes back here: what
+  /// a playback client shows is exactly what the plugin declared.
+  Future<List<PluginSource>> getPluginSources() async {
+    final data = await _getJson(Uri.parse('$_normalizedBaseUrl/plugin-sources'));
+    if (data is! List) {
+      throw Exception('GET /plugin-sources: expected a list, got ${data.runtimeType}');
+    }
+    return data.map(PluginSource.fromJson).toList(growable: false);
+  }
+
+  /// Changes declared settings of a plugin-backed source. [settings] is a patch:
+  /// a key left out keeps its value.
+  Future<PluginSource> updatePluginSourceSettings(String id, Map<String, Object?> settings) async {
+    final data = await _sendJson(
+      'PUT',
+      Uri.parse('$_normalizedBaseUrl/plugin-sources/${Uri.encodeComponent(id)}/settings'),
+      {'settings': settings},
+    );
+    return PluginSource.fromJson(data);
   }
 
   /// The headers a download from this backend needs (the device token, when

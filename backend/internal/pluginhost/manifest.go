@@ -8,6 +8,7 @@
 package pluginhost
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -37,6 +38,42 @@ type Manifest struct {
 	Protocol     int64    `json:"protocol"`
 	Entrypoint   string   `json:"entrypoint"`
 	Capabilities []string `json:"capabilities"`
+	// Config declares what a source of this plugin can be configured with, so a
+	// settings screen can be built from the plugin's own description instead of
+	// the host knowing its keys. Empty means "no declared settings".
+	Config []ConfigField `json:"config,omitempty"`
+}
+
+// Field types a manifest may declare. They say how the value is written into
+// the source's config, which is handed to the plugin verbatim: a `number` field
+// is stored as a JSON number, a `bool` as a boolean, everything else as a
+// string.
+const (
+	ConfigTypeChoice = "choice"
+	ConfigTypeBool   = "bool"
+	ConfigTypeNumber = "number"
+	ConfigTypeText   = "text"
+)
+
+// ConfigField is one setting a source of this plugin accepts.
+type ConfigField struct {
+	// Key is the config member the value is written to.
+	Key   string `json:"key"`
+	Label string `json:"label"`
+	Type  string `json:"type"`
+	// Options are the values a `choice` accepts, in the order to offer them.
+	Options []ConfigOption `json:"options,omitempty"`
+	// Help is one line of plain text shown next to the setting.
+	Help string `json:"help,omitempty"`
+}
+
+// ConfigOption is one value of a `choice`.
+type ConfigOption struct {
+	// Value is written into the source's config exactly as declared, so a
+	// numeric setting offers numbers and a textual one offers strings:
+	// `{"value": 1080, "label": "1080p"}`.
+	Value json.RawMessage `json:"value"`
+	Label string          `json:"label"`
 }
 
 // idPattern keeps ids usable as directory names and as URL path segments.
@@ -63,6 +100,42 @@ var ErrNotFound = errors.New("pluginhost: not found in the registry")
 // host's platform.
 var ErrNoArtifact = errors.New("pluginhost: no artifact for this platform")
 
+// configKeyPattern keeps a declared key usable as a config member name.
+var configKeyPattern = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+// validateConfig checks the declared settings. A field nobody can render is a
+// broken release, so it is refused here rather than shown as an empty row.
+func (m Manifest) validateConfig() error {
+	seen := map[string]bool{}
+	for _, f := range m.Config {
+		if !configKeyPattern.MatchString(f.Key) {
+			return fmt.Errorf("config field %q is not a usable key (want lowercase letters, digits and underscores)", f.Key)
+		}
+		if seen[f.Key] {
+			return fmt.Errorf("config field %q is declared twice", f.Key)
+		}
+		seen[f.Key] = true
+		if strings.TrimSpace(f.Label) == "" {
+			return fmt.Errorf("config field %q has no label", f.Key)
+		}
+		switch f.Type {
+		case ConfigTypeChoice:
+			if len(f.Options) == 0 {
+				return fmt.Errorf("config field %q is a choice with no options", f.Key)
+			}
+			for _, o := range f.Options {
+				if len(bytes.TrimSpace(o.Value)) == 0 || !json.Valid(o.Value) {
+					return fmt.Errorf("config field %q has an option with no valid value", f.Key)
+				}
+			}
+		case ConfigTypeBool, ConfigTypeNumber, ConfigTypeText:
+		default:
+			return fmt.Errorf("config field %q has type %q, want one of choice, bool, number, text", f.Key, f.Type)
+		}
+	}
+	return nil
+}
+
 // Validate checks a manifest before the host trusts anything else about the
 // plugin. A malformed manifest is a broken release, not something to work
 // around.
@@ -75,6 +148,9 @@ func (m Manifest) Validate() error {
 	}
 	if !versionPattern.MatchString(m.Version) {
 		return fmt.Errorf("%w: invalid version %q", ErrIncompatible, m.Version)
+	}
+	if err := m.validateConfig(); err != nil {
+		return fmt.Errorf("%w: %s", ErrIncompatible, err)
 	}
 	if m.Protocol != Protocol {
 		return fmt.Errorf("%w: %s speaks protocol %d, this host speaks %d", ErrIncompatible, m.ID, m.Protocol, Protocol)

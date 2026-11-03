@@ -23,6 +23,7 @@ import '../input/input_action.dart';
 import '../plugin/plugin_manifest.dart';
 import '../ui/ui_scale.dart';
 import '../widgets/app_icons.dart';
+import '../widgets/plugin_source_settings_dialog.dart';
 
 /// The one line a plugin row shows under its name.
 ///
@@ -69,6 +70,8 @@ class _PluginsPageState extends State<PluginsPage> {
   KeyBindingsService? _keyBindings;
   PluginRegistry? _registry;
   String? _registryError;
+  List<PluginSource> _sources = const [];
+  String? _sourcesError;
   final _progress = <String, int>{};
   final _errors = <String, String>{};
 
@@ -102,11 +105,70 @@ class _PluginsPageState extends State<PluginsPage> {
     } on Object {
       error = 'The backend cannot be reached, so its plugins cannot be read or changed right now.';
     }
+    // The sources a plugin lists, with the settings its own manifest declares.
+    // A backend that answers about plugins but not about sources still shows the
+    // plugin rows: the two are separate reads on purpose.
+    List<PluginSource> sources = const [];
+    String? sourcesError;
+    try {
+      sources = await runtime.api.getPluginSources();
+    } on Object {
+      sourcesError = 'The settings of the plugin sources cannot be read right now.';
+    }
     if (!mounted) return;
     setState(() {
       _registry = registry;
       _registryError = error;
+      _sources = sources;
+      _sourcesError = sourcesError;
     });
+  }
+
+  /// Saves one setting of one source and returns it as the backend now holds it.
+  Future<PluginSource> _saveSettings(String sourceId, Map<String, Object?> settings) async {
+    final runtime = _runtime!;
+    final updated = await runtime.api.updatePluginSourceSettings(sourceId, settings);
+    if (mounted) {
+      setState(() {
+        _sources = [for (final source in _sources) source.id == updated.id ? updated : source];
+        _sourcesError = null;
+      });
+    }
+    return updated;
+  }
+
+  /// One row per plugin source that has settings to show. A source whose plugin
+  /// declares nothing has nothing to configure here, so it is not listed: an
+  /// empty screen is worse than no screen.
+  List<Widget> _sourceRows(Map<String, InstalledPlugin> installed) {
+    final rows = <Widget>[];
+    for (final source in _sources) {
+      final fields = installed[source.pluginId]?.configFields ?? const <PluginConfigField>[];
+      if (fields.isEmpty) continue;
+      rows.add(ListTile(
+        key: Key('plugin-source-${source.id}'),
+        leading: const Icon(AppIcons.plugin),
+        title: Text(source.name.isEmpty ? source.id : source.name),
+        subtitle: Text(
+          [for (final field in fields) '${field.label} ${source.settingLabel(field)}'].join(' · '),
+          key: Key('plugin-source-values-${source.id}'),
+        ),
+        onTap: () => _openSourceSettings(source, fields),
+      ));
+    }
+    return rows;
+  }
+
+  void _openSourceSettings(PluginSource source, List<PluginConfigField> fields) {
+    final keyBindings = _keyBindings;
+    if (keyBindings == null) return;
+    unawaited(showPluginSourceSettings(
+      context,
+      source: source,
+      fields: fields,
+      save: (settings) => _saveSettings(source.id, settings),
+      keyBindings: keyBindings,
+    ));
   }
 
   Future<void> _install(String id) async {
@@ -288,6 +350,19 @@ class _PluginsPageState extends State<PluginsPage> {
                 ),
               ),
             ...rows,
+            if (_sourcesError != null)
+              ListTile(
+                key: const Key('plugin-sources-error'),
+                leading: const Icon(AppIcons.pluginMissing),
+                title: Text(_sourcesError!),
+              ),
+            if (_sourceRows(installed).isNotEmpty) ...[
+              ListTile(
+                dense: true,
+                title: Text('Source settings', style: Theme.of(context).textTheme.labelLarge),
+              ),
+              ..._sourceRows(installed),
+            ],
           ],
         ),
       ),
