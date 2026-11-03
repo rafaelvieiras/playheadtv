@@ -97,6 +97,23 @@ void main() {
     expect(result.hidden.single.reason, contains('1.0.0'));
   });
 
+  test('a plugin that is only turned off says this remote can fix it', () async {
+    final availability = await PluginAvailability.compute(
+        cache, cache.channels(), _api(installed: _installedSection('1.2.0', enabled: false)));
+    final result = playableChannels(cache, cache.channels(), availability);
+
+    expect(result.hidden.single.reason, contains('turned off'));
+    expect(result.nextStep, contains('Settings > Plugins'));
+  });
+
+  test('a plugin that is not installed says the admin installs it', () async {
+    final availability = await PluginAvailability.compute(cache, cache.channels(), _api(installed: const []));
+    final result = playableChannels(cache, cache.channels(), availability);
+
+    expect(result.nextStep, contains('admin'));
+    expect(result.nextStep, isNot(contains('Settings > Plugins')));
+  });
+
   test('requirements keep the strictest minimum across a channel', () {
     cache.applySnapshot({
       'plugin': [
@@ -148,14 +165,14 @@ PlayheadApi _api({required List<Map<String, dynamic>> installed, bool configured
   return PlayheadApi(baseUrl: 'http://backend.test:9394', client: client);
 }
 
-List<Map<String, dynamic>> _installedSection(String version) => [
+List<Map<String, dynamic>> _installedSection(String version, {bool enabled = true}) => [
       {
         'id': 'fake',
         'version': version,
         'protocol': 1,
         'name': 'Fake',
         'capabilities': 'media.resolve',
-        'enabled': true,
+        'enabled': enabled,
         'os': 'linux',
         'arch': 'amd64',
       },

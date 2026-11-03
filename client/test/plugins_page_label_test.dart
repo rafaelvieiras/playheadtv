@@ -13,13 +13,6 @@ void main() {
     expect(label, contains('turned off'));
   });
 
-  test('an install in progress replaces the old state', () {
-    expect(
-      pluginStateLabel(id: 'fake', offered: true, availableVersion: '1.2.0', progressPercent: 42),
-      'Installing on the backend... 42%',
-    );
-  });
-
   test('an error replaces whatever the row would have said', () {
     expect(
       pluginStateLabel(id: 'fake', installedVersion: '1.0.0', error: 'Install failed: hash mismatch'),
@@ -35,9 +28,11 @@ void main() {
     expect(pluginStateLabel(id: 'fake', offered: true), 'Not installable on this backend');
   });
 
-  test('an installable plugin names the version waiting', () {
+  test('a plugin the backend could install names the version and who installs it', () {
     final label = pluginStateLabel(id: 'fake', offered: true, availableVersion: '1.2.0');
-    expect(label, contains('Not installed'));
+    expect(label, contains('Not installed here'));
     expect(label, contains('1.2.0'));
+    // This page cannot install: saying "available" would read as "press Select".
+    expect(label, contains('admin'));
   });
 }

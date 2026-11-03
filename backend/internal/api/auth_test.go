@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -321,5 +322,67 @@ func TestDeviceOrSessionRouteAcceptsBoth(t *testing.T) {
 	mux.ServeHTTP(rec2, req)
 	if rec2.Code != http.StatusOK {
 		t.Fatalf("GET /epg with device token: status = %d, body = %s", rec2.Code, rec2.Body.String())
+	}
+}
+
+// TestAPairedDeviceTurnsAPluginOffButCannotInstallOne pins the line between
+// what a playback device may change about plugins and what only the admin may.
+//
+// The device is the one that sees a broken plugin first — its guide came from
+// that plugin, so the channel it cannot play is right there — and turning one off
+// or removing it pulls in no new code. Installing downloads a program from the
+// registry and runs it on the backend: that stays with the admin who configured
+// the registry.
+func TestAPairedDeviceTurnsAPluginOffButCannotInstallOne(t *testing.T) {
+	_, mux := newTestDB(t)
+
+	createRec := doRequest(t, mux, "POST", "/devices", `{"name":"TV","platform":"android"}`)
+	if createRec.Code != http.StatusCreated {
+		t.Fatalf("create device: status = %d, body = %s", createRec.Code, createRec.Body.String())
+	}
+	var createResp createDeviceResponse
+	if err := json.Unmarshal(createRec.Body.Bytes(), &createResp); err != nil {
+		t.Fatalf("unmarshal create device: %v", err)
+	}
+	token := createResp.Token
+
+	asDevice := func(method, path, body string) *httptest.ResponseRecorder {
+		var reader io.Reader
+		if body != "" {
+			reader = strings.NewReader(body)
+		}
+		req := httptest.NewRequest(method, path, reader)
+		req.Header.Set("Authorization", "Bearer "+token)
+		if body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		rec := httptest.NewRecorder()
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	// Allowed: the two calls about an installed plugin. They fail on the missing
+	// plugin (404), never on authentication (401), which is what this asserts.
+	for _, call := range []struct{ method, path, body string }{
+		{"PUT", "/plugins/fake", `{"enabled":false}`},
+		{"DELETE", "/plugins/fake", ""},
+	} {
+		rec := asDevice(call.method, call.path, call.body)
+		if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+			t.Errorf("%s %s with a device token: status = %d, want it allowed past auth (body = %s)",
+				call.method, call.path, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Not allowed: installing runs code on the backend from the registry, and the
+	// artifact download that serves it stays admin-only too.
+	for _, call := range []struct{ method, path, body string }{
+		{"POST", "/plugins/fake/install", `{"version":"1.0.0"}`},
+		{"GET", "/plugins/fake/1.0.0/linux-amd64", ""},
+	} {
+		rec := asDevice(call.method, call.path, call.body)
+		if rec.Code != http.StatusUnauthorized {
+			t.Errorf("%s %s with a device token: status = %d, want 401", call.method, call.path, rec.Code)
+		}
 	}
 }

@@ -7,12 +7,18 @@
 // what matters here is the backend's list, never this device's.
 //
 // A channel whose content comes from a plugin the backend lacks is not offered at
-// all, so this page is the only place that can turn such a channel on.
+// all, so this page is where a plugin the backend already has gets turned on.
 //
-// Six buttons, no exceptions: Up/Down move the focus, Select installs a missing
-// plugin or opens the installed one's dialog (turn it off, remove it, or cancel),
-// Back leaves. An install downloads tens of megabytes into the backend, so the row
-// reports progress while it happens.
+// Installing is the one thing this page cannot do: it downloads a program from the
+// registry the admin configured and runs it on the backend, which the backend only
+// accepts from an admin session (POST /plugins/{id}/install). A row for a plugin
+// that is not installed says so, instead of offering a call that would be refused.
+// Turning an installed plugin on or off, and removing it, are calls a paired device
+// may make (backend/internal/api/auth.go, isPluginTogglePath).
+//
+// Six buttons, no exceptions: Up/Down move the focus, Select opens the installed
+// plugin's dialog (turn it off, remove it, or cancel) or explains a missing one,
+// Back leaves.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -36,11 +42,9 @@ String pluginStateLabel({
   bool enabled = true,
   String? availableVersion,
   bool offered = true,
-  int? progressPercent,
   String? error,
 }) {
   if (error != null) return error;
-  if (progressPercent != null) return 'Installing on the backend... $progressPercent%';
 
   final local = installedVersion;
   if (local != null) {
@@ -55,7 +59,7 @@ String pluginStateLabel({
   if (available == null || available.isEmpty) {
     return 'Not installable on this backend';
   }
-  return 'Not installed (version $available available)';
+  return 'Not installed here (version $available offered): the admin installs it';
 }
 
 class PluginsPage extends StatefulWidget {
@@ -72,8 +76,6 @@ class _PluginsPageState extends State<PluginsPage> {
   String? _registryError;
   List<PluginSource> _sources = const [];
   String? _sourcesError;
-  final _progress = <String, int>{};
-  final _errors = <String, String>{};
 
   @override
   void initState() {
@@ -171,23 +173,40 @@ class _PluginsPageState extends State<PluginsPage> {
     ));
   }
 
-  Future<void> _install(String id) async {
-    final runtime = _runtime!;
-    setState(() {
-      _errors.remove(id);
-      _progress[id] = 0;
-    });
-    try {
-      // The archiving, verifying and unpacking happen on the backend; there is no
-      // per-byte progress to report from here, so the row shows that the work is
-      // happening and how long it has been going.
-      await runtime.api.installPlugin(id);
-    } on Object catch (e) {
-      if (mounted) setState(() => _errors[id] = 'Install failed: ${_shortError(e)}');
-    } finally {
-      if (mounted) setState(() => _progress.remove(id));
-      await _reload();
-    }
+  /// Why a plugin this backend's registry offers is not installed here, and who
+  /// installs it. Reached only by Select on that row, so it costs nothing until
+  /// someone asks.
+  Future<void> _explainMissing(PluginOffering offering) async {
+    final latest = offering.releases.map((r) => r.version).fold<String?>(null, (best, version) {
+          if (best == null) return version;
+          return comparePluginVersions(version, best) > 0 ? version : best;
+        });
+    final version = (latest == null || latest.isEmpty) ? '' : ' version $latest';
+    final name = offering.name.isNotEmpty ? offering.name : offering.id;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => UiScaled(
+        child: AlertDialog(
+          key: const Key('plugin-missing-dialog'),
+          title: Text(name),
+          content: Text(
+            'This backend offers $name$version but has not installed it, so a channel '
+            'that needs it does not appear here.\n\n'
+            'Installing puts the plugin on the backend, so only the admin can do it, '
+            'from the admin web page. After that it shows up in this list and can be '
+            'turned on and off with this remote.',
+          ),
+          actions: [
+            TextButton(
+              key: const Key('plugin-missing-close'),
+              autofocus: true,
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Close'),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 
   Future<void> _setEnabled(String id, bool enabled) async {
@@ -248,11 +267,6 @@ class _PluginsPageState extends State<PluginsPage> {
     }
   }
 
-  static String _shortError(Object error) {
-    final text = '$error';
-    return text.length <= 140 ? text : '${text.substring(0, 140)}...';
-  }
-
   @override
   Widget build(BuildContext context) => UiScaled(child: _buildPage(context));
 
@@ -293,18 +307,14 @@ class _PluginsPageState extends State<PluginsPage> {
             enabled: plugin?.enabled ?? true,
             availableVersion: latest,
             offered: offering != null,
-            progressPercent: _progress[id],
-            error: _errors[id],
           ),
           key: Key('plugin-state-$id'),
         ),
-        onTap: _progress.containsKey(id)
-            ? null
-            : (plugin != null
-                ? () => unawaited(_openInstalled(plugin, offering?.name))
-                // Only an offered plugin can be installed; a row that cannot do
-                // anything says why instead of pretending.
-                : (offering != null ? () => unawaited(_install(id)) : null)),
+        onTap: plugin != null
+            ? () => unawaited(_openInstalled(plugin, offering?.name))
+            // A plugin the backend offers but has not installed cannot be
+            // installed from here; the row explains where it happens.
+            : (offering != null ? () => unawaited(_explainMissing(offering)) : null),
       ));
     }
 

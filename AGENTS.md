@@ -92,9 +92,18 @@ or LLM, and to every artifact in the repo:
   channel filter. Playback asks the backend — `GET /catalog-items/{id}/play?start_ms=`
   — and opens the URL it gets back, on every open (preload, tune-in, resync),
   never cached: the URL carries the plugin's token, expires, and a `remux` stream
-  lives only while its process does. `playbackPluginModes` on the client is gone
-  with the local host; the backend asks for `remux` because a client that cannot
-  run the plugin is a client that cannot merge a `pair` either.
+  lives only while its process does. `playbackPluginModes` (`single`, `remux`)
+  never asks for a `pair`: a client that cannot run the plugin is a client that
+  cannot merge one either, and every host it targets plays `remux` the same way.
+- **Who may change what about a plugin**: a paired device reads `/plugins` and
+  `/plugin-sources`, saves a source's declared settings (`PUT .../settings`),
+  and turns an installed plugin on or off or removes it (`PUT`/`DELETE
+  /plugins/{id}`) — the device is the one that sees a broken plugin first, and
+  those two are reversible and pull in no new code. **Installing stays with the
+  admin** (`POST /plugins/{id}/install`, session only): it downloads a program
+  from the registry and runs it on the backend. The client therefore never
+  offers an install: a row for a plugin the backend lacks says who installs it
+  (`client/lib/pages/plugins_page.dart`).
 - The backend does not serve the bytes: it asks the plugin, rewrites the host of
   the URL to the address the client used (the port, path and token stay the
   plugin's) and answers `no-store`. That keeps "the backend never processes video"

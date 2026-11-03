@@ -5,7 +5,6 @@
 // backend is a cached mirror whose artifact URLs already point back at it, so a
 // client that can reach its backend can install a plugin even when it cannot
 // reach the internet.
-import 'dart:io';
 
 /// Raised when a registry document, a manifest or an installation is malformed.
 /// A malformed registry must never be half-applied: the caller gets this and
@@ -168,14 +167,6 @@ class PluginRelease {
       artifacts: artifacts,
     );
   }
-
-  /// This platform's archive, or null when the release does not build for it.
-  PluginArtifact? forPlatform(PluginPlatform platform) {
-    for (final artifact in artifacts) {
-      if (artifact.os == platform.os && artifact.arch == platform.arch) return artifact;
-    }
-    return null;
-  }
 }
 
 /// A plugin the registry offers.
@@ -204,20 +195,6 @@ class PluginOffering {
           .map(PluginRelease.fromJson)
           .toList(growable: false),
     );
-  }
-
-  /// The newest release that speaks [pluginProtocol] and has a build for
-  /// [platform]; null when the plugin cannot run here at all.
-  PluginRelease? latestFor(PluginPlatform platform, {int protocol = pluginProtocol}) {
-    PluginRelease? best;
-    for (final release in releases) {
-      if (release.protocol != protocol) continue;
-      if (release.forPlatform(platform) == null) continue;
-      if (best == null || comparePluginVersions(release.version, best.version) > 0) {
-        best = release;
-      }
-    }
-    return best;
   }
 }
 
@@ -423,69 +400,6 @@ class PluginRegistry {
     return null;
   }
 }
-
-/// Where this client runs, in the registry's own naming, so no translation
-/// happens on the host side.
-class PluginPlatform {
-  final String os;
-  final String arch;
-  const PluginPlatform(this.os, this.arch);
-
-  @override
-  String toString() => '$os-$arch';
-}
-
-/// The platform this process is running on.
-///
-/// Dart exposes the OS but not the CPU architecture, so on Linux and Android
-/// (where plugin archives matter most) `uname -m` answers it, and elsewhere the
-/// version string is parsed. [override] exists for tests.
-Future<PluginPlatform> hostPlatform({String? override}) async {
-  if (override != null) {
-    final parts = override.split('-');
-    if (parts.length != 2) {
-      throw PluginFormatException('platform override "$override" is not <os>-<arch>');
-    }
-    return PluginPlatform(parts[0], parts[1]);
-  }
-
-  final os = switch (Platform.operatingSystem) {
-    'macos' => 'darwin',
-    final other => other, // linux, windows, android
-  };
-
-  final arch = await _hostArch();
-  return PluginPlatform(os, arch);
-}
-
-Future<String> _hostArch() async {
-  for (final varname in const ['PLAYHEADTV_ARCH']) {
-    final value = Platform.environment[varname];
-    if (value != null && value.isNotEmpty) return _normaliseArch(value);
-  }
-  if (Platform.isLinux || Platform.isAndroid) {
-    try {
-      final result = await Process.run('uname', ['-m']);
-      if (result.exitCode == 0) {
-        final machine = (result.stdout as String).trim();
-        if (machine.isNotEmpty) return _normaliseArch(machine);
-      }
-    } on ProcessException {
-      // Fall through to the guess below rather than fail a whole install.
-    }
-  }
-  final guess = Platform.version.contains('arm64') || Platform.version.contains('aarch64')
-      ? 'arm64'
-      : 'amd64';
-  return guess;
-}
-
-String _normaliseArch(String raw) => switch (raw.trim().toLowerCase()) {
-      'x86_64' || 'amd64' || 'x64' => 'amd64',
-      'aarch64' || 'arm64' => 'arm64',
-      'armv7l' || 'armv6l' || 'arm' => 'arm',
-      final other => other,
-    };
 
 /// Compares two plugin versions, treating digit runs as numbers so
 /// `2026.10.26` sorts above `2026.9.30`.
