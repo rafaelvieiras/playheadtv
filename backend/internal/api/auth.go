@@ -396,8 +396,8 @@ var deviceOrSessionGET = map[string]bool{
 	// Which plugins exist, and whether this backend has one installed and on. A
 	// playback client needs it to know that a channel it was given can actually be
 	// played here: it decides what to show from its guide, and the guide names the
-	// plugin per entry. Read-only and no secret; installing and removing stay
-	// session-only.
+	// plugin per entry. Read-only and no secret; installing stays session-only
+	// (see isPluginTogglePath for the two calls a device may make).
 	"/plugins": true,
 	// The plugin sources and the settings their plugins declare: a playback
 	// client's Settings screen shows them and can change them through
@@ -405,6 +405,32 @@ var deviceOrSessionGET = map[string]bool{
 	// plugin declared (see plugin_settings.go). Every other field of a source
 	// stays on the session-only authoring routes.
 	"/plugin-sources": true,
+}
+
+// isPluginTogglePath matches PUT /plugins/{id} (turn it on or off) and
+// DELETE /plugins/{id} (remove it), the two calls a paired playback device may
+// make about an already installed plugin.
+//
+// They belong to the device because the device is the one that sees the failure
+// first: the guide it was given came from that plugin, so a plugin that broke
+// leaves a channel it cannot play. Turning one off or removing it is reversible
+// and pulls in no new code. Installing is not: POST /plugins/{id}/install
+// downloads a program from the registry and executes it on the backend, so it
+// stays with the admin who configured that registry.
+func isPluginTogglePath(r *http.Request) bool {
+	if r.Method != http.MethodPut && r.Method != http.MethodDelete {
+		return false
+	}
+	rest, ok := strings.CutPrefix(r.URL.Path, "/plugins/")
+	if !ok {
+		return false
+	}
+	// Only the plugin itself: /plugins/{id}/install and the artifact download are
+	// different routes and must not be matched here.
+	if id, _, hasTail := strings.Cut(rest, "/"); id == "" || hasTail {
+		return false
+	}
+	return true
 }
 
 // isPluginSettingsPath matches PUT /plugin-sources/{id}/settings.
@@ -457,12 +483,16 @@ func isOpenPath(r *http.Request) bool {
 }
 
 // isDeviceOrSessionPath reports whether either an app_user session or a
-// device token may authenticate this request — always a GET, and always
-// data a "dumb", not-logged-in playback client needs to resolve/play.
+// device token may authenticate this request: the reads and the few writes a
+// "dumb", not-logged-in playback client needs to resolve, play and unbreak what
+// it plays (see deviceOrSessionGET, isPluginSettingsPath, isPluginTogglePath).
 func isDeviceOrSessionPath(r *http.Request) bool {
 	if r.Method == http.MethodPut && isPluginSettingsPath(r.URL.Path) {
-		// The one write a paired playback device may make: the settings a plugin
-		// declares for its own sources, and nothing else about the source.
+		// The settings a plugin declares for its own sources, and nothing else
+		// about the source.
+		return true
+	}
+	if isPluginTogglePath(r) {
 		return true
 	}
 	if r.Method != http.MethodGet {

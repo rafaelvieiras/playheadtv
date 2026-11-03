@@ -1091,7 +1091,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         if (playable.allHiddenByPlugins) {
           if (!mounted) return;
           setState(() => _status = 'ERROR: no channel can play on this device yet. '
-              '${playable.reasons.join(' ')} Install it in Settings > Plugins.');
+              '${playable.reasons.join(' ')} ${playable.nextStep ?? ''}'.trimRight());
           return;
         }
         if (!mounted) return;

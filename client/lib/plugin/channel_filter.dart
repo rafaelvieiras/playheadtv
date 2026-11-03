@@ -77,7 +77,15 @@ class PlayableChannels {
   final List<PlayheadChannel> visible;
   final List<HiddenChannel> hidden;
 
-  const PlayableChannels(this.visible, this.hidden);
+  /// What the viewer can do about the hidden ones, if anything.
+  ///
+  /// Every reason already says which plugin is missing and how. This says who can
+  /// fix it: a plugin that is installed but turned off is one Select away on this
+  /// device (Settings > Plugins), while installing or updating one is the backend
+  /// admin's call, because it downloads and runs a program on the backend.
+  final String? nextStep;
+
+  const PlayableChannels(this.visible, this.hidden, {this.nextStep});
 
   bool get isEmpty => visible.isEmpty;
   bool get isNotEmpty => visible.isNotEmpty;
@@ -205,6 +213,7 @@ PlayableChannels playableChannels(
 
   final visible = <PlayheadChannel>[];
   final hidden = <HiddenChannel>[];
+  final blockers = <MissingPlugin>[];
   final seen = <String>{};
   for (final channel in channels) {
     final ids = requirementsOf(cache, channel.id).keys;
@@ -216,12 +225,21 @@ PlayableChannels playableChannels(
     for (final id in ids) {
       final detail = availability.detailFor([id]);
       if (detail == null) continue;
+      blockers.add(detail);
       final line = detail.describe();
       if (seen.add(line)) reasons.add(line);
     }
     hidden.add(HiddenChannel(channel, reasons));
   }
-  return PlayableChannels(visible, hidden);
+  // Turning one on is something this device offers; anything else is not.
+  final switchable = hidden.isNotEmpty && blockers.isNotEmpty && blockers.every((b) => b.disabled);
+  return PlayableChannels(
+    visible,
+    hidden,
+    nextStep: switchable
+        ? 'Settings > Plugins can turn it back on.'
+        : 'A plugin is installed on the backend by its admin, not by this device.',
+  );
 }
 
 /// The plugins a channel's cached guide needs, one entry per plugin id (the

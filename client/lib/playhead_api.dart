@@ -624,18 +624,6 @@ class PlayheadApi {
     return Uri.parse(url);
   }
 
-  /// Installs a plugin on the backend (`POST /plugins/{id}/install`).
-  ///
-  /// The plugin runs where the content is resolved, which is the backend: a
-  /// client that cannot run the tools (a TV box) only ever fetches a stream.
-  Future<void> installPlugin(String id, {String? version}) async {
-    await _sendWrite(
-      'POST',
-      Uri.parse('$_normalizedBaseUrl/plugins/${Uri.encodeComponent(id)}/install'),
-      body: {'version': ?version},
-    );
-  }
-
   /// Turns an installed plugin on or off on the backend.
   Future<void> setPluginEnabled(String id, bool enabled) async {
     await _sendWrite(

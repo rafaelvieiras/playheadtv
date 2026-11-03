@@ -156,7 +156,8 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
           _loading = false;
           _error = playable.allHiddenByPlugins
               ? 'No channel can play on this device yet. ${playable.reasons.join(' ')} '
-                  'Install it in Settings > Plugins.'
+                  '${playable.nextStep ?? ''}'
+                  .trimRight()
               : status.lastSucceeded
                   ? 'ERROR: no channels configured on the backend (GET /channels is empty)'
                   : 'ERROR: failed to load channels: ${status.lastError}';

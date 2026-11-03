@@ -49,8 +49,8 @@ func installFakePluginWithSettings(t *testing.T, db interface {
 	}
 }
 
-// Setting a plugin's declared settings is the one write a paired playback device
-// may make, and only for what the plugin declared.
+// Setting a plugin's declared settings is one of the few writes a paired playback
+// device may make, and it reaches only what the plugin declared.
 func TestPluginSourceSettingsAreExactlyWhatThePluginDeclares(t *testing.T) {
 	db, mux, host := newTestDBWithPluginHost(t)
 	installFakePluginWithSettings(t, db, host)

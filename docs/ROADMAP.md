@@ -1225,8 +1225,9 @@ repo never contains.
 
 - [x] Protocol contract: manifest, JSON-RPC over stdio (`info`,
       `catalog.list`, `media.resolve`, `shutdown`), artifact layout, registry
-      index schema, trust rules (SHA-256 always, Ed25519 optional), Android
-      `apk-service` transport reserved.
+      index schema, trust rules (SHA-256 always, Ed25519 optional). Plugins run
+      on the backend only, so no device transport exists (see `PLUGINS.md`
+      "Android").
 - [x] Backend host (`internal/pluginhost`): registry fetch/cache, artifact
       download with hash verification, `tar.gz`/`zip` extraction with traversal
       and size guards, process lifecycle with per-call timeouts, paged

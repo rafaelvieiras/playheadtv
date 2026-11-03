@@ -396,16 +396,33 @@ re-fetches the guide. There is no silent auto-install.
 
 ## Android
 
-Executing a downloaded file is not allowed on Android (W^X since API 29):
-only code shipped inside an APK's `lib/<abi>/` can run. So on Android the
-plugin is an **external APK** that the client binds to as a `Service`, and the
-artifact it carries lives inside that APK. The payloads are identical to
-protocol 1 above — same JSON, different transport — so a plugin author writes
-the logic once.
+**A plugin never runs on the device**, so Android needs no transport of its own.
+It used to: the first design ran the plugin inside the client, and Android would
+have needed the artifact shipped inside an APK (`lib/<abi>/`, since API 29
+refuses to execute a downloaded binary) and bound to as a `Service`. Moving the
+plugin to the backend removed the requirement, not just the transport: the
+extractor, the remuxer and the process do not exist on a TV box at all, and a
+device only asks the backend for a URL (`GET /catalog-items/{id}/play`).
 
-This transport (`apk-service`) is **not implemented yet**: the client ships
-the desktop transport first. The manifest's `protocol` field is what will
-disambiguate, so no wire change is planned for it.
+What is left of the platform question on a device is the *archive*: nothing on a
+client downloads or selects one, so the registry's `artifacts` list is read only
+by the backend that installs them. The client's plugin code
+(`client/lib/plugin/`) holds the registry types it displays and the channel
+filter.
+
+## Who may change what
+
+- **Read, any paired device**: `GET /plugins`, `GET /plugin-sources`.
+- **A paired device may write**: the settings a plugin declares for its own
+  sources (`PUT /plugin-sources/{id}/settings`), and turning an installed plugin
+  on or off or removing it (`PUT`/`DELETE /plugins/{id}`). The device is what
+  shows the guide the plugin produced, so it is the first to see that plugin
+  break, and neither call brings in new code.
+- **Admin session only**: `POST /plugins/{id}/install`, which downloads a
+  program from the registry and runs it on the backend, and the artifact
+  download that serves it. A client that offers an install would be offering a
+  call the backend refuses; `client/lib/pages/plugins_page.dart` says who
+  installs instead.
 
 ## What a host must never do
 
