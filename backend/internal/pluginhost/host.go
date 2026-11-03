@@ -148,6 +148,7 @@ func (h *Host) IndexFresh(ctx context.Context) (Index, []byte, error) {
 		return idx, raw, err
 	}
 	h.indexForceAt = time.Now()
+	logging.Infof("pluginhost: re-read the registry, %d plugin(s) offered", len(idx.Plugins))
 	return idx, raw, nil
 }
 
@@ -245,11 +246,7 @@ func (h *Host) artifactToInstall(ctx context.Context, id, version string) (Versi
 	if ok {
 		return ver, artifact, nil
 	}
-	wanted := version
-	if wanted == "" {
-		wanted = "latest"
-	}
-	logging.Infof("pluginhost: %s %s is not in the registry copy in hand, reading it again", id, wanted)
+	logging.Debugf("pluginhost: %s %q is not in the registry copy in hand", id, version)
 	fresh, _, err := h.IndexFresh(ctx)
 	if err != nil {
 		return Version{}, Artifact{}, err
