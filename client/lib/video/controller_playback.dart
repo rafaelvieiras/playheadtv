@@ -46,6 +46,9 @@ abstract class ControllerPlayback implements VideoPlayback {
   PlaybackState get state {
     final v = controller.value;
     final bufferedUntil = v.buffered.isEmpty ? null : v.buffered.last.end;
+    // A length the media has already outgrown is not a length (see
+    // [trustedDuration]): report it as unknown so no reader clamps against it.
+    final duration = trustedDuration(duration: v.duration, bufferedUntil: bufferedUntil);
     return PlaybackState(
       isInitialized: v.isInitialized,
       isPlaying: v.isPlaying,
@@ -56,9 +59,9 @@ abstract class ControllerPlayback implements VideoPlayback {
         engine: v.position,
         playing: v.isPlaying,
         bufferedUntil: bufferedUntil,
-        duration: v.duration,
+        duration: duration,
       ),
-      duration: v.duration,
+      duration: duration,
       bufferedUntil: bufferedUntil,
       size: v.size,
       volume: v.volume,

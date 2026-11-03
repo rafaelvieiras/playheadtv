@@ -761,7 +761,14 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   media buffered ahead of it** is left alone: both remedies tried first made it
   worse — a seek restarts the stream where it is, so every nudge replayed the same
   twenty seconds while the picture was fine, and a reopen resolves the same item
-  again. 
+  again. The length the engine reports for such a stream is just as unusable, and
+  it was the second half of the same freeze: for an HLS playlist that grows as the
+  remux appends segments, ExoPlayer answered `duration == position == 20387ms`
+  while it held 88s buffered, so every clamp against "the end of the media" pinned
+  the position at 20s. `trustedDuration` treats a length shorter than the media
+  already buffered as unknown, `PlaybackState.duration` reports that as zero, and
+  the OSD then shows the elapsed time alone instead of a total of zero. A stream
+  whose reported length is believable is still capped by it. 
 - A catalog item with a non-positive duration (reproduced 2026-09-30: a
   Jellyfin library item synced with `RunTimeTicks: 0`, missing/unprobed
   metadata) breaks the entire channel-assembly model if it ever reaches a

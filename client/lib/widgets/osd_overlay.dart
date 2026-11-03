@@ -539,7 +539,12 @@ class ChannelOsdState extends State<ChannelOsd> {
                     if (!channelOnly) ...[
                       SizedBox(width: _u(12)),
                       Text(
-                        '${_fmtDuration(position)} / ${_fmtDuration(duration)}',
+                        // A length the engine could not be believed about (a
+                        // stream still being produced) is left out rather than
+                        // shown as a total of zero.
+                        duration > Duration.zero
+                            ? '${_fmtDuration(position)} / ${_fmtDuration(duration)}'
+                            : _fmtDuration(position),
                         key: const Key('osd-elapsed'),
                         style: TextStyle(color: Colors.white70, fontSize: _u(13)),
                       ),

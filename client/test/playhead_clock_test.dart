@@ -99,6 +99,52 @@ void main() {
         frozen + const Duration(seconds: 10));
   });
 
+  test('keeps time past a length the stream has already outgrown', () {
+    // Measured on an HLS playlist that grows while it is followed: the engine
+    // answered a length of 20387ms while holding 88s buffered, and its position
+    // was pinned at that length. The length was the window it opened on, not the
+    // media, so it must not cap the position.
+    final clock = fresh();
+    const length = Duration(milliseconds: 20387);
+    const buffered = Duration(seconds: 88);
+    expect(
+      clock.advance(engine: length, playing: true, bufferedUntil: buffered, duration: length),
+      length,
+    );
+    pass(10);
+    expect(
+      clock.advance(engine: length, playing: true, bufferedUntil: buffered, duration: length),
+      length + const Duration(seconds: 10),
+    );
+  });
+
+  test('a length that can be believed still caps the position', () {
+    final clock = fresh();
+    const length = Duration(minutes: 41);
+    clock.advance(engine: const Duration(seconds: 5), playing: true, bufferedUntil: const Duration(minutes: 2), duration: length);
+    pass(3000);
+    expect(
+      clock.advance(engine: const Duration(seconds: 5),
+          playing: true, bufferedUntil: const Duration(minutes: 40), duration: length),
+      const Duration(minutes: 40),
+    );
+  });
+
+  test('a length shorter than what is buffered is read as unknown', () {
+    expect(trustedDuration(duration: Duration.zero, bufferedUntil: null), Duration.zero);
+    expect(trustedDuration(duration: const Duration(seconds: 20), bufferedUntil: null),
+        const Duration(seconds: 20));
+    expect(
+      trustedDuration(
+          duration: const Duration(milliseconds: 20387), bufferedUntil: const Duration(seconds: 88)),
+      Duration.zero,
+    );
+    expect(
+      trustedDuration(duration: const Duration(minutes: 41), bufferedUntil: const Duration(seconds: 88)),
+      const Duration(minutes: 41),
+    );
+  });
+
   test('does not count time that passed while paused', () {
     final clock = fresh();
     clock.advance(engine: const Duration(seconds: 3), playing: true);

@@ -1,6 +1,22 @@
 // What to show as the playing position when the engine's own answer cannot be
 // trusted. Pure Dart.
 
+/// The length to report for a media the engine answered [duration] for, while
+/// it already holds media up to [bufferedUntil] buffered.
+///
+/// A stream that is being produced while it is watched reports the length of the
+/// window it saw when it opened and keeps that number: measured on an HLS
+/// playlist that grows as the remux appends segments, the engine answered a
+/// length of 20.4s while it had 88s buffered and went on buffering. Media already
+/// in hand cannot be past the end of the media, so a length shorter than the
+/// buffer is not the length of the media at all — reading it as "unknown" (`zero`)
+/// is what keeps every clamp honest.
+Duration trustedDuration({required Duration duration, Duration? bufferedUntil}) {
+  if (duration <= Duration.zero) return Duration.zero;
+  if (bufferedUntil != null && bufferedUntil > duration) return Duration.zero;
+  return duration;
+}
+
 /// A playing position that keeps time for itself.
 ///
 /// Some devices report an unusable position for a perfectly healthy stream: the
@@ -89,7 +105,11 @@ class PlayheadClock {
 
     final ceiling = _bufferCeiling;
     if (ceiling != null && _reported > ceiling) _reported = ceiling;
-    if (duration > Duration.zero && _reported > duration) _reported = duration;
+    // The media's own length only caps the position when it can be believed; a
+    // window length the stream has already outgrown would pin the position for
+    // good, which is exactly the freeze this clock exists to survive.
+    final length = trustedDuration(duration: duration, bufferedUntil: _bufferCeiling);
+    if (length > Duration.zero && _reported > length) _reported = length;
     return _reported;
   }
 
