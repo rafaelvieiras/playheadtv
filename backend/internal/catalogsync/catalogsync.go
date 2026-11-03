@@ -146,6 +146,16 @@ func Delete(ctx context.Context, db storage.DB, mediaSourceID, externalID string
 	if err := db.Exec(ctx, "DELETE FROM block_item WHERE catalog_item_id = ?", catalogItemIDs[0]); err != nil {
 		return err
 	}
+	// The materialized guide is derived data (it is rebuilt from the schedule the
+	// moment a sync finishes, see pullsync.apply's mat.Trigger) but it holds a
+	// plain FK to the item, so an item that is still in someone's guide could not
+	// be deleted at all — reproduced as "delete <id>: constraint failed: FOREIGN
+	// KEY constraint failed (787)" on every sync, forever, leaving a dead item in
+	// the catalog. Dropping those rows is the only option that keeps the guide
+	// honest: the item is gone, so it cannot be shown as airing.
+	if err := db.Exec(ctx, "DELETE FROM epg_entry WHERE catalog_item_id = ?", catalogItemIDs[0]); err != nil {
+		return err
+	}
 	return db.Exec(ctx,
 		"DELETE FROM catalog_item WHERE media_source_id = ? AND external_id = ?",
 		mediaSourceID, externalID,
