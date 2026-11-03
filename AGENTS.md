@@ -433,6 +433,17 @@ keep in mind when touching `client/`:
   `_ChannelPlayerPageState`, no `setState`; `focus_lifecycle_test.dart`).
   GUI suites still need a desktop where nothing else takes focus while they
   run, and only one `flutter_tester` at a time.
+  Driving the *app itself* on a headless display (a manual pass against a real
+  backend, not a test) needs one more thing: a window manager. Xvfb alone leaves
+  every window unfocused, so the app draws and plays but no key press reaches it
+  — pointer clicks included, and `xdotool key --window` is worse (GTK ignores
+  synthetic XSendEvent). Any WM fixes it; where none is installed, a ~50-line
+  one that only maps windows and sets `_NET_ACTIVE_WINDOW` is enough. Pinning
+  the channel in the config file (`playhead_channel_id`) covers the read-only
+  half of such a pass with no input at all; the log at
+  `~/.local/state/playheadtv/playheadtv.log` (level debug) carries `channel on
+  air <n>ms` and `item <id> resolved by "<plugin>" in <n>ms`, which is the
+  measurement, not an impression.
   Without a desktop, run a suite under `xvfb-run -a -s "-screen 0 1920x1080x24"`
   (the default 640x480x8 screen makes the app fail to start) with
   `CUDA_VISIBLE_DEVICES=-1`: on hosts with a proprietary NVIDIA driver, mdk
