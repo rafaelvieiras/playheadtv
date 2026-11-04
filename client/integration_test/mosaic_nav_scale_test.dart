@@ -128,9 +128,17 @@ void main() {
       expect(frameHeight(), closeTo(1080 * 0.96, 0.5));
       expect(identical(tester.widget<VideoSurface>(find.byType(VideoSurface)).playback, controller), isTrue);
       final position = controller.state.position;
-      await tester.pump(const Duration(seconds: 2));
+      // `pump(2s)` moves the test clock, not the engine: a device plays in real
+      // time, so wait for the position to actually move. That is also a stronger
+      // statement than `isPlaying`, which can be true while nothing advances.
+      await pumpUntil(
+        tester,
+        () => controller.state.position > position,
+        timeout: const Duration(seconds: 15),
+        failMessage: 'the preview stopped advancing after the resize '
+            '(playing=${controller.state.isPlaying}, position=$position -> ${controller.state.position})',
+      );
       expect(controller.state.isPlaying, isTrue);
-      expect(controller.state.position, greaterThan(position));
       expect(tester.takeException(), isNull);
 
       // Portrait: fits the width, no overflow.
