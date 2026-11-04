@@ -79,8 +79,6 @@ profile_device() {
 }
 profile_ram() { case $1 in tv) echo 2048 ;; phone) echo 3072 ;; esac; }
 
-# The AVD is a disposable lab artifact: if it points at an image the profile no
-# longer selects, rebuild it instead of running yesterday's system.
 # `avdmanager` writes its own hardware profile; the lab's keys are applied over
 # it. Each key is replaced, not appended twice: config.ini is read key by key and
 # a duplicate is at best ambiguous.
@@ -90,6 +88,8 @@ set_ini() { # file key value
   printf '%s=%s\n' "$k" "$v" >>"$f"
 }
 
+# The AVD is a disposable lab artifact: if it points at an image the profile no
+# longer selects, rebuild it instead of running yesterday's system.
 ensure_avd() {
   local profile=$1 name img cfg dir
   name=$(avd_name "$profile"); img=$(profile_image "$profile")
