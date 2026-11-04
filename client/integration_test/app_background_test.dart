@@ -12,6 +12,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/app_logging.dart';
 import 'support/backend_fixture.dart';
 import 'support/offline_helpers.dart';
 import 'support/video_fixture.dart';
@@ -24,6 +25,7 @@ void main() {
     late VideoFixture video;
 
     setUpAll(() async {
+      await startSuiteLogging();
       backend = BackendFixture();
       video = VideoFixture();
       await video.start();
