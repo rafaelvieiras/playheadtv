@@ -91,9 +91,16 @@ class BackendFixture {
     await _bootstrap();
   }
 
-  /// The tenant's app_user and the session token every helper uses.
+  /// The tenant's app_user and the session token every helper uses. A 409 is
+  /// not an error: a backend that outlives the fixture (the lab runs one on the
+  /// host for the whole suite, see AGENTS.md "Android validation") already has
+  /// the user, and the login below is what this needs.
   Future<void> _bootstrap() async {
-    await _postJson('/app-users', {'email': 'e2e-test@example.com', 'password': 'test-password-123'});
+    try {
+      await _postJson('/app-users', {'email': 'e2e-test@example.com', 'password': 'test-password-123'});
+    } on StateError catch (e) {
+      if (!e.toString().contains('-> 409')) rethrow;
+    }
     final login = await _postJson(
       '/sessions',
       {'email': 'e2e-test@example.com', 'password': 'test-password-123'},
