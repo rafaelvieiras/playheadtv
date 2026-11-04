@@ -35,12 +35,24 @@
 # under <out>/<run>/suites/<suite>/. Exit 0 only when every suite passed.
 set -uo pipefail
 
-TOOL=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
-ROOT=$(cd "$TOOL/../.." && pwd)
+# From the environment when this is the private copy the guard below runs: that
+# copy lives in /tmp, so its own path says nothing about the repository.
+TOOL=${TOOL:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
+ROOT=${ROOT:-$(cd "$TOOL/../.." && pwd)}
 LAB=$TOOL/android_lab.sh
 OUTROOT=$ROOT/client/build/android-runs
 PROFILE=tv; PORT=5554; SERIAL=; TMO=900; SHARD=; RETRY=1; BACKEND=1; KEEP=0; RECORD=0; WATCH=1
 CHANGED=0; SINCE=; DRY=0; ALLSUITES=0
+
+# bash reads a script as it runs, so editing one under a live run makes that run
+# execute garbage: it happened twice, each time an hour into a census. The rest
+# of the run continues from a private copy, and the next edit only reaches the
+# next run.
+if [ -z "${LAB_SELF_COPY:-}" ]; then
+  LAB_SELF_COPY=$(mktemp "${TMPDIR:-/tmp}/$(basename "${BASH_SOURCE[0]}" .sh).XXXXXX")
+  cat "${BASH_SOURCE[0]}" >"$LAB_SELF_COPY"
+  LAB_SELF_COPY=$LAB_SELF_COPY TOOL=$TOOL ROOT=$ROOT exec bash "$LAB_SELF_COPY" "$@"
+fi
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -208,6 +220,7 @@ fi
 booted=0
 cleanup() {
   if [ $booted = 1 ] && [ $KEEP = 0 ]; then "$LAB" avd down "$SERIAL" >/dev/null 2>&1; fi
+  rm -f "${LAB_SELF_COPY:-}"
 }
 trap cleanup EXIT
 trap 'exit 130' INT TERM

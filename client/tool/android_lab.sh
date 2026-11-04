@@ -30,8 +30,9 @@
 # 2 usage or setup error, 3 device busy, 124 timeout.
 set -uo pipefail
 
-ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
-CLIENT=$ROOT/client
+# From the environment when this is the private copy the guard below runs.
+ROOT=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
+CLIENT=${CLIENT:-$ROOT/client}
 SDK=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}
 STATE=${ANDROID_LAB_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/android-lab}
 IMAGE_TV=${ANDROID_LAB_IMAGE_TV:-system-images;android-36;android-tv;x86_64}
@@ -40,6 +41,16 @@ TMO=900; OUT=; SERIAL=; PROFILE=; PORT=5554; COLD=1; WIPE=0; RETRY=1; BACKEND=1;
 RECORD=0; WAIT=0; LEASE_WAIT=0; PKG=io.github.rafaelvieiras.playheadtv.client
 FLAKE_RE='Unable to start the app|Error waiting for a debug connection|did not complete|Test process is no longer needed|stalled|device offline'
 ASSERT_RE='Expected: |EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK|TestFailure|Failed assertion'
+
+# bash reads a script as it runs, so editing one under a live run makes that run
+# execute garbage: it happened twice, each time an hour into a census. The rest
+# of the run continues from a private copy, and the next edit only reaches the
+# next run.
+if [ -z "${LAB_SELF_COPY:-}" ]; then
+  LAB_SELF_COPY=$(mktemp "${TMPDIR:-/tmp}/$(basename "${BASH_SOURCE[0]}" .sh).XXXXXX")
+  cat "${BASH_SOURCE[0]}" >"$LAB_SELF_COPY"
+  LAB_SELF_COPY=$LAB_SELF_COPY ROOT=$ROOT CLIENT=$CLIENT exec bash "$LAB_SELF_COPY" "$@"
+fi
 
 die() { echo "android_lab: $*" >&2; exit 2; }
 note() { echo "android_lab: $*" >&2; }
@@ -233,13 +244,19 @@ boot() {
   echo "$serial"
 }
 
-free_port() {
-  local p
-  for p in $(seq 18100 18200); do
-    # Bash's /dev/tcp is the cheapest port probe available without a dependency.
-    if ! (exec 3<>/dev/tcp/127.0.0.1/"$p") 2>/dev/null; then echo "$p"; return 0; fi
-  done
-  die "no free port in 18100-18200"
+# Fixed ports, not whichever one happens to be free. The URL is compiled into the
+# app with --dart-define, so a build Flutter reuses from an earlier suite keeps
+# the old URL and then dies with "connection refused" on a port that no log ever
+# announced — a stale build reads as a product bug. A busy port is a stop with the
+# owner named, never a silently different number.
+LAB_BACKEND_PORT=${ANDROID_LAB_BACKEND_PORT:-18100}
+LAB_MEDIA_PORT=${ANDROID_LAB_MEDIA_PORT:-18101}
+
+want_port() { # port what
+  local owner
+  (exec 3<>/dev/tcp/127.0.0.1/"$1") 2>/dev/null || return 0
+  owner=$(ss -ltnp 2>/dev/null | awk -v p=":$1" '$4 ~ p"$" {print $6; exit}')
+  die "port $1 is busy${owner:+ ($owner)} and $2 needs it; stop that process or set ANDROID_LAB_BACKEND_PORT / ANDROID_LAB_MEDIA_PORT"
 }
 
 lockfile() { echo "$STATE/lease-${1//[^a-zA-Z0-9]/_}.lock"; }
@@ -491,7 +508,7 @@ start_backend() { # dir tag
   # One database per suite: the server refuses a second app_user, and a suite
   # that inherits the previous one's tenant fails on its own setup, which reads
   # as a product bug in the report.
-  port=$(free_port); BACKEND_URL=http://127.0.0.1:$port
+  port=$LAB_BACKEND_PORT; want_port "$port" "the host backend"; BACKEND_URL=http://127.0.0.1:$port
   PLAYHEADTV_DB_PATH=$db PLAYHEADTV_ADDR=:$port "$bin" >"$log" 2>&1 9>&- &
   BACKEND_PID=$!
   local i
@@ -522,7 +539,7 @@ start_media() { # log-dir
   [ -x "$dartbin" ] || { note "no dart binary found next to flutter"; return 1; }
   ( cd "$CLIENT" && "$dartbin" run tool/gen_it_media.dart "$dir" ) >"$logdir/gen-media.log" 2>&1 ||
     { note "fixture media generation failed: $(tail -2 "$logdir/gen-media.log")"; return 1; }
-  port=$(free_port)
+  port=$LAB_MEDIA_PORT; want_port "$port" "the fixture media server"
   ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 9>&- ) \
     >"$logdir/media-server.log" 2>&1 &
   MEDIA_PID=$!
