@@ -222,6 +222,10 @@ shape it chose:
   `modes`, so no host pays for it by accident.
 - A host that cannot play what the plugin can offer gets `unsupported`; it must
   then hide the channel rather than play an error.
+- A pair's `headers` are **not** forwarded to the player (the engine can set them
+  on the main source, not on the second one). A source that genuinely needs a
+  header to serve its audio has to answer `remux` when the host offers it;
+  signed CDN URLs like the ones the extractor reports do not need them.
 
 Result, `single` or `remux`:
 
@@ -234,6 +238,14 @@ Result, `single` or `remux`:
   "headers": {"Referer": "https://example.com/"}
 }
 ```
+
+A client that does its own playback asks through the backend, which owns the
+plugin: `GET /catalog-items/{id}/play?modes=single,pair,remux&start_ms=…`. The
+`modes` list is the client's own capability, best first — absent, the answer is a
+`remux`, which is what any client could always open. For a pair the answer is
+`{"mode":"pair","url":…,"audio_url":…}`, both addresses rewritten to the machine
+the client reaches this backend on. The player merges them; nothing on the host
+processes media.
 
 Result, `pair`:
 

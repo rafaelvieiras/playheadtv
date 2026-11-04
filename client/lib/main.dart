@@ -484,7 +484,7 @@ const playbackBufferMaxMs = 30000;
 // so asking for two tracks would get an answer nothing can play. `remux` is the
 // plugin feeding a stream it copies, never transcodes, which is what makes a
 // plugin channel playable here at all.
-const playbackPluginModes = ['single', 'remux'];
+
 
 String streamUrl(String itemId) =>
     '${AppConfig.jellyfinUrl}/Videos/$itemId/stream?Static=true&ApiKey=${AppConfig.jellyfinApiKey}';
@@ -1439,26 +1439,28 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   /// next one fast once its cache is warm, so one more try recovers most of
   /// those without an error screen. Every attempt builds and, on failure,
   /// disposes its own controller (see [_createControllerOnce]).
-  Future<VideoPlayback> _createController(ChannelEntry entry, {Duration? seekTo}) {
-    return retryOpen<VideoPlayback>(
+  Future<({VideoPlayback playback, Duration startOffset})> _createController(ChannelEntry entry,
+      {Duration? seekTo}) {
+    return retryOpen<({VideoPlayback playback, Duration startOffset})>(
       attempt: (_) => _createControllerOnce(entry, seekTo: seekTo),
       onRetry: (n, e) => Log.warn('player', 'item ${entry.id} failed to open (attempt $n), retrying', error: e),
     );
   }
 
-  Future<VideoPlayback> _createControllerOnce(ChannelEntry entry, {Duration? seekTo}) async {
+  Future<({VideoPlayback playback, Duration startOffset})> _createControllerOnce(ChannelEntry entry,
+      {Duration? seekTo}) async {
     // Where this unit plays from, and whether that source already starts at the
     // requested position (a plugin asked for a start offset produces a stream
     // that begins there, so seeking again would skip twice).
     final source = await _entrySource(entry, seekTo: seekTo);
-    final controller = trackController(videoEngine.createNetwork(source.uri));
+    final controller = trackController(videoEngine.createNetwork(source.uri, audioUri: source.audioUri));
     final clock = Stopwatch()..start();
     Log.debug('player', 'opening item ${entry.id} (seek=${seekTo?.inSeconds ?? 0}s, offset=${entry.itemOffset.inSeconds}s)');
     try {
       final prepared = await _prepareController(controller, entry, seekTo,
           alreadyPositioned: source.startOffset > Duration.zero);
       Log.debug('player', 'item ${entry.id} opened in ${clock.elapsedMilliseconds}ms');
-      return prepared;
+      return (playback: prepared, startOffset: source.startOffset);
     } catch (e) {
       Log.debug('player', 'item ${entry.id} failed to open after ${clock.elapsedMilliseconds}ms', error: e);
       // Whatever url was used may be the reason: never reuse it for the retry.
@@ -1470,7 +1472,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
   // A url resolved for a plugin source, kept for [pluginStreamReuse]. Never
   // handed to another item (the key carries the item and the exact position).
-  final Map<String, ({Uri uri, DateTime at})> _resolvedStreams = {};
+  final Map<String, ({PluginStream stream, DateTime at})> _resolvedStreams = {};
 
   String _streamKey(ChannelEntry entry, Duration position) => '${entry.id}|${position.inMilliseconds}';
 
@@ -1492,11 +1494,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   /// (the plugin starts its stream there). The engine then counts from that
   /// stream's own zero, so everything that reads a position has to add the
   /// offset back — see `_playbackOffset`.
-  Future<({Uri uri, Duration startOffset})> _entrySource(ChannelEntry entry, {Duration? seekTo}) async {
+  Future<({Uri uri, Uri? audioUri, Duration startOffset})> _entrySource(ChannelEntry entry,
+      {Duration? seekTo}) async {
     final program = entry.program;
     final requires = program?.requires ?? const <EpgRequirement>[];
     if (requires.isEmpty) {
-      return (uri: Uri.parse(streamUrl(entry.id)), startOffset: Duration.zero);
+      return (uri: Uri.parse(streamUrl(entry.id)), audioUri: null, startOffset: Duration.zero);
     }
 
     final runtime = await OfflineRuntime.ensure();
@@ -1512,23 +1515,33 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // so a viewer who tuned in 20 minutes into a program does not wait for it.
     final key = _streamKey(entry, position);
     final cached = _resolvedStreams[key];
-    final startOffset = position > Duration.zero ? position : Duration.zero;
     if (cached != null && DateTime.now().difference(cached.at) < pluginStreamReuse) {
       Log.debug('player', 'item ${entry.id} reusing the url resolved '
           '${DateTime.now().difference(cached.at).inSeconds}s ago (start=${position.inSeconds}s)');
-      return (uri: cached.uri, startOffset: startOffset);
+      return _sourceOf(cached.stream, position);
     }
-    final uri = await runtime.api.playUrl(itemId, startAt: position);
+    final stream =
+        await runtime.api.playUrl(itemId, startAt: position, modes: pluginPlaybackModes(videoEngine));
     Log.debug('player', 'item ${entry.id} resolved by "${requires.first.id}" '
-        '(start=${position.inSeconds}s)');
+        '(start=${position.inSeconds}s, mode=${stream.mode}${stream.audioUri == null ? '' : ', pair'})');
     // Bounded: an entry that can no longer be reused is dropped on every insert,
     // so a long session that hops channels never accumulates urls.
     final now = DateTime.now();
     _resolvedStreams.removeWhere((_, v) => now.difference(v.at) >= pluginStreamReuse);
-    _resolvedStreams[key] = (uri: uri, at: now);
-    // A stream the plugin produced from a start offset already begins there.
-    return (uri: uri, startOffset: startOffset);
+    _resolvedStreams[key] = (stream: stream, at: now);
+    return _sourceOf(stream, position);
   }
+
+  /// A resolved plugin stream as the player consumes it. `startOffset` is the
+  /// position the stream itself begins at: only a mode the plugin produced
+  /// (`remux`) starts where it was asked to, so only then does the player skip
+  /// its own seek and add the offset back when reading a position. A `single`
+  /// file or a `pair` is the whole item from zero, seeked by the player.
+  ({Uri uri, Uri? audioUri, Duration startOffset}) _sourceOf(PluginStream stream, Duration position) => (
+        uri: stream.uri,
+        audioUri: stream.audioUri,
+        startOffset: stream.startsAtRequestedPosition && position > Duration.zero ? position : Duration.zero,
+      );
 
   Future<VideoPlayback> _prepareController(VideoPlayback controller, ChannelEntry entry, Duration? seekTo,
       {bool alreadyPositioned = false}) async {
@@ -1611,10 +1624,13 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
   Future<void> _startChannel({Duration initialSeek = Duration.zero, required int generation}) async {
     final entry = channel[0];
-    // A plugin stream begins where the backend was told to start it, so the
-    // engine's position counts from that stream's zero, not the item's.
-    _playbackOffset = _needsPlugin(entry) ? entry.itemOffset + initialSeek : Duration.zero;
-    final controller = await _createController(entry, seekTo: initialSeek);
+    // The offset is only known once the source is resolved (a remux starts where
+    // it was asked to; a pair or a single file starts at its own zero), so it is
+    // read back from the open, not assumed from `_needsPlugin`.
+    _playbackOffset = Duration.zero;
+    final opened = await _createController(entry, seekTo: initialSeek);
+    final controller = opened.playback;
+    _playbackOffset = opened.startOffset;
     if (generation != _loadGeneration || !mounted) {
       Log.debug('player', 'channel start abandoned after the controller opened (generation $generation, mounted=$mounted)');
       // Switched channel again, or left the player, while the controller was
@@ -1807,7 +1823,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       VideoPlayback? controller;
       Log.debug('preload', 'attempt ${failures + 1} for item $nextIndex started');
       try {
-        controller = await _createController(nextEntry);
+        controller = (await _createController(nextEntry)).playback;
         await controller.setVolume(0);
       } catch (e) {
         clock.stop();
@@ -2221,7 +2237,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     final entry = channel[index];
     Log.info('player', 'resuming at item $index with a hard cut (no preload to fade from)');
     _resetPreload();
-    final controller = await _createController(entry);
+    final controller = (await _createController(entry)).playback;
     if (generation != _loadGeneration || !mounted) {
       unawaited(disposeController(controller));
       return;

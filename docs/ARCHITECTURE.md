@@ -1893,6 +1893,13 @@ The client talks to the video engine only through `lib/video/video_engine.dart`:
   0-based position in the matching list of `MediaTracks`, never the container's
   absolute stream number; the stream-selection resolver and the track picker use
   the same positions.
+- **Where the stream begins is the mode's business, not the engine's.** A
+  `remux` is produced at the position it was asked for, so the player opens it
+  where it is and the OSD adds that offset back (`_playbackOffset`); a `pair` or
+  a `single` file is the item from its own zero, so the player seeks and adds
+  nothing. `_entrySource` returns the difference as `startOffset`, and
+  `_createController` carries it back out of the open instead of assuming it from
+  `_needsPlugin`.
 - Engine-specific tuning is the engine's business. `tune(PlaybackTuning)` carries
   what the app wants (the read-ahead window); the engine adds whatever it needs
   on its own (`FvpVideoEngine` sets `avsync.audio=0`, see AGENTS.md).
@@ -1901,6 +1908,13 @@ The client talks to the video engine only through `lib/video/video_engine.dart`:
   stall valve) because libmdk's GL threads are process-global; `lib/main.dart`
   and the mosaic never call `serializeGlOp`. A new engine decides for itself
   whether it needs a queue.
+- **A playback can carry a second, audio-only source** (`createNetwork(uri,
+  audioUri:)`), which is how a plugin's `pair` is played (`docs/PLUGINS.md`
+  "Modes"): `FvpVideoEngine` passes it to mdk as `setExternalAudio` before
+  `initialize` — mdk prepares both sources together — and the player seeks and
+  plays them as one. `VideoEngine.supportsPairedAudio` is what decides whether
+  the player offers `pair` to a plugin at all (`pluginPlaybackModes`); the
+  ExoPlayer seam cannot merge one and reports false.
 - Two implementations exist, both in `lib/video/`: `FvpVideoEngine` (libmdk,
   every platform, the default) and `ExoVideoEngine` (ExoPlayer/Media3 through
   `video_player_android`, Android only; see "ExoPlayer engine" below). They share

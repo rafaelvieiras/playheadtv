@@ -38,13 +38,16 @@ func registerPluginPlayback(mux Router, db storage.DB, host *pluginhost.Host) {
 	mux.HandleFunc("GET /catalog-items/{id}/play", pluginPlay(db, host, streamHost))
 }
 
+// pluginPlayback is what the client opens. `url` is always one address it can
+// fetch; `audio_url` is set in mode pair, where the audio is a second address and
+// the player merges them (docs/PLUGINS.md "Modes").
 type pluginPlayback struct {
 	Mode      string `json:"mode"`
 	URL       string `json:"url"`
+	AudioURL  string `json:"audio_url,omitempty"`
 	Mime      string `json:"mime,omitempty"`
 	Live      bool   `json:"live"`
 	ExpiresAt *int64 `json:"expires_at,omitempty"`
-	Mode2     string `json:"-"`
 }
 
 func pluginPlay(db storage.DB, host *pluginhost.Host, streamHost string) http.HandlerFunc {
@@ -96,12 +99,17 @@ func pluginPlay(db storage.DB, host *pluginhost.Host, streamHost string) http.Ha
 			config = json.RawMessage(*source.PluginConfigJSON)
 		}
 
-		// Only `remux`: the client is handed one URL, and a pair (video and audio
-		// apart) needs a player that merges two sources. Asking for what the
-		// player can use is the client's job when it runs the plugin itself; this
-		// route is for the client that cannot run it at all.
+		// Which shapes this client can play, best first: the client says so
+		// (`modes=pair,remux`) because only it knows whether its player can merge a
+		// second source. Absent, the answer stays what every client could always
+		// play: a remux.
+		modes, err := playModes(r.URL.Query().Get("modes"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		raw, err := host.Resolve(ctx, *source.PluginID, config, item.ExternalID, item.DurationMs,
-			startAtMs, []string{pluginhost.ModeRemux})
+			startAtMs, modes)
 		if err != nil {
 			if errors.Is(err, pluginhost.ErrNotInstalled) {
 				writeError(w, http.StatusConflict, err.Error())
@@ -112,39 +120,112 @@ func pluginPlay(db storage.DB, host *pluginhost.Host, streamHost string) http.Ha
 		}
 
 		var answer struct {
-			Mode      string `json:"mode"`
-			URL       string `json:"url"`
-			Mime      string `json:"mime"`
-			Live      bool   `json:"live"`
-			ExpiresAt *int64 `json:"expires_at"`
-			// A pair would arrive here as sources, never as a url: the answer is
-			// rejected rather than served as something the player cannot open.
-			Sources []json.RawMessage `json:"sources"`
+			Mode      string            `json:"mode"`
+			URL       string            `json:"url"`
+			Mime      string            `json:"mime"`
+			Live      bool              `json:"live"`
+			Headers   map[string]string `json:"headers"`
+			ExpiresAt *int64            `json:"expires_at"`
+			// A pair arrives as two sources, one video and one audio, and the
+			// player merges them.
+			Sources []pairSource `json:"sources"`
 		}
 		if err := json.Unmarshal(raw, &answer); err != nil {
 			writeError(w, http.StatusBadGateway, "the plugin answered with something unreadable")
 			return
 		}
-		if answer.URL == "" {
-			writeError(w, http.StatusBadGateway,
-				fmt.Sprintf("the plugin answered in mode %q with no playable url", answer.Mode))
-			return
-		}
-		reachable, err := reachableURL(answer.URL, r, streamHost)
+		out, err := playbackFromAnswer(answer.Mode, answer.URL, answer.Sources, answer.Mime, answer.Live,
+			answer.ExpiresAt, r, streamHost)
 		if err != nil {
 			writeError(w, http.StatusBadGateway, err.Error())
 			return
 		}
 
 		w.Header().Set("Cache-Control", "no-store")
-		writeJSON(w, http.StatusOK, pluginPlayback{
-			Mode:      answer.Mode,
-			URL:       reachable,
-			Mime:      answer.Mime,
-			Live:      answer.Live,
-			ExpiresAt: answer.ExpiresAt,
-		})
+		writeJSON(w, http.StatusOK, out)
 	}
+}
+
+// playbackFromAnswer turns a plugin's answer into what the client opens, with
+// every address rewritten to the machine the client can reach. A pair needs one
+// video and one audio address; anything else is a single address the player
+// opens on its own.
+func playbackFromAnswer(mode, rawURL string, sources []pairSource, mime string, live bool,
+	expiresAt *int64, r *http.Request, streamHost string) (pluginPlayback, error) {
+	out := pluginPlayback{Mode: mode, Mime: mime, Live: live, ExpiresAt: expiresAt}
+	if mode == pluginhost.ModePair {
+		video, audio := pairSources(sources)
+		if video == "" || audio == "" {
+			return pluginPlayback{}, fmt.Errorf(
+				"the plugin answered a pair with no video or no audio url (%d sources)", len(sources))
+		}
+		reachable, err := reachableURL(video, r, streamHost)
+		if err != nil {
+			return pluginPlayback{}, err
+		}
+		reachableAudio, err := reachableURL(audio, r, streamHost)
+		if err != nil {
+			return pluginPlayback{}, err
+		}
+		out.URL, out.AudioURL = reachable, reachableAudio
+		return out, nil
+	}
+	if rawURL == "" {
+		return pluginPlayback{}, fmt.Errorf("the plugin answered in mode %q with no playable url", mode)
+	}
+	reachable, err := reachableURL(rawURL, r, streamHost)
+	if err != nil {
+		return pluginPlayback{}, err
+	}
+	out.URL = reachable
+	return out, nil
+}
+
+// playModes reads the client's `modes` list. Absent is the answer every client
+// has always received (a remux); otherwise the list is taken in the order given,
+// because that order is the client's preference and the plugin honours it.
+func playModes(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return []string{pluginhost.ModeRemux}, nil
+	}
+	var modes []string
+	for _, mode := range strings.Split(raw, ",") {
+		switch mode = strings.TrimSpace(mode); mode {
+		case pluginhost.ModeSingle, pluginhost.ModePair, pluginhost.ModeRemux:
+			modes = append(modes, mode)
+		case "":
+			// A trailing comma or a padding space is not a request for anything.
+		default:
+			return nil, fmt.Errorf("modes must be a comma-separated list of single, pair, remux (got %q)", mode)
+		}
+	}
+	if len(modes) == 0 {
+		return nil, fmt.Errorf("modes must name at least one of single, pair, remux")
+	}
+	return modes, nil
+}
+
+// pairSource is one track of a pair answer.
+type pairSource struct {
+	Type    string            `json:"type"`
+	URL     string            `json:"url"`
+	Mime    string            `json:"mime"`
+	Headers map[string]string `json:"headers"`
+}
+
+// pairSources returns the video and audio urls of a pair answer, or an empty
+// string for a track the plugin did not send: two sources of the same type are
+// not a pair the player can merge.
+func pairSources(sources []pairSource) (video, audio string) {
+	for _, source := range sources {
+		switch {
+		case source.Type == "video" && video == "":
+			video = source.URL
+		case source.Type == "audio" && audio == "":
+			audio = source.URL
+		}
+	}
+	return video, audio
 }
 
 func parseStartMs(raw string) (int64, error) {

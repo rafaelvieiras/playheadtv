@@ -302,6 +302,7 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
       // failure (plugin unreachable, item withdrawn) stays a placeholder.
       final requires = entry.requires;
       Uri source;
+      Uri? audioSource;
       var alreadyPositioned = false;
       if (requires.isEmpty) {
         if (externalId == null) return;
@@ -318,13 +319,18 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
         position += Duration(milliseconds: entry.itemOffsetMs);
         await Future<void>.delayed(mosaicPluginPreviewDwell);
         if (!mounted || _appHidden || generation != _previewGeneration) return;
-        source = await _runtime.api.playUrl(catalogItemId, startAt: position);
-        alreadyPositioned = true;
+        final stream = await _runtime.api.playUrl(catalogItemId,
+            startAt: position, modes: pluginPlaybackModes(videoEngine));
+        source = stream.uri;
+        audioSource = stream.audioUri;
+        // Only a stream the plugin produced begins where it was asked to; a pair
+        // or a single file is the item from its own zero and is seeked below.
+        alreadyPositioned = stream.startsAtRequestedPosition;
         if (!mounted || _appHidden || generation != _previewGeneration) return;
         Log.debug('mosaic', 'preview resolved by "${requires.first.id}" (start=${position.inSeconds}s)');
       }
 
-      final controller = trackController(videoEngine.createNetwork(source));
+      final controller = trackController(videoEngine.createNetwork(source, audioUri: audioSource));
       final clock = Stopwatch()..start();
       try {
         await _openPreview(controller, now, itemStart, itemEnd, alreadyPositioned: alreadyPositioned);
