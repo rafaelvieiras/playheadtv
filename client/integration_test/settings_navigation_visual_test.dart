@@ -344,7 +344,18 @@ void main() {
             .map((e) => (e.widget.key! as ValueKey<String>).value)
             .where(rows.contains)
             .toList();
-        fail('$rowKey is not on $pageKey (rows present: $present)');
+        // What the screen actually says, so the next reader does not have to
+        // guess whether the page opened, the row is missing, or the app left.
+        final texts = find
+            .byType(Text)
+            .evaluate()
+            .map((e) => (e.widget as Text).data)
+            .whereType<String>()
+            .take(24)
+            .toList();
+        fail('$rowKey is not on $pageKey (rows present: $present; '
+            'page open: ${find.byKey(ValueKey(pageKey)).evaluate().isNotEmpty}; '
+            'texts on screen: $texts)');
       }
       final inner = find.descendant(of: find.byKey(Key(rowKey)), matching: find.byType(Focus)).evaluate().first;
       ((inner as StatefulElement).state as dynamic).focusNode.requestFocus();

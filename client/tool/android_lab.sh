@@ -287,10 +287,14 @@ evidence() {
   # explains itself (why it reloaded the channel, which engine it picked): logcat
   # has the native side, not this. A debug build allows reading its data dir.
   local f
-  "$ADB" -s "$serial" shell run-as "$PKG" ls files 2>/dev/null | tr -d '\r' |
-    grep -E '^playheadtv\.log|^perf_trace\.jsonl' | while read -r f; do
-      [ -n "$f" ] && "$ADB" -s "$serial" shell run-as "$PKG" cat "files/$f" 2>/dev/null >"$out/app-$f"
-    done
+  "$ADB" -s "$serial" shell run-as "$PKG" ls -R files 2>/dev/null | tr -d '\r' >"$out/app-files.txt"
+  [ -s "$out/app-files.txt" ] || rm -f "$out/app-files.txt"
+  grep -E '\.log$|\.jsonl$|\.log\.[0-9]+$' "$out/app-files.txt" 2>/dev/null | while read -r f; do
+    case $f in
+      /*) path=${f#/};; *) path=files/$f;;
+    esac
+    "$ADB" -s "$serial" shell run-as "$PKG" cat "$path" 2>/dev/null >"$out/app-$(basename "$f")"
+  done
   # Screenshots the suite took for itself, out of the app sandbox: a visual suite
   # that fails has to leave its evidence where the host can reach it.
   mkdir -p "$out/shots"
