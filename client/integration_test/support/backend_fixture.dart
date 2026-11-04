@@ -15,6 +15,16 @@ import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
+// The suites normally run next to a real backend: [BackendFixture.start]
+// builds the Go server and spawns it from the test process. On a device
+// (integration_test on an emulator or a set-top box) that process is inside
+// Android, where there is no `go` and no checkout, so the lab starts the
+// backend on the host, maps it into the device with `adb reverse` and passes
+// its address here (client/tool/android_lab.sh). The rest of the fixture does
+// not change: the app and the helpers still talk to http://127.0.0.1:<port>,
+// which on the device is the reverse tunnel.
+const _remoteBaseUrl = String.fromEnvironment('PLAYHEADTV_IT_BACKEND_URL');
+
 class BackendFixture {
   Directory? _tempDir;
   Process? _process;
@@ -40,7 +50,20 @@ class BackendFixture {
   /// (not through `go run`), so [stopServer] really takes it down and
   /// [restartServer] brings it back on the same address with the same data.
   /// [env] adds environment variables (e.g. `PLAYHEADTV_EPG_WINDOW`).
+  ///
+  /// With `PLAYHEADTV_IT_BACKEND_URL` set (see [_remoteBaseUrl]) nothing is
+  /// built or spawned: the backend already runs on the host and this only
+  /// waits for `/healthz` and does the bootstrap. [stopServer] and
+  /// [restartServer] throw in that mode, so the suites that need them stay on
+  /// the desktop.
   Future<void> start({Map<String, String> env = const {}}) async {
+    if (_remoteBaseUrl.isNotEmpty) {
+      _extraEnv = env;
+      _baseUrl = _remoteBaseUrl;
+      await _waitForHealth();
+      await _bootstrap();
+      return;
+    }
     final backendDir = Directory('${Directory.current.path}/../backend');
     if (!await backendDir.exists()) {
       throw StateError(
@@ -65,7 +88,11 @@ class BackendFixture {
     _baseUrl = 'http://127.0.0.1:$port';
 
     await _spawn(port);
+    await _bootstrap();
+  }
 
+  /// The tenant's app_user and the session token every helper uses.
+  Future<void> _bootstrap() async {
     await _postJson('/app-users', {'email': 'e2e-test@example.com', 'password': 'test-password-123'});
     final login = await _postJson(
       '/sessions',
@@ -88,7 +115,10 @@ class BackendFixture {
     );
     process.stdout.transform(utf8.decoder).listen((l) => stdout.write('[backend] $l'));
     process.stderr.transform(utf8.decoder).listen((l) => stderr.write('[backend] $l'));
+    await _waitForHealth();
+  }
 
+  Future<void> _waitForHealth() async {
     final deadline = DateTime.now().add(const Duration(seconds: 30));
     while (true) {
       try {
@@ -104,14 +134,20 @@ class BackendFixture {
     }
   }
 
-  /// Whether the backend process is up (false between [stopServer] and
+  /// Whether the backend is up (false between [stopServer] and
   /// [restartServer]).
-  bool get isRunning => _process != null;
+  bool get isRunning => _remoteBaseUrl.isNotEmpty || _process != null;
 
   /// Takes the backend process down but keeps its data and address: from now
   /// on every request to [baseUrl] is refused, which is how a test simulates
   /// the backend (or the internet) being out. [restartServer] brings it back.
   Future<void> stopServer() async {
+    if (_remoteBaseUrl.isNotEmpty) {
+      throw UnsupportedError(
+        'stopServer() needs the backend next to the test, and on a device the backend is on the host: '
+        'this suite runs on the desktop (client/tool/run_gui_suites.sh), not on an Android target yet.',
+      );
+    }
     final process = _process;
     _process = null;
     if (process == null) return;
@@ -127,6 +163,12 @@ class BackendFixture {
   /// Starts the backend again on the same address with the same database (the
   /// schedule is re-materialized at boot) and logs in again.
   Future<void> restartServer({Map<String, String>? env}) async {
+    if (_remoteBaseUrl.isNotEmpty) {
+      throw UnsupportedError(
+        'restartServer() needs the backend next to the test, and on a device the backend is on the host: '
+        'this suite runs on the desktop (client/tool/run_gui_suites.sh), not on an Android target yet.',
+      );
+    }
     if (env != null) _extraEnv = env;
     await _spawn(Uri.parse(_baseUrl!).port);
     final login = await _postJson('/sessions', {'email': 'e2e-test@example.com', 'password': 'test-password-123'}, auth: false);
