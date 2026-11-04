@@ -695,7 +695,11 @@ device, driven by scripts that end in a file an agent or a human can read.
   and install share one directory per working tree, so parallelism is one process
   per checkout (`git worktree`) and one port per process.
 - State of the suite on the lab (2026-11-04, TV profile, the 38 suites that can
-  run on a device): 33 pass, 5 fail, and none of the five is the lab. Four are
+  run on a device): 33 pass, 5 fail, and none of the five is the lab. Three of
+  those five were fixed the same day and pass now (`transition_audio_test`,
+  `warm_start_test`, `app_background_test`, plus `fullscreen_test` once the test
+  walks to the row instead of counting presses); `settings_navigation_visual_test`
+  is the one still open. The original five: Four are
   desktop assumptions the lab exposes — a TV cannot go windowed so the toggle
   stays `On` (`fullscreen_test`), a settings page laid out without a `Scrollable`
   breaks a helper that scrolls before focusing (`settings_navigation_visual_test`),
@@ -706,6 +710,22 @@ device, driven by scripts that end in a file an agent or a human can read.
   channel reloaded twice instead of once, and logcat shows the system opening
   `MainActivity` on its own at that moment — product or emulator focus, not yet
   known.
+- Two clocks, and they drift. The device's clock is not the backend's: an
+  emulator under swiftshader ran **49 s behind the host after eleven minutes**, and
+  the fixture computed the epoch millis of "start this two seconds ago" with the
+  device clock while the backend materialised with its own. Eight of twelve items
+  were already over, never aired, and two suites waited sixty seconds for entries
+  that could not exist (`last: 4`). `BackendFixture` now learns the server's clock
+  from the `Date` header of every response and anchors every epoch on it
+  (`serverNow`); use it for anything scheduled. The lab writes the measured skew
+  into each attempt (`skew.txt`) and the report says so when it passes 5 s;
+  `android-lab status` reports `clock_skew_s`.
+- Artifacts from inside the app are the ones that matter and the hardest to get.
+  A visual suite's screenshots went to `systemTemp`, which on a device is the app
+  sandbox: they died with the process, exactly when they were wanted. Suites write
+  to the support directory (`files/lab-shots`), the lab pulls it while the app is
+  still alive, and `startSuiteLogging()` (support/app_logging.dart) gives the app's
+  own log the same treatment for suites, which never run `main()`.
 - What the lab cannot see: hardware video decode, GPU compositing, real ARM
   ABIs, thermal throttling and a weak box's jank. Those are the cases for a
   physical device, and they are measured, not eyeballed: `perf_trace.jsonl` via
