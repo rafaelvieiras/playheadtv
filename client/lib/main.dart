@@ -25,6 +25,7 @@ import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:path_provider/path_provider.dart';
 import 'video/video_engine.dart';
 
 import 'cache/offline_runtime.dart';
@@ -503,6 +504,21 @@ Future<void> applyStartupFullScreen() async {
   await FullScreenController.shared.apply(settings.startFullScreen(AppConfig.startFullScreenDefault));
 }
 
+/// Where the log file lives on a platform with no state directory of its own.
+/// Android and iOS have no `PLAYHEADTV_ROOT` and no XDG state dir, so the log
+/// stayed in memory and died with the process — the one moment it is wanted. The
+/// app's support directory is `files/`, which `adb shell run-as` can read while
+/// the app is still running, and which survives its death on disk.
+Future<Directory?> _mobileLogDirectory() async {
+  if (!Platform.isAndroid && !Platform.isIOS) return null;
+  try {
+    return await getApplicationSupportDirectory();
+  } catch (e) {
+    Log.warn('app', 'no log directory on this device: $e');
+    return null;
+  }
+}
+
 Future<void> main() async {
   BootTrace.mark('main');
   WidgetsFlutterBinding.ensureInitialized();
@@ -513,6 +529,7 @@ Future<void> main() async {
     file: AppConfig.fileSettings,
     appVersion: appVersion,
     secrets: [AppConfig.jellyfinApiKey, AppConfig.playheadDeviceToken],
+    directory: await _mobileLogDirectory(),
   );
   _installErrorLogging();
   // A device with no reachable log file needs the log on screen to be readable
