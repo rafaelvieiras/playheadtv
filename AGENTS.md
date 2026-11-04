@@ -623,8 +623,20 @@ device, driven by scripts that end in a file an agent or a human can read.
   (it takes a lease, so a second run is told the device is busy instead of
   fighting for the screen). Artifacts per suite under
   `client/build/android-runs/<run>/`.
+- Which suites a change needs: `--changed` (add `--since <ref>` to include the
+  commits) picks them from `client/tool/suite_map.tsv` — globs to suites, one line
+  each — and falls back to the words in the path for everything nobody has mapped
+  yet, so a golden of the guide or a new `lib/dimmer_*.dart` still lands somewhere
+  sensible. A change nothing names runs the boot set and says so; a central file
+  (`lib/main.dart`, `pubspec.yaml`, `android/`, anything under
+  `integration_test/support/`) reaches the boot set or every suite. `--dry-run`
+  prints the selection and the file -> suites table without booting anything, and
+  every `--changed` run writes `selection.tsv` beside the results: a run that
+  passed three suites has to say how it picked those three. The rule behind the
+  map is err wide, and say why — a suite that is not selected is a suite that did
+  not run; intend wrongly and the run prints the file it could not place.
 - `client/tool/android_lab.sh` — the pieces, usable on their own: `avd up`
-  (`--profile tv|phone`, `--cold`, `--wipe`) prints the serial, `avd down`,
+  (`--profile tv|phone`, `--cold|--warm`, `--wipe`) prints the serial, `avd down`,
   `grab` for a screenshot plus the accessibility tree at any moment, `device` for
   what the target claims to be, `run` for a single suite, `verdict` to (re)build
   the verdict of an existing attempt directory.
@@ -639,9 +651,12 @@ device, driven by scripts that end in a file an agent or a human can read.
   the lab builds `backend/cmd/server` once, starts it on a free port with a
   temporary DB, maps it into the device with `adb reverse` and passes the address
   as `--dart-define=PLAYHEADTV_IT_BACKEND_URL`; `BackendFixture` then skips the
-  build/spawn and only waits for `/healthz`. The five suites that take the
-  backend down mid-run (`offline_*`, `settings_offline_test`) throw
-  `UnsupportedError` on a device: run those on the desktop.
+  build/spawn and only waits for `/healthz`. Six suites cannot pass that way —
+  the four `offline_*` and `settings_offline_test` take the backend down mid-run
+  and throw `UnsupportedError`, and `epg_window_test` starts a second
+  `BackendFixture` of its own ("only this test's channel is downloaded") which on
+  a device is the same host backend. Run those on the desktop; the runner skips
+  them by default and `--all-suites` puts them back.
 - Anything a fixture would shell out to is a host job too. The video fixture
   needs `ffmpeg`, which a device does not have: the lab encodes the clips once
   (`tool/gen_it_media.dart`, which calls the same `support/video_media.dart` the

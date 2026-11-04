@@ -1,0 +1,72 @@
+# Which integration suites a changed file touches, for
+# `tool/run_android_suites.sh --changed`. Read top to bottom, every matching
+# line contributes; the result is a union, never a narrowing.
+#
+#   <glob> [<glob> ...]	<suite> [<suite> ...]
+#
+# Fields are separated by a TAB, patterns and suites by spaces. Patterns are
+# shell globs matched against the path from the repository root (`*` crosses
+# `/`). Suites are names without `client/integration_test/` and without`.dart`.
+# `ALL` and `BOOT` are keywords: the whole set, and the suites that boot the app
+# and check its wiring.
+#
+# A file that matches nothing here still gets a chance: the runner matches the
+# words of its path (`epg_thumbnail.dart` -> `epg`) against the words of every
+# suite name. That covers the obvious cases and is what makes this file short;
+# when it guesses wrong the run prints the file and the suites it picked, and
+# `--changed --dry-run` shows the selection before anything boots.
+#
+# Err wide, and say why: a suite that is not selected is a suite that did not
+# run. If a change could plausibly reach areas this table does not name, widen
+# it here or pass the suites explicitly.
+
+# --- how the app starts, and what can break every suite -----------------------
+client/lib/main.dart	BOOT
+client/pubspec.yaml	BOOT
+client/pubspec.lock	BOOT
+client/android/*	BOOT
+client/integration_test/support/*	ALL
+
+# --- the backend answers every suite -----------------------------------------
+server/*	BOOT base_schedule_test epg_layout_test epg_filler_test epg_gap_test channel_navigation_test osd_test
+
+# --- playback: engines, controller, preload, stall ----------------------------
+client/lib/video/*	segment_playback_test track_selector_test track_selector_persistence_test transition_audio_test loading_navigation_test leave_during_load_test preload_late_test tail_cap_test osd_elapsed_test player_background_test controls_mapping_test settings_preload_lead_test
+client/lib/playback_stall.dart	loading_navigation_test leave_during_load_test segment_playback_test
+client/lib/preload_lead.dart	preload_late_test settings_preload_lead_test tail_cap_test
+client/lib/services/stream_*	controls_mapping_test track_selector_test track_selector_persistence_test transition_audio_test segment_playback_test settings_preload_lead_test
+client/lib/services/perf_*	perf_boot_epg_test
+
+# --- lifecycle: leaving the screen, waking up, being covered ------------------
+client/lib/util/controller_lifecycle.dart	app_background_test player_background_test focus_lifecycle_test screen_awake_test fullscreen_test warm_start_test
+client/lib/services/app_window.dart	fullscreen_test focus_lifecycle_test warm_start_test
+client/lib/services/app_exit.dart	exit_flow_test
+client/lib/services/screen_awake.dart	screen_awake_test
+client/lib/input/*	controls_mapping_test exit_flow_test
+client/lib/pages/controls_mapping_page.dart	controls_mapping_test
+
+# --- the guide ----------------------------------------------------------------
+client/lib/epg_guide.dart	epg_layout_test epg_gap_test epg_filler_test epg_overlay_test epg_live_nav_test base_schedule_test epg_window_test
+client/lib/widgets/epg_overlay.dart	epg_overlay_test epg_layout_test epg_live_nav_test epg_thumbnail_setting_test base_schedule_test epg_window_test
+client/lib/epg_thumbnail.dart	epg_thumbnail_setting_test epg_layout_test
+client/lib/widgets/art_image.dart	epg_thumbnail_setting_test channel_logo_clock_test mosaic_test
+client/lib/widgets/channel_logo.dart	channel_logo_clock_test channel_navigation_test mosaic_test
+client/lib/plugin/channel_filter.dart	channel_navigation_test
+
+# --- the screen over the picture ---------------------------------------------
+client/lib/widgets/osd_overlay.dart	osd_test osd_elapsed_test osd_filler_test
+client/lib/osd_subject.dart	osd_test osd_elapsed_test osd_filler_test
+client/lib/widgets/clock_overlay.dart	channel_logo_clock_test osd_test
+client/lib/clock.dart	channel_logo_clock_test osd_test osd_elapsed_test
+client/lib/widgets/track_selector_overlay.dart	track_selector_test track_selector_persistence_test
+client/lib/dimmer.dart client/lib/widgets/dimmer*	dimmer_test
+client/lib/watermark.dart client/lib/widgets/watermark_overlay.dart	watermark_test
+
+# --- mosaic -------------------------------------------------------------------
+client/lib/mosaic_layout.dart client/lib/mosaic_nav.dart client/lib/widgets/mosaic_frame.dart client/lib/pages/mosaic_page.dart	mosaic_test mosaic_nav_scale_test epg_live_nav_test
+
+# --- settings, logs, updates, cache ------------------------------------------
+client/lib/pages/settings_page.dart client/lib/services/settings_service.dart	settings_navigation_visual_test settings_navigation_pages_visual_test settings_preload_lead_test
+client/lib/log/* client/lib/pages/diagnostics_page.dart	logging_test
+client/lib/update/* client/lib/widgets/update_overlay.dart	update_banner_test update_notice_test
+client/lib/cache/* client/lib/pages/offline_cache_page.dart	offline_coldstart_test offline_exhausted_test offline_playback_test offline_reconcile_test settings_offline_test
