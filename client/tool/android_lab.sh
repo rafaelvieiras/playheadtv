@@ -283,6 +283,14 @@ evidence() {
   if "$ADB" -s "$serial" shell uiautomator dump /sdcard/lab-ui.xml >/dev/null 2>&1; then
     "$ADB" -s "$serial" pull /sdcard/lab-ui.xml "$out/ui.xml" >/dev/null 2>&1 || rm -f "$out/ui.xml"
   fi
+  # The app's own log, which survives the process and is the only place it
+  # explains itself (why it reloaded the channel, which engine it picked): logcat
+  # has the native side, not this. A debug build allows reading its data dir.
+  local f
+  "$ADB" -s "$serial" shell run-as "$PKG" ls files 2>/dev/null | tr -d '\r' |
+    grep -E '^playheadtv\.log|^perf_trace\.jsonl' | while read -r f; do
+      [ -n "$f" ] && "$ADB" -s "$serial" shell run-as "$PKG" cat "files/$f" 2>/dev/null >"$out/app-$f"
+    done
   "$ADB" -s "$serial" shell dumpsys gfxinfo "$PKG" >"$out/gfxinfo.txt" 2>/dev/null || rm -f "$out/gfxinfo.txt"
   "$ADB" -s "$serial" shell dumpsys activity processes 2>/dev/null | grep -E 'ANR in |crash' >"$out/anr.txt"
   [ -s "$out/anr.txt" ] || rm -f "$out/anr.txt"

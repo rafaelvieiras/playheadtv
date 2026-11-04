@@ -87,6 +87,28 @@ Future<String> seedChannel(
       {'external_id': '$prefix-$i', 'kind': 'episode', 'title': '$prefix $i', 'duration_ms': itemMs, ...extraFields},
   ]);
   final block = await backend.createBlockWithItems(ids);
-  await backend.createScheduleOnce(channelId: channelId, blockId: block, startAt: DateTime.now().toUtc().add(startOffset));
+  final itemId = await backend.createScheduleOnce(
+    channelId: channelId,
+    blockId: block,
+    startAt: DateTime.now().toUtc().add(startOffset),
+  );
+  await _keepGridAhead(backend, itemId, itemMs);
   return channelId;
+}
+
+/// The grid is materialised from the server's clock, and a device can spend
+/// seconds between "start this two seconds ago" and the row landing (a slow
+/// POST, a busy SQLite writer, the materialiser holding the write lock). The
+/// items that started *and ended* in the meantime never air, so a suite waiting
+/// for `items` entries waits for one that will never exist: the lab saw 11 of
+/// 12 and blamed the app. When that happens, move the start far enough ahead
+/// that the next write cannot lose an item either — by the time the app boots,
+/// the first item is on air again.
+Future<void> _keepGridAhead(BackendFixture backend, String itemId, int itemMs) async {
+  for (var attempt = 0; attempt < 3; attempt++) {
+    final item = await backend.scheduleItem(itemId);
+    final startAt = DateTime.fromMillisecondsSinceEpoch(item['start_at'] as int, isUtc: true);
+    if (DateTime.now().toUtc().difference(startAt).inMilliseconds < itemMs) return;
+    await backend.moveScheduleItem(itemId, DateTime.now().toUtc().add(const Duration(seconds: 1)));
+  }
 }

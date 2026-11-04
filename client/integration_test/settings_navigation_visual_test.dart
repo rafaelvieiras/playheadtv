@@ -320,11 +320,26 @@ void main() {
       violations.add('TEST RECOVERY needed on $pageKey (focus was not on a row)');
       out('TEST RECOVERY: focus was not on a row; requesting focus on $rowKey (the app did not do this)');
       if (find.byKey(Key(rowKey)).evaluate().isEmpty) {
-        // A lazy row that is not built: scroll the list to the end or the start first.
-        final scrollable = find.descendant(of: find.byKey(ValueKey(pageKey)), matching: find.byType(Scrollable)).evaluate().first;
-        final position = (scrollable as StatefulElement).state as ScrollableState;
-        position.position.jumpTo(rowKey == rows.last ? position.position.maxScrollExtent : position.position.minScrollExtent);
-        await tester.pump(const Duration(milliseconds: 400));
+        // A lazy row that is not built: scroll the list to the end or the start
+        // first. A page laid out so that everything fits has no Scrollable at
+        // all, and then there is nothing to scroll.
+        final scrollables = find.descendant(of: find.byKey(ValueKey(pageKey)), matching: find.byType(Scrollable)).evaluate();
+        if (scrollables.isNotEmpty) {
+          final position = (scrollables.first as StatefulElement).state as ScrollableState;
+          position.position.jumpTo(rowKey == rows.last ? position.position.maxScrollExtent : position.position.minScrollExtent);
+          await tester.pump(const Duration(milliseconds: 400));
+        }
+      }
+      if (find.byKey(Key(rowKey)).evaluate().isEmpty) {
+        // Say what is there instead of dying inside the recovery with "Bad
+        // state: No element", which reads like a lab failure.
+        final present = find
+            .byWidgetPredicate((w) => w.key is ValueKey<String>)
+            .evaluate()
+            .map((e) => (e.widget.key! as ValueKey<String>).value)
+            .where(rows.contains)
+            .toList();
+        fail('$rowKey is not on $pageKey (rows present: $present)');
       }
       final inner = find.descendant(of: find.byKey(Key(rowKey)), matching: find.byType(Focus)).evaluate().first;
       ((inner as StatefulElement).state as dynamic).focusNode.requestFocus();

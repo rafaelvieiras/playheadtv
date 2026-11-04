@@ -26,3 +26,25 @@ Future<void> pressKey(WidgetTester tester, LogicalKeyboardKey key) async {
   await ensurePlayerFocus(tester);
   await tester.sendKeyEvent(key);
 }
+
+/// Whether primary focus sits on the widget keyed [key], or inside it.
+///
+/// A page builds before it takes focus, and a device widens that gap enough for
+/// the first key presses to be swallowed: the suite then asserts about a row
+/// that never received them (the lab saw the full screen row still reading On
+/// after Enter). Wait on this before pressing.
+bool focusIsInside(Key key) {
+  final primary = FocusManager.instance.primaryFocus;
+  final context = primary?.context;
+  if (primary == null || primary is FocusScopeNode || context == null) return false;
+  if (context.widget.key == key) return true;
+  var found = false;
+  context.visitAncestorElements((e) {
+    if (e.widget.key == key) {
+      found = true;
+      return false;
+    }
+    return true;
+  });
+  return found;
+}
