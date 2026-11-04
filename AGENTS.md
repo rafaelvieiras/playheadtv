@@ -694,38 +694,19 @@ device, driven by scripts that end in a file an agent or a human can read.
   Two suites never run at once against the same checkout: Flutter's Android build
   and install share one directory per working tree, so parallelism is one process
   per checkout (`git worktree`) and one port per process.
-- State of the suite on the lab (2026-11-04, TV profile, the 38 suites that can
-  run on a device): 33 pass, 5 fail, and none of the five is the lab. Three of
-  those five were fixed the same day and pass now (`transition_audio_test`,
-  `warm_start_test`, `app_background_test`, plus `fullscreen_test` once the test
-  walks to the row instead of counting presses); `settings_navigation_visual_test`
-  is the one still open. The original five: Four are
-  desktop assumptions the lab exposes — a TV cannot go windowed so the toggle
-  stays `On` (`fullscreen_test`), a settings page laid out without a `Scrollable`
-  breaks a helper that scrolls before focusing (`settings_navigation_visual_test`),
-  a seven-second entry starts before the device finishes booting
-  (`transition_audio_test`), and `waitForEpgEntries(12)` sees 11 because the last
-  entry materialises when it is due (`warm_start_test`; `app_background_test` has
-  the same shape). The fifth is open: going `inactive` inside the test gets the
-  channel reloaded twice instead of once, and logcat shows the system opening
-  `MainActivity` on its own at that moment — product or emulator focus, not yet
-  known.
-- Two clocks, and they drift. The device's clock is not the backend's: an
-  emulator under swiftshader ran **49 s behind the host after eleven minutes**, and
-  the fixture computed the epoch millis of "start this two seconds ago" with the
-  device clock while the backend materialised with its own. Eight of twelve items
-  were already over, never aired, and two suites waited sixty seconds for entries
-  that could not exist (`last: 4`). `BackendFixture` now learns the server's clock
-  from the `Date` header of every response and anchors every epoch on it
-  (`serverNow`); use it for anything scheduled. The lab writes the measured skew
-  into each attempt (`skew.txt`) and the report says so when it passes 5 s;
-  `android-lab status` reports `clock_skew_s`.
-- Artifacts from inside the app are the ones that matter and the hardest to get.
-  A visual suite's screenshots went to `systemTemp`, which on a device is the app
-  sandbox: they died with the process, exactly when they were wanted. Suites write
-  to the support directory (`files/lab-shots`), the lab pulls it while the app is
-  still alive, and `startSuiteLogging()` (support/app_logging.dart) gives the app's
-  own log the same treatment for suites, which never run `main()`.
+- State of the suite on the lab (2026-11-04, TV profile): **37 device suites, 37
+  pass** — the full census plus `mosaic_nav_scale_test` re-run after its own fix.
+  Seven suites cannot run here and the runner skips them by default: the four
+  `offline_*` and `settings_offline_test` take the backend down or start a second
+  fixture of their own, `epg_window_test` does the same, and
+  `settings_navigation_visual_test` resizes the window at will (800x450 at 200%
+  interface size), which a device does not have. `--all-suites` puts them back.
+  What the lab found on the way — all of it in the suites, plus one product gap:
+  a device clock 49 s behind the backend (the fixture now anchors on `serverNow`);
+  a 7-second entry that started before the app had painted; focus counted by
+  presses instead of walked to; a preview asserted as playing on the frame its
+  surface appeared; screenshots and the app's log dying inside the app sandbox; and
+  the app having no log file at all on a phone.
 - What the lab cannot see: hardware video decode, GPU compositing, real ARM
   ABIs, thermal throttling and a weak box's jank. Those are the cases for a
   physical device, and they are measured, not eyeballed: `perf_trace.jsonl` via
