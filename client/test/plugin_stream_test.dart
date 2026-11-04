@@ -11,14 +11,14 @@ import 'package:http/testing.dart';
 
 void main() {
   group('what the player declares it can play', () {
-    test('an engine that merges asks for the pair first, then a plain file', () {
+    test('an engine that merges asks for the pair first, then a remux', () {
       final engine = _Engine(paired: true);
-      expect(pluginPlaybackModes(engine), ['pair', 'single', 'remux']);
+      expect(pluginPlaybackModes(engine), ['pair', 'remux']);
     });
 
-    test('an engine that cannot merge never offers a pair', () {
+    test('an engine that cannot merge asks for the remux alone, never the pair', () {
       final engine = _Engine(paired: false);
-      expect(pluginPlaybackModes(engine), ['single', 'remux']);
+      expect(pluginPlaybackModes(engine), ['remux']);
     });
   });
 
