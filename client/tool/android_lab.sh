@@ -36,7 +36,7 @@ SDK=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}
 STATE=${ANDROID_LAB_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/android-lab}
 IMAGE_TV=${ANDROID_LAB_IMAGE_TV:-system-images;android-36;android-tv;x86_64}
 IMAGE_PHONE=${ANDROID_LAB_IMAGE_PHONE:-system-images;android-33;google_apis;x86_64}
-TMO=900; OUT=; SERIAL=; PROFILE=; PORT=5554; COLD=0; WIPE=0; RETRY=1; BACKEND=1
+TMO=900; OUT=; SERIAL=; PROFILE=; PORT=5554; COLD=0; WIPE=0; RETRY=1; BACKEND=1; MEDIA=1; WATCH=1
 RECORD=0; WAIT=0; LEASE_WAIT=0; PKG=io.github.rafaelvieiras.playheadtv.client
 FLAKE_RE='Unable to start the app|Error waiting for a debug connection|did not complete|Test process is no longer needed|stalled|device offline'
 ASSERT_RE='Expected: |EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK|TestFailure|Failed assertion'
@@ -126,16 +126,28 @@ ensure_avd() {
   echo "$name"
 }
 
-wait_boot() {
-  local serial=$1 i
-  "$ADB" -s "$serial" wait-for-device >/dev/null 2>&1 || return 1
-  # One adb shell for the whole wait: every separate `adb shell` costs ~0.2 s and
-  # a cold boot would need hundreds of them.
-  timeout 600 "$ADB" -s "$serial" shell 'while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 1; done' \
-    >/dev/null 2>&1 || return 1
-  for i in $(seq 1 60); do
-    "$ADB" -s "$serial" shell pm list packages >/dev/null 2>&1 && return 0
-    sleep 1
+# The adb transport flaps while the system comes up: `wait-for-device` says the
+# device is there, and the `shell` right after it can still answer "device
+# offline" and exit 1. Retry instead of calling a finished boot a failure, and
+# give up when the emulator process itself is gone (a crash, not a slow boot).
+wait_boot() { # serial timeout-seconds
+  local serial=$1 deadline=$(($(date +%s) + ${2:-600})) i seen=0
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if timeout 300 "$ADB" -s "$serial" shell 'while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 1; done' >/dev/null 2>&1; then
+      # boot_completed is set before the package manager is ready to answer.
+      for i in $(seq 1 60); do
+        "$ADB" -s "$serial" shell pm list packages >/dev/null 2>&1 && return 0
+        sleep 1
+      done
+    fi
+    # The device is listed before it can answer, and can drop out later (a
+    # crashed emulator), so only a disappearance after it was seen is fatal.
+    if "$ADB" devices | grep -q "^$serial[[:space:]]"; then
+      seen=1
+    elif [ "$seen" = 1 ]; then
+      return 1
+    fi
+    sleep 2
   done
   return 1
 }
@@ -176,7 +188,11 @@ boot() {
   [ "$wipe" = 1 ] && args+=(-wipe-data)
   note "booting $name on $serial"
   ("$EMU" "${args[@]}" >"$STATE/$name/emulator-$port.log" 2>&1 &) || die "could not start the emulator"
-  wait_boot "$serial" || { note "see $STATE/$name/emulator-$port.log"; die "the emulator did not boot"; }
+  if ! wait_boot "$serial"; then
+    note "the emulator did not come up; see $STATE/$name/emulator-$port.log"
+    "$ADB" -s "$serial" emu kill >/dev/null 2>&1
+    die "the emulator did not boot"
+  fi
   tame_device "$serial" "$profile"
   if [ "$cold" = 1 ] || [ ! -f "$marker" ]; then
     "$ADB" -s "$serial" emu avd snapshot save lab >/dev/null 2>&1 && echo lab >"$marker"
@@ -221,12 +237,37 @@ evidence() {
   "$ADB" -s "$serial" shell dumpsys activity processes 2>/dev/null | grep -E 'ANR in |crash' >"$out/anr.txt"
   [ -s "$out/anr.txt" ] || rm -f "$out/anr.txt"
   pid=$("$ADB" -s "$serial" shell pidof "$PKG" 2>/dev/null | tr -d '\r')
-  if [ -n "$pid" ]; then
-    "$ADB" -s "$serial" logcat -d -v threadtime --pid="$pid" >"$out/logcat.txt" 2>/dev/null
-  else
-    "$ADB" -s "$serial" logcat -d -v threadtime -s flutter >"$out/logcat.txt" 2>/dev/null
-  fi
+  [ -n "$pid" ] && echo "$pid" >"$out/pid.txt"
+  # The buffer was cleared when the attempt started, so the whole dump is exactly
+  # this run: keep it (an app that never logged to `flutter` is still explained
+  # by the native side) and a filtered copy for whoever reads the report.
+  "$ADB" -s "$serial" logcat -d -v threadtime 2>/dev/null | tail -n 20000 >"$out/logcat-full.txt"
+  grep -E "flutter|AndroidRuntime|FATAL|ANR|libc|mdk|AudioTrack|GLES|EGL|$PKG" "$out/logcat-full.txt" >"$out/logcat.txt"
   [ -s "$out/logcat.txt" ] || rm -f "$out/logcat.txt"
+  [ -s "$out/logcat-full.txt" ] || rm -f "$out/logcat-full.txt"
+}
+
+# A failure that only exists on the screen (a black frame, an error banner, a
+# spinner that never ends) is gone by the time the suite ends: the app is torn
+# down and the launcher comes back, so the post-mortem screenshot shows the
+# launcher and nothing else. Keep a rolling window of frames from the run.
+watch_screen() { # serial dir
+  local serial=$1 dir=$2 keep=${3:-12} i=0 f
+  mkdir -p "$dir"
+  while :; do
+    i=$((i + 1))
+    f=$(printf '%s/frame-%03d' "$dir" "$i")
+    "$ADB" -s "$serial" exec-out screencap -p >"$f.png" 2>/dev/null || rm -f "$f.png"
+    if [ $((i % 3)) = 0 ]; then
+      "$ADB" -s "$serial" shell uiautomator dump /sdcard/lab-watch.xml >/dev/null 2>&1 &&
+        "$ADB" -s "$serial" pull /sdcard/lab-watch.xml "$f.xml" >/dev/null 2>&1 || rm -f "$f.xml"
+    fi
+    # Rolling window: a 15 minute suite must not leave 180 screenshots behind.
+    ls "$dir"/frame-*.png 2>/dev/null | head -n "-$keep" | while read -r old; do
+      rm -f "$old" "${old%.png}.xml"
+    done
+    sleep "${FRAME_IV:-5}"
+  done
 }
 
 # The suite log is the primary evidence; logcat and the screen only matter for
@@ -244,16 +285,25 @@ report() {
     [ -n "$note" ] && echo "- note: $note"
     echo "- attempt dirs: $(ls -d "$dir"/attempt-* 2>/dev/null | xargs -r -n1 basename | tr '\n' ' ')"
     echo "- files: $(ls "$dir"/attempt-*/ 2>/dev/null | grep -v '^$' | sort -u | tr '\n' ' ')"
+    local frames
+    frames=$(ls "$dir"/attempt-*/frames/*.png 2>/dev/null | tail -1)
+    [ -n "$frames" ] && echo "- screen while it ran: $(ls "$dir"/attempt-*/frames/*.png 2>/dev/null | wc -l | tr -d ' ') frames, last \`$frames\`"
     echo
     echo '## Failures in the suite log'
     echo '```'
-    grep -hE "E/flutter|FATAL EXCEPTION|Unhandled exception|Expected: |Actual: |Failed assertion|TestFailure|Error waiting for a debug connection" \
-      "$log" "$dir"/attempt-*/suite.log 2>/dev/null | tail -40
+    # The line under a failure is the message ("OSD never auto-showed"); the
+    # header alone says nothing. Stack frames are noise for a reader.
+    grep -hA6 -E "TestFailure was thrown|Expected: |Actual: |FATAL EXCEPTION|Unhandled exception|Failed assertion|Failing tests:" \
+      "$log" "$dir"/attempt-*/suite.log 2>/dev/null |
+      grep -vE '^\s*#[0-9]|asynchronous suspension|elided [a-z]+ frames' | head -60
     echo '```'
     if [ -s "$dir/attempt-1/logcat.txt" ]; then
-      echo '## App logcat (errors, tail)'
+      echo '## App logcat (its own log and crashes, tail)'
       echo '```'
-      grep -hE " E |FATAL|Exception|ANR in " "$dir"/attempt-*/logcat.txt 2>/dev/null | tail -30
+      # The package filter matters: the device log is mostly system noise
+      # (AppOps, Finsky) that says nothing about this suite.
+      grep -hE "flutter :|FATAL EXCEPTION|ANR in |AndroidRuntime|$PKG" "$dir"/attempt-*/logcat.txt 2>/dev/null |
+        awk '!/AppOps|BackupHelper|Finsky/' | uniq | tail -40
       echo '```'
     fi
   } >"$tmp"
@@ -288,17 +338,31 @@ EOF
 # so two suites never run at once against the same checkout; parallel runs take
 # `git worktree` copies of the tree (see AGENTS.md).
 attempt() {
-  local suite=$1 serial=$2 name=$3 n=$4 out="$OUT/$name/attempt-$n" t0=$SECONDS rc
+  local suite=$1 serial=$2 name=$3 n=$4 t0=$SECONDS rc
+  # Not on the line above: bash builds every name in a `local` list before it
+  # assigns any, so `out=...$name...` would read an unset name under `set -u`.
+  local out="$OUT/$name/attempt-$n"
   mkdir -p "$out"; echo "$serial" >"$OUT/$name/target"
-  [ -n "${BACKEND_BIN:-}" ] && "$ADB" -s "$serial" logcat -c >/dev/null 2>&1
-  local extra=()
+  "$ADB" -s "$serial" logcat -c >/dev/null 2>&1
+  local extra=() watcher=
   [ "$BACKEND" = 1 ] && extra+=("--dart-define=PLAYHEADTV_IT_BACKEND_URL=$BACKEND_URL")
+  [ -n "${MEDIA_URL:-}" ] && extra+=("--dart-define=PLAYHEADTV_IT_MEDIA_BASE_URL=$MEDIA_URL/")
   [ -f "$CLIENT/.dart_tool/package_config.json" ] && extra+=(--no-pub)
+  if [ "$WATCH" = 1 ]; then
+    watch_screen "$serial" "$out/frames" >/dev/null 2>&1 &
+    watcher=$!
+  fi
   ( cd "$CLIENT" && timeout --signal=TERM "$TMO" "$(command -v flutter)" test \
       "integration_test/$suite.dart" -d "$serial" "${extra[@]}" ) >"$out/suite.log" 2>&1
   rc=$?
+  if [ -n "$watcher" ]; then
+    kill "$watcher" 2>/dev/null
+    wait "$watcher" 2>/dev/null
+  fi
   local dur=$((SECONDS - t0))
   evidence "$serial" "$out"
+  # Frames cost a few MB per suite: keep them only where somebody will look.
+  [ $rc = 0 ] && rm -rf "$out/frames"
   echo "$rc $dur" >"$out/rc"
   grep '^\[backend\]' "$out/suite.log" >"$out/backend.log" 2>/dev/null; [ -s "$out/backend.log" ] || rm -f "$out/backend.log"
   return $rc
@@ -375,7 +439,8 @@ cmd_device() {
 # http://127.0.0.1:<port>, which is the address the suite already expects, but
 # the process and its SQLite file live on the host where Go exists.
 start_backend() {
-  local dir=$1 bin=$dir/server db=$dir/db port
+  local dir=$1 port
+  local bin="$dir/server" db="$dir/db"
   BACKEND_BIN=$bin
   if [ ! -x "$bin" ]; then
     ( cd "$ROOT/backend" && go build -o "$bin" ./cmd/server ) >"$dir/build.log" 2>&1 ||
@@ -398,6 +463,37 @@ stop_backend() {
   BACKEND_PID=
 }
 
+# The video fixture shells out to ffmpeg, which a device does not have: encode
+# the clips here instead (`tool/gen_it_media.dart` calls the fixture's own ffmpeg
+# invocation) and serve that directory, reached through the same `adb reverse`
+# tunnel the backend uses. Cached in $STATE/media, since encoding is the slow
+# part and the shapes barely change.
+start_media() { # log-dir
+  local logdir=$1 dir=$STATE/media port i dartbin
+  MEDIA_URL=
+  mkdir -p "$dir" "$logdir"
+  dartbin=$(command -v dart || true)
+  [ -n "$dartbin" ] || dartbin=$(dirname "$(command -v flutter)")/dart
+  [ -x "$dartbin" ] || { note "no dart binary found next to flutter"; return 1; }
+  ( cd "$CLIENT" && "$dartbin" run tool/gen_it_media.dart "$dir" ) >"$logdir/gen-media.log" 2>&1 ||
+    { note "fixture media generation failed: $(tail -2 "$logdir/gen-media.log")"; return 1; }
+  port=$(free_port)
+  ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) \
+    >"$logdir/media-server.log" 2>&1 &
+  MEDIA_PID=$!
+  for i in $(seq 1 50); do
+    (exec 3<>/dev/tcp/127.0.0.1/"$port") 2>/dev/null && { MEDIA_URL=http://127.0.0.1:$port; return 0; }
+    sleep 0.2
+  done
+  note "the fixture media server did not answer on port $port"
+  stop_media
+  return 1
+}
+stop_media() {
+  [ -n "${MEDIA_PID:-}" ] && kill "$MEDIA_PID" 2>/dev/null
+  MEDIA_PID=; MEDIA_URL=
+}
+
 cmd_run() {
   local suite=${1:?usage: run <suite> --serial <serial>|-p tv|phone}; shift
   while [ $# -gt 0 ]; do
@@ -410,6 +506,8 @@ cmd_run() {
       -r) RECORD=1; shift;;
       --no-retry) RETRY=0; shift;;
       --no-backend) BACKEND=0; shift;;
+      --no-media) MEDIA=0; shift;;
+      --no-watch) WATCH=0; shift;;
       --no-lease) LEASE_WAIT=-1; shift;;
       *) die "unknown option $1";;
     esac
@@ -437,6 +535,13 @@ cmd_run() {
     "$ADB" -s "$SERIAL" reverse "tcp:${BACKEND_URL##*:}" "tcp:${BACKEND_URL##*:}" >/dev/null 2>&1 ||
       note "adb reverse failed; the app will not reach the host backend"
     echo "===== host backend on $BACKEND_URL (reversed into $SERIAL) =====" >>"$OUT/$name/backend-host.log"
+  fi
+  local mdir=$OUT/.media
+  if [ "$MEDIA" = 1 ]; then
+    start_media "$mdir" || die "the fixture media server did not start; see $mdir/gen-media.log"
+    "$ADB" -s "$SERIAL" reverse "tcp:${MEDIA_URL##*:}" "tcp:${MEDIA_URL##*:}" >/dev/null 2>&1 ||
+      note "adb reverse failed; the suites will not find the fixture media"
+    echo "===== fixture media on $MEDIA_URL (reversed into $SERIAL) =====" >>"$OUT/$name/media-host.log"
   fi
   [ "$RECORD" = 1 ] && { "$ADB" -s "$SERIAL" shell screenrecord --time-limit "$TMO" /sdcard/lab-screen.mp4 >/dev/null 2>&1 & }
 
@@ -468,6 +573,10 @@ cmd_run() {
   [ "$BACKEND" = 1 ] && {
     "$ADB" -s "$SERIAL" reverse --remove "tcp:${BACKEND_URL##*:}" >/dev/null 2>&1
     stop_backend
+  }
+  [ "$MEDIA" = 1 ] && {
+    "$ADB" -s "$SERIAL" reverse --remove "tcp:${MEDIA_URL##*:}" >/dev/null 2>&1
+    stop_media
   }
   report "$OUT/$name" "$suite" "$status" "$note" "$dur" "$sig"
   write_json "$OUT/$name" "$suite" "$status" "$note" "$dur" "$sig"

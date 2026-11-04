@@ -6,11 +6,18 @@
 // (libmdk) may issue partial requests during the initial probe/seek — without
 // that, the player could fail or behave differently from a real Jellyfin.
 //
-// ffmpeg is resolved from the `FFMPEG_PATH` environment variable, falling
-// back to plain `ffmpeg` on the PATH.
+// The clip itself lives in video_media.dart: a target without an ffmpeg (an
+// Android device: the suite runs as an app and cannot shell out to a desktop
+// binary) reads it from a host instead, one
+// `--dart-define=PLAYHEADTV_IT_MEDIA_BASE_URL=http://127.0.0.1:<port>/` away.
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
+
+import 'package:client/video/video_engine.dart';
+
+import 'video_media.dart';
 
 // A 1x1 PNG.
 final _tinyPng = base64Decode(
@@ -26,11 +33,6 @@ class VideoFixture {
   /// Jellyfin 12 requires (the `ApiKey` query parameter); a test may assert
   /// this stays empty.
   final List<String> unauthorizedRequests = [];
-
-  static String get _ffmpegPath {
-    final fromEnv = Platform.environment['FFMPEG_PATH'];
-    return (fromEnv != null && fromEnv.isNotEmpty) ? fromEnv : 'ffmpeg';
-  }
 
   /// Paths of the video requests received so far, in order.
   final List<String> videoRequests = [];
@@ -84,41 +86,44 @@ class VideoFixture {
   /// later boot indefinitely — see AGENTS.md's mdk/GL-texture-under-load
   /// gotcha. Suites that don't need multiple tracks should stay on the
   /// default to keep their existing reliability.
+  /// The clip's bytes: generated here, or fetched from the host's media server
+  /// when this build was told where one is.
+  Future<Uint8List> _clipBytes({required int audioTracks, required int clipSeconds}) async {
+    if (mediaBaseUrl.isNotEmpty) {
+      final url = Uri.parse('$mediaBaseUrl${clipName(audioTracks: audioTracks, clipSeconds: clipSeconds)}');
+      final client = HttpClient();
+      try {
+        final response = await (await client.getUrl(url)).close();
+        if (response.statusCode != HttpStatus.ok) {
+          throw StateError(
+            'The fixture media server answered ${response.statusCode} for $url. Generate and serve the '
+            'clips on the host with tool/gen_it_media.dart.',
+          );
+        }
+        final builder = BytesBuilder(copy: false);
+        await response.forEach(builder.add);
+        return builder.takeBytes();
+      } finally {
+        client.close(force: true);
+      }
+    }
+    _tempDir = await Directory.systemTemp.createTemp('playheadtv_it_video_');
+    final file = File('${_tempDir!.path}/${clipName(audioTracks: audioTracks, clipSeconds: clipSeconds)}');
+    await generateClip(file, audioTracks: audioTracks, clipSeconds: clipSeconds);
+    return file.readAsBytes();
+  }
+
   Future<void> start({int audioTracks = 1, int clipSeconds = 8}) async {
     assert(audioTracks == 1 || audioTracks == 2, 'only 1 or 2 audio tracks are supported by this fixture');
-    _tempDir = await Directory.systemTemp.createTemp('playheadtv_it_video_');
-    final videoFile = File('${_tempDir!.path}/fixture.mp4');
-
-    final ProcessResult result;
-    try {
-      result = await Process.run(_ffmpegPath, [
-        '-y',
-        '-f', 'lavfi',
-        '-i', 'testsrc=duration=$clipSeconds:size=320x240:rate=15',
-        '-f', 'lavfi',
-        '-i', 'sine=frequency=440:duration=$clipSeconds',
-        if (audioTracks == 2) ...['-f', 'lavfi', '-i', 'sine=frequency=880:duration=$clipSeconds'],
-        '-map', '0:v',
-        '-map', '1:a',
-        if (audioTracks == 2) ...['-map', '2:a'],
-        '-c:v', 'libx264',
-        '-pix_fmt', 'yuv420p',
-        '-c:a', 'aac',
-        if (audioTracks == 2) ...['-metadata:s:a:0', 'language=eng', '-metadata:s:a:1', 'language=por'],
-        '-shortest',
-        videoFile.path,
-      ]);
-    } on ProcessException catch (e) {
-      throw StateError(
-        'Could not run ffmpeg ("$_ffmpegPath"): ${e.message}. Install ffmpeg and make sure it is '
-        'on your PATH, or set the FFMPEG_PATH environment variable to the full path of the '
-        'ffmpeg binary (e.g. FFMPEG_PATH=/usr/local/bin/ffmpeg).',
-      );
-    }
-    if (result.exitCode != 0) {
-      throw StateError('ffmpeg failed (exit ${result.exitCode}): ${result.stderr}');
-    }
-    _videoBytes = await videoFile.readAsBytes();
+    // `main()` registers the video engine; the suites boot the app widget
+    // directly and never pass through it. On the desktop the plugin's own
+    // registrant hides that, on Android nothing does and the first playback
+    // dies with "VideoPlayerPlatform.instance have to be of
+    // MdkVideoPlayerPlatform". Engine-aware on purpose: the ExoPlayer engine's
+    // register() is a no-op, so a suite that selects it keeps the plugin's own
+    // platform instead of being overwritten by fvp.
+    videoEngine.register();
+    _videoBytes = await _clipBytes(audioTracks: audioTracks, clipSeconds: clipSeconds);
 
     _server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     _sub = _server!.listen(_handleRequest);
