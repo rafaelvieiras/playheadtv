@@ -1,5 +1,11 @@
 // Visual keyboard-navigation regression test for the Settings screen tree.
 //
+// Desktop only: it resizes the window at will (800x450 at 200% interface size,
+// 2560x1440, 1280x720) and asserts about the layout at each size. A phone or a TV
+// box has one window — the screen — so the harness resizes a frame the device can
+// never have, focus wanders in the scaled-down copy and the run says nothing
+// about the product. `run_android_suites.sh` skips it for that reason.
+//
 // Drives Settings (and Settings -> Diagnostics, and the player's debug overlay)
 // with real key events, including HELD keys (key down, repeated key-repeat
 // events every ~35 ms, key up) as a keyboard's auto-repeat produces, at several

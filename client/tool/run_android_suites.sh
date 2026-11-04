@@ -82,7 +82,8 @@ done
 # start it, or start a second fixture of their own. The backend runs on the host
 # here, so these cannot pass on a device and are not selected by default.
 DESKTOP_ONLY="offline_coldstart_test offline_exhausted_test offline_playback_test
-offline_reconcile_test settings_offline_test epg_window_test"
+offline_reconcile_test settings_offline_test epg_window_test
+settings_navigation_visual_test"
 # Boot and wiring: what to run when a change is central enough to reach anything.
 BOOT_SUITES="osd_test exit_flow_test fullscreen_test warm_start_test
 focus_lifecycle_test screen_awake_test loading_navigation_test"
