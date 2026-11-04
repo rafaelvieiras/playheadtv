@@ -78,8 +78,13 @@ void main() {
       await press(tester, LogicalKeyboardKey.enter);
       await pumpUntil(tester, () => find.byKey(const Key('settings-page')).evaluate().isNotEmpty, failMessage: 'Settings did not open');
       await pumpUntil(tester, () => find.byKey(const Key('settings-fullscreen-tile')).evaluate().isNotEmpty, failMessage: 'no full screen row');
+      // The page exists before it holds focus, and on a device the first presses
+      // land in the gap and are swallowed (the row then still reads On after
+      // Enter). Wait for focus to reach the page, and for it to reach the row.
+      await pumpUntil(tester, () => focusIsInside(const Key('settings-page')), failMessage: 'Settings never took focus');
       await press(tester, LogicalKeyboardKey.arrowDown); // Offline cache
       await press(tester, LogicalKeyboardKey.arrowDown); // Start in full screen
+      await pumpUntil(tester, () => focusIsInside(const Key('settings-fullscreen-tile')), failMessage: 'focus never reached the full screen row');
     }
 
     testWidgets('a fresh start is full screen; turning it off applies now and is saved', (tester) async {

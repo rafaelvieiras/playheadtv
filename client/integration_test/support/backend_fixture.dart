@@ -286,12 +286,12 @@ class BackendFixture {
   /// Creates a Schedule + a single `once` ScheduleItem inside it, then
   /// assigns it to the channel. A thin wrapper over createScheduleWithItems
   /// below for the common single-occurrence case most suites need.
-  Future<void> createScheduleOnce({
+  Future<String> createScheduleOnce({
     required String channelId,
     required String blockId,
     required DateTime startAt,
-  }) =>
-      createScheduleWithItems(channelId: channelId, items: [(blockId: blockId, startAt: startAt)]);
+  }) async =>
+      (await createScheduleWithItems(channelId: channelId, items: [(blockId: blockId, startAt: startAt)])).single;
 
   /// Creates a Schedule with one or more `once` ScheduleItems (each its own
   /// block + explicit start_at), then assigns it to the channel (issue #7's
@@ -308,7 +308,7 @@ class BackendFixture {
   /// With [asBase] the schedule is assigned as the channel's base schedule
   /// (`base_schedule_id`) instead of its pinned one; the other of the two is
   /// kept as it is.
-  Future<void> createScheduleWithItems({
+  Future<List<String>> createScheduleWithItems({
     required String channelId,
     required List<({String blockId, DateTime startAt})> items,
     bool asBase = false,
@@ -317,12 +317,14 @@ class BackendFixture {
       'name': 'Schedule ${DateTime.now().microsecondsSinceEpoch}',
     });
     final scheduleId = scheduleResp['id'] as String;
+    final created = <String>[];
     for (final item in items) {
-      await _postJson('/schedules/$scheduleId/items', {
+      final resp = await _postJson('/schedules/$scheduleId/items', {
         'block_id': item.blockId,
         'recurrence_type': 'once',
         'start_at': item.startAt.toUtc().millisecondsSinceEpoch,
       });
+      created.add(resp['id'] as String);
     }
     final ch = await _getJson('/channels/$channelId') as Map<String, dynamic>;
     await _putJson('/channels/$channelId', {
@@ -332,6 +334,21 @@ class BackendFixture {
       'timezone': ch['timezone'],
       'schedule_id': asBase ? ch['schedule_id'] : scheduleId,
       'base_schedule_id': asBase ? scheduleId : ch['base_schedule_id'],
+    });
+    return created;
+  }
+
+  Future<Map<String, dynamic>> scheduleItem(String id) async =>
+      await _getJson('/schedule-items/$id') as Map<String, dynamic>;
+
+  /// Moves a one-off item. Used by [seedChannel] to recover a grid that landed
+  /// in the past because the write itself took the time.
+  Future<void> moveScheduleItem(String id, DateTime startAt) async {
+    final item = await scheduleItem(id);
+    await _putJson('/schedule-items/$id', {
+      'block_id': item['block_id'],
+      'recurrence_type': item['recurrence_type'],
+      'start_at': startAt.toUtc().millisecondsSinceEpoch,
     });
   }
 
