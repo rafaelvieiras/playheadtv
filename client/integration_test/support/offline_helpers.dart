@@ -90,7 +90,7 @@ Future<String> seedChannel(
   final itemId = await backend.createScheduleOnce(
     channelId: channelId,
     blockId: block,
-    startAt: DateTime.now().toUtc().add(startOffset),
+    startAt: backend.serverNow.toUtc().add(startOffset),
   );
   await _keepGridAhead(backend, itemId, itemMs);
   return channelId;
@@ -108,7 +108,7 @@ Future<void> _keepGridAhead(BackendFixture backend, String itemId, int itemMs) a
   for (var attempt = 0; attempt < 3; attempt++) {
     final item = await backend.scheduleItem(itemId);
     final startAt = DateTime.fromMillisecondsSinceEpoch(item['start_at'] as int, isUtc: true);
-    if (DateTime.now().toUtc().difference(startAt).inMilliseconds < itemMs) return;
-    await backend.moveScheduleItem(itemId, DateTime.now().toUtc().add(const Duration(seconds: 1)));
+    if (backend.serverNow.toUtc().difference(startAt).inMilliseconds < itemMs) return;
+    await backend.moveScheduleItem(itemId, backend.serverNow.toUtc().add(const Duration(seconds: 1)));
   }
 }
