@@ -146,7 +146,7 @@ check_clock() { # serial
   note "the guest clock is ${skew}s off the host: suites about schedules will read a stale window (boot cold, without --warm)"
 }
 
-wait_boot() { # serial timeout-seconds
+wait_boot() { # serial timeout-seconds [emulator-pid] [emulator-log]
   local serial=$1 deadline=$(($(date +%s) + ${2:-600})) i seen=0
   while [ "$(date +%s)" -lt "$deadline" ]; do
     if timeout 300 "$ADB" -s "$serial" shell 'while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 1; done' >/dev/null 2>&1; then
@@ -161,6 +161,11 @@ wait_boot() { # serial timeout-seconds
     if "$ADB" devices | grep -q "^$serial[[:space:]]"; then
       seen=1
     elif [ "$seen" = 1 ]; then
+      return 1
+    elif [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then
+      # A device that never appeared because the emulator refused to start: say
+      # why now instead of waiting out the whole deadline.
+      [ -n "${4:-}" ] && tail -3 "$4" >&2
       return 1
     fi
     sleep 2
@@ -190,7 +195,17 @@ boot() {
   local profile=$1 port=$2 cold=$3 wipe=$4 name serial marker
   name=$(ensure_avd "$profile"); serial=emulator-$port; marker=$STATE/$name/boot-snapshot
   if "$ADB" devices | grep -q "^$serial[[:space:]]"; then
-    "$ADB" -s "$serial" emu kill >/dev/null 2>&1; sleep 2
+    # The emulator needs the port and its AVD lock, and it starts before the old
+    # instance has finished dying: "Another emulator instance is running".
+    note "$serial is busy; stopping the instance that holds it"
+    "$ADB" -s "$serial" emu kill >/dev/null 2>&1
+    local i
+    for i in $(seq 1 40); do
+      "$ADB" devices | grep -q "^$serial[[:space:]]" || break
+      sleep 0.5
+    done
+    "$ADB" devices | grep -q "^$serial[[:space:]]" && pkill -f -- "-avd $name " >/dev/null 2>&1
+    sleep 1
   fi
   local args=(-avd "$name" -port "$port" -no-window -no-audio -no-boot-anim
               -gpu swiftshader_indirect -netdelay none -netspeed full -no-metrics)
@@ -203,8 +218,9 @@ boot() {
   fi
   [ "$wipe" = 1 ] && args+=(-wipe-data)
   note "booting $name on $serial"
-  ("$EMU" "${args[@]}" >"$STATE/$name/emulator-$port.log" 2>&1 9>&- &) || die "could not start the emulator"
-  if ! wait_boot "$serial"; then
+  setsid "$EMU" "${args[@]}" >"$STATE/$name/emulator-$port.log" 2>&1 9>&- &
+  local emu_pid=$!
+  if ! wait_boot "$serial" 600 "$emu_pid" "$STATE/$name/emulator-$port.log"; then
     note "the emulator did not come up; see $STATE/$name/emulator-$port.log"
     "$ADB" -s "$serial" emu kill >/dev/null 2>&1
     die "the emulator did not boot"
