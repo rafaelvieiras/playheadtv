@@ -662,16 +662,23 @@ device, driven by scripts that end in a file an agent or a human can read.
 - The evidence has to survive the app. `flutter test` tears the app down at the
   end, so a post-mortem screenshot shows the launcher: while a suite runs, the lab
   keeps a rolling window of frames (`attempt-N/frames/`, one every 5 s, the last
-  12) and the accessibility tree every third frame, and keeps them only when the
-  suite failed. `logcat-full.txt` is everything since the attempt started (the
-  buffer is cleared first) — the app's own log and native crashes are in there
-  even when the process is gone. Frames cost CPU: `--no-watch` for a suite that
-  measures timings.
+  12) and keeps them only when the suite failed. `logcat-full.txt` is everything
+  since the attempt started (the buffer is cleared first) — the app's own log and
+  native crashes are in there even when the process is gone. Frames cost CPU:
+  `--no-watch` for a suite that measures timings. The accessibility tree is *not*
+  captured during a run: `uiautomator dump` turns the accessibility service on,
+  which turns Flutter's semantics tree on, which ends the suite with "A
+  SemanticsHandle was active at the end of the test". `--watch-ui` opts in when a
+  frame is not enough, and `android_lab.sh grab` takes a tree from a running app.
 - Determinism: animations off, stay-awake on, TV geometry forced with `wm size`/
-  `wm density`, and a saved boot snapshot so a start costs seconds. Two suites
-  never run at once against the same checkout: Flutter's Android build and
-  install share one directory per working tree, so parallelism is one process per
-  checkout (`git worktree`) and one port per process.
+  `wm density`, and a **cold boot** — a saved snapshot resumes the guest clock
+  from the snapshot, and a production image refuses `adb root`, so after a warm
+  boot the device can be many minutes behind the host and a suite that asks "what
+  is on now" reads a window that already passed. A cold boot costs ~24 s once per
+  run (the emulator is reused for every suite); `--warm` trades that for the clock.
+  Two suites never run at once against the same checkout: Flutter's Android build
+  and install share one directory per working tree, so parallelism is one process
+  per checkout (`git worktree`) and one port per process.
 - What the lab cannot see: hardware video decode, GPU compositing, real ARM
   ABIs, thermal throttling and a weak box's jank. Those are the cases for a
   physical device, and they are measured, not eyeballed: `perf_trace.jsonl` via
