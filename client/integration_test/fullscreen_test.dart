@@ -82,8 +82,20 @@ void main() {
       // land in the gap and are swallowed (the row then still reads On after
       // Enter). Wait for focus to reach the page, and for it to reach the row.
       await pumpUntil(tester, () => focusIsInside(const Key('settings-page')), failMessage: 'Settings never took focus');
-      await press(tester, LogicalKeyboardKey.arrowDown); // Offline cache
-      await press(tester, LogicalKeyboardKey.arrowDown); // Start in full screen
+      // Walk until the row has focus instead of counting presses: where the page
+      // starts its focus is not this test's business, and a device does not
+      // answer the same count as the desktop.
+      Future<void> walkToFullScreenRow() async {
+        final row = const Key('settings-fullscreen-tile');
+        for (final key in [LogicalKeyboardKey.arrowDown, LogicalKeyboardKey.arrowUp]) {
+          for (var i = 0; i < 12 && !focusIsInside(row); i++) {
+            await press(tester, key);
+          }
+          if (focusIsInside(row)) return;
+        }
+      }
+
+      await walkToFullScreenRow();
       await pumpUntil(tester, () => focusIsInside(const Key('settings-fullscreen-tile')), failMessage: 'focus never reached the full screen row');
     }
 

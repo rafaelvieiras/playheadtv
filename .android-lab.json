@@ -1,0 +1,10 @@
+{
+  "name": "playheadtv",
+  "package": "io.github.rafaelvieiras.playheadtv.client",
+  "activity": ".MainActivity",
+  "profile": "tv",
+  "port": 5554,
+  "apk": "client/build/app/outputs/flutter-apk/app-debug.apk",
+  "suites": "client/integration_test",
+  "baseline_dir": "client/build/lab-baselines"
+}

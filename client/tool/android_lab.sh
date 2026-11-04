@@ -291,6 +291,14 @@ evidence() {
     grep -E '^playheadtv\.log|^perf_trace\.jsonl' | while read -r f; do
       [ -n "$f" ] && "$ADB" -s "$serial" shell run-as "$PKG" cat "files/$f" 2>/dev/null >"$out/app-$f"
     done
+  # Screenshots the suite took for itself, out of the app sandbox: a visual suite
+  # that fails has to leave its evidence where the host can reach it.
+  mkdir -p "$out/shots"
+  "$ADB" -s "$serial" shell run-as "$PKG" ls files/lab-shots 2>/dev/null | tr -d '\r' |
+    grep -E '\.png$|\.txt$' | while read -r f; do
+      [ -n "$f" ] && "$ADB" -s "$serial" shell run-as "$PKG" cat "files/lab-shots/$f" 2>/dev/null >"$out/shots/$f"
+    done
+  rmdir "$out/shots" 2>/dev/null
   "$ADB" -s "$serial" shell dumpsys gfxinfo "$PKG" >"$out/gfxinfo.txt" 2>/dev/null || rm -f "$out/gfxinfo.txt"
   "$ADB" -s "$serial" shell dumpsys activity processes 2>/dev/null | grep -E 'ANR in |crash' >"$out/anr.txt"
   [ -s "$out/anr.txt" ] || rm -f "$out/anr.txt"
