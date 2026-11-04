@@ -6,5 +6,6 @@
   "port": 5554,
   "apk": "client/build/app/outputs/flutter-apk/app-debug.apk",
   "suites": "client/integration_test",
-  "baseline_dir": "client/build/lab-baselines"
+  "baseline_dir": "client/build/lab-baselines",
+  "flutter_dir": "client"
 }

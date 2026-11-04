@@ -116,7 +116,11 @@ void main() {
       expect(tiles().evaluate().length, 6); // featured + 4 channels + Settings
 
       final controller = tester.widget<VideoSurface>(find.byType(VideoSurface)).playback;
-      expect(controller.state.isPlaying, isTrue);
+      // The surface is in the tree before the engine reports playing, and a
+      // device takes longer to get there than the desktop: wait for the state
+      // instead of asserting on the frame right after the widget appeared.
+      await pumpUntil(tester, () => controller.state.isPlaying,
+          failMessage: 'the featured preview never started playing');
 
       // A 21:9 window: same height rule, same controller, still playing.
       tester.view.physicalSize = const Size(2560, 1080);
