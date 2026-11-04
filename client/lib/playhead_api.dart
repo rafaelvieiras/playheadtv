@@ -9,6 +9,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:isolate';
 
+import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 
 import 'plugin/plugin_manifest.dart';
@@ -550,6 +551,28 @@ class CatalogItemInfo {
       );
 }
 
+/// What the backend answered for an item a plugin serves: one address, or two the
+/// player merges (mode `pair`, the audio apart). See `docs/PLUGINS.md` "Modes".
+@immutable
+class PluginStream {
+  /// The address to open: the whole stream in `single` and `remux`, the video
+  /// track in `pair`.
+  final Uri uri;
+
+  /// The audio track of a `pair`; null for every other mode.
+  final Uri? audioUri;
+
+  /// The mode the plugin answered with (`single`, `pair`, `remux`), for logs.
+  final String mode;
+
+  const PluginStream({required this.uri, required this.mode, this.audioUri});
+
+  /// True when the stream itself begins at the position that was asked for,
+  /// which is what a `remux` does: the plugin started it there. A `single` file
+  /// or a `pair` is the item from its own zero, so the player has to seek.
+  bool get startsAtRequestedPosition => mode == 'remux';
+}
+
 /// Client for the Playhead TV backend. Authentication is optional — see
 /// [deviceToken] for the hook that sends a device token as a Bearer
 /// Authorization header when the backend requires one.
@@ -606,9 +629,21 @@ class PlayheadApi {
   /// The URL comes from the plugin and carries its own token, so it is asked for
   /// on every open and never stored: it expires, and a `remux` stream exists only
   /// while its process runs.
-  Future<Uri> playUrl(String catalogItemId, {Duration startAt = Duration.zero}) async {
+  ///
+  /// [modes] is what this player can play, best first (docs/PLUGINS.md "Modes"):
+  /// the backend asks the plugin for those, so a player that can merge a separate
+  /// audio track can get a pair and spare the host a remux.
+  Future<PluginStream> playUrl(
+    String catalogItemId, {
+    Duration startAt = Duration.zero,
+    List<String> modes = const ['remux'],
+  }) async {
+    final query = <String, String>{
+      if (startAt > Duration.zero) 'start_ms': '${startAt.inMilliseconds}',
+      if (modes.isNotEmpty) 'modes': modes.join(','),
+    };
     final uri = Uri.parse('$_normalizedBaseUrl/catalog-items/${Uri.encodeComponent(catalogItemId)}/play')
-        .replace(queryParameters: startAt > Duration.zero ? {'start_ms': '${startAt.inMilliseconds}'} : null);
+        .replace(queryParameters: query.isEmpty ? null : query);
     // Bounded, not the default 10s: this answer waits for an extractor to resolve
     // the item and for the plugin to produce a first segment, which measured
     // 9-12s on a real host. Too short and every tune-in fails while the work is
@@ -621,7 +656,12 @@ class PlayheadApi {
     if (url is! String || url.isEmpty) {
       throw Exception('GET /catalog-items/{id}/play: no url in the answer');
     }
-    return Uri.parse(url);
+    final audio = data['audio_url'];
+    return PluginStream(
+      uri: Uri.parse(url),
+      audioUri: audio is String && audio.isNotEmpty ? Uri.parse(audio) : null,
+      mode: data['mode'] is String ? data['mode'] as String : '',
+    );
   }
 
   /// Turns an installed plugin on or off on the backend.

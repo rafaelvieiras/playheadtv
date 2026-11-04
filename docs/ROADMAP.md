@@ -1263,9 +1263,8 @@ repo never contains.
 - [x] Playback resolves through the plugin: `_entrySource` asks for a fresh
       url on every open (preload, tune-in, resync), passes the position as
       `start_at_ms`, and skips the client-side seek when the stream already
-      starts there. `playbackPluginModes` is `single,remux` today, because the
-      engine seam still opens one url; `pair` joins it when the player can merge
-      two tracks.
+      starts there. The modes the player can open travel with the request
+      (`pluginPlaybackModes`), so `remux` is only used when it has to be.
 - [x] Settings -> "Plugins" on the playback client: what the backend has, what
       it offers, and the settings a plugin declares for its sources. Six-button
       only. The client cannot install (that downloads and runs a program on the
@@ -1294,16 +1293,25 @@ repo never contains.
       enters the player and the mosaic. A channel with no cached guide stays
       visible, and when everything is hidden both screens say which plugin to
       install instead of claiming the backend has no channels.
-- [ ] (deferred) Client playback of a `pair`: the engine needs to merge a video and an
-      audio source (ExoPlayer can; `fvp`/FFmpeg cannot merge two inputs through
-      its Dart binding, so desktop declares `single`+`remux` for now). Until
-      this lands, a channel built from a pair-only source plays on Android TV
-      only.
-- [ ] Android: plugin as an external APK bound as a `Service` (W^X forbids
-      executing a downloaded file since API 29). Protocol 2 candidate; the
-      payloads do not change.
-- [ ] Web UI: a Plugins page (installed, available, install/remove/enable) and
-      the plugin fields in the media source form.
+- [x] Client playback of a `pair` (fvp only, 03/nov/2026): a plugin that answers
+      a pair is played with its audio track opened beside the video
+      (`setExternalAudio` before `initialize`), so a channel served by a plugin
+      the extractor only publishes as two streams plays with no process on the
+      host. `VideoEngine.supportsPairedAudio` is what decides whether the player
+      offers `pair` at all — the ExoPlayer seam cannot merge and never asks; a
+      pair's `headers` are not forwarded, which the measured CDN URLs do not need.
+      The offset rule had to become mode-aware: a `remux` begins at the position
+      it was asked for (no client seek, OSD adds `startOffset` back), while a pair
+      or a single file is seeked by the player and adds nothing.
+- [x] Web UI: a Plugins page (installed, available, install/update/turn off/
+      remove) and the settings each plugin declares for its sources — the
+      session-only half, since installing downloads and runs a program on the
+      backend. The plugin fields in the media source form were not needed: a
+      plugin source is created by the sync that knows its config, and its
+      settings are edited from that page.
+- [x] (dropped) Android: plugin as an external APK bound as a `Service`. Not
+      needed once the plugin moved to the backend: there is no code to run on the
+      device, so there is no transport to build. W^X stopped being the question.
 
 ## Backlog / cleanup
 

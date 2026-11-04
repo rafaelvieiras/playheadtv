@@ -14,6 +14,11 @@ class FvpVideoEngine implements VideoEngine {
   @override
   String get name => 'fvp (libmdk)';
 
+  // mdk takes a second source with `setMedia(uri, audio)` and plays it in step
+  // with the main one, which is exactly a plugin's pair.
+  @override
+  bool get supportsPairedAudio => true;
+
   @override
   String get decoderSummary => Platform.isAndroid
       ? 'platform default (AMediaCodec > FFmpeg)'
@@ -41,8 +46,8 @@ class FvpVideoEngine implements VideoEngine {
   }
 
   @override
-  VideoPlayback createNetwork(Uri uri) =>
-      _FvpPlayback(VideoPlayerController.networkUrl(uri));
+  VideoPlayback createNetwork(Uri uri, {Uri? audioUri}) =>
+      _FvpPlayback(VideoPlayerController.networkUrl(uri), audioUri: audioUri);
 
   @override
   VideoPlayback createAsset(String assetPath) =>
@@ -50,7 +55,10 @@ class FvpVideoEngine implements VideoEngine {
 }
 
 class _FvpPlayback extends ControllerPlayback {
-  _FvpPlayback(super.controller);
+  _FvpPlayback(super.controller, {this.audioUri});
+
+  /// A second source carrying only audio (a plugin's pair), or null.
+  final Uri? audioUri;
 
   // fvp/libmdk creates GL resources on its own raster thread during
   // initialize() and frees them on a separate dispose thread, and those
@@ -58,8 +66,14 @@ class _FvpPlayback extends ControllerPlayback {
   // reuse a GL object id mid-teardown (a real segfault, see gl_serial.dart).
   // So every initialize()/dispose() goes through the one shared FIFO.
   @override
-  Future<void> open({String label = 'initialize'}) =>
-      serializeGlOp(() => controller.initialize(), label: label);
+  Future<void> open({String label = 'initialize'}) => serializeGlOp(() async {
+        // Before initialize: mdk prepares the main source and the external one
+        // together, so an audio source added afterwards would only be heard
+        // from the next prepare on.
+        final audio = audioUri;
+        if (audio != null) controller.setExternalAudio(audio.toString());
+        await controller.initialize();
+      }, label: label);
 
   @override
   Future<void> dispose() =>

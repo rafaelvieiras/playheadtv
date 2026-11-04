@@ -31,6 +31,12 @@ class ExoVideoEngine implements VideoEngine {
   @override
   String get decoderSummary => 'platform MediaCodec (hardware when available)';
 
+  // ExoPlayer can merge sources, but the `video_player` plugin this engine sits
+  // on exposes no way to add one, so a pair would play as silent video. The
+  // player therefore never asks a plugin for one here.
+  @override
+  bool get supportsPairedAudio => false;
+
   // The plugin registers itself as the `video_player` platform on Android, as
   // long as fvp's `registerWith` was not called (it replaces that platform).
   @override
@@ -43,9 +49,14 @@ class ExoVideoEngine implements VideoEngine {
   static final _options = VideoPlayerOptions(mixWithOthers: true);
 
   @override
-  VideoPlayback createNetwork(Uri uri) => _ExoPlayback(
-        VideoPlayerController.networkUrl(uri, videoPlayerOptions: _options),
-      );
+  VideoPlayback createNetwork(Uri uri, {Uri? audioUri}) {
+    if (audioUri != null) {
+      Log.warn('video', 'the exo engine cannot merge a separate audio track; playing the video source alone');
+    }
+    return _ExoPlayback(
+      VideoPlayerController.networkUrl(uri, videoPlayerOptions: _options),
+    );
+  }
 
   @override
   VideoPlayback createAsset(String assetPath) => _ExoPlayback(

@@ -181,13 +181,33 @@ abstract class VideoEngine {
   /// How the engine picks decoders, shown by the debug overlay.
   String get decoderSummary;
 
+  /// Whether a playback can take an audio track from a separate url
+  /// ([createNetwork]'s `audioUri`), which is what a plugin's `pair` answer is
+  /// (docs/PLUGINS.md "Modes"). The player only asks a plugin for a pair when
+  /// this is true, so an engine without it never receives one.
+  bool get supportsPairedAudio;
+
   /// One-time process setup, from `main()`. A harness that never calls it
   /// (the integration tests) gets the engine's defaults.
   void register();
 
-  VideoPlayback createNetwork(Uri uri);
+  /// [audioUri] is a second source carrying only audio, played in step with
+  /// [uri]; null is the ordinary case of one source with both tracks inside.
+  VideoPlayback createNetwork(Uri uri, {Uri? audioUri});
   VideoPlayback createAsset(String assetPath);
 }
+
+/// The shapes a player can open, best first, as the plugin modes they name
+/// (docs/PLUGINS.md "Modes"): one address (`single`), a video and an audio
+/// address the player merges (`pair`), or a stream the plugin produces
+/// (`remux`). The order is a preference — a plugin answers with the first mode it
+/// can — and `remux` is last because it costs the host a process per stream. A
+/// pair is only offered by an engine that can actually merge one.
+List<String> pluginPlaybackModes(VideoEngine engine) => [
+      'single',
+      if (engine.supportsPairedAudio) 'pair',
+      'remux',
+    ];
 
 VideoEngine? _engine;
 

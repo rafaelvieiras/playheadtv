@@ -12,17 +12,23 @@ class _FakeEngine implements VideoEngine {
   @override
   String get decoderSummary => 'none';
   @override
+  bool get supportsPairedAudio => true;
+  @override
   void register() {}
   @override
-  VideoPlayback createNetwork(Uri uri) => _FakePlayback(uri.toString());
+  VideoPlayback createNetwork(Uri uri, {Uri? audioUri}) =>
+      _FakePlayback(uri.toString(), audio: audioUri?.toString());
   @override
   VideoPlayback createAsset(String assetPath) => _FakePlayback(assetPath);
 }
 
 class _FakePlayback implements VideoPlayback {
-  _FakePlayback(this.source);
+  _FakePlayback(this.source, {this.audio});
   @override
   final String source;
+
+  /// The separate audio source, when the engine was handed one.
+  final String? audio;
   final calls = <String>[];
   @override
   PlaybackState get state => PlaybackState.uninitialized;

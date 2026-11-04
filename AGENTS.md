@@ -92,9 +92,15 @@ or LLM, and to every artifact in the repo:
   channel filter. Playback asks the backend — `GET /catalog-items/{id}/play?start_ms=`
   — and opens the URL it gets back, on every open (preload, tune-in, resync),
   never cached: the URL carries the plugin's token, expires, and a `remux` stream
-  lives only while its process does. `playbackPluginModes` (`single`, `remux`)
-  never asks for a `pair`: a client that cannot run the plugin is a client that
-  cannot merge one either, and every host it targets plays `remux` the same way.
+  lives only while its process does. `pluginPlaybackModes(engine)`
+  (`lib/video/video_engine.dart`, `single,pair,remux` on an engine that can merge
+  two sources) travels as the `modes` query parameter, so the plugin answers the
+  cheapest shape the engine can open: a `pair` costs the host nothing, a `remux`
+  costs a process. Only `fvp` merges one (`setExternalAudio`); the ExoPlayer seam
+  cannot and does not offer it. A `remux` stream begins where it was asked to and
+  the player must not seek again; a `pair` and a `single` file begin at the item's
+  own zero and are seeked by the player — `_entrySource` returns that as
+  `startOffset`, which is also what the OSD adds back (`_playbackOffset`).
 - **Who may change what about a plugin**: a paired device reads `/plugins` and
   `/plugin-sources`, saves a source's declared settings (`PUT .../settings`),
   and turns an installed plugin on or off or removes it (`PUT`/`DELETE
