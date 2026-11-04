@@ -1294,10 +1294,13 @@ repo never contains.
       visible, and when everything is hidden both screens say which plugin to
       install instead of claiming the backend has no channels.
 - [x] Client playback of a `pair` (fvp only, 03/nov/2026): a plugin that answers
-      a pair is played with its audio track opened beside the video
-      (`setExternalAudio` before `initialize`), so a channel served by a plugin
-      the extractor only publishes as two streams plays with no process on the
-      host. `VideoEngine.supportsPairedAudio` is what decides whether the player
+      a pair is played with its audio attached beside the video (`setExternalAudio`
+      + `setAudioTracks` *after* `initialize`, because preparing a media url resets
+      the external media), so a channel served by a plugin the extractor only
+      publishes as two streams plays with no process on the host. Measured on the
+      desktop app: the picture opens in ~250-350 ms (a remux took 5-13 s), and the
+      audio of a tune-in 5874 s into the item correlates 0.96 with that position
+      and 0.09 with the file's start — it follows the seek. `VideoEngine.supportsPairedAudio` is what decides whether the player
       offers `pair` at all — the ExoPlayer seam cannot merge and never asks; a
       pair's `headers` are not forwarded, which the measured CDN URLs do not need.
       The offset rule had to become mode-aware: a `remux` begins at the position
