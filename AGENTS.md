@@ -694,6 +694,18 @@ device, driven by scripts that end in a file an agent or a human can read.
   Two suites never run at once against the same checkout: Flutter's Android build
   and install share one directory per working tree, so parallelism is one process
   per checkout (`git worktree`) and one port per process.
+- State of the suite on the lab (2026-11-04, TV profile, the 38 suites that can
+  run on a device): 33 pass, 5 fail, and none of the five is the lab. Four are
+  desktop assumptions the lab exposes — a TV cannot go windowed so the toggle
+  stays `On` (`fullscreen_test`), a settings page laid out without a `Scrollable`
+  breaks a helper that scrolls before focusing (`settings_navigation_visual_test`),
+  a seven-second entry starts before the device finishes booting
+  (`transition_audio_test`), and `waitForEpgEntries(12)` sees 11 because the last
+  entry materialises when it is due (`warm_start_test`; `app_background_test` has
+  the same shape). The fifth is open: going `inactive` inside the test gets the
+  channel reloaded twice instead of once, and logcat shows the system opening
+  `MainActivity` on its own at that moment — product or emulator focus, not yet
+  known.
 - What the lab cannot see: hardware video decode, GPU compositing, real ARM
   ABIs, thermal throttling and a weak box's jank. Those are the cases for a
   physical device, and they are measured, not eyeballed: `perf_trace.jsonl` via
