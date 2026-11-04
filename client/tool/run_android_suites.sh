@@ -88,7 +88,9 @@ elif [ -n "$SERIAL" ]; then
   "$LAB" lease "$SERIAL" || exit 3
 fi
 
-args=(-t "$TMO" --serial "$SERIAL")
+# A leftover child of the previous suite can still hold the lease for a
+# moment; wait it out instead of calling the whole run blocked.
+args=(-t "$TMO" --serial "$SERIAL" --lease-wait 180)
 [ $RETRY = 0 ] && args+=(--no-retry)
 [ $BACKEND = 0 ] && args+=(--no-backend)
 [ $WATCH = 0 ] && args+=(--no-watch)

@@ -6,7 +6,7 @@
 #
 #   tool/android_lab.sh profiles
 #   tool/android_lab.sh avd create [--profile tv|phone]
-#   tool/android_lab.sh avd up [--profile tv|phone] [--port 5554] [--cold] [--wipe]
+#   tool/android_lab.sh avd up [--profile tv|phone] [--port 5554] [--cold|--warm] [--wipe]
 #   tool/android_lab.sh avd list
 #   tool/android_lab.sh avd down <serial>|--all
 #   tool/android_lab.sh device <serial>
@@ -36,7 +36,7 @@ SDK=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}
 STATE=${ANDROID_LAB_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/android-lab}
 IMAGE_TV=${ANDROID_LAB_IMAGE_TV:-system-images;android-36;android-tv;x86_64}
 IMAGE_PHONE=${ANDROID_LAB_IMAGE_PHONE:-system-images;android-33;google_apis;x86_64}
-TMO=900; OUT=; SERIAL=; PROFILE=; PORT=5554; COLD=0; WIPE=0; RETRY=1; BACKEND=1; MEDIA=1; WATCH=1
+TMO=900; OUT=; SERIAL=; PROFILE=; PORT=5554; COLD=1; WIPE=0; RETRY=1; BACKEND=1; MEDIA=1; WATCH=1; FRAME_UI=0
 RECORD=0; WAIT=0; LEASE_WAIT=0; PKG=io.github.rafaelvieiras.playheadtv.client
 FLAKE_RE='Unable to start the app|Error waiting for a debug connection|did not complete|Test process is no longer needed|stalled|device offline'
 ASSERT_RE='Expected: |EXCEPTION CAUGHT BY FLUTTER TEST FRAMEWORK|TestFailure|Failed assertion'
@@ -130,6 +130,22 @@ ensure_avd() {
 # device is there, and the `shell` right after it can still answer "device
 # offline" and exit 1. Retry instead of calling a finished boot a failure, and
 # give up when the emulator process itself is gone (a crash, not a slow boot).
+# A restored snapshot brings the guest clock back with it, and a production image
+# refuses `adb root`, so the clock cannot be set from here: after a warm boot the
+# device can be minutes behind the host. Suites that ask "what is on now" (a guide
+# window, a schedule that starts three seconds ago, the OSD clock) then read a
+# window that has already passed and fail for a reason that has nothing to do
+# with the app. Hence a cold boot by default, and this check to name the cause
+# when `--warm` was asked for anyway.
+check_clock() { # serial
+  local serial=$1 guest host skew
+  guest=$("$ADB" -s "$serial" shell date +%s 2>/dev/null | tr -d '\r')
+  case $guest in ''|*[!0-9]*) return 0;; esac
+  host=$(date +%s); skew=$((host - guest))
+  [ "$skew" -le 5 ] && [ "$skew" -ge -5 ] && return 0
+  note "the guest clock is ${skew}s off the host: suites about schedules will read a stale window (boot cold, without --warm)"
+}
+
 wait_boot() { # serial timeout-seconds
   local serial=$1 deadline=$(($(date +%s) + ${2:-600})) i seen=0
   while [ "$(date +%s)" -lt "$deadline" ]; do
@@ -187,13 +203,14 @@ boot() {
   fi
   [ "$wipe" = 1 ] && args+=(-wipe-data)
   note "booting $name on $serial"
-  ("$EMU" "${args[@]}" >"$STATE/$name/emulator-$port.log" 2>&1 &) || die "could not start the emulator"
+  ("$EMU" "${args[@]}" >"$STATE/$name/emulator-$port.log" 2>&1 9>&- &) || die "could not start the emulator"
   if ! wait_boot "$serial"; then
     note "the emulator did not come up; see $STATE/$name/emulator-$port.log"
     "$ADB" -s "$serial" emu kill >/dev/null 2>&1
     die "the emulator did not boot"
   fi
   tame_device "$serial" "$profile"
+  check_clock "$serial"
   if [ "$cold" = 1 ] || [ ! -f "$marker" ]; then
     "$ADB" -s "$serial" emu avd snapshot save lab >/dev/null 2>&1 && echo lab >"$marker"
   fi
@@ -258,7 +275,12 @@ watch_screen() { # serial dir
     i=$((i + 1))
     f=$(printf '%s/frame-%03d' "$dir" "$i")
     "$ADB" -s "$serial" exec-out screencap -p >"$f.png" 2>/dev/null || rm -f "$f.png"
-    if [ $((i % 3)) = 0 ]; then
+    # No `uiautomator dump` here: it turns on the accessibility service, which
+    # turns on Flutter's semantics tree inside the app and makes the suite end
+    # with "A SemanticsHandle was active at the end of the test" — the lab
+    # failing the suite it is supposed to observe. `--watch-ui` opts in when a
+    # frame is not enough and the suite is known not to care.
+    if [ "$FRAME_UI" = 1 ] && [ $((i % 3)) = 0 ]; then
       "$ADB" -s "$serial" shell uiautomator dump /sdcard/lab-watch.xml >/dev/null 2>&1 &&
         "$ADB" -s "$serial" pull /sdcard/lab-watch.xml "$f.xml" >/dev/null 2>&1 || rm -f "$f.xml"
     fi
@@ -349,11 +371,14 @@ attempt() {
   [ -n "${MEDIA_URL:-}" ] && extra+=("--dart-define=PLAYHEADTV_IT_MEDIA_BASE_URL=$MEDIA_URL/")
   [ -f "$CLIENT/.dart_tool/package_config.json" ] && extra+=(--no-pub)
   if [ "$WATCH" = 1 ]; then
-    watch_screen "$serial" "$out/frames" >/dev/null 2>&1 &
+    watch_screen "$serial" "$out/frames" >/dev/null 2>&1 9>&- &
     watcher=$!
   fi
+  # 9>&- everywhere a child outlives the attempt: the lease fd must die with
+  # this process, or the next run finds its own device leased by a ghost (and a
+  # gradle daemon under `flutter test` would hold it for hours).
   ( cd "$CLIENT" && timeout --signal=TERM "$TMO" "$(command -v flutter)" test \
-      "integration_test/$suite.dart" -d "$serial" "${extra[@]}" ) >"$out/suite.log" 2>&1
+      "integration_test/$suite.dart" -d "$serial" "${extra[@]}" ) >"$out/suite.log" 2>&1 9>&-
   rc=$?
   if [ -n "$watcher" ]; then
     kill "$watcher" 2>/dev/null
@@ -395,6 +420,7 @@ cmd_avd() {
           --profile) PROFILE=${2:?}; shift 2;;
           --port) PORT=${2:?}; shift 2;;
           --cold) COLD=1; shift;;
+          --warm) COLD=0; shift;;
           --wipe) WIPE=1; COLD=1; shift;;
           *) die "unknown option $1";;
         esac
@@ -438,21 +464,24 @@ cmd_device() {
 # links it into the device with `adb reverse`: the app and the fixture still see
 # http://127.0.0.1:<port>, which is the address the suite already expects, but
 # the process and its SQLite file live on the host where Go exists.
-start_backend() {
-  local dir=$1 port
-  local bin="$dir/server" db="$dir/db"
+start_backend() { # dir tag
+  local dir=$1 tag=${2:-run} port
+  local bin="$dir/server" db="$dir/db-$tag" log="$dir/$tag-backend.log"
   BACKEND_BIN=$bin
   if [ ! -x "$bin" ]; then
     ( cd "$ROOT/backend" && go build -o "$bin" ./cmd/server ) >"$dir/build.log" 2>&1 ||
       { note "backend build failed: $(tail -3 "$dir/build.log")"; return 1; }
   fi
+  # One database per suite: the server refuses a second app_user, and a suite
+  # that inherits the previous one's tenant fails on its own setup, which reads
+  # as a product bug in the report.
   port=$(free_port); BACKEND_URL=http://127.0.0.1:$port
-  PLAYHEADTV_DB_PATH=$db PLAYHEADTV_ADDR=:$port "$bin" >"$dir/backend.log" 2>&1 &
+  PLAYHEADTV_DB_PATH=$db PLAYHEADTV_ADDR=:$port "$bin" >"$log" 2>&1 9>&- &
   BACKEND_PID=$!
   local i
   for i in $(seq 1 150); do
     curl -fs "http://127.0.0.1:$port/healthz" >/dev/null 2>&1 && return 0
-    kill -0 "$BACKEND_PID" 2>/dev/null || { note "backend died: $(tail -3 "$dir/backend.log")"; return 1; }
+    kill -0 "$BACKEND_PID" 2>/dev/null || { note "backend died: $(tail -3 "$log")"; return 1; }
     sleep 0.2
   done
   note "backend did not answer /healthz in 30s"; return 1
@@ -478,7 +507,7 @@ start_media() { # log-dir
   ( cd "$CLIENT" && "$dartbin" run tool/gen_it_media.dart "$dir" ) >"$logdir/gen-media.log" 2>&1 ||
     { note "fixture media generation failed: $(tail -2 "$logdir/gen-media.log")"; return 1; }
   port=$(free_port)
-  ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 ) \
+  ( cd "$dir" && exec python3 -m http.server "$port" --bind 127.0.0.1 9>&- ) \
     >"$logdir/media-server.log" 2>&1 &
   MEDIA_PID=$!
   for i in $(seq 1 50); do
@@ -508,7 +537,9 @@ cmd_run() {
       --no-backend) BACKEND=0; shift;;
       --no-media) MEDIA=0; shift;;
       --no-watch) WATCH=0; shift;;
+      --watch-ui) FRAME_UI=1; shift;;
       --no-lease) LEASE_WAIT=-1; shift;;
+      --lease-wait) LEASE_WAIT=${2:?}; shift 2;;
       *) die "unknown option $1";;
     esac
   done
@@ -521,7 +552,7 @@ cmd_run() {
   if [ -z "$SERIAL" ]; then
     [ -n "$PROFILE" ] || PROFILE=tv
     require_accel
-    SERIAL=$(boot "$PROFILE" "$PORT" 0 0) || exit 2
+    SERIAL=$(boot "$PROFILE" "$PORT" 1 0) || exit 2
     booted=1
   fi
   OUT=${OUT:-$CLIENT/build/android-runs/$(date +%Y%m%d-%H%M%S)}
@@ -531,7 +562,7 @@ cmd_run() {
   local bdir=$OUT/.backend rc status=PASS sig= note= dur=0 t0
   if [ "$BACKEND" = 1 ]; then
     mkdir -p "$bdir"
-    start_backend "$bdir" || die "the backend did not start; see $bdir/backend.log"
+    start_backend "$bdir" "$name" || die "the backend did not start; see $bdir/$name-backend.log"
     "$ADB" -s "$SERIAL" reverse "tcp:${BACKEND_URL##*:}" "tcp:${BACKEND_URL##*:}" >/dev/null 2>&1 ||
       note "adb reverse failed; the app will not reach the host backend"
     echo "===== host backend on $BACKEND_URL (reversed into $SERIAL) =====" >>"$OUT/$name/backend-host.log"
@@ -543,7 +574,7 @@ cmd_run() {
       note "adb reverse failed; the suites will not find the fixture media"
     echo "===== fixture media on $MEDIA_URL (reversed into $SERIAL) =====" >>"$OUT/$name/media-host.log"
   fi
-  [ "$RECORD" = 1 ] && { "$ADB" -s "$SERIAL" shell screenrecord --time-limit "$TMO" /sdcard/lab-screen.mp4 >/dev/null 2>&1 & }
+  [ "$RECORD" = 1 ] && { "$ADB" -s "$SERIAL" shell screenrecord --time-limit "$TMO" /sdcard/lab-screen.mp4 >/dev/null 2>&1 9>&- & }
 
   t0=$SECONDS
   attempt "$suite" "$SERIAL" "$name" 1; rc=$?
