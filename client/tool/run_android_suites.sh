@@ -7,6 +7,8 @@
 #   tool/run_android_suites.sh osd_test epg_window_test
 #   tool/run_android_suites.sh -p phone --shard 1/2
 #   tool/run_android_suites.sh --serial <adb-serial>  against a physical device
+#   tool/run_android_suites.sh --changed             the suites the diff touches
+#   tool/run_android_suites.sh --changed --dry-run   only show that selection
 #
 # Options:
 #   -o DIR     artifacts root (default client/build/android-runs)
@@ -16,6 +18,11 @@
 #              in parallel only from separate checkouts (one Flutter build dir
 #              per working tree; see AGENTS.md)
 #   --serial S use this device instead of booting one (takes a lease on it)
+#   --changed  pick the suites the changed files touch, through tool/suite_map.tsv
+#              plus the words of every path; a change nothing names yet runs BOOT
+#   --since REF with --changed, also the files committed since REF (e.g. master)
+#   --dry-run  print the selection and exit without booting anything
+#   --all-suites also select the suites that cannot pass on a device
 #   --shard I/N only the suites at positions I, I+N, ... (1-based)
 #   --no-retry never retry an environmental failure
 #   --no-backend run without the host backend (suites that manage it themselves)
@@ -33,6 +40,7 @@ ROOT=$(cd "$TOOL/../.." && pwd)
 LAB=$TOOL/android_lab.sh
 OUTROOT=$ROOT/client/build/android-runs
 PROFILE=tv; PORT=5554; SERIAL=; TMO=900; SHARD=; RETRY=1; BACKEND=1; KEEP=0; RECORD=0; WATCH=1
+CHANGED=0; SINCE=; DRY=0; ALLSUITES=0
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -42,6 +50,10 @@ while [ $# -gt 0 ]; do
     --port) PORT=$2; shift 2;;
     --serial) SERIAL=$2; shift 2;;
     --shard) SHARD=$2; shift 2;;
+    --changed) CHANGED=1; shift;;
+    --since) SINCE=$2; CHANGED=1; shift 2;;
+    --dry-run) DRY=1; shift;;
+    --all-suites) ALLSUITES=1; shift;;
     --no-retry) RETRY=0; shift;;
     --no-backend) BACKEND=0; shift;;
     --no-watch) WATCH=0; shift;;
@@ -54,6 +66,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Suites that need the backend on the same machine as the app: they stop and
+# start it, or start a second fixture of their own. The backend runs on the host
+# here, so these cannot pass on a device and are not selected by default.
+DESKTOP_ONLY="offline_coldstart_test offline_exhausted_test offline_playback_test
+offline_reconcile_test settings_offline_test epg_window_test"
+# Boot and wiring: what to run when a change is central enough to reach anything.
+BOOT_SUITES="osd_test exit_flow_test fullscreen_test warm_start_test
+focus_lifecycle_test screen_awake_test loading_navigation_test"
+
+all_suites() { local f; for f in "$ROOT"/client/integration_test/*_test.dart; do basename "$f" .dart; done; }
+is_desktop_only() { case " $(echo $DESKTOP_ONLY) " in *" $1 "*) return 0;; esac; return 1; }
+
 suites=()
 if [ $# -gt 0 ]; then
   for s in "$@"; do
@@ -61,17 +85,126 @@ if [ $# -gt 0 ]; then
     [ -f "$ROOT/client/integration_test/$s.dart" ] || { echo "no such suite: $s" >&2; exit 2; }
     suites+=("$s")
   done
-else
-  for f in "$ROOT"/client/integration_test/*_test.dart; do suites+=("$(basename "$f" .dart)"); done
+elif [ $CHANGED = 0 ]; then
+  for s in $(all_suites); do
+    if is_desktop_only "$s" && [ $ALLSUITES = 0 ]; then
+      echo "skipping $s: it needs the backend on the device (see AGENTS.md)"
+    else
+      suites+=("$s")
+    fi
+  done
 fi
-if [ -n "$SHARD" ]; then
-  i=${SHARD%/*}; n=${SHARD#*/}; picked=()
-  for k in "${!suites[@]}"; do [ $(( k % n + 1 )) = "$i" ] && picked+=("${suites[$k]}"); done
-  suites=("${picked[@]}")
+
+# Which suites a diff touches, from tool/suite_map.tsv plus the words of the
+# paths. It errs wide on purpose: a suite that is not selected is a suite that
+# did not run, so the answer is a union of every plausible reading of the change.
+if [ $CHANGED = 1 ]; then
+  pairs=(); picked=()
+  add() { # one suite name, or the ALL/BOOT keyword
+    case $1 in
+      ALL) local f; for f in $(all_suites); do picked+=("$f"); done;;
+      BOOT) local b; for b in $(echo $BOOT_SUITES); do picked+=("$b"); done;;
+      *) picked+=("$1");;
+    esac
+  }
+  files=$(cd "$ROOT" && {
+    [ -n "$SINCE" ] && git diff --name-only "$SINCE"...HEAD 2>/dev/null
+    git diff --name-only 2>/dev/null
+    git diff --cached --name-only 2>/dev/null
+    git ls-files --others --exclude-standard 2>/dev/null
+  } | sort -u)
+  [ -n "$files" ] || { echo "nothing changed since ${SINCE:-HEAD}; pass suites explicitly" >&2; exit 2; }
+
+  unmatched=()
+  for f in $files; do
+    mine=()
+    while IFS=$'\t' read -r -a fields; do
+      # The last field names the suites, everything before it names files, so a
+      # stray tab is a wide choice and never a suite that does not exist.
+      [ ${#fields[@]} -ge 2 ] || continue
+      pats=${fields[*]:0:$((${#fields[@]} - 1))}
+      names=${fields[$((${#fields[@]} - 1))]}
+      case ${pats:-} in ''|'#'*) continue;; esac
+      hit=0
+      for pat in $pats; do
+        # shellcheck disable=SC2254
+        case $f in $pat) hit=1; break;; esac
+      done
+      [ $hit = 1 ] || continue
+      for s in $names; do mine+=("$s"); done
+    done <"$TOOL/suite_map.tsv"
+    # The map is hand-written and falls behind, but when it has an answer that
+    # answer is the considered one; the words of the path are the fallback for
+    # everything nobody has mapped yet (`client/test/dimmer_test.dart` reaches
+    # dimmer_test, a golden of the guide reaches the guide suites).
+    if [ ${#mine[@]} -gt 0 ]; then
+      for s in "${mine[@]}"; do add "$s"; done
+      pairs+=("$f"$'\t'"$(printf '%s\n' "${mine[@]}" | sort -u | tr '\n' ' ')")
+      continue
+    fi
+    words=$(printf '%s' "$f" | tr '/_.-' '    ' | tr ' ' '\n' | awk 'length($0) >= 3' |
+      grep -vxE 'lib|dart|client|test|integration|support|tool|page|pages|widget|widgets|service|services|util|utils|file|files|main|app|new' | tr '\n' ' ')
+    for s in $(all_suites); do
+      for w in $(printf '%s' "${s%_test}" | tr '_' ' '); do
+        case " $words " in *" $w "*) mine+=("$s"); break;; esac
+      done
+    done
+    if [ ${#mine[@]} = 0 ]; then
+      unmatched+=("$f")
+    else
+      for s in "${mine[@]}"; do add "$s"; done
+      pairs+=("$f"$'\t'"$(printf '%s\n' "${mine[@]}" | sort -u | tr '\n' ' ')")
+    fi
+  done
+
+  if [ ${#picked[@]} = 0 ]; then
+    echo "no suite is named by this change; running the boot set so the run is not empty" >&2
+    for s in $(echo $BOOT_SUITES); do picked+=("$s"); done
+  fi
+
+  for s in $(printf '%s\n' "${picked[@]}" | sort -u); do
+    [ -f "$ROOT/client/integration_test/$s.dart" ] || { echo "suite_map.tsv names a suite that does not exist: $s" >&2; continue; }
+    if is_desktop_only "$s" && [ $ALLSUITES = 0 ]; then
+      echo "skipping $s: the map sent this change to it, but it needs the backend on the device" >&2
+      continue
+    fi
+    suites+=("$s")
+  done
+  [ ${#unmatched[@]} = 0 ] || printf 'no suite is named by: %s\n' "${unmatched[*]}" >&2
 fi
 [ ${#suites[@]} -gt 0 ] || { echo "no suites to run" >&2; exit 2; }
 
+if [ -n "$SHARD" ]; then
+  i=${SHARD%/*}; n=${SHARD#*/}; picked_shard=()
+  for k in "${!suites[@]}"; do [ $(( k % n + 1 )) = "$i" ] && picked_shard+=("${suites[$k]}"); done
+  suites=("${picked_shard[@]}")
+fi
+if [ $DRY = 1 ]; then
+  # Whatever the run would do, without a device: what booted and installed for
+  # nothing teaches nobody which suite the change was supposed to reach.
+  head_line="${#suites[@]} suite(s)"
+  [ -n "$SINCE" ] && head_line="$head_line since $SINCE"
+  [ $CHANGED = 1 ] && head_line="$head_line, from $(echo $files | wc -w) changed file(s)"
+  echo "$head_line:"
+  for s in "${suites[@]}"; do echo "  $s"; done
+  if [ ${#pairs[@]} -gt 0 ]; then
+    echo
+    echo "file -> suites"
+    printf '%s\n' "${pairs[@]}" | sed 's/^/  /'
+  fi
+  exit 0
+fi
+
 RUN=$OUTROOT/$(date +%Y%m%d-%H%M%S); mkdir -p "$RUN/suites"
+if [ $CHANGED = 1 ]; then
+  # The selection is evidence too: a run that passed 3 suites has to say how it
+  # picked those 3.
+  {
+    echo "# selection: ${#suites[@]} suite(s), ${SINCE:+since $SINCE }from $(echo $files | wc -w) changed file(s)"
+    for s in "${suites[@]}"; do echo "suite\t$s"; done
+    [ ${#pairs[@]} -eq 0 ] || { echo "# file\tsuites"; printf '%s\n' "${pairs[@]}"; }
+  } >"$RUN/selection.tsv"
+fi
 booted=0
 cleanup() {
   if [ $booted = 1 ] && [ $KEEP = 0 ]; then "$LAB" avd down "$SERIAL" >/dev/null 2>&1; fi
