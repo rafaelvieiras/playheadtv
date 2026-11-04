@@ -1910,11 +1910,17 @@ The client talks to the video engine only through `lib/video/video_engine.dart`:
   whether it needs a queue.
 - **A playback can carry a second, audio-only source** (`createNetwork(uri,
   audioUri:)`), which is how a plugin's `pair` is played (`docs/PLUGINS.md`
-  "Modes"): `FvpVideoEngine` passes it to mdk as `setExternalAudio` before
-  `initialize` — mdk prepares both sources together — and the player seeks and
-  plays them as one. `VideoEngine.supportsPairedAudio` is what decides whether
-  the player offers `pair` to a plugin at all (`pluginPlaybackModes`); the
-  ExoPlayer seam cannot merge one and reports false.
+  "Modes"). `FvpVideoEngine` attaches it with mdk's `setExternalAudio` **after**
+  `initialize`, then activates the track: preparing a media url resets the
+  external media (mdk's own note on `setMedia`), so attaching it first is silent.
+  The caller's `seekTo` runs after the attach and mdk applies it to the whole
+  timeline — measured on a real pair, a tune-in 5874 s into an item had its audio
+  correlate 0.96 with that position and 0.09 with the file's start, and the
+  picture opens in ~300 ms. mdk does not list the external track in
+  `getMediaInfo()`, so `tracks` (the overlay, the audio picker) show no audio for
+  a pair, which is right for one track. `VideoEngine.supportsPairedAudio` decides
+  whether the player offers `pair` at all (`pluginPlaybackModes`); the ExoPlayer
+  seam cannot merge one and reports false.
 - Two implementations exist, both in `lib/video/`: `FvpVideoEngine` (libmdk,
   every platform, the default) and `ExoVideoEngine` (ExoPlayer/Media3 through
   `video_player_android`, Android only; see "ExoPlayer engine" below). They share

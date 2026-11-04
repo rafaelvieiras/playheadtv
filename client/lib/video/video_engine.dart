@@ -198,14 +198,19 @@ abstract class VideoEngine {
 }
 
 /// The shapes a player can open, best first, as the plugin modes they name
-/// (docs/PLUGINS.md "Modes"): one address (`single`), a video and an audio
-/// address the player merges (`pair`), or a stream the plugin produces
-/// (`remux`). The order is a preference — a plugin answers with the first mode it
-/// can — and `remux` is last because it costs the host a process per stream. A
-/// pair is only offered by an engine that can actually merge one.
+/// (docs/PLUGINS.md "Modes"): a video and an audio address the player merges
+/// (`pair`), one address carrying both (`single`), or a stream the plugin
+/// produces (`remux`). The order is the host's preference and a plugin answers
+/// with the first mode it can.
+///
+/// `pair` comes first when the engine can merge one: it costs the host nothing
+/// and it is the best picture a source has — measured on the plugin this was
+/// written for, `single` was a 360p muxed file while the separated video track
+/// was 1080p. `remux` is last because it is the only mode that runs a process per
+/// playback.
 List<String> pluginPlaybackModes(VideoEngine engine) => [
-      'single',
       if (engine.supportsPairedAudio) 'pair',
+      'single',
       'remux',
     ];
 

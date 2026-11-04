@@ -3,6 +3,7 @@
 // native create/dispose and the `avsync.audio` / `buffer` properties.
 import 'dart:io' show Platform;
 
+
 import 'package:fvp/fvp.dart' as fvp;
 import 'package:video_player/video_player.dart';
 
@@ -67,12 +68,25 @@ class _FvpPlayback extends ControllerPlayback {
   // So every initialize()/dispose() goes through the one shared FIFO.
   @override
   Future<void> open({String label = 'initialize'}) => serializeGlOp(() async {
-        // Before initialize: mdk prepares the main source and the external one
-        // together, so an audio source added afterwards would only be heard
-        // from the next prepare on.
         final audio = audioUri;
-        if (audio != null) controller.setExternalAudio(audio.toString());
         await controller.initialize();
+        // After initialize, not before: preparing a media url *resets* the
+        // external media (mdk docs for `setMedia`), so attaching the audio first
+        // would leave the playback silent. Attaching it here stops and re-prepares
+        // the player, and the caller's own `seekTo` (which mdk applies to the
+        // whole timeline, external media included — measured: the audio of a
+        // tune-in 5874s into an item correlates 0.96 with that position and 0.09
+        // with the file's start) follows.
+        //
+        // mdk does not list the external track in `getMediaInfo()`, so [tracks]
+        // (and the debug overlay, and the audio picker) show no audio for a pair —
+        // right for a pair, which carries exactly one audio track.
+        //
+        // Measured on a real pair: the picture opens in ~300ms.
+        if (audio != null) {
+          controller.setExternalAudio(audio.toString());
+          controller.setAudioTracks(const [0]);
+        }
       }, label: label);
 
   @override
