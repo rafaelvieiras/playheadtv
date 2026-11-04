@@ -15,6 +15,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'support/backend_fixture.dart';
@@ -46,7 +47,11 @@ void main() {
           ? Directory(configured)
           : fromRunner != null
               ? Directory(fromRunner)
-              : Directory.systemTemp.createTempSync('playhead_nav_shots_');
+              // On a device `systemTemp` lives inside the app sandbox and dies
+              // with the process — exactly when the screenshots matter. The
+              // support directory is `files/`, which the host can read while the
+              // app still runs (`adb shell run-as <package> cat files/…`).
+              : Directory('${(await getApplicationSupportDirectory()).path}/lab-shots');
       shotDir.createSync(recursive: true);
       backend = BackendFixture();
       video = VideoFixture();
