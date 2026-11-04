@@ -206,6 +206,30 @@ class BackendFixture {
     }
   }
 
+  /// How far this process's clock is from the backend's, learned from the `Date`
+  /// header of every response.
+  ///
+  /// A device clock drifts — an emulator under load ran 49 s behind the host
+  /// after eleven minutes — and the fixture computes epoch millis that the
+  /// backend interprets with *its* clock while materialising with *its* clock.
+  /// With a skewed client, "start two seconds ago" lands 49 s in the past, the
+  /// items that came and went never air, and a suite waiting for twelve entries
+  /// waits for eight that will never exist. Every epoch this fixture sends is
+  /// therefore anchored on the server's clock.
+  Duration _serverOffset = Duration.zero;
+
+  DateTime get serverNow => DateTime.now().add(_serverOffset);
+
+  void _learnClock(http.Response resp) {
+    final date = resp.headers['date'];
+    if (date == null) return;
+    try {
+      _serverOffset = HttpDate.parse(date).difference(DateTime.now());
+    } catch (_) {
+      // A server without a parseable Date: keep the local clock.
+    }
+  }
+
   Future<Map<String, dynamic>> _postJson(String path, Map<String, dynamic> body, {bool auth = true}) async {
     final resp = await _client.post(
       Uri.parse('$_baseUrl$path'),
@@ -215,6 +239,7 @@ class BackendFixture {
       },
       body: jsonEncode(body),
     );
+    _learnClock(resp);
     if (resp.statusCode != 200 && resp.statusCode != 201) {
       throw StateError('POST $path -> ${resp.statusCode}: ${resp.body}');
     }
@@ -226,6 +251,7 @@ class BackendFixture {
       Uri.parse('$_baseUrl$path'),
       headers: {'Authorization': 'Bearer $_sessionToken'},
     );
+    _learnClock(resp);
     if (resp.statusCode != 200) {
       throw StateError('GET $path -> ${resp.statusCode}: ${resp.body}');
     }
@@ -241,6 +267,7 @@ class BackendFixture {
       },
       body: jsonEncode(body),
     );
+    _learnClock(resp);
     if (resp.statusCode != 200) {
       throw StateError('PUT $path -> ${resp.statusCode}: ${resp.body}');
     }
@@ -405,7 +432,7 @@ class BackendFixture {
     var count = 0;
     var stableSince = DateTime.now();
     while (DateTime.now().isBefore(deadline)) {
-      final now = DateTime.now().toUtc().millisecondsSinceEpoch;
+      final now = serverNow.toUtc().millisecondsSinceEpoch;
       final data = await _getJson('/epg?channel_id=$channelId&start=${now - 60000}&end=${now + 7200000}') as List;
       if (data.length != count) {
         count = data.length;

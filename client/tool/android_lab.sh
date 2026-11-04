@@ -299,6 +299,11 @@ evidence() {
       [ -n "$f" ] && "$ADB" -s "$serial" shell run-as "$PKG" cat "files/lab-shots/$f" 2>/dev/null >"$out/shots/$f"
     done
   rmdir "$out/shots" 2>/dev/null
+  # The guest clock drifts under load, and everything the app schedules by wall
+  # clock moves with it: it belongs in the evidence, not in the reader's guesses.
+  local guest
+  guest=$("$ADB" -s "$serial" shell date +%s 2>/dev/null | tr -d '\r')
+  case $guest in ''|*[!0-9]*) ;; *) echo "$(( $(date +%s) - guest ))" >"$out/skew.txt";; esac
   "$ADB" -s "$serial" shell dumpsys gfxinfo "$PKG" >"$out/gfxinfo.txt" 2>/dev/null || rm -f "$out/gfxinfo.txt"
   "$ADB" -s "$serial" shell dumpsys activity processes 2>/dev/null | grep -E 'ANR in |crash' >"$out/anr.txt"
   [ -s "$out/anr.txt" ] || rm -f "$out/anr.txt"
@@ -356,6 +361,17 @@ report() {
     [ -n "$note" ] && echo "- note: $note"
     echo "- attempt dirs: $(ls -d "$dir"/attempt-* 2>/dev/null | xargs -r -n1 basename | tr '\n' ' ')"
     echo "- files: $(ls "$dir"/attempt-*/ 2>/dev/null | grep -v '^$' | sort -u | tr '\n' ' ')"
+    local skew
+    skew=$(cat "$dir"/attempt-*/skew.txt 2>/dev/null | tail -1)
+    if [ -n "$skew" ]; then
+      # Past a few seconds the app and the backend disagree about "now", and a
+      # suite about schedules or the guide reads a window that has moved.
+      if [ "$skew" -gt 5 ] || [ "$skew" -lt -5 ]; then
+        echo "- clock skew: ${skew}s (the device clock is off the host: suites about schedules read a window that moved)"
+      else
+        echo "- clock skew: ${skew}s"
+      fi
+    fi
     local frames
     frames=$(ls "$dir"/attempt-*/frames/*.png 2>/dev/null | tail -1)
     [ -n "$frames" ] && echo "- screen while it ran: $(ls "$dir"/attempt-*/frames/*.png 2>/dev/null | wc -l | tr -d ' ') frames, last \`$frames\`"
