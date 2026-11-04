@@ -642,11 +642,31 @@ device, driven by scripts that end in a file an agent or a human can read.
   build/spawn and only waits for `/healthz`. The five suites that take the
   backend down mid-run (`offline_*`, `settings_offline_test`) throw
   `UnsupportedError` on a device: run those on the desktop.
+- Anything a fixture would shell out to is a host job too. The video fixture
+  needs `ffmpeg`, which a device does not have: the lab encodes the clips once
+  (`tool/gen_it_media.dart`, which calls the same `support/video_media.dart` the
+  fixture uses, so the two sides cannot drift), serves the directory over a
+  second `adb reverse` tunnel and passes `PLAYHEADTV_IT_MEDIA_BASE_URL`. A suite
+  that prefers no media server for what it tests can be run with `--no-media`.
+- The suites boot `PlayheadSpikeApp` directly and never run `main()`, so they
+  inherit nothing `main()` sets up. On the desktop a plugin's own registrant hid
+  that; on Android the video engine was never registered and every playback died
+  with "VideoPlayerPlatform.instance have to be of MdkVideoPlayerPlatform" —
+  which is why `VideoFixture.start()` calls `videoEngine.register()`. A new
+  `main()` setup step that a suite depends on needs the same treatment.
 - Verdict contract: every run writes `<suite>/results.json` (suite, target,
   status, duration, signature, artifact paths) and a `report.md` of a few KB with
   the failure lines a reader needs, plus a final `VERDICT:` line on stderr. A
   claim that something works on Android needs a `results.json` from the run —
   "it looked fine" is not evidence.
+- The evidence has to survive the app. `flutter test` tears the app down at the
+  end, so a post-mortem screenshot shows the launcher: while a suite runs, the lab
+  keeps a rolling window of frames (`attempt-N/frames/`, one every 5 s, the last
+  12) and the accessibility tree every third frame, and keeps them only when the
+  suite failed. `logcat-full.txt` is everything since the attempt started (the
+  buffer is cleared first) — the app's own log and native crashes are in there
+  even when the process is gone. Frames cost CPU: `--no-watch` for a suite that
+  measures timings.
 - Determinism: animations off, stay-awake on, TV geometry forced with `wm size`/
   `wm density`, and a saved boot snapshot so a start costs seconds. Two suites
   never run at once against the same checkout: Flutter's Android build and
