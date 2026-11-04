@@ -578,6 +578,11 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   (`PLAYHEADTV_DB_PATH=<temp> PLAYHEADTV_ADDR=:<free port> go run
   ./cmd/server`), populated through the real REST API (admin bootstrap,
   login, fixtures).
+- Android behaviour is validated on the lab
+  (`client/tool/run_android_suites.sh`), not by installing on a phone or on the
+  TV somebody is watching; a physical device is for what the lab cannot see
+  (hardware decode, real ARM, thermal), one run at a time. See "Android
+  validation".
 - Backend default port is **9394**, not 8080 (8080 is commonly taken by
   other local services).
 - Docker: `docker compose build && docker compose up -d`, `docker compose
@@ -599,10 +604,58 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   `--dart-define=PLAYHEADTV_PERF_TRACE=true` appends one JSON line per window
   (`epg_open`, `epg_navigate`) to `perf_trace.jsonl`, and `client/tool/mibox_perf.sh`
   drives the guide over adb and prints them. Without the define it is a no-op.
+  That script takes the box's screen for the length of the run: it is the last
+  resort, not the loop (see "Android validation").
 - `flutter build apk --profile` defaults to versionCode 1; installing over an
   existing install needs `--build-number` equal to or above the installed one, and
   keeps the app's data only while the signing key is the same. Back up
   `shared_prefs` first (it holds the connection settings).
+
+## Android validation
+
+Android behaviour is checked on the lab, never on somebody's phone or on the TV
+in use. The lab is a headless emulator with the geometry and memory of the target
+device, driven by scripts that end in a file an agent or a human can read.
+
+- `client/tool/run_android_suites.sh [suite ...]` — runs the Android integration
+  suites on one emulator reused across suites; `-p phone` for the phone profile,
+  `--shard I/N` to split the list, `--serial <adb-serial>` for a physical device
+  (it takes a lease, so a second run is told the device is busy instead of
+  fighting for the screen). Artifacts per suite under
+  `client/build/android-runs/<run>/`.
+- `client/tool/android_lab.sh` — the pieces, usable on their own: `avd up`
+  (`--profile tv|phone`, `--cold`, `--wipe`) prints the serial, `avd down`,
+  `grab` for a screenshot plus the accessibility tree at any moment, `device` for
+  what the target claims to be, `run` for a single suite, `verdict` to (re)build
+  the verdict of an existing attempt directory.
+- Profiles: `tv` is Android TV, 1920x1080 @ 320dpi, 2 GB of RAM — a 1080p
+  set-top box, so a layout that only survives with a desktop's RAM fails here.
+  `phone` is the AVD's own geometry. Images are overridable with
+  `ANDROID_LAB_IMAGE_TV` / `ANDROID_LAB_IMAGE_PHONE`.
+- The emulator needs `/dev/kvm`. Without it the lab stops with the fix instead of
+  booting for half an hour in software: `sudo modprobe kvm_amd` and persist it in
+  `/etc/modules-load.d/`.
+- The backend stays on the host. On a device there is no `go` and no checkout, so
+  the lab builds `backend/cmd/server` once, starts it on a free port with a
+  temporary DB, maps it into the device with `adb reverse` and passes the address
+  as `--dart-define=PLAYHEADTV_IT_BACKEND_URL`; `BackendFixture` then skips the
+  build/spawn and only waits for `/healthz`. The five suites that take the
+  backend down mid-run (`offline_*`, `settings_offline_test`) throw
+  `UnsupportedError` on a device: run those on the desktop.
+- Verdict contract: every run writes `<suite>/results.json` (suite, target,
+  status, duration, signature, artifact paths) and a `report.md` of a few KB with
+  the failure lines a reader needs, plus a final `VERDICT:` line on stderr. A
+  claim that something works on Android needs a `results.json` from the run —
+  "it looked fine" is not evidence.
+- Determinism: animations off, stay-awake on, TV geometry forced with `wm size`/
+  `wm density`, and a saved boot snapshot so a start costs seconds. Two suites
+  never run at once against the same checkout: Flutter's Android build and
+  install share one directory per working tree, so parallelism is one process per
+  checkout (`git worktree`) and one port per process.
+- What the lab cannot see: hardware video decode, GPU compositing, real ARM
+  ABIs, thermal throttling and a weak box's jank. Those are the cases for a
+  physical device, and they are measured, not eyeballed: `perf_trace.jsonl` via
+  `tool/mibox_perf.sh`, one run per change at most.
 
 ## Gotchas already hit once
 
