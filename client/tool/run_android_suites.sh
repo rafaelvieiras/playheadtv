@@ -19,6 +19,7 @@
 #   --shard I/N only the suites at positions I, I+N, ... (1-based)
 #   --no-retry never retry an environmental failure
 #   --no-backend run without the host backend (suites that manage it themselves)
+#   --no-watch skip the rolling screen capture (lighter under perf suites)
 #   --keep     leave the emulator running
 #   -r         record the device screen per suite
 #
@@ -31,7 +32,7 @@ TOOL=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT=$(cd "$TOOL/../.." && pwd)
 LAB=$TOOL/android_lab.sh
 OUTROOT=$ROOT/client/build/android-runs
-PROFILE=tv; PORT=5554; SERIAL=; TMO=900; SHARD=; RETRY=1; BACKEND=1; KEEP=0; RECORD=0
+PROFILE=tv; PORT=5554; SERIAL=; TMO=900; SHARD=; RETRY=1; BACKEND=1; KEEP=0; RECORD=0; WATCH=1
 
 while [ $# -gt 0 ]; do
   case $1 in
@@ -43,6 +44,7 @@ while [ $# -gt 0 ]; do
     --shard) SHARD=$2; shift 2;;
     --no-retry) RETRY=0; shift;;
     --no-backend) BACKEND=0; shift;;
+    --no-watch) WATCH=0; shift;;
     --keep) KEEP=1; shift;;
     -r) RECORD=1; shift;;
     -h|--help) sed -n '2,/^set -u/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0;;
@@ -89,6 +91,7 @@ fi
 args=(-t "$TMO" --serial "$SERIAL")
 [ $RETRY = 0 ] && args+=(--no-retry)
 [ $BACKEND = 0 ] && args+=(--no-backend)
+[ $WATCH = 0 ] && args+=(--no-watch)
 [ $RECORD = 1 ] && args+=(-r)
 
 : >"$RUN/summary.tsv"; start=$SECONDS
@@ -103,6 +106,18 @@ for suite in "${suites[@]}"; do
   rc=$?
   [ -n "$line" ] && printf '%s\n' "$line" >>"$RUN/summary.tsv"
   [ $rc = 3 ] && { echo "device became busy during the run" >&2; break; }
+done
+
+# A suite that produced no verdict is a failure, not an absence: a lab that dies
+# halfway (or a device that vanished) must not look like a clean run. Fill in the
+# missing result here, so the report an agent reads never has a silent hole.
+for suite in "${suites[@]}"; do
+  [ -f "$RUN/suites/$suite/results.json" ] && continue
+  grep -qP "^$suite\t" "$RUN/summary.tsv" ||
+    printf '%s\tFAIL\t0\tsuite produced no result (traceback in %s)\n' "$suite" "${suite}.err" >>"$RUN/summary.tsv"
+  mkdir -p "$RUN/suites/$suite"
+  printf '{\n  "suite": "%s",\n  "target": "%s",\n  "status": "FAIL",\n  "duration_s": 0,\n  "note": "no result from the lab; see %s.err",\n  "artifacts": {"dir": "%s"}\n}\n' \
+    "$suite" "$SERIAL" "$suite" "suites/$suite" >"$RUN/suites/$suite/results.json"
 done
 sort -o "$RUN/summary.tsv" "$RUN/summary.tsv"
 
@@ -126,4 +141,4 @@ total=$(wc -l <"$RUN/summary.tsv" | tr -d ' ')
 passed=$(grep -cP '\tPASS\t' "$RUN/summary.tsv" || true)
 flaky=$(grep -cP '\tFLAKY\t' "$RUN/summary.tsv" || true)
 echo "VERDICT: $passed/$total passed, $flaky flaky, $((total - passed)) not passing  ($RUN/results.json)"
-! grep -qP '\t(FAIL|TIMEOUT)\t' "$RUN/summary.tsv"
+! grep -qP '\t(FAIL|TIMEOUT)\t' "$RUN/summary.tsv" && [ "$total" = "${#suites[@]}" ]
