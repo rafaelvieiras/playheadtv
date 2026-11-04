@@ -1300,7 +1300,10 @@ repo never contains.
       publishes as two streams plays with no process on the host. Measured on the
       desktop app: the picture opens in ~250-350 ms (a remux took 5-13 s), and the
       audio of a tune-in 5874 s into the item correlates 0.96 with that position
-      and 0.09 with the file's start — it follows the seek. `VideoEngine.supportsPairedAudio` is what decides whether the player
+      and 0.09 with the file's start — it follows the seek. The Android engine
+      (ExoPlayer) cannot merge one and keeps asking for the `remux`: preferring a
+      source's muxed file there cost the channel its resolution (360p against
+      1080p, seen on a TV). `VideoEngine.supportsPairedAudio` is what decides whether the player
       offers `pair` at all — the ExoPlayer seam cannot merge and never asks; a
       pair's `headers` are not forwarded, which the measured CDN URLs do not need.
       The offset rule had to become mode-aware: a `remux` begins at the position

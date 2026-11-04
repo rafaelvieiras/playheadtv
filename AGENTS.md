@@ -93,12 +93,14 @@ or LLM, and to every artifact in the repo:
   — and opens the URL it gets back, on every open (preload, tune-in, resync),
   never cached: the URL carries the plugin's token, expires, and a `remux` stream
   lives only while its process does. `pluginPlaybackModes(engine)`
-  (`lib/video/video_engine.dart`: `pair,single,remux` on an engine that can merge
-  two sources, `single,remux` otherwise) travels as the `modes` query parameter, so
-  the plugin answers the cheapest shape the engine can open: a `pair` costs the
-  host nothing, a `remux` costs a process. `pair` comes first because a source's
-  muxed `single` file can be far below the separated video track (measured: 360p
-  against 1080p), and the plugin honours the host's order. Only `fvp` merges a pair
+  (`lib/video/video_engine.dart`: `pair,remux` on an engine that can merge two
+  sources, `remux` alone otherwise) travels as the `modes` query parameter, so the
+  plugin answers the best picture the engine can open: a `pair` costs the host
+  nothing, a `remux` costs a process. `single` is never asked for — a source's one
+  muxed file can be far below the separated video track (measured: 360p against
+  1080p on YouTube's) — but a plugin may still answer one and the player plays it.
+  The engine that cannot merge (ExoPlayer on Android) must not prefer `single`:
+  that reads as "cheapest" and costs the channel its resolution. Only `fvp` merges a pair
   (mdk `setExternalAudio` + `setAudioTracks`, *after* `initialize`); the ExoPlayer
   seam cannot and does not offer it. A `remux` stream begins where it was asked to and
   the player must not seek again; a `pair` and a `single` file begin at the item's

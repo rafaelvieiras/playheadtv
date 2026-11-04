@@ -208,9 +208,15 @@ abstract class VideoEngine {
 /// written for, `single` was a 360p muxed file while the separated video track
 /// was 1080p. `remux` is last because it is the only mode that runs a process per
 /// playback.
+/// The shapes to ask a plugin for, best first. A `pair` costs the host nothing
+/// and carries the source's best tracks, so it wins whenever the engine can
+/// merge one; `remux` is the transcription of those same tracks when it cannot.
+/// `single` is deliberately last — and never asked for, since a source's one
+/// muxed file is usually the cheap one (on YouTube's it is 360p against a 1080p
+/// separated track) — but the player still parses and plays one if a plugin
+/// answers it (`PluginStream.mode`).
 List<String> pluginPlaybackModes(VideoEngine engine) => [
       if (engine.supportsPairedAudio) 'pair',
-      'single',
       'remux',
     ];
 
