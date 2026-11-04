@@ -63,8 +63,9 @@ void main() {
       await prefs.clear();
     });
 
-    Future<void> pumpUntil(WidgetTester tester, bool Function() condition, {String? failMessage}) async {
-      final deadline = DateTime.now().add(const Duration(seconds: 20));
+    Future<void> pumpUntil(WidgetTester tester, bool Function() condition,
+        {Duration timeout = const Duration(seconds: 20), String? failMessage}) async {
+      final deadline = DateTime.now().add(timeout);
       while (!condition()) {
         if (DateTime.now().isAfter(deadline)) fail(failMessage ?? 'condition not met in time');
         await tester.pump(const Duration(milliseconds: 200));
