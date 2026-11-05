@@ -65,6 +65,51 @@ mkdir -p "$TMP/bin" && ln -s "$root/playheadtv" "$TMP/bin/playheadtv"
 "$TMP/bin/playheadtv" >/dev/null
 check "updater gets root and config path (also via a symlink)" "$root|$root/config.json" "$(cat "$root/seen")"
 
+# ---- supervisor: a signal death is reported and restarted ----
+# A root whose client crashes <crashes> times before it stays up, plus a fake
+# notify-send that records what the user was told.
+make_crasher() { # make_crasher <name> <crashes before it stays up>
+    local root="$TMP/$1"
+    mkdir -p "$root/versions/1.0.0/bundle" "$TMP/bin-$1"
+    {
+        echo '#!/bin/sh'
+        echo "n=\$(cat \"$root/runs\" 2>/dev/null || echo 0); n=\$((n+1)); echo \$n >\"$root/runs\""
+        echo "[ \$n -le $2 ] && kill -SEGV \$\$"
+        echo 'echo "app up"'
+    } >"$root/versions/1.0.0/bundle/client"
+    chmod +x "$root/versions/1.0.0/bundle/client"
+    ln -s versions/1.0.0 "$root/current"
+    cp "$LAUNCHER" "$root/playheadtv"
+    printf '#!/bin/sh\necho "$*" >>"%s/notified"\n' "$root" >"$TMP/bin-$1/notify-send"
+    chmod +x "$TMP/bin-$1/notify-send"
+    echo "$root"
+}
+
+root=$(make_crasher crash-once 1)
+out=$(PATH="$TMP/bin-crash-once:$PATH" PLAYHEADTV_CRASH_DELAY=0 "$root/playheadtv" 2>"$TMP/crash-err")
+check "supervisor: a crash is followed by a restart" "app up" "$out"
+check "supervisor: the app ran twice" "2" "$(cat "$root/runs")"
+check "supervisor: the user was told what happened" "yes" "$(grep -q 'signal 11' "$root/notified" && echo yes || echo no)"
+check "supervisor: the crash is on stderr too" "yes" "$(grep -q 'killed by signal 11' "$TMP/crash-err" && echo yes || echo no)"
+
+root=$(make_crasher crash-always 99)
+PATH="$TMP/bin-crash-always:$PATH" PLAYHEADTV_CRASH_DELAY=0 PLAYHEADTV_CRASH_RESTARTS=2 \
+    "$root/playheadtv" >/dev/null 2>"$TMP/giveup-err"
+status=$?
+check "supervisor: a crash that repeats stops at the restart budget" "2" "$(cat "$root/runs")"
+check "supervisor: giving up returns the crash status" "139" "$status"
+check "supervisor: giving up says so" "yes" "$(grep -q 'giving up after 2 crashes' "$TMP/giveup-err" && echo yes || echo no)"
+
+root="$TMP/exit7"
+mkdir -p "$root/versions/1.0.0/bundle"
+printf '#!/bin/sh\nexit 7\n' >"$root/versions/1.0.0/bundle/client"
+chmod +x "$root/versions/1.0.0/bundle/client"
+ln -s versions/1.0.0 "$root/current"
+cp "$LAUNCHER" "$root/playheadtv"
+"$root/playheadtv" >/dev/null 2>&1
+status=$?
+check "supervisor: a plain non-zero exit is passed through, not restarted" "7" "$status"
+
 # 7. install.sh lays out a package and a desktop entry, and is re-runnable.
 pkg="$TMP/pkg/playheadtv-client-3.0.0-linux-x64"
 mkdir -p "$pkg/bundle"
@@ -154,6 +199,22 @@ d=$(make_appdir ar-config 'true')
 mkdir -p "$d/h/.config/playheadtv" && echo '{"x":1}' >"$d/h/.config/playheadtv/config.json"
 run_apprun "$d" >/dev/null
 check "AppRun: an existing config is kept" '{"x":1}' "$(cat "$d/h/.config/playheadtv/config.json")"
+
+# ---- supervisor in the AppImage entry point ----
+d=$(make_appdir ar-crash 'echo "playheadtv-updater: upToDate: x"')
+{
+    echo '#!/bin/sh'
+    echo "n=\$(cat \"$d/runs\" 2>/dev/null || echo 0); n=\$((n+1)); echo \$n >\"$d/runs\""
+    echo '[ $n -le 1 ] && kill -SEGV $$'
+    echo 'echo "app back"'
+} >"$d/appdir/bundle/client"
+chmod +x "$d/appdir/bundle/client"
+mkdir -p "$d/bin"
+printf '#!/bin/sh\necho "$*" >>"%s/notified"\n' "$d" >"$d/bin/notify-send"
+chmod +x "$d/bin/notify-send"
+out=$(env -i PATH="$d/bin:$PATH" HOME="$d/h" APPDIR="$d/appdir" PLAYHEADTV_CRASH_DELAY=0 "$d/appdir/AppRun" 2>/dev/null)
+check "AppRun: a crash is followed by a restart" "app back" "$out"
+check "AppRun: the user was told what happened" "yes" "$(grep -q 'signal 11' "$d/notified" && echo yes || echo no)"
 
 # ---- release notes (tool/release_notes.sh) ----
 NOTES="$HERE/tool/release_notes.sh"

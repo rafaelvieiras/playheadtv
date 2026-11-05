@@ -2383,15 +2383,38 @@ Settings come from the config file (`PLAYHEADTV_CONFIG`, set by the launcher to
 `--dart-define`, then the config file, then the default
 (`client/lib/config/config_file.dart`), so a development build is unchanged.
 
+### Crash supervision (desktop launcher)
+
+A process killed by a signal cannot report it: no dialog, no log line, no
+exception, nothing. The native video engine (`fvp`/libmdk) can die on a
+teardown/create race (a use-after-free on its raster thread or on a reader
+thread, reproduced on the desktop 2026-11-05 — see the `docs/ROADMAP.md` entry),
+and from the user's side the app simply vanished.
+
+So the launcher (`packaging/linux/playheadtv`) and the AppImage entry point
+(`packaging/appimage/AppRun`) no longer `exec` the app: they run it as a child
+and stay its parent. A zero exit is the user quitting and is passed straight
+through. A non-zero exit that is not a signal is the app's own decision and is
+passed through too. A *signal* death prints to stderr, shows a desktop
+notification when `notify-send` exists, and starts the app again — at most
+`PLAYHEADTV_CRASH_RESTARTS` times (default 3), `PLAYHEADTV_CRASH_DELAY` seconds
+apart (default 3), so a crash on every start cannot become an invisible loop.
+This is supervision, not app logic: every update decision still lives in the
+Dart updater, and the app itself is unchanged by it. `client/tool/test_launcher.sh`
+covers the matrix (restart, budget, non-signal exit, AppRun).
+
+Nothing inside the app can do this job: recovering from a SIGSEGV needs a
+process that is still alive.
+
 ### Headless auto-update
 
 Where the logic lives, and why. The launcher script only does what must work
 when the new app cannot: run the updater with a timeout and ignore its status,
-fall back to `previous` if `current` is not runnable, then `exec` the app.
-Everything that decides anything (check, compare, download, verify, extract,
-swap, rollback) is Dart in `client/lib/update/`, compiled to a standalone
-executable shipped inside the bundle (`dart compile exe`, no display, no
-Flutter), so that
+fall back to `previous` if `current` is not runnable, then run the app under a
+small supervisor. Everything that decides anything (check, compare, download,
+verify, extract, swap, rollback) is Dart in `client/lib/update/`, compiled to a
+standalone executable shipped inside the bundle (`dart compile exe`, no
+display, no Flutter), so that
 
 - it is unit-tested end to end against a fake release server and real
   `tar.gz` packages, instead of untestable shell;
