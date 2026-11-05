@@ -546,9 +546,14 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   release assets by name (`clientPackageName`/`clientChecksumsName`); the
   packaging script and the release workflow must keep producing exactly those
   names. It must never throw to its caller or block the app from starting.
-- The launcher (`client/packaging/linux/playheadtv`) stays minimal and
-  logic-free; decisions belong in the Dart updater. `client/tool/test_launcher.sh`
-  tests it and `install.sh`.
+- The launcher (`client/packaging/linux/playheadtv`) stays minimal: every
+  update decision belongs in the Dart updater, and the script only runs it,
+  falls back to `previous` and *supervises the app* — it runs the app as a
+  child instead of `exec`ing it, so a process killed by a signal (the native
+  video engine can die on a teardown/create race) is reported to the user and
+  restarted a bounded number of times instead of vanishing silently. The
+  AppImage entry point (`packaging/appimage/AppRun`) does the same.
+  `client/tool/test_launcher.sh` tests both and `install.sh`.
 - Pin third-party GitHub Actions by commit SHA (with the version in a comment).
   The backend image has no `latest` tag.
 
