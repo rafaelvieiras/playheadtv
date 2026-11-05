@@ -1,17 +1,29 @@
-name: GUI suites
+name: GUI suites (desktop)
 
 # Runs the Flutter GUI integration suites (client/integration_test) headless in
-# containers, sharded across a matrix (client/tool/run_gui_suites.sh,
-# docs/ARCHITECTURE.md "Headless GUI suites in containers"). Informational for
-# now: a failing shard never fails the workflow (continue-on-error), and a suite
-# that passed only on its retry is reported as FLAKY in the job summary. The
-# regular CI workflow does not depend on this one. It is not triggered by
-# push/PR to save Actions minutes (see the `on:` block).
+# containers on a hosted runner, sharded across a matrix
+# (client/tool/run_gui_suites.sh, docs/ARCHITECTURE.md "Headless GUI suites in
+# containers").
+#
+# This workflow validates the DESKTOP build only. Android is not validated here
+# and cannot be: the Android suites need a headless emulator with /dev/kvm, the
+# Go backend and the media fixture on the same machine, which is the lab in
+# AGENTS.md "Android validation" — it runs on a developer machine, and a physical
+# device is the final gate for what the lab cannot see (hardware decode, jank).
+# A green run here says nothing about Android; a red one says nothing either.
+#
+# A failing shard now fails the workflow. It did not before (`continue-on-error`)
+# while the suites were proving themselves in containers; they have, and a run
+# nobody waits on has no reason to hide its own red.
+#
+# Manual or nightly, never on push/PR: ~15 min per shard would burn Actions
+# minutes on every commit. Two shards a night is about an hour against a private
+# repository's free tier; switch the schedule to weekly (`0 6 * * 1`) or back to
+# four shards in the matrix line if that budget changes.
 on:
-  # Disabled as an automatic trigger to save Actions minutes (~15 min x 4 shards
-  # per run). Run the suites locally (client/tool/run_gui_suites.sh) before a
-  # release; this manual trigger stays available if a hosted run is ever wanted.
   workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *' # 06:00 UTC
 
 permissions:
   contents: read
@@ -22,25 +34,24 @@ concurrency:
 
 jobs:
   gui:
-    name: Shard ${{ matrix.shard }}/4
+    name: Shard ${{ matrix.shard }}/2
     runs-on: ubuntu-24.04
     timeout-minutes: 90
-    continue-on-error: true # non-blocking until the suites prove stable here
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Run the suites
-        run: client/tool/run_gui_suites.sh -j 2 --shard ${{ matrix.shard }}/4 -o "$RUNNER_TEMP/gui-runs"
+        run: client/tool/run_gui_suites.sh -j 2 --shard ${{ matrix.shard }}/2 -o "$RUNNER_TEMP/gui-runs"
 
       - name: Summary
         if: always()
         run: |
           {
-            echo "### GUI suites, shard ${{ matrix.shard }}/4"
+            echo "### GUI suites (desktop), shard ${{ matrix.shard }}/2"
             echo '```'
             cat "$RUNNER_TEMP"/gui-runs/*/summary.tsv 2>/dev/null || true
             echo '```'

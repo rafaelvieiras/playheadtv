@@ -95,6 +95,9 @@ that has not yet seen the new key trusts the leaked one until it updates.
 
 1. Make sure `main` is green in CI. Run the GUI suites that cover what changed
    (`fvm flutter test integration_test/<file>.dart -d linux`, one at a time).
+   CI validates the desktop build; for the Android build run the lab
+   (`client/tool/run_android_suites.sh --changed`, see AGENTS.md "Android
+   validation") and put what changed on the device only when it needs hardware.
 2. If the client now needs a newer backend API, or was verified against a newer
    one, update `minSupportedApiVersion`/`maxSupportedApiVersion` in
    `client/lib/update/compat.dart`. The release notes quote the range.

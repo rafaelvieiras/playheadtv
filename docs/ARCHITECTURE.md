@@ -2256,10 +2256,13 @@ and CI needs no display.
   per suite and attempt are the log, the JSON results, the backend log, an
   optional screen recording (`-r`) and the host kernel's segfault lines when
   readable.
-- `.github/workflows/gui-suites.yml` shards the suites across a matrix. It is
-  informational (`continue-on-error`) and separate from the regular CI. It is manual-only
-  (`workflow_dispatch`), not run on push or pull request, to save Actions minutes;
-  the suites are run locally with `client/tool/run_gui_suites.sh`.
+- `.github/workflows/gui-suites.yml` shards these desktop suites across a matrix
+  on a hosted runner. It is manual or nightly (`workflow_dispatch` and a `schedule`
+  entry), never on push or pull request, to save Actions minutes; the suites are
+  run locally with `client/tool/run_gui_suites.sh`. A failing shard fails the
+  workflow. It validates the desktop build only: the Android suites need the lab
+  in `AGENTS.md` "Android validation" (emulator with `/dev/kvm`, host backend and
+  media), so this workflow says nothing about Android.
 - Limits: Docker does not validate real GPU rendering or the texture path,
   hardware decoders, input devices and remotes, window-manager fullscreen and
   focus, audio output, the `org.freedesktop.ScreenSaver` service or the
