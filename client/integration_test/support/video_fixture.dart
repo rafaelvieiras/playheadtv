@@ -57,6 +57,11 @@ class VideoFixture {
 
   Directory? _tempDir;
   List<int>? _videoBytes;
+
+  /// The two halves of a `pair`, served when [start] was asked for one; null
+  /// otherwise, so every existing suite sees exactly the one file it always had.
+  List<int>? _pairVideoBytes;
+  List<int>? _pairAudioBytes;
   HttpServer? _server;
   StreamSubscription<HttpRequest>? _sub;
 
@@ -88,9 +93,18 @@ class VideoFixture {
   /// default to keep their existing reliability.
   /// The clip's bytes: generated here, or fetched from the host's media server
   /// when this build was told where one is.
-  Future<Uint8List> _clipBytes({required int audioTracks, required int clipSeconds}) async {
+  /// [name] and [generate] default to the single clip every suite uses; the pair
+  /// passes its own, so its two files are produced by the same host-side path.
+  Future<Uint8List> _clipBytes({
+    required int audioTracks,
+    required int clipSeconds,
+    String? name,
+    Future<void> Function(File out)? generate,
+  }) async {
+    final fileName = name ?? clipName(audioTracks: audioTracks, clipSeconds: clipSeconds);
+    final make = generate ?? (out) => generateClip(out, audioTracks: audioTracks, clipSeconds: clipSeconds);
     if (mediaBaseUrl.isNotEmpty) {
-      final url = Uri.parse('$mediaBaseUrl${clipName(audioTracks: audioTracks, clipSeconds: clipSeconds)}');
+      final url = Uri.parse('$mediaBaseUrl$fileName');
       final client = HttpClient();
       try {
         final response = await (await client.getUrl(url)).close();
@@ -107,13 +121,24 @@ class VideoFixture {
         client.close(force: true);
       }
     }
-    _tempDir = await Directory.systemTemp.createTemp('playheadtv_it_video_');
-    final file = File('${_tempDir!.path}/${clipName(audioTracks: audioTracks, clipSeconds: clipSeconds)}');
-    await generateClip(file, audioTracks: audioTracks, clipSeconds: clipSeconds);
+    _tempDir ??= await Directory.systemTemp.createTemp('playheadtv_it_video_');
+    final file = File('${_tempDir!.path}/$fileName');
+    await make(file);
     return file.readAsBytes();
   }
 
-  Future<void> start({int audioTracks = 1, int clipSeconds = 8}) async {
+  /// The two urls of a pair (`docs/PLUGINS.md` "Modes"), once [start] was called
+  /// with `pair: true`. The video file carries no audio and the audio file no
+  /// picture, so a merged playback is the only thing that can report both
+  /// ([tests] assert exactly that).
+  Uri get pairVideoUrl => _urlFor(pairVideoName());
+  Uri get pairAudioUrl => _urlFor(pairAudioName());
+
+  Uri _urlFor(String name) => Uri.parse('$baseUrl/Videos/$name?ApiKey=it');
+
+  /// `pair` serves two files instead of one: the video half and the audio half
+  /// of what [audioTracks]/[clipSeconds] would otherwise put in a single file.
+  Future<void> start({int audioTracks = 1, int clipSeconds = 8, bool pair = false}) async {
     assert(audioTracks == 1 || audioTracks == 2, 'only 1 or 2 audio tracks are supported by this fixture');
     // `main()` registers the video engine; the suites boot the app widget
     // directly and never pass through it. On the desktop the plugin's own
@@ -124,6 +149,20 @@ class VideoFixture {
     // platform instead of being overwritten by fvp.
     videoEngine.register();
     _videoBytes = await _clipBytes(audioTracks: audioTracks, clipSeconds: clipSeconds);
+    if (pair) {
+      _pairVideoBytes = await _clipBytes(
+        audioTracks: audioTracks,
+        clipSeconds: clipSeconds,
+        name: pairVideoName(clipSeconds: clipSeconds),
+        generate: (out) => generatePairVideo(out, clipSeconds: clipSeconds),
+      );
+      _pairAudioBytes = await _clipBytes(
+        audioTracks: audioTracks,
+        clipSeconds: clipSeconds,
+        name: pairAudioName(clipSeconds: clipSeconds),
+        generate: (out) => generatePairAudio(out, clipSeconds: clipSeconds),
+      );
+    }
 
     _server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     _sub = _server!.listen(_handleRequest);
@@ -134,7 +173,15 @@ class VideoFixture {
   }
 
   Future<void> _respond(HttpRequest request) async {
-    final bytes = _videoBytes;
+    var bytes = _videoBytes;
+    var contentType = 'video/mp4';
+    // The audio half of a pair: a second file, with no picture in it.
+    if (_pairAudioBytes != null && request.uri.path.contains('pair-audio')) {
+      bytes = _pairAudioBytes;
+      contentType = 'audio/mp4';
+    } else if (_pairVideoBytes != null && request.uri.path.contains('pair-video')) {
+      bytes = _pairVideoBytes;
+    }
     // Like a Jellyfin 12 server with legacy authorization at its default: the
     // key travels as `ApiKey`; the legacy `api_key` is refused.
     final query = request.uri.queryParameters;
@@ -154,7 +201,8 @@ class VideoFixture {
       await request.response.close();
       return;
     }
-    if (bytes == null || !request.uri.path.startsWith('/Videos/')) {
+    final requested = bytes;
+    if (requested == null || !request.uri.path.startsWith('/Videos/')) {
       request.response.statusCode = HttpStatus.notFound;
       await request.response.close();
       return;
@@ -175,7 +223,7 @@ class VideoFixture {
       }
     }
 
-    final total = bytes.length;
+    final total = requested.length;
     final rangeHeader = request.headers.value(HttpHeaders.rangeHeader);
     if (rangeHeader != null) {
       final match = RegExp(r'^bytes=(\d*)-(\d*)$').firstMatch(rangeHeader.trim());
@@ -197,9 +245,9 @@ class VideoFixture {
           await request.response.close();
           return;
         }
-        final chunk = bytes.sublist(start, end + 1);
+        final chunk = requested.sublist(start, end + 1);
         request.response.statusCode = HttpStatus.partialContent;
-        request.response.headers.set(HttpHeaders.contentTypeHeader, 'video/mp4');
+        request.response.headers.set(HttpHeaders.contentTypeHeader, contentType);
         request.response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
         request.response.headers.set(HttpHeaders.contentRangeHeader, 'bytes $start-$end/$total');
         request.response.headers.contentLength = chunk.length;
@@ -210,10 +258,10 @@ class VideoFixture {
     }
 
     request.response.statusCode = HttpStatus.ok;
-    request.response.headers.set(HttpHeaders.contentTypeHeader, 'video/mp4');
+    request.response.headers.set(HttpHeaders.contentTypeHeader, contentType);
     request.response.headers.set(HttpHeaders.acceptRangesHeader, 'bytes');
     request.response.headers.contentLength = total;
-    request.response.add(bytes);
+    request.response.add(requested);
     await request.response.close();
   }
 

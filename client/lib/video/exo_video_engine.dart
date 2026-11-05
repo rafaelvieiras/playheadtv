@@ -13,6 +13,12 @@
 //    control is not reachable), so ExoPlayer's own defaults apply.
 //  * Only one audio track plays at a time.
 //
+// A `pair` (a video url and an audio url, docs/PLUGINS.md "Modes") does not go
+// through this plugin: it opens one media source per player. The app builds that
+// player itself on the Android side and merges the two sources — see
+// `exo_paired_playback.dart` and `PairedVideos.kt` — so this engine does take a
+// pair.
+//
 // Unlike [FvpVideoEngine] there is no native-lifecycle queue: ExoPlayer
 // instances are independent, there is no process-global GL thread to share.
 import 'dart:async';
@@ -21,6 +27,7 @@ import 'package:video_player/video_player.dart';
 
 import '../log/log.dart';
 import 'controller_playback.dart';
+import 'exo_paired_playback.dart';
 import 'language_code.dart';
 import 'video_engine.dart';
 
@@ -31,11 +38,12 @@ class ExoVideoEngine implements VideoEngine {
   @override
   String get decoderSummary => 'platform MediaCodec (hardware when available)';
 
-  // ExoPlayer can merge sources, but the `video_player` plugin this engine sits
-  // on exposes no way to add one, so a pair would play as silent video. The
-  // player therefore never asks a plugin for one here.
+  // The `video_player` plugin cannot add a second source, so the pair is played
+  // by the host's own merged player (`PairedVideos.kt`) instead. That player is
+  // registered by `MainActivity`, which every Android build and every Android
+  // integration suite runs, so the pair is always available here.
   @override
-  bool get supportsPairedAudio => false;
+  bool get supportsPairedAudio => true;
 
   // The plugin registers itself as the `video_player` platform on Android, as
   // long as fvp's `registerWith` was not called (it replaces that platform).
@@ -51,7 +59,9 @@ class ExoVideoEngine implements VideoEngine {
   @override
   VideoPlayback createNetwork(Uri uri, {Uri? audioUri}) {
     if (audioUri != null) {
-      Log.warn('video', 'the exo engine cannot merge a separate audio track; playing the video source alone');
+      // Two addresses, one timeline: MergingMediaSource on the host side, which
+      // a seek moves as one.
+      return ExoPairedPlayback(video: uri, audio: audioUri);
     }
     return _ExoPlayback(
       VideoPlayerController.networkUrl(uri, videoPlayerOptions: _options),

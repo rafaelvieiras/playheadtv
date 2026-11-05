@@ -22,5 +22,8 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+        // A plugin's `pair` answer is two addresses; the `video_player` plugin
+        // opens one per player, so the app builds that player here.
+        PairedVideos(applicationContext, flutterEngine.renderer, flutterEngine.dartExecutor.binaryMessenger)
     }
 }
