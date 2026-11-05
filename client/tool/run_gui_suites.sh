@@ -5,7 +5,7 @@
 #
 #   client/tool/run_gui_suites.sh                      all suites, 2 in parallel
 #   client/tool/run_gui_suites.sh -j 3 epg_window_test osd_test
-#   client/tool/run_gui_suites.sh --shard 1/4          every 4th suite (CI matrix)
+#   client/tool/run_gui_suites.sh --shard 1/2          every 2nd suite (CI matrix)
 #
 # Options:
 #   -j N          suites in parallel (default 2; keep it modest, see Limits)
