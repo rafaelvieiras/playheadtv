@@ -74,6 +74,13 @@ sdk_paths() {
 # A usable emulator needs /dev/kvm: without it qemu falls back to TCG and a cold
 # boot takes tens of minutes, which is worse than no device at all. Say so once,
 # with the fix, instead of hanging in the boot wait.
+# The backend and the media server keep fixed ports: the address is compiled into
+# the app with --dart-define, and a reused build with an old define fails as
+# "connection refused" on a port no log announces. A busy port is a stop with the
+# owner named, never a silently different number.
+LAB_BACKEND_PORT=${ANDROID_LAB_BACKEND_PORT:-18100}
+LAB_MEDIA_PORT=${ANDROID_LAB_MEDIA_PORT:-18101}
+
 want_port() { # port what
   local owner
   (exec 3<>/dev/tcp/127.0.0.1/"$1") 2>/dev/null || return 0
