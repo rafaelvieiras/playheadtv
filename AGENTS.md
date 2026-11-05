@@ -635,15 +635,20 @@ device, driven by scripts that end in a file an agent or a human can read.
   passed three suites has to say how it picked those three. The rule behind the
   map is err wide, and say why — a suite that is not selected is a suite that did
   not run; intend wrongly and the run prints the file it could not place.
-- `client/tool/android_lab.sh` — the pieces, usable on their own: `avd up`
-  (`--profile tv|phone`, `--cold|--warm`, `--wipe`) prints the serial, `avd down`,
-  `grab` for a screenshot plus the accessibility tree at any moment, `device` for
-  what the target claims to be, `run` for a single suite, `verdict` to (re)build
-  the verdict of an existing attempt directory.
+- `client/tool/android_lab.sh` — what belongs to this project: the host backend,
+  the media the suites play, the evidence a failing attempt leaves behind (`run`
+  for a single suite, `verdict` to (re)build a verdict from an attempt directory).
+- The device layer is not here. Booting, taming, leasing, pressing, the widget
+  tree, the screenshot and the golden diff live in the shared kit at
+  `~/ai-workspace/scripts/android-lab` (`ANDROID_LAB_BIN`, or `lab` on PATH), so
+  the next Android project uses the same one. `avd up|down`, `profiles`, `device`,
+  `grab` and `lease` remain in this repository because the suites script and the
+  habit of the repo already call them; each one passes straight through to
+  `lab up|down|profiles|status|evidence|lease` and prints what the kit prints.
 - Profiles: `tv` is Android TV, 1920x1080 @ 320dpi, 2 GB of RAM — a 1080p
   set-top box, so a layout that only survives with a desktop's RAM fails here.
-  `phone` is the AVD's own geometry. Images are overridable with
-  `ANDROID_LAB_IMAGE_TV` / `ANDROID_LAB_IMAGE_PHONE`.
+  `phone` is the AVD's own geometry. `lab profiles` prints them; images are
+  overridable with `ANDROID_LAB_IMAGE_TV` / `ANDROID_LAB_IMAGE_PHONE`.
 - The emulator needs `/dev/kvm`. Without it the lab stops with the fix instead of
   booting for half an hour in software: `sudo modprobe kvm_amd` and persist it in
   `/etc/modules-load.d/`.

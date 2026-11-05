@@ -4,17 +4,22 @@
 # screen. See AGENTS.md "Android validation" for the contract and for why the
 # suites run here instead of on a developer's phone or set-top box.
 #
-#   tool/android_lab.sh profiles
-#   tool/android_lab.sh avd create [--profile tv|phone]
 #   tool/android_lab.sh avd up [--profile tv|phone] [--port 5554] [--cold|--warm] [--wipe]
-#   tool/android_lab.sh avd list
 #   tool/android_lab.sh avd down <serial>|--all
-#   tool/android_lab.sh device <serial>
-#   tool/android_lab.sh grab <serial> [-o DIR]
 #   tool/android_lab.sh run <suite> --serial <serial> [-o DIR] [-t SECS] [--no-backend] [--no-retry] [-r]
 #   tool/android_lab.sh run <suite> --profile tv [...]      (boots one, kills it after)
 #   tool/android_lab.sh verdict <attempt-dir>
-#   tool/android_lab.sh lease <serial> [--wait SECS]
+#
+# The device layer is not here. Booting, taming, leasing, pressing, the widget
+# tree, the screenshot and the golden diff belong to the shared kit at
+# ~/ai-workspace/scripts/android-lab (ANDROID_LAB_BIN), so the next Android
+# project uses the same one and only one script knows how an emulator is driven.
+# What is left here is what belongs to this project: the host backend, the media
+# the suites play, the evidence a failing suite leaves behind, and the verdict.
+#
+# `avd up|down` stay because tool/run_android_suites.sh calls them; they pass
+# through to `lab up|down`, as do `profiles`, `device`, `grab` and `lease`
+# (`lab profiles|status|evidence|lease`).
 #
 # Profiles:
 #   tv     Android TV, 1920x1080 @ 320dpi, 2 GB RAM: the geometry and the memory
@@ -35,8 +40,10 @@ ROOT=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 CLIENT=${CLIENT:-$ROOT/client}
 SDK=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}
 STATE=${ANDROID_LAB_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/android-lab}
-IMAGE_TV=${ANDROID_LAB_IMAGE_TV:-system-images;android-36;android-tv;x86_64}
-IMAGE_PHONE=${ANDROID_LAB_IMAGE_PHONE:-system-images;android-33;google_apis;x86_64}
+# The device layer — boot, tame, lease, press, screenshot, the widget tree — lives
+# in the shared kit, so the next Android project uses the same one. Point
+# ANDROID_LAB_BIN at it, or have `lab` on PATH.
+LAB=${ANDROID_LAB_BIN:-$(command -v lab 2>/dev/null || echo "${ANDROID_LAB_HOME:-$HOME/ai-workspace/scripts/android-lab}/lab")}
 TMO=900; OUT=; SERIAL=; PROFILE=; PORT=5554; COLD=1; WIPE=0; RETRY=1; BACKEND=1; MEDIA=1; WATCH=1; FRAME_UI=0
 RECORD=0; WAIT=0; LEASE_WAIT=0; PKG=io.github.rafaelvieiras.playheadtv.client
 FLAKE_RE='Unable to start the app|Error waiting for a debug connection|did not complete|Test process is no longer needed|stalled|device offline'
@@ -53,6 +60,7 @@ if [ -z "${LAB_SELF_COPY:-}" ]; then
 fi
 
 die() { echo "android_lab: $*" >&2; exit 2; }
+[ -x "$LAB" ] || die "the shared kit is not at $LAB; set ANDROID_LAB_BIN to its lab script"
 note() { echo "android_lab: $*" >&2; }
 
 sdk_paths() {
@@ -66,192 +74,6 @@ sdk_paths() {
 # A usable emulator needs /dev/kvm: without it qemu falls back to TCG and a cold
 # boot takes tens of minutes, which is worse than no device at all. Say so once,
 # with the fix, instead of hanging in the boot wait.
-require_accel() {
-  if [ ! -e /dev/kvm ]; then
-    die "/dev/kvm is missing: the emulator would run without acceleration.
-  Load the module once:  sudo modprobe kvm_amd && echo kvm_amd | sudo tee /etc/modules-load.d/kvm-amd.conf
-  Check:                 $EMU -accel-check"
-  fi
-}
-
-avd_name() { echo "lab-$1"; }
-profile_image() {
-  case $1 in
-    tv) echo "$IMAGE_TV" ;;
-    phone) echo "$IMAGE_PHONE" ;;
-    *) die "unknown profile '$1' (tv|phone)" ;;
-  esac
-}
-profile_device() {
-  case $1 in
-    tv) echo tv_1080p ;;
-    phone) echo pixel_5 ;;
-  esac
-}
-profile_ram() { case $1 in tv) echo 2048 ;; phone) echo 3072 ;; esac; }
-
-# `avdmanager` writes its own hardware profile; the lab's keys are applied over
-# it. Each key is replaced, not appended twice: config.ini is read key by key and
-# a duplicate is at best ambiguous.
-set_ini() { # file key value
-  local f=$1 k=$2 v=$3
-  sed -i "/^${k//./\\.}=/d" "$f"
-  printf '%s=%s\n' "$k" "$v" >>"$f"
-}
-
-# The AVD is a disposable lab artifact: if it points at an image the profile no
-# longer selects, rebuild it instead of running yesterday's system.
-ensure_avd() {
-  local profile=$1 name img cfg dir
-  name=$(avd_name "$profile"); img=$(profile_image "$profile")
-  dir=$HOME/.android/avd/$name.avd; cfg=$dir/config.ini
-  if [ -f "$cfg" ] && ! grep -qF "${img//;/\/}" "$cfg"; then
-    note "the $name AVD is on another image; recreating it"
-    "$AVDMANAGER" delete avd -n "$name" >/dev/null 2>&1
-    rm -f "$STATE/$name/boot-snapshot"
-  fi
-  if [ ! -f "$cfg" ]; then
-    if [ ! -f "$SDK/${img//;//}/system.img" ]; then
-      note "image $img is not installed; downloading it (that can take a few minutes)"
-      yes | "$SDKMANAGER" "$img" >&2 || die "could not install $img"
-    fi
-    echo no | "$AVDMANAGER" create avd -n "$name" -k "$img" -d "$(profile_device "$profile")" --force >&2 ||
-      die "could not create the $name AVD"
-    # Hardware the lab needs and hardware it must not pretend to have: no
-    # camera or GPS (flaky services cost boot time), keyboard on (a D-pad is
-    # not enough to type into the few text fields the app has), and RAM at the
-    # target device's size so a memory-hungry layout fails here, not on the box.
-    set_ini "$cfg" hw.keyboard yes
-    set_ini "$cfg" hw.mainKeys no
-    set_ini "$cfg" hw.audioInput no
-    set_ini "$cfg" hw.gps no
-    set_ini "$cfg" hw.camera.back none
-    set_ini "$cfg" hw.camera.front none
-    set_ini "$cfg" hw.ramSize "$(profile_ram "$profile")"
-    set_ini "$cfg" disk.dataPartition.size 4G
-    set_ini "$cfg" hw.gpu.enabled yes
-    set_ini "$cfg" hw.gpu.mode swiftshader_indirect
-    set_ini "$cfg" showDeviceFrame no
-  fi
-  mkdir -p "$STATE/$name"
-  echo "$name"
-}
-
-# The adb transport flaps while the system comes up: `wait-for-device` says the
-# device is there, and the `shell` right after it can still answer "device
-# offline" and exit 1. Retry instead of calling a finished boot a failure, and
-# give up when the emulator process itself is gone (a crash, not a slow boot).
-# A restored snapshot brings the guest clock back with it, and a production image
-# refuses `adb root`, so the clock cannot be set from here: after a warm boot the
-# device can be minutes behind the host. Suites that ask "what is on now" (a guide
-# window, a schedule that starts three seconds ago, the OSD clock) then read a
-# window that has already passed and fail for a reason that has nothing to do
-# with the app. Hence a cold boot by default, and this check to name the cause
-# when `--warm` was asked for anyway.
-check_clock() { # serial
-  local serial=$1 guest host skew
-  guest=$("$ADB" -s "$serial" shell date +%s 2>/dev/null | tr -d '\r')
-  case $guest in ''|*[!0-9]*) return 0;; esac
-  host=$(date +%s); skew=$((host - guest))
-  [ "$skew" -le 5 ] && [ "$skew" -ge -5 ] && return 0
-  note "the guest clock is ${skew}s off the host: suites about schedules will read a stale window (boot cold, without --warm)"
-}
-
-wait_boot() { # serial timeout-seconds [emulator-pid] [emulator-log]
-  local serial=$1 deadline=$(($(date +%s) + ${2:-600})) i seen=0
-  while [ "$(date +%s)" -lt "$deadline" ]; do
-    if timeout 300 "$ADB" -s "$serial" shell 'while [ "$(getprop sys.boot_completed)" != 1 ]; do sleep 1; done' >/dev/null 2>&1; then
-      # boot_completed is set before the package manager is ready to answer.
-      for i in $(seq 1 60); do
-        "$ADB" -s "$serial" shell pm list packages >/dev/null 2>&1 && return 0
-        sleep 1
-      done
-    fi
-    # The device is listed before it can answer, and can drop out later (a
-    # crashed emulator), so only a disappearance after it was seen is fatal.
-    if "$ADB" devices | grep -q "^$serial[[:space:]]"; then
-      seen=1
-    elif [ "$seen" = 1 ]; then
-      return 1
-    elif [ -n "${3:-}" ] && ! kill -0 "$3" 2>/dev/null; then
-      # A device that never appeared because the emulator refused to start: say
-      # why now instead of waiting out the whole deadline.
-      [ -n "${4:-}" ] && tail -3 "$4" >&2
-      return 1
-    fi
-    sleep 2
-  done
-  return 1
-}
-
-# Determinism: an animation that is still running when the harness pumps makes a
-# golden differ run to run, and a screen that sleeps mid-suite kills the app.
-tame_device() {
-  local serial=$1 profile=$2
-  [ "$profile" = tv ] && "$ADB" -s "$serial" shell 'wm size 1920x1080; wm density 320' >/dev/null 2>&1
-  "$ADB" -s "$serial" shell '
-    settings put global window_animation_scale 0
-    settings put global transition_animation_scale 0
-    settings put global animator_duration_scale 0
-    settings put global stay_on_while_plugged_in 3
-    settings put system screen_off_timeout 2147483647
-    settings put secure immersive_mode_confirmations confirmed
-    svc power stayon true
-    input keyevent KEYCODE_WAKEUP
-    wm dismiss-keyguard
-  ' >/dev/null 2>&1
-}
-
-boot() {
-  local profile=$1 port=$2 cold=$3 wipe=$4 name serial marker
-  name=$(ensure_avd "$profile"); serial=emulator-$port; marker=$STATE/$name/boot-snapshot
-  if "$ADB" devices | grep -q "^$serial[[:space:]]"; then
-    # The emulator needs the port and its AVD lock, and it starts before the old
-    # instance has finished dying: "Another emulator instance is running".
-    note "$serial is busy; stopping the instance that holds it"
-    "$ADB" -s "$serial" emu kill >/dev/null 2>&1
-    local i
-    for i in $(seq 1 40); do
-      "$ADB" devices | grep -q "^$serial[[:space:]]" || break
-      sleep 0.5
-    done
-    "$ADB" devices | grep -q "^$serial[[:space:]]" && pkill -f -- "-avd $name " >/dev/null 2>&1
-    sleep 1
-  fi
-  local args=(-avd "$name" -port "$port" -no-window -no-audio -no-boot-anim
-              -gpu swiftshader_indirect -netdelay none -netspeed full -no-metrics)
-  if [ "$cold" = 1 ] || [ ! -f "$marker" ]; then
-    args+=(-no-snapshot-load -no-snapshot-save)
-  else
-    # A saved boot snapshot is the difference between a ~10 s and a ~60 s start,
-    # which is what makes a suite-per-change loop usable.
-    args+=(-snapshot "$(cat "$marker")" -no-snapshot-save)
-  fi
-  [ "$wipe" = 1 ] && args+=(-wipe-data)
-  note "booting $name on $serial"
-  setsid "$EMU" "${args[@]}" >"$STATE/$name/emulator-$port.log" 2>&1 9>&- &
-  local emu_pid=$!
-  if ! wait_boot "$serial" 600 "$emu_pid" "$STATE/$name/emulator-$port.log"; then
-    note "the emulator did not come up; see $STATE/$name/emulator-$port.log"
-    "$ADB" -s "$serial" emu kill >/dev/null 2>&1
-    die "the emulator did not boot"
-  fi
-  tame_device "$serial" "$profile"
-  check_clock "$serial"
-  if [ "$cold" = 1 ] || [ ! -f "$marker" ]; then
-    "$ADB" -s "$serial" emu avd snapshot save lab >/dev/null 2>&1 && echo lab >"$marker"
-  fi
-  echo "$serial"
-}
-
-# Fixed ports, not whichever one happens to be free. The URL is compiled into the
-# app with --dart-define, so a build Flutter reuses from an earlier suite keeps
-# the old URL and then dies with "connection refused" on a port that no log ever
-# announced — a stale build reads as a product bug. A busy port is a stop with the
-# owner named, never a silently different number.
-LAB_BACKEND_PORT=${ANDROID_LAB_BACKEND_PORT:-18100}
-LAB_MEDIA_PORT=${ANDROID_LAB_MEDIA_PORT:-18101}
-
 want_port() { # port what
   local owner
   (exec 3<>/dev/tcp/127.0.0.1/"$1") 2>/dev/null || return 0
@@ -259,12 +81,12 @@ want_port() { # port what
   die "port $1 is busy${owner:+ ($owner)} and $2 needs it; stop that process or set ANDROID_LAB_BACKEND_PORT / ANDROID_LAB_MEDIA_PORT"
 }
 
-lockfile() { echo "$STATE/lease-${1//[^a-zA-Z0-9]/_}.lock"; }
-
-# A physical device is shared with a human, so a run takes a lease on it and a
-# second run is told to wait instead of fighting for the screen.
-take_lease() {
-  local serial=$1 wait=$2 lf; lf=$(lockfile "$serial"); mkdir -p "$STATE"
+# A device is shared with a human and with other runs, so whoever drives it takes
+# the same lease the shared kit takes: one file, one convention. The kit names the
+# file (lock-path) and this script holds it for as long as it drives the device.
+take_lease() { # serial wait-seconds
+  local serial=$1 wait=$2 lf
+  lf=$("$LAB" lock-path "$serial") || die "the kit could not name the lease for $serial"
   exec 9>"$lf"
   if [ "$wait" = 0 ]; then
     flock -n 9 || { echo "BLOCKED(busy) $serial is leased by another run" >&2; exit 3; }
@@ -462,31 +284,35 @@ attempt() {
   return $rc
 }
 
-cmd_profiles() {
-  printf '%-6s %-46s %-12s %s\n' PROFILE IMAGE DEVICE RAM
-  printf '%-6s %-46s %-12s %s\n' tv "$IMAGE_TV" "$(profile_device tv)" "$(profile_ram tv)MB"
-  printf '%-6s %-46s %-12s %s\n' phone "$IMAGE_PHONE" "$(profile_device phone)" "$(profile_ram phone)MB"
+# Booting, inspecting and grabbing belong to the shared kit. These verbs stay
+# because tool/run_android_suites.sh and the habit of this repo already call
+# them; each one passes the question straight through.
+boot_device() { # profile port cold wipe -> the serial on stdout
+  local p=${1:-tv} n=${2:-5554} c=${3:-1} w=${4:-0} out args=(up)
+  args+=(--profile "$p" --port "$n")
+  [ "$c" = 1 ] && args+=(--cold) || args+=(--warm)
+  [ "$w" = 1 ] && args+=(--wipe)
+  out=$("$LAB" "${args[@]}") || return 2
+  # The kit answers in JSON, one object per call: the serial is a field, so it is
+  # read out of the answer rather than printed by it.
+  if printf '%s' "$out" | sed -n 's/.*"serial": *"\([^"]*\)".*/\1/p' | head -1 | grep .; then
+    return 0
+  fi
+  printf '%s\n' "$out" >&2
+  die "the kit booted nothing it could name"
 }
 
+cmd_profiles() { exec "$LAB" profiles; }
+cmd_device() { exec "$LAB" status; }
+cmd_grab() { exec "$LAB" evidence "$@"; }
+
 cmd_avd() {
-  local sub=${1:-list}; shift || true
+  local sub=${1:-up}; shift || true
   case $sub in
-    create)
-      # Creates or refreshes the AVD without booting it: useful on a machine
-      # that cannot run the emulator yet, and it fails early on a missing image.
-      while [ $# -gt 0 ]; do
-        case $1 in
-          --profile) PROFILE=${2:?}; shift 2;;
-          *) die "unknown option $1";;
-        esac
-      done
-      PROFILE=${PROFILE:-tv}; sdk_paths
-      ensure_avd "$PROFILE"
-      ;;
     up)
       while [ $# -gt 0 ]; do
         case $1 in
-          --profile) PROFILE=${2:?}; shift 2;;
+          --profile|-p) PROFILE=${2:?}; shift 2;;
           --port) PORT=${2:?}; shift 2;;
           --cold) COLD=1; shift;;
           --warm) COLD=0; shift;;
@@ -494,45 +320,17 @@ cmd_avd() {
           *) die "unknown option $1";;
         esac
       done
-      PROFILE=${PROFILE:-tv}; sdk_paths; require_accel
-      boot "$PROFILE" "$PORT" "$COLD" "$WIPE"
+      boot_device "${PROFILE:-tv}" "$PORT" "$COLD" "$WIPE" || exit 2
       ;;
-    list)
-      sdk_paths
-      "$EMU" -list-avds 2>/dev/null | while read -r a; do
-        case $a in lab-*) printf '%s\n' "$a";; esac
-      done
-      "$ADB" devices | awk 'NR>1 && $2=="device" {print "running: " $1}'
-      ;;
-    down)
-      [ $# -gt 0 ] || die "usage: avd down <serial>|--all"
-      sdk_paths
-      if [ "$1" = --all ]; then
-        "$ADB" devices | awk 'NR>1 && $1 ~ /^emulator-/ {print $1}' | while read -r s; do
-          "$ADB" -s "$s" emu kill >/dev/null 2>&1 && echo "killed $s"
-        done
-      else
-        "$ADB" -s "$1" emu kill >/dev/null 2>&1 || die "could not kill $1 (not an emulator?)"
-        echo "killed $1"
-      fi
-      ;;
-    *) die "unknown avd subcommand '$sub'";;
+    down) exec "$LAB" down "$@";;
+    create) die "avd create is gone: 'avd up' creates the AVD and boots it, 'avd up --wipe' starts over";;
+    list) exec "$LAB" status;;
+    *) die "unknown avd subcommand '$sub' (up|down)";;
   esac
 }
 
-cmd_device() {
-  local serial=${1:?serial}; sdk_paths
-  "$ADB" -s "$serial" shell 'getprop ro.product.model; getprop ro.build.version.release;
-    getprop ro.build.version.sdk; getprop ro.product.cpu.abi; wm size; wm density' 2>&1 |
-    tr -d '\r' | paste -sd' '
-  "$ADB" -s "$serial" shell pm list features 2>/dev/null |
-    grep -q android.software.leanback && echo "leanback: yes" || echo "leanback: no"
-}
-
-# Starts the real Go backend on the host, once per run, on a free port, and
-# links it into the device with `adb reverse`: the app and the fixture still see
-# http://127.0.0.1:<port>, which is the address the suite already expects, but
-# the process and its SQLite file live on the host where Go exists.
+# Starts the real Go backend on the host, once per run, on a fixed port, and
+# links it into the device with `adb reverse`.
 start_backend() { # dir tag
   local dir=$1 tag=${2:-run} port
   local bin="$dir/server" db="$dir/db-$tag" log="$dir/$tag-backend.log"
@@ -620,8 +418,7 @@ cmd_run() {
   name=$(basename "$suite")
   if [ -z "$SERIAL" ]; then
     [ -n "$PROFILE" ] || PROFILE=tv
-    require_accel
-    SERIAL=$(boot "$PROFILE" "$PORT" 1 0) || exit 2
+    SERIAL=$(boot_device "$PROFILE" "$PORT" 1 0) || exit 2
     booted=1
   fi
   OUT=${OUT:-$CLIENT/build/android-runs/$(date +%Y%m%d-%H%M%S)}
@@ -686,15 +483,6 @@ cmd_run() {
   case $status in PASS|FLAKY) return 0;; TIMEOUT) return 124;; *) return 1;; esac
 }
 
-cmd_grab() {
-  local serial=${1:?serial}; shift; sdk_paths
-  local out=$CLIENT/build/android-grab/$(date +%Y%m%d-%H%M%S)
-  [ "${1:-}" = -o ] && { out=${2:?}; shift 2; }
-  mkdir -p "$out"; evidence "$serial" "$out"
-  echo "$out"
-  ls -la "$out" | tail -n +2 | awk '{print $5, $9}'
-}
-
 cmd_verdict() {
   local adir=${1:?attempt dir} dir status note sig dur suite rc
   dir=$(dirname "$adir"); suite=$(basename "$dir")
@@ -724,10 +512,7 @@ while [ $# -gt 0 ]; do
     grab) shift; cmd_grab "$@"; exit $?;;
     run) shift; cmd_run "$@"; exit $?;;
     verdict) shift; cmd_verdict "$@"; exit $?;;
-    lease)
-      shift; local_serial=${1:?serial}; shift || true
-      [ "${1:-}" = --wait ] && LEASE_WAIT=${2:?}
-      sdk_paths; take_lease "$local_serial" "$LEASE_WAIT"; exit 0;;
+    lease) shift; exec "$LAB" lease "$@";;
     -h|--help) sed -n '2,/^set -u/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 0;;
     *) die "unknown command '$1' (see --help)";;
   esac
