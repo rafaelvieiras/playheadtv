@@ -645,6 +645,11 @@ device, driven by scripts that end in a file an agent or a human can read.
   `grab` and `lease` remain in this repository because the suites script and the
   habit of the repo already call them; each one passes straight through to
   `lab up|down|profiles|status|evidence|lease` and prints what the kit prints.
+- CI does not validate Android, and it cannot. `.github/workflows/gui-suites.yml`
+  runs the desktop GUI suites on a hosted runner, manual or nightly; the device
+  suites need an emulator with `/dev/kvm` plus the host backend and media, which
+  is this lab, so they run on a developer machine and the physical device is the
+  final gate for what the lab cannot see.
 - Profiles: `tv` is Android TV, 1920x1080 @ 320dpi, 2 GB of RAM — a 1080p
   set-top box, so a layout that only survives with a desktop's RAM fails here.
   `phone` is the AVD's own geometry. `lab profiles` prints them; images are

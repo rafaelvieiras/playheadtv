@@ -1325,8 +1325,8 @@ repo never contains.
       (`client/tool/run_gui_suites.sh`, `client/test/docker/`,
       `.github/workflows/gui-suites.yml`; `docs/ARCHITECTURE.md` "Headless GUI
       suites in containers"). All suites pass in containers and the workflow
-      runs on hosted runners. Left: make the workflow blocking once it has
-      proven stable across several runs.
+      runs on hosted runners. The workflow is blocking and runs manual/nightly;
+      it covers the desktop build only, Android is the lab's job.
 - [ ] Remove the `fvp` `dependency_overrides` git pin
       (`client/pubspec.yaml`) once `wang-bin/fvp#390`/`#391` ship as an
       official pub.dev release.
