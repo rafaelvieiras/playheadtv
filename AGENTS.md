@@ -100,9 +100,12 @@ or LLM, and to every artifact in the repo:
   muxed file can be far below the separated video track (measured: 360p against
   1080p on YouTube's) — but a plugin may still answer one and the player plays it.
   The engine that cannot merge (ExoPlayer on Android) must not prefer `single`:
-  that reads as "cheapest" and costs the channel its resolution. Only `fvp` merges a pair
-  (mdk `setExternalAudio` + `setAudioTracks`, *after* `initialize`); the ExoPlayer
-  seam cannot and does not offer it. A `remux` stream begins where it was asked to and
+  that reads as "cheapest" and costs the channel its resolution. Both engines merge a
+  pair, each in its own way: `fvp` with mdk's `setExternalAudio` + `setAudioTracks`,
+  *after* `initialize` (attaching first is silent), and the Android engine with its own
+  Media3 player, because the `video_player` plugin it sits on opens one source per
+  player (`client/android/app/src/main/kotlin/.../PairedVideos.kt`,
+  `lib/video/exo_paired_playback.dart`). A `remux` stream begins where it was asked to and
   the player must not seek again; a `pair` and a `single` file begin at the item's
   own zero and are seeked by the player — `_entrySource` returns that as
   `startOffset`, which is also what the OSD adds back (`_playbackOffset`).

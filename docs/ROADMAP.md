@@ -1286,6 +1286,22 @@ repo never contains.
       remove it, and edit the settings each plugin declares for its sources. The
       page draws its forms from the plugin's own `config` declaration, so a
       plugin's new setting needs no change here.
+- [x] The pair on Android too: the `video_player` plugin opens one media source
+      per player, so the app builds that player itself on Media3
+      (`MergingMediaSource`) and keeps only the texture from Flutter
+      (`client/android/app/src/main/kotlin/.../PairedVideos.kt`,
+      `lib/video/exo_paired_playback.dart`; channel `playheadtv/paired`). One
+      `seekTo` moves both sources, and the host answers `create` only once the
+      merged timeline is ready, carrying the track lists — so `open` returning is
+      `tracks` being readable. Same limits as the one-source path (no subtitles
+      exposed, no read-ahead tuning) plus none of its own: `selectAudio` addresses
+      the merged `currentTracks`. Proved on the Android lab, not in a unit test:
+      `integration_test/exo_pair_test.dart` plays a pair whose video file has no
+      audio and whose audio file has no picture, so reporting both kinds of track
+      can only mean both were opened, then seeks to 3 s and requires the position
+      to advance past 4.3 s (`client/tool/run_android_suites.sh exo_pair_test`).
+      The two boot suites (`osd_test`, `channel_navigation_test`) still pass with
+      the engine change, which is what says the one-source path did not move.
 - [x] Hide the channels this device cannot play
       (`client/lib/plugin/channel_filter.dart`). `PluginAvailability` computes the
       answer once (one directory read, plus a bounded registry lookup), and
@@ -1301,11 +1317,11 @@ repo never contains.
       desktop app: the picture opens in ~250-350 ms (a remux took 5-13 s), and the
       audio of a tune-in 5874 s into the item correlates 0.96 with that position
       and 0.09 with the file's start — it follows the seek. The Android engine
-      (ExoPlayer) cannot merge one and keeps asking for the `remux`: preferring a
-      source's muxed file there cost the channel its resolution (360p against
-      1080p, seen on a TV). `VideoEngine.supportsPairedAudio` is what decides whether the player
-      offers `pair` at all — the ExoPlayer seam cannot merge and never asks; a
-      pair's `headers` are not forwarded, which the measured CDN URLs do not need.
+      (ExoPlayer) kept asking for the `remux` for a while: preferring a source's
+      muxed file there cost the channel its resolution (360p against 1080p, seen
+      on a TV). `VideoEngine.supportsPairedAudio` is what decides whether the
+      player offers `pair` at all; a pair's `headers` are not forwarded, which the
+      measured CDN URLs do not need.
       The offset rule had to become mode-aware: a `remux` begins at the position
       it was asked for (no client seek, OSD adds `startOffset` back), while a pair
       or a single file is seeked by the player and adds nothing.

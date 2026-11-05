@@ -1919,8 +1919,9 @@ The client talks to the video engine only through `lib/video/video_engine.dart`:
   picture opens in ~300 ms. mdk does not list the external track in
   `getMediaInfo()`, so `tracks` (the overlay, the audio picker) show no audio for
   a pair, which is right for one track. `VideoEngine.supportsPairedAudio` decides
-  whether the player offers `pair` at all (`pluginPlaybackModes`); the ExoPlayer
-  seam cannot merge one and reports false.
+  whether the player offers `pair` at all (`pluginPlaybackModes`). `ExoVideoEngine`
+  reports true as well, through a player of its own — see "Paired playback on
+  Android" below.
 - Two implementations exist, both in `lib/video/`: `FvpVideoEngine` (libmdk,
   every platform, the default) and `ExoVideoEngine` (ExoPlayer/Media3 through
   `video_player_android`, Android only; see "ExoPlayer engine" below). They share
@@ -1963,6 +1964,40 @@ user:
 - **No GL queue.** The serialization around create/dispose is libmdk's problem
   (process-global GL threads) and stays in `FvpVideoEngine`; ExoPlayer instances
   are independent.
+
+### Paired playback on Android
+
+A `pair` (a video url and an audio url, `docs/PLUGINS.md` "Modes") does not go
+through `video_player_android`: that plugin opens one media source per player, and
+a second player would be a second picture. ExoPlayer itself merges — so the app
+builds that player on the Android side and takes only the texture from Flutter.
+
+- **The seam is the same.** `ExoPairedPlayback` (`lib/video/exo_paired_playback.dart`)
+  implements `VideoPlayback`; `ExoVideoEngine.createNetwork(uri, audioUri: ...)`
+  returns it, and `supportsPairedAudio` is true. Nothing above `lib/video/` knows
+  the pair is handled differently.
+- **One timeline.** The host merges the two sources with
+  `MergingMediaSource` (`client/android/app/src/main/kotlin/.../PairedVideos.kt`,
+  channel `playheadtv/paired`), so a single `seekTo` moves both — which is what a
+  tune-in in the middle of an item needs: the audio of that point, not of the
+  file's start.
+- **Open means open.** The host answers `create` only once the merged timeline is
+  ready, and the answer carries the track lists, so a caller reading `tracks`
+  right after an `open` that returned does not depend on a later message. State
+  then arrives as samples every 200 ms and at every change; the position still
+  passes through `PlayheadClock` (see "A playing position that keeps time").
+- **Same limits as the one-source path**, and one more: `media3`'s load control
+  is not reachable, so `tune` is a no-op, and subtitles are not exposed (an audio
+  track list is: `selectAudio` addresses `currentTracks` the way the app already
+  addresses tracks).
+- **Audio focus** is not requested (`handleAudioFocus = false`), for the same
+  reason the one-source path passes `mixWithOthers`: the crossfade fades two
+  players itself.
+- **Proved on a device, not in a unit test.** `integration_test/exo_pair_test.dart`
+  plays a pair whose two files carry one track each (the video file has no audio,
+  the audio file no picture), so a playback that reports both kinds of track can
+  only have opened both; it also seeks and requires the position to advance from
+  there. On the lab: `client/tool/run_android_suites.sh exo_pair_test`.
 
 The playback surface stays a single, never-rebuilt widget per playback (see the
 GL-texture gotcha in AGENTS.md): `buildView()` is called once per

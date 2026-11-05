@@ -375,9 +375,17 @@ start_media() { # log-dir
   local logdir=$1 dir=$STATE/media port i dartbin
   MEDIA_URL=
   mkdir -p "$dir" "$logdir"
-  dartbin=$(command -v dart || true)
-  [ -n "$dartbin" ] || dartbin=$(dirname "$(command -v flutter)")/dart
-  [ -x "$dartbin" ] || { note "no dart binary found next to flutter"; return 1; }
+  # The generator has to run with the SDK this project uses: a different Dart
+  # rebuilds the build hooks with its own hash and dies with "Invalid SDK hash",
+  # which reads like a broken checkout. The project's own SDK (fvm) wins, then
+  # the one next to `flutter`.
+  dartbin=
+  for candidate in "$CLIENT/.fvm/flutter_sdk/bin/dart" \
+      "$(dirname "$(command -v flutter 2>/dev/null || echo /nonexistent)")/dart" \
+      "$(command -v dart 2>/dev/null || echo /nonexistent)"; do
+    if [ -x "$candidate" ]; then dartbin=$candidate; break; fi
+  done
+  [ -n "$dartbin" ] || { note "no dart binary found (looked in .fvm, next to flutter, and on PATH)"; return 1; }
   ( cd "$CLIENT" && "$dartbin" run tool/gen_it_media.dart "$dir" ) >"$logdir/gen-media.log" 2>&1 ||
     { note "fixture media generation failed: $(tail -2 "$logdir/gen-media.log")"; return 1; }
   port=$LAB_MEDIA_PORT; want_port "$port" "the fixture media server"

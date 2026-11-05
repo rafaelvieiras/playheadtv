@@ -28,9 +28,10 @@ void main(List<String> args) async {
   final audio = RegExp(r'audioTracks:\s*(\d+)');
   final seconds = RegExp(r'clipSeconds:\s*(\d+)');
   final call = RegExp(r'\.start\(([^)]*)\)');
+  // name -> [audioTracks, clipSeconds, wantsPair]
   final variants = <String, List<int>>{
     // The shape a suite gets when it calls start() with no arguments.
-    clipName(): [1, 8],
+    clipName(): [1, 8, 0],
   };
   for (final f in Directory('${clientDir.path}/integration_test').listSync().whereType<File>()) {
     if (!f.path.endsWith('.dart')) continue;
@@ -38,7 +39,13 @@ void main(List<String> args) async {
       final a = m.group(1)!;
       final tracks = int.tryParse(audio.firstMatch(a)?.group(1) ?? '') ?? 1;
       final secs = int.tryParse(seconds.firstMatch(a)?.group(1) ?? '') ?? 8;
-      variants[clipName(audioTracks: tracks, clipSeconds: secs)] = [tracks, secs];
+      final pair = RegExp(r'pair:\s*true').hasMatch(a) ? 1 : 0;
+      variants[clipName(audioTracks: tracks, clipSeconds: secs)] = [tracks, secs, pair];
+      if (pair == 1) {
+        // A pair needs its two halves as well: the video file and the audio file.
+        variants[pairVideoName(clipSeconds: secs)] = [tracks, secs, 0];
+        variants[pairAudioName(clipSeconds: secs)] = [tracks, secs, 0];
+      }
     }
   }
 
@@ -51,7 +58,13 @@ void main(List<String> args) async {
       continue;
     }
     final started = DateTime.now();
-    await generateClip(file, audioTracks: shape[0], clipSeconds: shape[1]);
+    if (name.startsWith('pair-video-')) {
+      await generatePairVideo(file, clipSeconds: shape[1]);
+    } else if (name.startsWith('pair-audio-')) {
+      await generatePairAudio(file, clipSeconds: shape[1]);
+    } else {
+      await generateClip(file, audioTracks: shape[0], clipSeconds: shape[1]);
+    }
     final kb = (file.lengthSync() / 1024).round();
     stdout.writeln('write  $name  ${kb}kB  ${DateTime.now().difference(started).inMilliseconds}ms');
   }
