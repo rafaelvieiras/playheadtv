@@ -1343,6 +1343,25 @@ repo never contains.
       suites in containers"). All suites pass in containers and the workflow
       runs on hosted runners. The workflow is blocking and runs manual/nightly;
       it covers the desktop build only, Android is the lab's job.
+- [ ] Native crash in the video engine on a teardown/create race (desktop,
+      reproduced 2026-11-05). `libmdk` segfaults while one controller is being
+      disposed and another is created: caught under `gdb` on `io.flutter.rast`
+      (a dangling node whose memory had already been reused — it read a Dart
+      string) and on `mdk.read@...` (a garbage pointer), both inside
+      `libmdk.so.0`, with the app exiting on `SIGSEGV` and nothing able to
+      report it. Triggers: channel -> mosaic -> channel, and quick channel
+      switching. Measured on the desktop stress (6 cycles of fast switching per
+      attempt): 1 crash in 3 attempts on the pinned `fvp`, 3 in 6 with a 50 ms
+      drain after every dispose, 1 in 6 with the CUDA decoder disabled, and 1 in
+      5 on `fvp` 0.39.1 — which already carries the upstream `#400` "drain
+      callbacks before deleting player API" fix, the same class of bug. Blocked
+      upstream in two ways: the remaining race is in `libmdk` itself, and `fvp`
+      0.39.x pulls the mdk 0.40.0 nightly whose `libmdk` lost `$ORIGIN` in its
+      RUNPATH (`$:$/lib:...`), so a bundle built with it only starts with
+      `LD_LIBRARY_PATH` set — which is why the dependency bump was reverted.
+      What the repo does meanwhile: the launcher supervises the app, so a signal
+      death is reported to the user and the app comes back
+      (`docs/ARCHITECTURE.md` "Crash supervision").
 - [ ] Remove the `fvp` `dependency_overrides` git pin
       (`client/pubspec.yaml`) once `wang-bin/fvp#390`/`#391` ship as an
       official pub.dev release.

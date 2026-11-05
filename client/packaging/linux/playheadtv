@@ -8,11 +8,21 @@
 # starting: it is bounded by a timeout and its status is ignored. If the
 # updater is missing or broken, the installed version just starts.
 #
+# The app itself then runs under a small supervisor. A process killed by a
+# signal (SIGSEGV in the native video engine is the known one) leaves nothing
+# behind to report it: no dialog, no log line, no exception. So the launcher
+# stays alive as its parent, says what happened and starts it again, a bounded
+# number of times. A normal exit — the user quitting — is passed straight
+# through and never restarted. Decisions about *updates* still belong in the
+# Dart updater; this is only the parent a crash needs.
+#
 # Environment:
 #   PLAYHEADTV_UPDATE_TIMEOUT  seconds the update step may take (default 150)
 #   PLAYHEADTV_AUTO_UPDATE=0   skip the update check (config.json auto_update
 #                              does the same); rollback still happens
 #   PLAYHEADTV_CONFIG          config file (default <root>/config.json)
+#   PLAYHEADTV_CRASH_RESTARTS  restarts after a crash before giving up (3)
+#   PLAYHEADTV_CRASH_DELAY     seconds between a crash and the restart (3)
 
 SELF=$(readlink -f "$0" 2>/dev/null || echo "$0")
 ROOT=$(cd "$(dirname "$SELF")" && pwd -P)
@@ -46,4 +56,30 @@ if [ ! -x "$APP" ]; then
     echo "playheadtv: no installed version found under $ROOT" >&2
     exit 1
 fi
-exec "$APP" "$@"
+
+# A crash must be visible and recoverable, and only a parent can do either:
+# the process that dies cannot. Restarting is bounded so a crash that repeats
+# every few seconds cannot turn into an invisible loop.
+restarts=0
+while :; do
+    "$APP" "$@"
+    status=$?
+    [ "$status" -eq 0 ] && exit 0
+    signal=$((status - 128))
+    if [ "$signal" -le 0 ]; then
+        # A plain non-zero exit is the app's own decision, not a crash.
+        echo "playheadtv: the app exited with status $status" >&2
+        exit "$status"
+    fi
+    restarts=$((restarts + 1))
+    echo "playheadtv: the app was killed by signal $signal (restart $restarts of ${PLAYHEADTV_CRASH_RESTARTS:-3})" >&2
+    if command -v notify-send >/dev/null 2>&1; then
+        notify-send -u critical "Playhead TV" \
+            "The player stopped unexpectedly (signal $signal) and was restarted." 2>/dev/null
+    fi
+    if [ "$restarts" -ge "${PLAYHEADTV_CRASH_RESTARTS:-3}" ]; then
+        echo "playheadtv: giving up after $restarts crashes; see the app log" >&2
+        exit "$status"
+    fi
+    sleep "${PLAYHEADTV_CRASH_DELAY:-3}" 2>/dev/null || true
+done
