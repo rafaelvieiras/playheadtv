@@ -48,3 +48,11 @@ kotlin {
 flutter {
     source = "../.."
 }
+
+dependencies {
+    // The paired player (PairedVideos.kt) builds its own Media3 player: the
+    // `video_player` plugin is what normally carries Media3, and its dependency
+    // is not on this module's compile classpath. Same version the plugin
+    // resolves, so the app never ships two overlapping Media3 trees.
+    implementation("androidx.media3:media3-exoplayer:1.9.2")
+}
