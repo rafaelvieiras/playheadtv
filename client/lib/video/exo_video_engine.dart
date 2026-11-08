@@ -28,6 +28,7 @@ import 'package:video_player/video_player.dart';
 import '../log/log.dart';
 import 'controller_playback.dart';
 import 'exo_paired_playback.dart';
+import 'exo_teardown.dart';
 import 'language_code.dart';
 import 'video_engine.dart';
 
@@ -145,8 +146,9 @@ class _ExoPlayback extends ControllerPlayback {
   @override
   void tune(PlaybackTuning tuning) {}
 
+  // One teardown at a time across the engine: see `exo_teardown.dart`.
   @override
-  Future<void> dispose() => controller.dispose();
+  Future<void> dispose() => serializeExoTeardown(controller.dispose);
 }
 
 String? _nonEmpty(String? value) => (value == null || value.trim().isEmpty) ? null : value;
