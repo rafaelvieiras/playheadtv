@@ -15,6 +15,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 
 import '../log/log.dart';
+import 'exo_teardown.dart';
 import 'language_code.dart';
 import 'playhead_clock.dart';
 import 'video_engine.dart';
@@ -193,18 +194,22 @@ class ExoPairedPlayback implements VideoPlayback {
   Widget buildView() => Texture(key: ValueKey<int>(_textureId), textureId: _textureId);
 
   @override
-  Future<void> dispose() async {
-    if (_disposed) return;
+  Future<void> dispose() {
+    if (_disposed) return Future<void>.value();
     _disposed = true;
     final handle = _handle;
     _handle = null;
-    if (handle == null) return;
+    if (handle == null) return Future<void>.value();
     _open.remove(handle);
-    try {
-      await _channel.invokeMethod<void>('dispose', {'handle': handle});
-    } catch (e) {
-      Log.warn('exo', 'could not release the paired player', error: e);
-    }
+    // The merged player holds two decoders, so its release is the one that
+    // hurts most to run beside another: same FIFO as the plain player.
+    return serializeExoTeardown(() async {
+      try {
+        await _channel.invokeMethod<void>('dispose', {'handle': handle});
+      } catch (e) {
+        Log.warn('exo', 'could not release the paired player', error: e);
+      }
+    });
   }
 
   /// One state sample from the host: 200ms apart, and at every state change.
