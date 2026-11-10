@@ -27,8 +27,14 @@ class RecordedRequest {
   int? status;
   RecordedRequest(this.method, this.path, this.query, {this.ifNoneMatch});
 
+  // The status travels with the request: "the app asked and the answer was 401"
+  // and "the app asked and the answer was 200 but the entry stayed unresolved"
+  // point at completely different bugs, and a request list without it cannot
+  // tell them apart (that cost a device run on 2026-11-10).
   @override
-  String toString() => '$method $path${query.isEmpty ? '' : '?${Uri(queryParameters: query).query}'}';
+  String toString() =>
+      '$method $path${query.isEmpty ? '' : '?${Uri(queryParameters: query).query}'}'
+      '${status == null ? '' : ' -> $status'}';
 }
 
 class RequestProxy {
