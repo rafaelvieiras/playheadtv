@@ -9,7 +9,9 @@
 import 'package:client/ui/form_factor.dart';
 import 'package:client/ui/osd_metrics.dart';
 import 'package:client/ui/ui_scale.dart';
+import 'package:client/widgets/mosaic_frame.dart';
 import 'package:client/widgets/osd_overlay.dart';
+import 'package:client/widgets/phone_mosaic_view.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -82,6 +84,48 @@ void main() {
         await tester.pump();
         expect(tester.takeException(), isNull);
         await expectLater(find.byType(MaterialApp), matchesGoldenFile('goldens/phone_osd_$name.png'));
+        await tester.pumpWidget(const SizedBox());
+      });
+    }
+  });
+
+  group('phone mosaic goldens', () {
+    // Slice 6: the mosaic is a column on a phone, not the television's ring.
+    // Four channels plus Settings is enough to show the card and the rows.
+    for (final (name, size) in [('360x780', const Size(360, 780)), ('780x360', const Size(780, 360))]) {
+      testWidgets('phone_mosaic_$name', (tester) async {
+        tester.view.physicalSize = size;
+        tester.view.devicePixelRatio = 1.0;
+        addTearDown(tester.view.reset);
+        final tiles = [
+          const MosaicTileSpec.channel(key: Key('mosaic-tile-c0'), number: 1, name: 'One', nowTitle: 'A Film'),
+          for (var i = 2; i <= 4; i++)
+            MosaicTileSpec.channel(key: Key('mosaic-tile-c$i'), number: i, name: 'Channel $i', nowTitle: 'On now $i'),
+          const MosaicTileSpec.settings(),
+        ];
+        final focusNodes = [for (var i = 0; i < tiles.length; i++) FocusNode()];
+        addTearDown(() {
+          for (final n in focusNodes) {
+            n.dispose();
+          }
+        });
+        await tester.pumpWidget(
+          app(
+            Scaffold(
+              backgroundColor: Colors.black,
+              body: PhoneMosaicView(
+                tiles: tiles,
+                focusNodes: focusNodes,
+                focusedIndex: 1,
+                featuredBackground: const ColoredBox(color: Color(0xFF223344)),
+                onSelect: (_) {},
+              ),
+            ),
+          ),
+        );
+        await tester.pump();
+        expect(tester.takeException(), isNull);
+        await expectLater(find.byType(MaterialApp), matchesGoldenFile('goldens/phone_mosaic_$name.png'));
         await tester.pumpWidget(const SizedBox());
       });
     }

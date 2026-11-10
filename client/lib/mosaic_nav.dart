@@ -59,6 +59,34 @@ Rect mosaicTileGridRect(int tile) {
   return Rect.fromLTWH(slot.col.toDouble(), slot.row.toDouble(), 1, 1);
 }
 
+/// How the mosaic arranges its tiles, and therefore how an arrow walks them.
+///
+/// [ring] is the television's 4x4 frame around the featured block; [list] is the
+/// phone's single column (`widgets/phone_mosaic_view.dart`), where Up and Down
+/// walk one row and Left and Right mean nothing. The arrow keys stay the same
+/// keys on both; only the geometry changes, which is why this is one entry point
+/// and not two.
+enum MosaicLayoutMode { ring, list }
+
+/// The tile [direction] moves to, in whichever arrangement [mode] describes.
+int mosaicMove({
+  required MosaicLayoutMode mode,
+  required int tileCount,
+  required int focused,
+  required MosaicDirection direction,
+  int? returnTo,
+}) {
+  if (mode == MosaicLayoutMode.ring) {
+    return mosaicNavigate(tileCount: tileCount, focused: focused, direction: direction, returnTo: returnTo);
+  }
+  if (tileCount <= 0 || focused < 0 || focused >= tileCount) return focused;
+  return switch (direction) {
+    MosaicDirection.up => focused > 0 ? focused - 1 : focused,
+    MosaicDirection.down => focused < tileCount - 1 ? focused + 1 : focused,
+    MosaicDirection.left || MosaicDirection.right => focused,
+  };
+}
+
 /// The tile that gets the focus when [direction] is pressed on [focused], or
 /// [focused] itself when nothing lies that way. [tileCount] tiles exist
 /// (indices 0..tileCount-1).

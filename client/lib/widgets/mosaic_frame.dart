@@ -25,14 +25,20 @@ class MosaicTileSpec {
   final String name;
   final String? artUrl;
 
-  const MosaicTileSpec.channel({required this.key, required this.number, required this.name, this.artUrl})
+  /// What the channel is showing now, when the caller knows it: the phone's
+  /// column shows it under the name (the frame has no room and no need).
+  final String? nowTitle;
+
+  const MosaicTileSpec.channel({required this.key, required this.number, required this.name, this.artUrl,
+      this.nowTitle})
       : isSettings = false;
   const MosaicTileSpec.settings()
       : key = const Key('mosaic-tile-settings'),
         isSettings = true,
         number = 0,
         name = '',
-        artUrl = null;
+        artUrl = null,
+        nowTitle = null;
 }
 
 class MosaicFrameView extends StatelessWidget {
