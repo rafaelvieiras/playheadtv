@@ -49,3 +49,7 @@ Thumbs.db
 # Local agent tooling: task logs, worktrees and scratch state, never part of the project
 .claude/
 .pi/
+
+# Kotlin/Gradle build cache (generated)
+client/android/.kotlin/
+client/android/.gradle/
