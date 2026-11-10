@@ -257,8 +257,18 @@ or LLM, and to every artifact in the repo:
   window of any size stays `tv`, which is what keeps every existing desktop suite
   and golden meaningful. Pages then pick a **metrics object** per family, never
   `if (isPhone)`. Touch is additive on a phone — it never removes a key path —
-  and `context.uiTouch(px)` applies Material's 48 dp floor after the scale. Plan:
-  `docs/PHONE_UI_PLAN.md`; design: `docs/ARCHITECTURE.md` "Client form factors".
+  and `context.uiTouch(px, min: m.minTapTarget)` applies Material's 48 dp floor
+  after the scale (floor 0 on a television, so no television pixel moves). The
+  television flag comes from `UiModeManager` **or** the store's own television
+  features, and the size guard is only a fallback (500 dp): the lab's TV emulator
+  is 960x540 dp logical and declares a touchscreen, so size or touch alone
+  misclassifies it. Plan: `docs/PHONE_UI_PLAN.md`; design:
+  `docs/ARCHITECTURE.md` "Client form factors".
+
+- The channel OSD's design units live in `OsdMetrics`
+  (`lib/ui/osd_metrics.dart`), one const object per layout family; `OsdMetrics.tv`
+  must stay the literals the widget always used (the `osd_*.png` goldens prove
+  it), and a phone-only change never gates on anything but those fields.
 - A page-level wrapper that only catches Back (`Focus(onKeyEvent:)`,
   `KeyboardListener`) is non-focusable (`canRequestFocus: false,
   skipTraversal: true`), else it takes traversal focus past the last row

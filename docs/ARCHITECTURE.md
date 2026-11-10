@@ -2316,6 +2316,20 @@ seam, deliberately with no visual change.
   `ClientFormFactorHost` sits above `UiScaleHost` in `MaterialApp.builder`, both
   passing the Navigator through as `child:`, so a page below never rebuilds when
   either value changes.
+- **Per-screen metrics instead of per-page branching.** The channel OSD reads
+  `OsdMetrics` (`lib/ui/osd_metrics.dart`): 57 design units per family, with
+  `OsdMetrics.tv` equal to the literals the widget used before the phone existed
+  — the `osd_*.png` goldens match byte for byte, which is what makes the
+  television claim falsifiable. The phone drops the transport row (five buttons
+  disabled in every build) and the recent-channel strip, and applies
+  `context.uiTouch(px, min: m.minTapTarget)` — floor 0 on a television, so no
+  television pixel moves, and 48 dp on a phone. Measured on the phone metrics: the
+  panel takes 18.5% of the height in portrait (360x780) and 40.2% in landscape
+  (780x360), the smallest glyph drawn is 12.9 dp (the television's 11 px chip
+  resolved to 6.6 dp at the old 0.6 scale), and every control is a 48 dp box.
+  Tests: `client/test/phone_layout_golden_test.dart` (goldens in
+  `client/test/goldens/phone_*.png`, deliberately a separate file from the
+  frozen television ones).
 - **Scale per family.** `autoUiScale` uses a 420 dp reference and a 0.85-1.3
   range for a phone (stock Material sizes; the 1080p reference would put every
   phone on the 0.6 floor and shrink body text to ~9.6 sp). `maxFitUiScale` uses
