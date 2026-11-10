@@ -63,7 +63,13 @@ client/lib/dimmer.dart client/lib/widgets/dimmer*	dimmer_test
 client/lib/watermark.dart client/lib/widgets/watermark_overlay.dart	watermark_test
 
 # --- mosaic -------------------------------------------------------------------
-client/lib/mosaic_layout.dart client/lib/mosaic_nav.dart client/lib/widgets/mosaic_frame.dart client/lib/pages/mosaic_page.dart	mosaic_test mosaic_nav_scale_test epg_live_nav_test
+client/lib/mosaic_layout.dart client/lib/mosaic_nav.dart client/lib/mosaic_tiles.dart client/lib/widgets/mosaic_frame.dart client/lib/widgets/phone_mosaic_view.dart client/lib/pages/mosaic_page.dart	mosaic_test mosaic_nav_scale_test epg_live_nav_test phone_layout_test phone_touch_test
+
+# --- the two layout families --------------------------------------------------
+client/lib/ui/*	BOOT phone_layout_test phone_touch_test osd_test mosaic_test epg_layout_test
+client/lib/widgets/player_gestures.dart	phone_touch_test osd_test
+client/lib/services/system_bars.dart	fullscreen_test focus_lifecycle_test phone_layout_test
+client/lib/widgets/dimmer_level_dialog.dart	dimmer_test phone_touch_test
 
 # --- settings, logs, updates, cache ------------------------------------------
 client/lib/pages/settings_page.dart client/lib/services/settings_service.dart	settings_navigation_visual_test settings_navigation_pages_visual_test settings_preload_lead_test

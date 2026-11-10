@@ -3360,6 +3360,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
               child: ValueListenableBuilder<bool>(
                 valueListenable: _epgOpenNotifier,
                 builder: (context, epgOpen, _) => PlayerGestureLayer(
+                  key: const Key('player-gestures'),
                   enabled: !epgOpen && !_trackPickerOpenNotifier.value,
                   onTapPicture: _toggleOsdFromTouch,
                   onHorizontalFling: (direction) => unawaited(_switchChannel(direction)),

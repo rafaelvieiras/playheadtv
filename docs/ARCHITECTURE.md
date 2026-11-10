@@ -2330,6 +2330,19 @@ seam, deliberately with no visual change.
   Tests: `client/test/phone_layout_golden_test.dart` (goldens in
   `client/test/goldens/phone_*.png`, deliberately a separate file from the
   frozen television ones).
+- **The lab knows which layout a suite asserts.** `run_android_suites.sh` had
+  one suite list plus `DESKTOP_ONLY`; it now has three sets, because a suite that
+  asserts the ten-foot layout fails on a phone *for the reason it exists* and
+  would read as a regression: `DESKTOP_ONLY` (needs the backend on the same
+  machine), `TV_ONLY` (`mosaic_nav_scale_test`, `epg_layout_test`,
+  `settings_navigation_visual_test`) and `PHONE_ONLY` (`phone_touch_test`,
+  `phone_layout_test`). A general sweep skips the sets that do not match the
+  profile; naming one by hand with the wrong profile is an error, not a
+  four-minute run that ends in a red nobody should act on. `run_gui_suites.sh`
+  keeps the matching `ANDROID_ONLY` for the desktop container.
+  `tool/suite_map.tsv` gained the new files, so `--changed` reaches the phone
+  suites from a change to `client/lib/ui/*`, `player_gestures.dart`,
+  `system_bars.dart`, `dimmer_level_dialog.dart` or the mosaic.
 - **An overlay a finger can open must be an overlay a finger can leave.** Four
   were reachable by tap and operable only by key, which is the one outcome the
   phone work must never ship, and all four are fixed the same way: the tap calls
