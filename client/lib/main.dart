@@ -787,7 +787,7 @@ class _InitialRouteResolverState extends State<_InitialRouteResolver> {
   static Future<void> _resolveFormFactor(Size size) async {
     final started = DateTime.now();
     final identity = await DeviceIdentity.detect()
-        .timeout(const Duration(milliseconds: 250), onTimeout: () => (isTv: false, model: null));
+        .timeout(const Duration(seconds: 2), onTimeout: () => (isTv: false, model: null));
     final formFactor = resolveFormFactor(
       size: size,
       isTelevision: identity.isTv,

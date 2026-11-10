@@ -2288,9 +2288,21 @@ seam, deliberately with no visual change.
   pairing), and whether the platform is a mobile operating system at all. A
   television is always `tv`. A non-mobile platform is always `tv`, whatever the
   window size, which is what keeps every desktop golden and suite (they run at
-  320x180, 640x360, 800x450, 600x1000) on the 10-foot layout. A mobile device is
-  `phone` while its shortest side is under `phoneMaxShortestSide` (600 dp) — a
-  tablet is a big screen, and the 10-foot layout is a defensible answer there.
+  320x180, 640x360, 800x450, 600x1000) on the 10-foot layout.
+- **The television flag has two sources, and the size guard is only a
+  fallback.** `MainActivity` answers `tv` from `UiModeManager.currentModeType`
+  **or** the package features the store itself uses (`FEATURE_LEANBACK`,
+  `FEATURE_TELEVISION`). Size alone cannot decide: measured on the lab's Android
+  TV emulator, the screen is 1920x1080 at density 320, i.e. **960x540 dp** logical,
+  and the image declares `android.hardware.touchscreen`, so both a "small screen"
+  and a "has a touchscreen" test point at a handheld. A first cut that trusted
+  the flag without a second source classified the lab TV as a phone, which
+  `osd_test` caught by asking for the OSD's transport row. `phoneMaxShortestSide`
+  is therefore 500 dp — above every phone (at most 430 dp) and below a 1080p box
+  at 320 dpi — and the boot probe's timeout is 2 s, not 250 ms, because a timeout
+  falls back to `tv` and a phone that times out gets a layout it cannot use. A
+  720p box at 320 dpi is 640x360 dp and cannot be told from a phone by size at
+  all: the flag has to answer, which is why it has two sources.
 - **Resolved once, at boot, before the first page builds**, by
   `_InitialRouteResolverState` (one bounded platform-channel call, 250 ms cap,
   falling back to `tv`). A form factor is never re-derived from a resize: a

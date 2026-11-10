@@ -30,11 +30,22 @@ void main() {
 
     test('the shortest-side boundary is exclusive', () {
       expect(
-        resolveFormFactor(size: const Size(599, 900), isTelevision: false, isMobilePlatform: true),
+        resolveFormFactor(size: const Size(499, 900), isTelevision: false, isMobilePlatform: true),
         ClientFormFactor.phone,
       );
       expect(
-        resolveFormFactor(size: const Size(600, 900), isTelevision: false, isMobilePlatform: true),
+        resolveFormFactor(size: const Size(500, 900), isTelevision: false, isMobilePlatform: true),
+        ClientFormFactor.tv,
+      );
+    });
+
+    test('a 1080p TV box is not a phone even when the flag fails', () {
+      // Measured on the lab's Android TV emulator: 1920x1080 at 320 dpi is
+      // 960x540 dp, and it declares android.hardware.touchscreen, so size and a
+      // touchscreen test both point the wrong way. 540 dp is above the phone
+      // range on purpose.
+      expect(
+        resolveFormFactor(size: const Size(960, 540), isTelevision: false, isMobilePlatform: true),
         ClientFormFactor.tv,
       );
     });

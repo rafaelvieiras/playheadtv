@@ -14,13 +14,17 @@ import 'package:flutter/widgets.dart';
 /// The two layout families the client draws.
 enum ClientFormFactor { tv, phone }
 
-/// The largest shortest side, in logical pixels, that still counts as a phone.
+/// The largest shortest side, in dp, that still counts as a phone.
 ///
 /// Only ever consulted on a mobile platform that is not reporting a television.
-/// A 720p TV box has a shortest side of 720 and must stay [ClientFormFactor.tv],
-/// which is what keeps every existing TV suite and golden meaningful — they run
-/// against windows as small as 320x180 and expect the 10-foot layout.
-const double phoneMaxShortestSide = 600;
+/// Every phone is at most 430 dp on its shortest side, so 500 leaves a margin
+/// without reaching a set-top box: a 1080p box at 320 dpi is 960x540 dp, and
+/// calling that a phone is the one mistake this number can make (measured on
+/// the lab's TV emulator, which declares a touchscreen and so rules out the
+/// feature test). A 720p box at the same density is 640x360 dp and cannot be
+/// told from a phone by size at all — the television flag has to answer, which
+/// is why it has two sources on the Android side.
+const double phoneMaxShortestSide = 500;
 
 /// The form factor a device is, from the two things a window cannot tell:
 /// whether the platform says it is a television, and whether it is a mobile
