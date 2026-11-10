@@ -67,15 +67,32 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# Suites that only run on Android. The run on this script's platform is the
+# mirror of DESKTOP_ONLY in run_android_suites.sh: a suite whose subject is not
+# present here fails for that reason alone and says nothing about the code.
+# exo_pair_test drives the paired media source, which is a Kotlin/Media3 class
+# behind the `playheadtv/paired` method channel; on any desktop engine `create`
+# throws MissingPluginException.
+ANDROID_ONLY="exo_pair_test"
+is_android_only() { case " $ANDROID_ONLY " in *" $1 "*) return 0;; esac; return 1; }
+
 suites=()
 if [ $# -gt 0 ]; then
   for s in "$@"; do
     s=${s#client/}; s=${s#integration_test/}; s=${s%.dart}
     [ -f "$ROOT/client/integration_test/$s.dart" ] || { echo "no such suite: $s" >&2; exit 2; }
+    if is_android_only "$s"; then
+      echo "$s only runs on Android (see ANDROID_ONLY in this script); run it with run_android_suites.sh" >&2
+      exit 2
+    fi
     suites+=("integration_test/$s.dart")
   done
 else
-  for f in "$ROOT"/client/integration_test/*_test.dart; do suites+=("integration_test/$(basename "$f")"); done
+  for f in "$ROOT"/client/integration_test/*_test.dart; do
+    s=$(basename "$f" .dart)
+    if is_android_only "$s"; then echo "skipping $s: Android only"; continue; fi
+    suites+=("integration_test/$s.dart")
+  done
 fi
 if [ -n "$SHARD" ]; then
   i=${SHARD%/*}; n=${SHARD#*/}; picked=()
