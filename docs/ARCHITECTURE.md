@@ -2276,6 +2276,49 @@ client and takes the screen back when it ends), so leaving is part of the app.
   pixels), so a large choice on a small window cannot overflow it; the
   automatic factor needs no cap.
 
+### Client form factors
+
+Design plan for the phone UI: `PHONE_UI_PLAN.md`. What exists today is only the
+seam, deliberately with no visual change.
+
+- **Two layout families, one codebase.** `ClientFormFactor`
+  (`lib/ui/form_factor.dart`) is `tv` or `phone`. `resolveFormFactor` takes three
+  inputs: the window size, whether the platform reports a television (the
+  `playheadtv/device` channel's `tv` flag, already asked once at boot for
+  pairing), and whether the platform is a mobile operating system at all. A
+  television is always `tv`. A non-mobile platform is always `tv`, whatever the
+  window size, which is what keeps every desktop golden and suite (they run at
+  320x180, 640x360, 800x450, 600x1000) on the 10-foot layout. A mobile device is
+  `phone` while its shortest side is under `phoneMaxShortestSide` (600 dp) — a
+  tablet is a big screen, and the 10-foot layout is a defensible answer there.
+- **Resolved once, at boot, before the first page builds**, by
+  `_InitialRouteResolverState` (one bounded platform-channel call, 250 ms cap,
+  falling back to `tv`). A form factor is never re-derived from a resize: a
+  resized desktop window must not change the app's personality, and a flip after
+  the player page is up would rebuild the tree around a live video surface (the
+  GL-texture gotcha). Rotation is safe by construction — it changes width and
+  height, never the shortest side, so the answer does not move.
+  `android:configChanges` already lists `orientation|screenSize`, so the Activity
+  is not recreated and the channel keeps playing.
+- **Provided above the UI scale**, because the scale depends on it:
+  `ClientFormFactorHost` sits above `UiScaleHost` in `MaterialApp.builder`, both
+  passing the Navigator through as `child:`, so a page below never rebuilds when
+  either value changes.
+- **Scale per family.** `autoUiScale` uses a 420 dp reference and a 0.85-1.3
+  range for a phone (stock Material sizes; the 1080p reference would put every
+  phone on the 0.6 floor and shrink body text to ~9.6 sp). `maxFitUiScale` uses
+  the phone panel's own budget (`uiScaleFitHeightPhone`/`uiScaleFitWidthPhone`)
+  — with the television budget, a plain 100% choice on a 360 dp screen was capped
+  *below* the automatic factor, so the cap made it worse instead of preventing an
+  overflow. `context.uiTouch(px)` applies Material's 48 dp minimum after the
+  multiplication, for anything a finger must hit; a television measures nothing,
+  so it keeps the plain `ui(px)`.
+- **Not built yet, per the plan:** the per-screen metrics objects (`OsdMetrics`,
+  `GuideMetrics`), the phone mosaic list view, the touch gesture layer, system
+  bars and safe areas, and touch handlers on the overlays that only answer to a
+  key today (the track picker, the dimmer level dialog, the update banner and the
+  guide cells).
+
 ## Guide performance and start-up
 
 Measured on an Android TV box (a low-end quad-core), where the frame budget is
