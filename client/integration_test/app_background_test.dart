@@ -59,11 +59,19 @@ void main() {
       final binding = tester.binding;
 
       // Losing focus with the window still visible must not stop anything.
-      final beforeInactive = video.videoRequests.length;
+      //
+      // The witness is a path asked for twice, not a request count: the items are
+      // 6 s long, so this 500 ms window can legitimately contain the channel
+      // moving on to its next item, which asks for a NEW path. Counting requests
+      // made the assertion fail for a channel that was behaving correctly (seen
+      // once on the Android lab at 39 s). A reload re-opens a path already asked
+      // for; that is what must not happen.
+      final beforeInactive = List<String>.of(video.videoRequests);
       binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
       await tester.pump(const Duration(milliseconds: 500));
       expect(osdTitle(tester), isNotNull, reason: 'inactive (focus lost, window visible) must keep the channel on air');
-      expect(video.videoRequests.length, beforeInactive, reason: 'inactive must not reload the channel');
+      final reloaded = video.videoRequests.skip(beforeInactive.length).where(beforeInactive.contains).toList();
+      expect(reloaded, isEmpty, reason: 'inactive must not reload the channel, but it re-opened $reloaded');
       binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
       await tester.pump();
 
