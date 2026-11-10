@@ -333,6 +333,13 @@ or LLM, and to every artifact in the repo:
   instead of building the URL by hand, and keep the widget findable by a stable
   key (`epg-channel-name-<id>`, `osd-channel-name`). See
   `docs/ARCHITECTURE.md` "Channel logo".
+- The player hides the system bars (`SystemBarsController`,
+  `lib/services/system_bars.dart`, driven from `initState`/lifecycle/`dispose`
+  only) and, because they are hidden, its own surfaces read
+  `MediaQuery.viewPaddingOf` — never `paddingOf`, which reports zero there. A
+  cutout or gesture handle then cannot eat the OSD clock, the always-on clock or
+  the guide's header. Insets are zero on a television and on the desktop, so a
+  television golden must not move: check that before blaming a font.
 - The player's touch surface is `PlayerGestureLayer`
   (`lib/widgets/player_gestures.dart`): tap = show/hide the OSD, horizontal
   fling = channel, swipe up = guide. It is a `Positioned.fill` child of the
