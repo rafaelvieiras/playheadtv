@@ -238,6 +238,14 @@ or LLM, and to every artifact in the repo:
   `DismissAction` and the dialog never closes (that is how "Clear the offline
   cache?" stayed open on Escape). `popupOwnsBack` is that rule;
   `test/back_key_guard_test.dart` pins both sides of it.
+- The mosaic's tiles and their order are decided in `buildMosaicTiles`
+  (`lib/mosaic_tiles.dart`, pure) and an arrow is `mosaicMove`
+  (`lib/mosaic_nav.dart`): `MosaicLayoutMode.ring` is the television's twelve-cell
+  frame, `list` is the phone's column with every channel and no cap. Don't put
+  either decision back in `MosaicPage`, and don't add a third place that caps the
+  tiles. On a phone the featured card is capped at 40 % of the height, every row
+  is built eagerly (a row that is not built cannot hold focus) and a move scrolls
+  the focused row into view; a tap is Select on that row.
 - The mosaic's featured-tile preview plays whatever the channel is airing, from
   the offline cache: a media-server item as a plain url, and an item behind a
   plugin through the backend's play route, exactly as the player does (the url

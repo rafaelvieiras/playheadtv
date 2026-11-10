@@ -2330,6 +2330,26 @@ seam, deliberately with no visual change.
   Tests: `client/test/phone_layout_golden_test.dart` (goldens in
   `client/test/goldens/phone_*.png`, deliberately a separate file from the
   frozen television ones).
+- **The mosaic becomes a column on a phone, and the two decisions behind it
+  are pure modules.** `buildMosaicTiles` (`lib/mosaic_tiles.dart`) picks the
+  tiles and their order for a `MosaicLayoutMode`: `ring` is the television's
+  frame, capped at its twelve cells with a random fill of the empty ones;
+  `list` is the phone's column, which holds **every** channel because a column
+  has no cells to run out of, keeps the "most recently watched first" order (it
+  means something there) and then falls back to channel number, which is how a
+  viewer finds one. `mosaicMove` (`lib/mosaic_nav.dart`) is the arrow: the same
+  two-dimensional walk in ring mode, one row at a time in list mode, where Left
+  and Right mean nothing. `MosaicPage.build` picks a view and nothing else
+  branches. The phone's `PhoneMosaicView`
+  (`lib/widgets/phone_mosaic_view.dart`) draws the featured channel as a 16:9
+  card capped at 40 % of the height — a landscape phone is 360 dp tall and a
+  full-width card would be 438 — with "on now" from the cache under each name.
+  Every row is built eagerly so every row can hold focus, and a move scrolls the
+  focused row into view (`Scrollable.ensureVisible`) instead of hoping traversal
+  does; a tap is the same outcome as Select on that row. The preview rules do not
+  change at all: still one decorative `VideoPlayback`, still
+  `mosaicPluginPreviewDwell` before a plugin resolve, still torn down on
+  `hidden`/`paused`, still never holding the wake lock.
 - **Touch is a layer, not a mode.** `PlayerGestureLayer`
   (`lib/widgets/player_gestures.dart`) is one `Positioned.fill` child of the
   player's Stack: above the video and the watermark, below the OSD, the spinner,

@@ -176,4 +176,40 @@ void main() {
     expect(go(5, 9, right), 9);
     expect(go(0, 0, right), 0);
   });
+
+  group('list mode (a phone column)', () {
+    int list(int count, int from, MosaicDirection d) =>
+        mosaicMove(mode: MosaicLayoutMode.list, tileCount: count, focused: from, direction: d);
+
+    test('down and up walk one row and clamp at both ends', () {
+      expect(list(5, 0, down), 1);
+      expect(list(5, 3, down), 4);
+      expect(list(5, 4, down), 4, reason: 'the last row stays put');
+      expect(list(5, 1, up), 0);
+      expect(list(5, 0, up), 0, reason: 'the first row stays put');
+    });
+
+    test('left and right mean nothing in a column', () {
+      expect(list(5, 2, left), 2);
+      expect(list(5, 2, right), 2);
+    });
+
+    test('an out-of-range focus or an empty list is left alone', () {
+      expect(list(0, 0, down), 0);
+      expect(list(3, 9, down), 9);
+      expect(list(3, -1, up), -1);
+    });
+
+    test('ring mode is exactly the 2-D navigation, not a copy of it', () {
+      for (var from = 0; from < 13; from++) {
+        for (final d in MosaicDirection.values) {
+          expect(
+            mosaicMove(mode: MosaicLayoutMode.ring, tileCount: 13, focused: from, direction: d),
+            go(13, from, d),
+            reason: 'from $from toward $d',
+          );
+        }
+      }
+    });
+  });
 }
