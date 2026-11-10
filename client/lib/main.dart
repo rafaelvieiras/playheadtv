@@ -40,6 +40,7 @@ import 'update/app_update.dart';
 import 'update/compat.dart';
 import 'widgets/update_overlay.dart';
 import 'mosaic_layout.dart' show defaultMosaicSafeMargin;
+import 'ui/form_factor.dart';
 import 'ui/ui_scale.dart';
 import 'playhead_api.dart';
 import 'services/perf_trace.dart';
@@ -53,6 +54,7 @@ import 'input/input_action.dart';
 import 'pages/mosaic_page.dart';
 import 'pages/pairing_page.dart';
 import 'pages/server_url_page.dart';
+import 'services/device_identity.dart';
 import 'services/pairing_boot.dart' show BootRoute, ServerUrlResolver, decideBootRoute;
 import 'util/controller_lifecycle.dart';
 import 'util/open_retry.dart';
@@ -710,8 +712,11 @@ class PlayheadSpikeApp extends StatelessWidget {
       navigatorKey: _appNavigatorKey,
       // The update banner / changelog sit above the Navigator: they never
       // rebuild a page (the Navigator is passed through as a child).
-      builder: (context, child) =>
-          UiScaleHost(child: BackKeyGuard(child: UpdateOverlayHost(child: child ?? const SizedBox.shrink()))),
+      // The form-factor host is ABOVE the UI scale host because the scale
+      // depends on the form factor.
+      builder: (context, child) => ClientFormFactorHost(
+        child: UiScaleHost(child: BackKeyGuard(child: UpdateOverlayHost(child: child ?? const SizedBox.shrink()))),
+      ),
       theme: ThemeData.dark(),
       home: const _InitialRouteResolver(),
     );
@@ -749,6 +754,8 @@ class _InitialRouteResolverState extends State<_InitialRouteResolver> {
   Future<void> _resolve() async {
     final settings = await SettingsService.create();
     if (!mounted) return;
+    await _resolveFormFactor(MediaQuery.sizeOf(context));
+    if (!mounted) return;
     // First-run routing lives in pairing_boot.dart so the decision is pure Dart
     // and unit tested: a complete connection goes straight home, a known server
     // URL goes to quick-connect pairing, otherwise we ask the user to type one.
@@ -770,6 +777,24 @@ class _InitialRouteResolverState extends State<_InitialRouteResolver> {
       return;
     }
     Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => _homePage(settings)));
+  }
+
+  // The layout family for the whole process, decided before any page builds
+  // and never again (lib/ui/form_factor.dart explains why). On Android the
+  // answer needs the platform channel that knows a television from a phone;
+  // the wait is bounded so a wedged channel delays boot by nothing measurable
+  // and falls back to the layout the app has always drawn. No-op elsewhere.
+  static Future<void> _resolveFormFactor(Size size) async {
+    final started = DateTime.now();
+    final identity = await DeviceIdentity.detect()
+        .timeout(const Duration(milliseconds: 250), onTimeout: () => (isTv: false, model: null));
+    final formFactor = resolveFormFactor(
+      size: size,
+      isTelevision: identity.isTv,
+      isMobilePlatform: Platform.isAndroid || Platform.isIOS,
+    );
+    ClientFormFactorState.notifier.value = formFactor;
+    Log.info('boot', 'form factor ${formFactor.name} in ${DateTime.now().difference(started).inMilliseconds}ms');
   }
 
   @override
@@ -3045,7 +3070,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   Rect _videoThumbnailRect(Size screenSize) {
     // The same factor the EPG overlay reads from UiScale (the host resolves it
     // the same way); computed here so the page does not subscribe to it.
-    final k = resolveUiScale(screenSize, override: UiScaleOverride.notifier.value);
+    final k = resolveUiScale(
+      screenSize,
+      override: UiScaleOverride.notifier.value,
+      // Read once, never subscribed: the host resolved the same value.
+      formFactor: ClientFormFactorState.notifier.value,
+    );
     return Rect.fromLTWH(
       screenSize.width - (epgThumbnailMargin + epgThumbnailWidth) * k,
       epgThumbnailMargin * k,
