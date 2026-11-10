@@ -291,6 +291,52 @@ void main() {
     });
   });
 
+  group('preflight (the local half the launcher runs before the app)', () {
+    test('rolls back an unconfirmed update without touching the release server', () async {
+      await publish('1.1.0');
+      await updaterWith().prepare(); // swaps in 1.1.0, pending
+      clock = clock.add(const Duration(seconds: 16)); // the app never confirmed
+      server.offline = true; // any network use would be refused
+      server.latestCalls = 0; // counted from here: the prepare above used it
+
+      final result = await updaterWith().preflight();
+
+      expect(result.rolledBackFrom, '1.1.0');
+      expect(result.inWindow, isFalse);
+      expect(layout.installedVersion, SemVer.tryParse('1.0.0'));
+      expect(UpdateState.read(layout.stateFile).failed, {'1.1.0'});
+      expect(server.latestCalls, 0, reason: 'preflight never checks for a new release');
+    });
+
+    test('reports the confirmation window so the background half stays out of it', () async {
+      await publish('1.1.0');
+      await updaterWith().prepare();
+      clock = clock.add(const Duration(seconds: 5));
+
+      final result = await updaterWith().preflight();
+
+      expect(result.inWindow, isTrue);
+      expect(result.rolledBackFrom, isNull);
+      expect(layout.installedVersion, SemVer.tryParse('1.1.0'));
+    });
+
+    test('does nothing when there is nothing pending', () async {
+      server.offline = true;
+      final result = await updaterWith().preflight();
+      expect(result.inWindow, isFalse);
+      expect(result.rolledBackFrom, isNull);
+      expect(layout.installedVersion, SemVer.tryParse('1.0.0'));
+    });
+
+    test('preflight then prepare still installs a newer release', () async {
+      await publish('1.1.0');
+      await updaterWith().preflight();
+      final result = await updaterWith().prepare();
+      expect(result.outcome, UpdateOutcome.updated);
+      expect(layout.installedVersion, SemVer.tryParse('1.1.0'));
+    });
+  });
+
   group('crash rollback', () {
     test('an update not confirmed within the window is rolled back on the next start', () async {
       await publish('1.1.0');

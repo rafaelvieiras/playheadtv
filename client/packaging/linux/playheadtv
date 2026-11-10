@@ -2,11 +2,15 @@
 # Playhead TV launcher: the one entry point (desktop entry, kiosk session,
 # autostart). It lives at the install root and is never swapped by an update.
 #
-# Before every start it runs the headless updater (rolls back an update that
-# never came up healthy, installs a newer release if there is one), then starts
-# whatever `current` points at. The updater can never keep the app from
-# starting: it is bounded by a timeout and its status is ignored. If the
-# updater is missing or broken, the installed version just starts.
+# Before every start it runs the local half of the updater -- roll back an
+# update that was swapped in and never came up healthy -- and starts whatever
+# `current` points at. The network half (look for a newer release, download,
+# verify, swap) is started right after, in the background: it costs 0.6-1 s and
+# up to its whole budget when the release server is slow, time the picture must
+# not wait for. A swap that finishes mid-session is simply what the next start
+# runs. Neither half can keep the app from starting: both are bounded by a
+# timeout, their status is ignored, and a missing or broken updater just starts
+# the installed version.
 #
 # The app itself then runs under a small supervisor. A process killed by a
 # signal (SIGSEGV in the native video engine is the known one) leaves nothing
@@ -17,7 +21,8 @@
 # Dart updater; this is only the parent a crash needs.
 #
 # Environment:
-#   PLAYHEADTV_UPDATE_TIMEOUT  seconds the update step may take (default 150)
+#   PLAYHEADTV_PREFLIGHT_TIMEOUT  seconds the rollback step may take (20)
+#   PLAYHEADTV_UPDATE_TIMEOUT  seconds the background update may take (150)
 #   PLAYHEADTV_AUTO_UPDATE=0   skip the update check (config.json auto_update
 #                              does the same); rollback still happens
 #   PLAYHEADTV_CONFIG          config file (default <root>/config.json)
@@ -37,14 +42,22 @@ if [ -f "$LOG" ] && [ "$(wc -c <"$LOG" 2>/dev/null || echo 0)" -gt 100000 ]; the
     : >"$LOG"
 fi
 
+# `bounded <seconds> <command...>`: run it with a timeout where the tool
+# exists, and swallow its status -- every caller below starts the app anyway.
+bounded() {
+    seconds=$1
+    shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 "$seconds" "$@"
+    else
+        "$@"
+    fi
+}
+
+# Local half, before the app: rollback only (a rename, no network).
 UPDATER="$ROOT/current/bundle/playheadtv-updater"
 if [ -x "$UPDATER" ]; then
-    if command -v timeout >/dev/null 2>&1; then
-        timeout -k 5 "${PLAYHEADTV_UPDATE_TIMEOUT:-150}" "$UPDATER" prepare --root "$ROOT" >>"$LOG" 2>&1
-    else
-        "$UPDATER" prepare --root "$ROOT" >>"$LOG" 2>&1
-    fi
-    # Deliberately ignored: any outcome still starts the app below.
+    bounded "${PLAYHEADTV_PREFLIGHT_TIMEOUT:-20}" "$UPDATER" preflight --root "$ROOT" >>"$LOG" 2>&1 || true
 fi
 
 APP="$ROOT/current/bundle/client"
@@ -57,6 +70,16 @@ if [ ! -x "$APP" ]; then
     exit 1
 fi
 
+# Network half, once the app is on its way. Its output goes to the same log;
+# stdin is closed so it can never hold the terminal. It is waited for at the
+# end (below): leaving a swap half-done is worse than exiting a moment later.
+UPDATE_PID=
+UPDATER="$ROOT/current/bundle/playheadtv-updater"
+if [ -x "$UPDATER" ]; then
+    bounded "${PLAYHEADTV_UPDATE_TIMEOUT:-150}" "$UPDATER" prepare --root "$ROOT" >>"$LOG" 2>&1 </dev/null &
+    UPDATE_PID=$!
+fi
+
 # A crash must be visible and recoverable, and only a parent can do either:
 # the process that dies cannot. Restarting is bounded so a crash that repeats
 # every few seconds cannot turn into an invisible loop.
@@ -64,12 +87,12 @@ restarts=0
 while :; do
     "$APP" "$@"
     status=$?
-    [ "$status" -eq 0 ] && exit 0
+    [ "$status" -eq 0 ] && break
     signal=$((status - 128))
     if [ "$signal" -le 0 ]; then
         # A plain non-zero exit is the app's own decision, not a crash.
         echo "playheadtv: the app exited with status $status" >&2
-        exit "$status"
+        break
     fi
     restarts=$((restarts + 1))
     echo "playheadtv: the app was killed by signal $signal (restart $restarts of ${PLAYHEADTV_CRASH_RESTARTS:-3})" >&2
@@ -79,7 +102,10 @@ while :; do
     fi
     if [ "$restarts" -ge "${PLAYHEADTV_CRASH_RESTARTS:-3}" ]; then
         echo "playheadtv: giving up after $restarts crashes; see the app log" >&2
-        exit "$status"
+        break
     fi
     sleep "${PLAYHEADTV_CRASH_DELAY:-3}" 2>/dev/null || true
 done
+
+[ -n "$UPDATE_PID" ] && wait "$UPDATE_PID" 2>/dev/null
+exit "$status"
