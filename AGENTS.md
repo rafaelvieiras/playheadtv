@@ -419,6 +419,14 @@ or LLM, and to every artifact in the repo:
   bursty latency from network-backed libraries. A min above the remaining
   length of the 8s integration-test clips stalls their channel load — keep
   it small.
+- The guide's design units live in `GuideMetrics` (`lib/ui/guide_metrics.dart`),
+  one const object per family, never module constants in the overlay:
+  `GuideMetrics.tv` must stay the numbers the overlay has always used (the
+  television goldens prove it). The phone shows 90 minutes in a 72 px channel
+  column, because the grid is proportional — at television numbers a half-hour
+  cell is 24 dp wide on a 360 dp screen. Touch: a tap on a program focuses it and
+  tunes only if it is on air, and a horizontal drag pans the axis (bounded like
+  the arrows, unanimated while the finger is down).
 - The full-screen EPG (`lib/widgets/epg_overlay.dart`) is a `Stack` overlay
   inside the player's own `build()`, gated by `_epgOpenNotifier` — never a
   separate route. This is what lets the active channel's video thumbnail
