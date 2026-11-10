@@ -14,6 +14,7 @@ import 'package:flutter/services.dart';
 import '../input/input_action.dart';
 import '../services/settings_service.dart';
 import '../ui/ui_scale.dart';
+import '../widgets/focus_reveal.dart';
 
 class _ActionGroup {
   final String title;
@@ -195,16 +196,22 @@ class _ControlsMappingPageState extends State<ControlsMappingPage> {
             ),
           ],
         ),
-        body: ListView(
-          children: [
-            for (final group in _groups) ...[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
-                child: Text(group.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-              ),
-              for (final action in group.actions) _buildActionTile(action),
-            ],
-          ],
+        body: FocusReveal(
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                for (final group in _groups) ...[
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 4),
+                    child: Text(group.title, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                  ),
+                  for (final action in group.actions) _buildActionTile(action),
+                ],
+            
+              ],
+            ),
+          ),
         ),
       ),
     );

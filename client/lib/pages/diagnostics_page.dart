@@ -12,6 +12,7 @@ import '../input/input_action.dart';
 import '../log/log.dart';
 import '../services/settings_service.dart';
 import '../ui/ui_scale.dart';
+import '../widgets/focus_reveal.dart';
 import '../update/app_update.dart';
 import '../widgets/app_icons.dart';
 
@@ -76,33 +77,38 @@ class _DiagnosticsPageState extends State<DiagnosticsPage> {
       child: Scaffold(
         key: const Key('diagnostics-page'),
         appBar: AppBar(title: const Text('Diagnostics'), toolbarHeight: context.ui(kToolbarHeight)),
-        body: ListView(
-          children: [
-            ListTile(
-              key: const Key('diagnostics-path-tile'),
-              leading: const Icon(AppIcons.diagnostics),
-              title: const Text('Log file'),
-              subtitle: Text(file?.path ?? 'Not written to a file in this setup', key: const Key('diagnostics-path-value')),
+        body: FocusReveal(
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ListTile(
+                  key: const Key('diagnostics-path-tile'),
+                  leading: const Icon(AppIcons.diagnostics),
+                  title: const Text('Log file'),
+                  subtitle: Text(file?.path ?? 'Not written to a file in this setup', key: const Key('diagnostics-path-value')),
+                ),
+                ListTile(
+                  key: const Key('diagnostics-level-tile'),
+                  autofocus: true,
+                  onTap: _cycleLogLevel,
+                  leading: const Icon(AppIcons.logLevel),
+                  title: const Text('Log level'),
+                  subtitle: Text(logLevelLabel(Log.level, Log.configuredLevel), key: const Key('diagnostics-level-value')),
+                ),
+                ListTile(
+                  key: const Key('diagnostics-bundle-tile'),
+                  leading: const Icon(AppIcons.diagnostics),
+                  title: const Text('Create log bundle'),
+                  subtitle: const Text(
+                    'Gathers the log files into one .txt next to the log. Secrets are redacted; '
+                    'review it before sharing it with a bug report.',
+                  ),
+                  onTap: () => unawaited(_createBundle()),
+                ),
+              ],
             ),
-            ListTile(
-              key: const Key('diagnostics-level-tile'),
-              autofocus: true,
-              onTap: _cycleLogLevel,
-              leading: const Icon(AppIcons.logLevel),
-              title: const Text('Log level'),
-              subtitle: Text(logLevelLabel(Log.level, Log.configuredLevel), key: const Key('diagnostics-level-value')),
-            ),
-            ListTile(
-              key: const Key('diagnostics-bundle-tile'),
-              leading: const Icon(AppIcons.diagnostics),
-              title: const Text('Create log bundle'),
-              subtitle: const Text(
-                'Gathers the log files into one .txt next to the log. Secrets are redacted; '
-                'review it before sharing it with a bug report.',
-              ),
-              onTap: () => unawaited(_createBundle()),
-            ),
-          ],
+          ),
         ),
       ),
     );

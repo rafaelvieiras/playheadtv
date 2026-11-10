@@ -19,6 +19,7 @@ import '../epg_thumbnail.dart';
 import '../preload_lead.dart';
 import '../services/settings_service.dart';
 import '../ui/ui_scale.dart';
+import '../widgets/focus_reveal.dart';
 import '../video/video_engine.dart';
 import '../log/log.dart';
 import 'controls_mapping_page.dart';
@@ -186,173 +187,178 @@ class _SettingsPageState extends State<SettingsPage> {
       child: Scaffold(
         key: const Key('settings-page'),
         appBar: AppBar(title: const Text('Settings'), toolbarHeight: context.ui(kToolbarHeight)),
-        body: ListView(
-          children: [
-            ListTile(
-              key: const Key('settings-connection-tile'),
-              leading: const Icon(Icons.lan),
-              title: const Text('Connection'),
-              subtitle: const Text('Media server and Playhead TV addresses'),
-              onTap: () {
-                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SetupPage()));
-              },
+        body: FocusReveal(
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ListTile(
+                  key: const Key('settings-connection-tile'),
+                  leading: const Icon(Icons.lan),
+                  title: const Text('Connection'),
+                  subtitle: const Text('Media server and Playhead TV addresses'),
+                  onTap: () {
+                    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SetupPage()));
+                  },
+                ),
+                ListTile(
+                  key: const Key('settings-server-tile'),
+                  leading: const Icon(Icons.dns),
+                  title: const Text('Server'),
+                  subtitle: const Text('Change server or pair this device again'),
+                  onTap: () {
+                    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ServerUrlPage()));
+                  },
+                ),
+                ListTile(
+                  key: const Key('settings-controls-tile'),
+                  autofocus: true,
+                  leading: const Icon(AppIcons.controls),
+                  title: const Text('Remap controls'),
+                  onTap: () {
+                    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ControlsMappingPage()));
+                  },
+                ),
+                ListTile(
+                  key: const Key('settings-offline-tile'),
+                  leading: const Icon(AppIcons.offlineCache),
+                  title: const Text('Offline cache'),
+                  onTap: () {
+                    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const OfflineCachePage()));
+                  },
+                ),
+                ListTile(
+                  key: const Key('settings-plugins-tile'),
+                  leading: const Icon(AppIcons.plugin),
+                  title: const Text('Plugins'),
+                  subtitle: const Text('Content sources outside the media server'),
+                  onTap: () {
+                    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PluginsPage()));
+                  },
+                ),
+                // The window is not the app's to resize on Android (always full
+                // screen): no row there.
+                if (_settings != null && FullScreenController.shared.supported)
+                  ListTile(
+                    key: const Key('settings-fullscreen-tile'),
+                    leading: const Icon(AppIcons.fullScreen),
+                    title: const Text('Start in full screen'),
+                    subtitle: Text(
+                      _settings!.startFullScreen(AppConfig.startFullScreenDefault) ? 'On' : 'Off',
+                      key: const Key('settings-fullscreen-value'),
+                    ),
+                    onTap: _toggleFullScreen,
+                  ),
+                if (_settings != null)
+                  ListTile(
+                    key: const Key('settings-ui-scale-tile'),
+                    leading: const Icon(AppIcons.interfaceSize),
+                    title: const Text('Interface size'),
+                    subtitle: Text(
+                      uiScaleLabel(_settings!.uiScaleOverride),
+                      key: const Key('settings-ui-scale-value'),
+                    ),
+                    onTap: _cycleUiScale,
+                  ),
+                if (_settings != null)
+                  ListTile(
+                    key: const Key('settings-preload-lead-tile'),
+                    leading: const Icon(AppIcons.preloadLead),
+                    title: const Text('Preload lead'),
+                    subtitle: Text(
+                      preloadLeadLabel(_settings!.preloadLeadSeconds ?? AppConfig.preloadLeadDefaultSeconds),
+                      key: const Key('settings-preload-lead-value'),
+                    ),
+                    onTap: _cyclePreloadLead,
+                  ),
+                if (_settings != null)
+                  ListTile(
+                    key: const Key('settings-dim-level-tile'),
+                    leading: const Icon(AppIcons.dimmer),
+                    title: const Text('Dim level'),
+                    subtitle: Text(
+                      dimLevelLabel(AppConfig.configuredDimLevel(_settings!)),
+                      key: const Key('settings-dim-level-value'),
+                    ),
+                    onTap: _editDimLevel,
+                  ),
+                if (_settings != null)
+                  ListTile(
+                    key: const Key('settings-clock-tile'),
+                    leading: const Icon(AppIcons.clock),
+                    title: const Text('Always show the clock'),
+                    subtitle: Text(
+                      _settings!.clockAlwaysVisible ? 'On' : 'Off',
+                      key: const Key('settings-clock-value'),
+                    ),
+                    onTap: _toggleClock,
+                  ),
+                // The two looks only matter while the clock is on: no rows when it
+                // is off, so Settings does not offer knobs for something the player
+                // never draws.
+                if (_settings != null && _settings!.clockAlwaysVisible)
+                  ListTile(
+                    key: const Key('settings-clock-opacity-tile'),
+                    leading: const Icon(AppIcons.clock),
+                    title: const Text('Clock opacity'),
+                    subtitle: Text(
+                      clockOpacityLabel(_settings!.clockOpacityPct),
+                      key: const Key('settings-clock-opacity-value'),
+                    ),
+                    onTap: _cycleClockOpacity,
+                  ),
+                if (_settings != null && _settings!.clockAlwaysVisible)
+                  ListTile(
+                    key: const Key('settings-clock-scale-tile'),
+                    leading: const Icon(AppIcons.clock),
+                    title: const Text('Clock size'),
+                    subtitle: Text(
+                      clockScaleLabel(_settings!.clockScale),
+                      key: const Key('settings-clock-scale-value'),
+                    ),
+                    onTap: _cycleClockScale,
+                  ),
+                if (_settings != null)
+                  ListTile(
+                    key: const Key('settings-epg-thumbnail-tile'),
+                    leading: const Icon(AppIcons.epgThumbnail),
+                    title: const Text('Show channel thumbnail in the guide'),
+                    subtitle: Text(
+                      _settings!.epgThumbnail ? 'On' : 'Off',
+                      key: const Key('settings-epg-thumbnail-value'),
+                    ),
+                    onTap: _toggleEpgThumbnail,
+                  ),
+                if (_settings != null && Platform.isAndroid)
+                  ListTile(
+                    key: const Key('settings-video-engine-tile'),
+                    leading: const Icon(AppIcons.videoEngine),
+                    title: const Text('Video player'),
+                    subtitle: Text(
+                      videoEngineLabel(_savedVideoEngine, running: videoEngine),
+                      key: const Key('settings-video-engine-value'),
+                    ),
+                    onTap: _toggleVideoEngine,
+                  ),
+                ListTile(
+                  key: const Key('settings-log-level-tile'),
+                  leading: const Icon(AppIcons.logLevel),
+                  title: const Text('Log level'),
+                  subtitle: Text(logLevelLabel(Log.level, Log.configuredLevel), key: const Key('settings-log-level-value')),
+                  onTap: _cycleLogLevel,
+                ),
+                ListTile(
+                  key: const Key('settings-diagnostics-tile'),
+                  leading: const Icon(AppIcons.diagnostics),
+                  title: const Text('Diagnostics'),
+                  subtitle: const Text('Log file location and a shareable log bundle'),
+                  onTap: () {
+                    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DiagnosticsPage()));
+                  },
+                ),
+              ],
             ),
-            ListTile(
-              key: const Key('settings-server-tile'),
-              leading: const Icon(Icons.dns),
-              title: const Text('Server'),
-              subtitle: const Text('Change server or pair this device again'),
-              onTap: () {
-                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ServerUrlPage()));
-              },
-            ),
-            ListTile(
-              key: const Key('settings-controls-tile'),
-              autofocus: true,
-              leading: const Icon(AppIcons.controls),
-              title: const Text('Remap controls'),
-              onTap: () {
-                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const ControlsMappingPage()));
-              },
-            ),
-            ListTile(
-              key: const Key('settings-offline-tile'),
-              leading: const Icon(AppIcons.offlineCache),
-              title: const Text('Offline cache'),
-              onTap: () {
-                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const OfflineCachePage()));
-              },
-            ),
-            ListTile(
-              key: const Key('settings-plugins-tile'),
-              leading: const Icon(AppIcons.plugin),
-              title: const Text('Plugins'),
-              subtitle: const Text('Content sources outside the media server'),
-              onTap: () {
-                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PluginsPage()));
-              },
-            ),
-            // The window is not the app's to resize on Android (always full
-            // screen): no row there.
-            if (_settings != null && FullScreenController.shared.supported)
-              ListTile(
-                key: const Key('settings-fullscreen-tile'),
-                leading: const Icon(AppIcons.fullScreen),
-                title: const Text('Start in full screen'),
-                subtitle: Text(
-                  _settings!.startFullScreen(AppConfig.startFullScreenDefault) ? 'On' : 'Off',
-                  key: const Key('settings-fullscreen-value'),
-                ),
-                onTap: _toggleFullScreen,
-              ),
-            if (_settings != null)
-              ListTile(
-                key: const Key('settings-ui-scale-tile'),
-                leading: const Icon(AppIcons.interfaceSize),
-                title: const Text('Interface size'),
-                subtitle: Text(
-                  uiScaleLabel(_settings!.uiScaleOverride),
-                  key: const Key('settings-ui-scale-value'),
-                ),
-                onTap: _cycleUiScale,
-              ),
-            if (_settings != null)
-              ListTile(
-                key: const Key('settings-preload-lead-tile'),
-                leading: const Icon(AppIcons.preloadLead),
-                title: const Text('Preload lead'),
-                subtitle: Text(
-                  preloadLeadLabel(_settings!.preloadLeadSeconds ?? AppConfig.preloadLeadDefaultSeconds),
-                  key: const Key('settings-preload-lead-value'),
-                ),
-                onTap: _cyclePreloadLead,
-              ),
-            if (_settings != null)
-              ListTile(
-                key: const Key('settings-dim-level-tile'),
-                leading: const Icon(AppIcons.dimmer),
-                title: const Text('Dim level'),
-                subtitle: Text(
-                  dimLevelLabel(AppConfig.configuredDimLevel(_settings!)),
-                  key: const Key('settings-dim-level-value'),
-                ),
-                onTap: _editDimLevel,
-              ),
-            if (_settings != null)
-              ListTile(
-                key: const Key('settings-clock-tile'),
-                leading: const Icon(AppIcons.clock),
-                title: const Text('Always show the clock'),
-                subtitle: Text(
-                  _settings!.clockAlwaysVisible ? 'On' : 'Off',
-                  key: const Key('settings-clock-value'),
-                ),
-                onTap: _toggleClock,
-              ),
-            // The two looks only matter while the clock is on: no rows when it
-            // is off, so Settings does not offer knobs for something the player
-            // never draws.
-            if (_settings != null && _settings!.clockAlwaysVisible)
-              ListTile(
-                key: const Key('settings-clock-opacity-tile'),
-                leading: const Icon(AppIcons.clock),
-                title: const Text('Clock opacity'),
-                subtitle: Text(
-                  clockOpacityLabel(_settings!.clockOpacityPct),
-                  key: const Key('settings-clock-opacity-value'),
-                ),
-                onTap: _cycleClockOpacity,
-              ),
-            if (_settings != null && _settings!.clockAlwaysVisible)
-              ListTile(
-                key: const Key('settings-clock-scale-tile'),
-                leading: const Icon(AppIcons.clock),
-                title: const Text('Clock size'),
-                subtitle: Text(
-                  clockScaleLabel(_settings!.clockScale),
-                  key: const Key('settings-clock-scale-value'),
-                ),
-                onTap: _cycleClockScale,
-              ),
-            if (_settings != null)
-              ListTile(
-                key: const Key('settings-epg-thumbnail-tile'),
-                leading: const Icon(AppIcons.epgThumbnail),
-                title: const Text('Show channel thumbnail in the guide'),
-                subtitle: Text(
-                  _settings!.epgThumbnail ? 'On' : 'Off',
-                  key: const Key('settings-epg-thumbnail-value'),
-                ),
-                onTap: _toggleEpgThumbnail,
-              ),
-            if (_settings != null && Platform.isAndroid)
-              ListTile(
-                key: const Key('settings-video-engine-tile'),
-                leading: const Icon(AppIcons.videoEngine),
-                title: const Text('Video player'),
-                subtitle: Text(
-                  videoEngineLabel(_savedVideoEngine, running: videoEngine),
-                  key: const Key('settings-video-engine-value'),
-                ),
-                onTap: _toggleVideoEngine,
-              ),
-            ListTile(
-              key: const Key('settings-log-level-tile'),
-              leading: const Icon(AppIcons.logLevel),
-              title: const Text('Log level'),
-              subtitle: Text(logLevelLabel(Log.level, Log.configuredLevel), key: const Key('settings-log-level-value')),
-              onTap: _cycleLogLevel,
-            ),
-            ListTile(
-              key: const Key('settings-diagnostics-tile'),
-              leading: const Icon(AppIcons.diagnostics),
-              title: const Text('Diagnostics'),
-              subtitle: const Text('Log file location and a shareable log bundle'),
-              onTap: () {
-                Navigator.of(context).push(MaterialPageRoute(builder: (_) => const DiagnosticsPage()));
-              },
-            ),
-          ],
+          ),
         ),
       ),
     );

@@ -13,7 +13,7 @@
 #   -r            record the screen of each run (screen.mp4)
 #   -o DIR        artifacts root (default: client/build/gui-runs)
 #   -i IMAGE      image to use (default playheadtv-gui:local; built when absent)
-#   --worktree    snapshot the working tree (tracked files) instead of HEAD
+#   --worktree    snapshot the working tree (tracked files and new ones) instead of HEAD
 #   --shard I/N   run only the suites at positions I, I+N, ... (1-based)
 #   --no-retry    never retry
 #   --prune       remove the cache volumes and exit
@@ -111,7 +111,11 @@ fi
 RUN=$OUTROOT/$(date +%Y%m%d-%H%M%S); mkdir -p "$RUN"
 SNAP=$(mktemp -d)
 if [ $WORKTREE = 1 ]; then
-  (cd "$ROOT" && git ls-files -z backend client | tar --null -T - -cf - 2>/dev/null) | tar -C "$SNAP" -xf -
+  # Tracked files and new ones: a file the tree gained is part of the tree, and
+  # leaving it out turned a working change into "Error: No such file or
+  # directory" from the build, which reads like a product failure at 12 s.
+  (cd "$ROOT" && { git ls-files -z backend client; git ls-files -z --others --exclude-standard backend client; } \
+    | tar --null -T - -cf - 2>/dev/null) | tar -C "$SNAP" -xf -
 else
   git -C "$ROOT" archive HEAD backend client | tar -C "$SNAP" -xf -
 fi
