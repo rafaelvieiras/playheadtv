@@ -1359,6 +1359,19 @@ repo never contains.
       total, with a 120 s budget. `docs/ARCHITECTURE.md` "Client boot".
 - [ ] Measure the boot again with the perf suite (`perf_boot_epg_test`) and a
       cold cache, and record the before/after numbers there.
+- [ ] A boot against a *legacy* backend (one that predates the enriched
+      `/epg`) can end on the loading banner with an empty channel and stay
+      there. Found on the Android lab via `epg_window_test`'s legacy case, which
+      passes on the desktop; the evidence, from the run itself: the app is on
+      the loading banner for the channel, the counting proxy saw `/epg` once and
+      the per-item `GET /catalog-items/{id}` fallback run, the video fixture saw
+      **no request at all**, and the app logged nothing after the boot. That is
+      a channel whose entries stayed unresolved, not a slow one: `unitsOfProgram`
+      drops an entry with no `external_id`, so nothing is playable, and nothing
+      says so. Two things to settle before fixing: why the lookups do not
+      resolve on the device (they do on the desktop, with the same code), and
+      what a channel with nothing playable should do instead of a spinner — a
+      message and a retry, since silence is the current answer.
 - [x] GUI integration suites headless in containers
       (`client/tool/run_gui_suites.sh`, `client/test/docker/`,
       `.github/workflows/gui-suites.yml`; `docs/ARCHITECTURE.md` "Headless GUI
