@@ -1375,19 +1375,27 @@ repo never contains.
       (`client/lib/widgets/focus_reveal.dart`) centres the focused row when it
       takes focus and again after the metrics change, which is the case with no
       focus event to react to. `test/focus_reveal_test.dart` pins both.
-- [ ] A boot against a *legacy* backend (one that predates the enriched
-      `/epg`) can end on the loading banner with an empty channel and stay
-      there. Found on the Android lab via `epg_window_test`'s legacy case, which
-      passes on the desktop; the evidence, from the run itself: the app is on
-      the loading banner for the channel, the counting proxy saw `/epg` once and
-      the per-item `GET /catalog-items/{id}` fallback run, the video fixture saw
-      **no request at all**, and the app logged nothing after the boot. That is
-      a channel whose entries stayed unresolved, not a slow one: `unitsOfProgram`
-      drops an entry with no `external_id`, so nothing is playable, and nothing
-      says so. Two things to settle before fixing: why the lookups do not
-      resolve on the device (they do on the desktop, with the same code), and
-      what a channel with nothing playable should do instead of a spinner — a
-      message and a retry, since silence is the current answer.
+- [x] A cold boot could declare "nothing scheduled in the next 48h" for a
+      channel that was about to play (fixed 2026-11-10). Found on the Android lab
+      with `epg_window_test`'s legacy case, which passes on the desktop; the run
+      that explained it recorded the status of every request, and all fourteen
+      per-item lookups answered 200. The app log was the whole story:
+
+          15:26:22.897 channel load started: channel 33 (generation 0)
+          15:26:27.066 cache exhausted and the backend is unreachable at load
+          15:26:27.067 channel load failed: nothing scheduled in the next 48h
+          15:26:28.528 guide refreshed: updated in 7833ms
+
+      The legacy refresh needs a lookup per catalog item, so it took 7.8 s; the
+      reachability probe (`syncNow()` with a 4 s bound) cut it, the load read an
+      empty cache, reported the channel as unscheduled — a lie — and nothing
+      tried again once the guide arrived 1.5 s later. A load with nothing at all
+      cached for the channel now waits `coldStartSyncBound` (20 s) for the
+      refresh instead of 4 s, which is only ever paid when there is nothing to
+      play. Still open, and a separate decision: a guide that lands *after* any
+      bound leaves the channel on the message, because only a playing channel
+      gets reconciled when a refresh changes what is on air.
+
 - [x] GUI integration suites headless in containers
       (`client/tool/run_gui_suites.sh`, `client/test/docker/`,
       `.github/workflows/gui-suites.yml`; `docs/ARCHITECTURE.md` "Headless GUI
