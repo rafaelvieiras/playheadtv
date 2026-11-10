@@ -81,9 +81,12 @@ class _ClockOverlayState extends State<ClockOverlay> {
     // Always a Positioned child of the player's Stack, in both branches: a bare
     // zero-sized child breaks the video texture's composition (see the EPG's
     // ValueListenableBuilder in main.dart).
+    // Out from under a cutout or a status bar: the player is immersive, so the
+    // bars are hidden (`padding` reads zero) while the notch is still there.
+    final insets = MediaQuery.viewPaddingOf(context);
     return Positioned(
-      top: context.ui(20),
-      right: context.ui(32),
+      top: context.ui(20) + insets.top,
+      right: context.ui(32) + insets.right,
       child: IgnorePointer(
         child: ValueListenableBuilder<bool>(
           valueListenable: ClockOverlaySettings.alwaysVisible,

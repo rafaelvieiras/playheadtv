@@ -458,12 +458,17 @@ class ChannelOsdState extends State<ChannelOsd> {
     final rows = _rows();
     bool has(String i) => rows.any((r) => r.contains(i));
 
+    // The OSD is the surface most exposed to a cutout: its clock sits in the
+    // top-right corner. `viewPadding` and not `padding`, because the player is
+    // immersive — the bars are hidden while the notch and the gesture handle
+    // are still there.
+    final insets = MediaQuery.viewPaddingOf(context);
     return Stack(
       key: const Key('channel-osd'),
       children: [
         Positioned(
-          top: _u(_m.clockTop),
-          right: _u(_m.clockRight),
+          top: _u(_m.clockTop) + insets.top,
+          right: _u(_m.clockRight) + insets.right,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
@@ -486,7 +491,12 @@ class ChannelOsdState extends State<ChannelOsd> {
           right: 0,
           bottom: 0,
           child: Container(
-            padding: EdgeInsets.fromLTRB(_u(_m.panelLeft), _u(_m.panelTop), _u(_m.panelRight), _u(_m.panelBottom)),
+            padding: EdgeInsets.fromLTRB(
+              _u(_m.panelLeft) + insets.left,
+              _u(_m.panelTop),
+              _u(_m.panelRight) + insets.right,
+              _u(_m.panelBottom) + insets.bottom,
+            ),
             decoration: const BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
