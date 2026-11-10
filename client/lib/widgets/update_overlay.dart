@@ -15,6 +15,11 @@
 //      Up / Down (raw arrows)       scroll a long changelog, and ONLY while it
 //                                   scrolls; otherwise they go to the page
 //    The six baseline buttons are all it ever needs.
+//  - Touch: a tap on the banner dismisses it (the same `select()` Select runs),
+//    and a tap on the changelog closes it (the same `close()` Back runs). The
+//    handlers are plain `GestureDetector`s, which create no `FocusNode`, so the
+//    "never takes focus" rule above still holds and a television with a mouse
+//    gains nothing it did not have.
 import 'dart:async';
 
 import 'package:flutter/material.dart';
@@ -165,7 +170,10 @@ class _UpdateOverlayHostState extends State<UpdateOverlayHost> {
       child: Center(
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: context.ui(1100)),
-          child: Material(
+          // No FocusNode here on purpose: the banner still never takes focus.
+          child: GestureDetector(
+            onTap: () => _controller?.select(),
+            child: Material(
             key: const Key('update-banner'),
             color: _panelColor,
             borderRadius: BorderRadius.circular(context.ui(16)),
@@ -187,12 +195,13 @@ class _UpdateOverlayHostState extends State<UpdateOverlayHost> {
                   ),
                   SizedBox(height: context.ui(14)),
                   Text(
-                    'Select: do not show this version again    Back: close',
+                    'Tap or Select: do not show this version again    Back: close',
                     key: Key('update-banner-hint'),
                     style: _hintStyle(context),
                   ),
                 ],
               ),
+            ),
             ),
           ),
         ),
@@ -206,7 +215,9 @@ class _UpdateOverlayHostState extends State<UpdateOverlayHost> {
       child: Center(
         child: ConstrainedBox(
           constraints: BoxConstraints(maxWidth: context.ui(1000), maxHeight: height * 0.75),
-          child: Material(
+          child: GestureDetector(
+            onTap: () => _controller?.close(),
+            child: Material(
             key: const Key('update-changelog'),
             color: _panelColor,
             borderRadius: BorderRadius.circular(context.ui(16)),
@@ -237,13 +248,16 @@ class _UpdateOverlayHostState extends State<UpdateOverlayHost> {
                   ValueListenableBuilder<bool>(
                     valueListenable: _scrollable,
                     builder: (_, scrollable, _) => Text(
-                      scrollable ? 'Up/Down: scroll    Select or Back: close' : 'Select or Back: close',
+                      scrollable
+                          ? 'Up/Down: scroll    Tap, Select or Back: close'
+                          : 'Tap, Select or Back: close',
                       key: const Key('update-changelog-hint'),
                       style: _hintStyle(context),
                     ),
                   ),
                 ],
               ),
+            ),
             ),
           ),
         ),
