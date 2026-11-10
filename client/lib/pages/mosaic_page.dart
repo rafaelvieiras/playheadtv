@@ -85,18 +85,36 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
 
   final FocusNode _pageFocusNode = FocusNode();
 
-  /// Ring on a television and on the desktop, one column on a phone. Resolved
-  /// once, at construction: the form factor is decided at boot and never
-  /// re-derived from a resize (docs/ARCHITECTURE.md "Client form factors").
-  late final MosaicLayoutMode _layoutMode = ClientFormFactorState.notifier.value == ClientFormFactor.phone
-      ? MosaicLayoutMode.list
-      : MosaicLayoutMode.ring;
+  /// Ring on a television and on the desktop, one column on a phone.
+  ///
+  /// Followed, not snapshotted: the form factor is decided at boot, and this page
+  /// can be built before the platform has answered (the probe is asynchronous),
+  /// in which case the default `tv` would leave a phone showing the ring until
+  /// the next start. `_onFormFactorChanged` re-lays the tiles out once the answer
+  /// arrives. It is never re-derived from a resize, which is the rule in
+  /// docs/ARCHITECTURE.md "Client form factors".
+  MosaicLayoutMode _layoutMode = _modeFor(ClientFormFactorState.notifier.value);
+
+  static MosaicLayoutMode _modeFor(ClientFormFactor factor) =>
+      factor == ClientFormFactor.phone ? MosaicLayoutMode.list : MosaicLayoutMode.ring;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    ClientFormFactorState.notifier.addListener(_onFormFactorChanged);
     _bootstrap();
+  }
+
+  // The platform answered (or changed its mind): the tiles of the other family
+  // are a different list, so they are rebuilt, focus included.
+  void _onFormFactorChanged() {
+    final mode = _modeFor(ClientFormFactorState.notifier.value);
+    if (!mounted || mode == _layoutMode) return;
+    _layoutMode = mode;
+    if (_allChannels.isEmpty) return;
+    setState(_resolveTiles);
+    if (_focusNodes.isNotEmpty) _focusNodes[_focusedIndex.clamp(0, _focusNodes.length - 1)].requestFocus();
   }
 
   // The preview plays with audio, so it must stop when the app is hidden or
@@ -222,6 +240,9 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
   // lives in mosaic_tiles.dart. The ring caps at the frame's cells and shuffles
   // the tail; the phone's list holds every channel in number order.
   void _resolveTiles() {
+    for (final node in _focusNodes) {
+      node.dispose();
+    }
     final built = buildMosaicTiles(
       channels: _allChannels,
       recentIds: _settings.recentChannelIds,
@@ -468,6 +489,7 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    ClientFormFactorState.notifier.removeListener(_onFormFactorChanged);
     WidgetsBinding.instance.removeObserver(this);
     final preview = _previewController;
     if (preview != null) unawaited(disposeController(preview));

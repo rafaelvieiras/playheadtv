@@ -73,7 +73,7 @@ done
 # exo_pair_test drives the paired media source, which is a Kotlin/Media3 class
 # behind the `playheadtv/paired` method channel; on any desktop engine `create`
 # throws MissingPluginException.
-ANDROID_ONLY="exo_pair_test"
+ANDROID_ONLY="exo_pair_test phone_touch_test phone_layout_test"
 is_android_only() { case " $ANDROID_ONLY " in *" $1 "*) return 0;; esac; return 1; }
 
 suites=()
