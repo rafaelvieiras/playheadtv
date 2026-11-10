@@ -22,6 +22,7 @@
 // Three real app boots only, on purpose (see AGENTS.md: many boots per file
 // can stall a later one). Every key sent is one of the six baseline buttons
 // (Up/Down/Left/Right/Select/Back = Enter held or tapped, Escape).
+import 'package:client/log/log.dart';
 import 'package:client/main.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -29,6 +30,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'support/app_logging.dart';
 import 'support/backend_fixture.dart';
 import 'support/key_focus.dart';
 import 'support/request_proxy.dart';
@@ -44,6 +46,9 @@ void main() {
     RequestProxy? proxy;
 
     setUpAll(() async {
+      // The app's own account of the boot, on disk, so a suite that times out
+      // says why instead of only that the screen stayed empty.
+      await startSuiteLogging();
       backend = BackendFixture();
       video = VideoFixture();
       await video.start();
@@ -311,7 +316,26 @@ void main() {
       await backend.waitForEpgEntries(channelId, 200);
 
       await boot(tester, on: backend, token: deviceToken, channelId: channelId, legacy: true, workingSetSize: 1);
-      await pumpUntil(tester, () => osdTitle(tester) != null, failMessage: 'never started playing against the legacy backend');
+      // Legacy mode is slower by design: with no enriched fields in `/epg` the
+      // client resolves each item through `GET /catalog-items/{id}` (bounded and
+      // cached, see docs/ARCHITECTURE.md) before the channel can start. The 20 s
+      // default is enough on a desktop and was not on the Android lab, where the
+      // same wait took over 20 s for a channel that was loading correctly.
+      final legacyStart = DateTime.now();
+      try {
+        await pumpUntil(tester, () => osdTitle(tester) != null, timeout: const Duration(seconds: 60));
+      } on TestFailure {
+        // Say what the app did, not only that the screen stayed empty: the
+        // requests tell a slow sync from a channel that was built empty.
+        fail(
+          'never started playing against the legacy backend, '
+          '${DateTime.now().difference(legacyStart).inSeconds}s after the boot\n'
+          'requests:\n  ${describe(proxy!)}\n'
+          'video requests: ${video.videoRequests}\n'
+          'screen text: ${tester.widgetList<Text>(find.byType(Text)).map((t) => t.data).where((d) => d != null).toList()}\n'
+          'app log:\n  ${Log.tail(40).join('\n  ')}',
+        );
+      }
       final p = proxy!;
 
       expect(osdTitle(tester), 'LEGACY A', reason: 'the title came from the per-item fallback');
