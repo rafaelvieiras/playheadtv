@@ -132,9 +132,10 @@ extension UiScaleContext on BuildContext {
   double ui(double px) => px * UiScale.of(this);
 
   /// [px] scaled to this screen, with a floor at Material's minimum touch
-  /// target. A television measures nothing, so a 28 px icon keeping its size
-  /// is fine there; a finger needs 48 dp, and no design unit may go below it.
-  double uiTouch(double px) => math.max(ui(px), kMinInteractiveDimension);
+  /// target. A television measures nothing, so a 28 px icon keeping its size is
+  /// fine there; a finger needs 48 dp, and no design unit may go below it. A
+  /// caller that wants no floor on a television passes `min: 0`.
+  double uiTouch(double px, {double min = kMinInteractiveDimension}) => math.max(ui(px), min);
 }
 
 /// Provides [UiScale] to everything below it. Sits in the MaterialApp builder,
