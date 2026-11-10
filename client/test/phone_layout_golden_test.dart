@@ -111,6 +111,26 @@ void main() {
       });
     }
 
+    testWidgets('a cutout pushes the OSD out of its way', (tester) async {
+      // `viewPadding`, not `padding`: the player is immersive, so the bars are
+      // hidden while the notch and the gesture handle are still there.
+      tester.view.physicalSize = const Size(780, 360);
+      tester.view.devicePixelRatio = 1.0;
+      tester.view.viewPadding = const FakeViewPadding(top: 24, bottom: 12, left: 30, right: 6);
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(app(osd()));
+      await tester.pump();
+      final scale = resolveUiScale(const Size(780, 360), formFactor: ClientFormFactor.phone);
+      final m = OsdMetrics.of(ClientFormFactor.phone);
+      final clock = tester.getRect(find.byKey(const Key('osd-clock')));
+      expect(clock.top, closeTo(m.clockTop * scale + 24, 0.5), reason: 'no clock under the notch');
+      expect(clock.right, closeTo(780 - 6 - m.clockRight * scale, 0.5), reason: 'no clock under the right cutout');
+      final panel = tester.getRect(find.byKey(const Key('osd-progress')));
+      // The gesture handle sits 12 dp off the bottom; the progress bar clears it.
+      expect(panel.bottom, lessThanOrEqualTo(360 - 12 + 0.5));
+      await tester.pumpWidget(const SizedBox());
+    });
+
     testWidgets('every control is a touch target and every glyph is legible', (tester) async {
       tester.view.physicalSize = const Size(360, 780);
       tester.view.devicePixelRatio = 1.0;

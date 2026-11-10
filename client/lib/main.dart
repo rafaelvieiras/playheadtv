@@ -45,6 +45,7 @@ import 'ui/ui_scale.dart';
 import 'playhead_api.dart';
 import 'services/perf_trace.dart';
 import 'services/screen_awake.dart';
+import 'services/system_bars.dart';
 import 'services/settings_service.dart';
 import 'services/app_window.dart';
 import 'services/stream_preferences_service.dart';
@@ -932,6 +933,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // _startChannel/lifecycle/dispose only, never via setState.
   final ScreenAwakeController _screenAwake = ScreenAwakeController();
 
+  // Hides the system bars for as long as this page is on screen (a phone has
+  // them; a set-top box does not). Driven from initState/dispose/lifecycle
+  // only — never from build, and never through setState.
+  final SystemBarsController _systemBars = SystemBarsController();
+
   // Focus mode of the OSD (see widgets/osd_overlay.dart): off while the OSD is
   // just displayed (auto-show), on once the user pressed Select and then an
   // arrow (Select, Select opens the EPG instead). Always turned off when the
@@ -1119,6 +1125,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _systemBars.player = true;
     _osdVisibleNotifier.addListener(() {
       if (!_osdVisibleNotifier.value) {
         _osdFocusNotifier.value = false;
@@ -3008,6 +3015,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   void didChangeAppLifecycleState(AppLifecycleState state) {
     Log.debug('app', 'lifecycle ${state.name}');
     _screenAwake.lifecycle(state);
+    _systemBars.lifecycle(state);
     if (state == AppLifecycleState.hidden || state == AppLifecycleState.paused) {
       _suspendPlayback();
     } else if (state == AppLifecycleState.resumed || state == AppLifecycleState.inactive) {
@@ -3033,6 +3041,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _volumeRampTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     _screenAwake.dispose();
+    _systemBars.dispose();
     _advanceTimer?.cancel();
     _volumeRampTimer?.cancel();
     _osdHideTimer?.cancel();

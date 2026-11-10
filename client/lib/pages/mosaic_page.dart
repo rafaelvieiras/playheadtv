@@ -560,12 +560,17 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
       child: Scaffold(
         key: const Key('mosaic-page'),
         backgroundColor: Colors.black,
-        body: MosaicFrameView(
-          tiles: [for (final t in _tiles) _specFor(t)],
-          focusNodes: _focusNodes,
-          focusedIndex: _focusedIndex,
-          featuredBackground: _featuredBackground(),
-          safeMargin: AppConfig.mosaicSafeMargin,
+        // The mosaic is the one full-bleed screen with no AppBar: it draws its
+        // own black background, so the insets are its job. Zero on a television
+        // and on the desktop, so not a pixel of the mosaic goldens moves.
+        body: SafeArea(
+          child: MosaicFrameView(
+            tiles: [for (final t in _tiles) _specFor(t)],
+            focusNodes: _focusNodes,
+            focusedIndex: _focusedIndex,
+            featuredBackground: _featuredBackground(),
+            safeMargin: AppConfig.mosaicSafeMargin,
+          ),
         ),
       ),
     );

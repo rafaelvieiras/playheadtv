@@ -2346,6 +2346,22 @@ seam, deliberately with no visual change.
   Rejected in the plan, for the record: double-tap to seek (a linear channel has
   no seek, and it collides with tap-to-show-OSD), edge swipes (Android reserves
   them), pull-to-refresh (only the syncer writes the cache).
+- **The player is immersive; the surfaces inside it read `viewPadding`.**
+  `SystemBarsController` (`lib/services/system_bars.dart`) hides the bars with
+  `immersiveSticky` while the player page is on screen and gives them back with
+  `edgeToEdge` when it leaves — from `initState`, `didChangeAppLifecycleState`
+  and `dispose`, never from `build`, and edge-triggered so a rebuild cannot
+  churn the window. It has the same shape as `ScreenAwakeController` (a tiny
+  platform interface, a tested policy, a `@visibleForTesting` override) and is a
+  no-op off a mobile platform. Because the bars are hidden, `padding` reads
+  zero on the player: the OSD panel, the OSD clock, the always-on clock and the
+  guide's body read `MediaQuery.viewPaddingOf` instead, which still reports a
+  cutout and a gesture handle. `android:windowLayoutInDisplayCutoutMode =
+  shortEdges` lets the window use the notch area — a 16:9 picture letterboxes
+  inside it anyway. Every inset is zero on a television and on the desktop, so
+  the frozen goldens do not move; `phone_layout_golden_test.dart` pins a cutout
+  case with a fake `viewPadding` instead. The mosaic is the one full-bleed
+  screen with no AppBar, so it wraps its body in `SafeArea`.
 - **Scale per family.** `autoUiScale` uses a 420 dp reference and a 0.85-1.3
   range for a phone (stock Material sizes; the 1080p reference would put every
   phone on the 0.6 floor and shrink body text to ~9.6 sp). `maxFitUiScale` uses

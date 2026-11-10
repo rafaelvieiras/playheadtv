@@ -1003,10 +1003,18 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
   @override
   Widget build(BuildContext context) {
     final rect = widget.videoThumbnailRect;
+    // A cutout or a system bar over the guide's header would eat its first row.
+    // `viewPadding` and not `padding`: the player is immersive, so the bars are
+    // hidden (`padding` reads zero) while the notch is still there.
+    final insets = MediaQuery.viewPaddingOf(context);
+    final body = Padding(
+      padding: EdgeInsets.only(top: insets.top, left: insets.left, right: insets.right),
+      child: _buildBody(),
+    );
     if (rect == null) {
       // No thumbnail: one opaque layer, the grid gets the whole screen.
       return Stack(key: const Key('epg-overlay'), children: [
-        Positioned.fill(child: Container(color: Colors.black, child: _buildBody())),
+        Positioned.fill(child: Container(color: Colors.black, child: body)),
       ]);
     }
     return Stack(
@@ -1021,7 +1029,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
           right: 0,
           top: rect.bottom,
           bottom: 0,
-          child: _darkBand(child: _buildBody()),
+          child: _darkBand(child: body),
         ),
         // Band to the left of the thumbnail (only its height).
         Positioned(left: 0, top: rect.top, width: rect.left, height: rect.height, child: _darkBand()),
