@@ -1359,6 +1359,18 @@ repo never contains.
       total, with a 120 s budget. `docs/ARCHITECTURE.md` "Client boot".
 - [ ] Measure the boot again with the perf suite (`perf_boot_epg_test`) and a
       cold cache, and record the before/after numbers there.
+- [ ] Focus stops moving in a long list once the window shrinks under a large
+      interface size. Measured by `settings_navigation_visual_test` (desktop
+      container, 2026-11-10): after the window goes from 2560x1440 to 1280x720
+      with "Interface size" at 200%, Up on the focused row does nothing at all
+      (`goTo settings-ui-scale-tile from settings-diagnostics-tile` ... `ended on
+      settings-diagnostics-tile`), so the next Select activates the row that was
+      really focused and the page changes underneath the walk. Settings is a long
+      list and rows outside the viewport are not laid out, so the row above may
+      simply not exist as a focus target; the fix has to keep the focused row in
+      view across a resize (or make the traversal scroll to an unbuilt row). The
+      same walk passes at 800x450 with the same 200% cap, which is the clue that
+      it is the resize, not the size.
 - [ ] A boot against a *legacy* backend (one that predates the enriched
       `/epg`) can end on the loading banner with an empty channel and stay
       there. Found on the Android lab via `epg_window_test`'s legacy case, which
