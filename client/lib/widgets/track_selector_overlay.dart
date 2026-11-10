@@ -21,8 +21,15 @@
 // `singlePanel` shows only `initialPanel` (the OSD's CC and audio buttons each
 // open their own picker); Left/Right then do nothing. The two-panel layout is
 // kept for the optional `trackSelector` accelerator.
+//
+// Touch: a tap on an option picks it (the same `onSelect` Select gives), a tap
+// outside the panel closes the picker (the same `onClose` Back gives), and a
+// phone floors each row at `OsdMetrics.minTapTarget`. The TV keeps its row
+// height exactly, which is what its frozen goldens record.
 import 'package:flutter/material.dart';
 
+import '../ui/form_factor.dart';
+import '../ui/osd_metrics.dart';
 import '../ui/ui_scale.dart';
 
 /// One selectable entry in a panel. `index` is the position in the SAME list
@@ -120,8 +127,27 @@ class TrackSelectorOverlayState extends State<TrackSelectorOverlay> {
     widget.onSelect(_activePanel, options[_focusedIndex]);
   }
 
+  /// A tap on an option: it becomes the active panel's focused one and is
+  /// picked, which is exactly what walking to it and pressing Select does.
+  void tapOption(TrackSelectorPanel panel, int index, List<TrackOption> options) {
+    if (index < 0 || index >= options.length) return;
+    setState(() {
+      _activePanel = panel;
+      if (panel == TrackSelectorPanel.audio) {
+        _focusedAudio = index;
+      } else {
+        _focusedSubtitle = index;
+      }
+    });
+    widget.onSelect(panel, options[index]);
+  }
+
   // Pixels at 1080p scaled to this screen (the shared UiScale).
   double _u(double px) => context.ui(px);
+
+  // The same, floored at a touch target where the family asks for one (0 on a
+  // television, so its rows do not move).
+  double _tap(double px) => context.uiTouch(px, min: OsdMetrics.of(context.formFactor).minTapTarget);
 
   Widget _buildPanel(String title, TrackSelectorPanel panel, List<TrackOption> options, int focusedIndex) {
     final isActive = _activePanel == panel;
@@ -146,9 +172,12 @@ class TrackSelectorOverlayState extends State<TrackSelectorOverlay> {
             )
           else
             for (var i = 0; i < options.length; i++)
-              Container(
+              GestureDetector(
+                onTap: () => tapOption(panel, i, options),
+                child: Container(
                 key: Key('track-option-${panel.name}-${options[i].index}'),
                 width: double.infinity,
+                constraints: BoxConstraints(minHeight: _tap(36)),
                 margin: EdgeInsets.symmetric(vertical: _u(3)),
                 padding: EdgeInsets.symmetric(horizontal: _u(14), vertical: _u(9)),
                 decoration: BoxDecoration(
@@ -159,12 +188,14 @@ class TrackSelectorOverlayState extends State<TrackSelectorOverlay> {
                   ),
                   borderRadius: BorderRadius.circular(_u(6)),
                 ),
+                alignment: Alignment.centerLeft,
                 child: Text(
                   options[i].label,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(color: Colors.white, fontSize: _u(18)),
                 ),
+              ),
               ),
         ],
       ),
@@ -176,7 +207,15 @@ class TrackSelectorOverlayState extends State<TrackSelectorOverlay> {
     return Stack(
       key: const Key('track-selector-overlay'),
       children: [
-        Positioned.fill(child: Container(color: Colors.black.withValues(alpha: 0.75))),
+        // Tapping the dim area closes the picker, the way Back does: on a phone
+        // the only other way out would be the system Back gesture.
+        Positioned.fill(
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onClose,
+            child: Container(color: Colors.black.withValues(alpha: 0.75)),
+          ),
+        ),
         Center(
           child: ConstrainedBox(
             constraints: BoxConstraints(maxWidth: _u(720), maxHeight: _u(560)),

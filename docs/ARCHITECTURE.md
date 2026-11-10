@@ -2330,6 +2330,22 @@ seam, deliberately with no visual change.
   Tests: `client/test/phone_layout_golden_test.dart` (goldens in
   `client/test/goldens/phone_*.png`, deliberately a separate file from the
   frozen television ones).
+- **An overlay a finger can open must be an overlay a finger can leave.** Four
+  were reachable by tap and operable only by key, which is the one outcome the
+  phone work must never ship, and all four are fixed the same way: the tap calls
+  the method the key calls, never a second meaning.
+  `TrackSelectorOverlay` picks an option on tap and closes on a tap outside the
+  panel (the same `onSelect`/`onClose` Select and Back give); its rows are
+  floored at a touch target through `context.uiTouch(px, min: minTapTarget)`, so
+  the television's rows keep the height its frozen golden records.
+  `DimmerLevelDialog` gained `-`/`+` beside the value plus Cancel/Save, inside
+  `ExcludeFocus`: the dialog's own `Focus` owns every key, and a button that
+  could take the focus would swallow Select. Its content is scrollable and the
+  steps sit beside the value, because a 360 dp-tall window overflowed by 99 px
+  with a second button row. `UpdateOverlay`'s banner and changelog are wrapped in
+  plain `GestureDetector`s — no `FocusNode`, so "never takes focus" still holds —
+  and the hint text now says "Tap or Select". The guide's cells got their `onTap`
+  with `GuideMetrics`.
 - **The mosaic becomes a column on a phone, and the two decisions behind it
   are pure modules.** `buildMosaicTiles` (`lib/mosaic_tiles.dart`) picks the
   tiles and their order for a `MosaicLayoutMode`: `ring` is the television's

@@ -9,6 +9,8 @@
 //
 // Six buttons: Up/Down move between the settings, Select changes the focused one
 // (or opens the keyboard for a number/text), Back closes.
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -178,7 +180,12 @@ class _PluginSourceSettingsDialogState extends State<PluginSourceSettingsDialog>
       child: Dialog(
         key: const Key('plugin-source-settings'),
         child: ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: context.ui(720), maxHeight: context.ui(640)),
+          // A phone held sideways is 360 dp tall: 640 scaled would overflow, so
+          // the box also stays inside 90% of the window.
+          constraints: BoxConstraints(
+            maxWidth: context.ui(720),
+            maxHeight: math.min(context.ui(640), MediaQuery.sizeOf(context).height * 0.9),
+          ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
