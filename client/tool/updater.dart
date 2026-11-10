@@ -1,15 +1,18 @@
 // The headless updater, compiled to a standalone executable (`dart compile
 // exe`) and shipped inside every release bundle as `bundle/playheadtv-updater`.
-// The launcher (or the AppImage's AppRun) runs `playheadtv-updater prepare`
-// before every start of the app: it rolls back an unconfirmed update, then
-// installs a newer release if there is one. It prints one line and ALWAYS exits
-// 0 on any outcome that should still start the app; the launcher ignores its
-// status anyway.
+// The launcher (or the AppImage's AppRun) works in two steps so the network is
+// never on the way to the picture:
+//   `preflight` runs before the app — it rolls back an update that was swapped
+//   in and never confirmed itself, which is local file work;
+//   `prepare` runs once the app is starting, in the background — it looks for a
+//   newer release and installs it (0.6-1 s of network, up to the budget).
+// Each prints one line and ALWAYS exits 0 on any outcome that should still start
+// the app; the launcher ignores its status anyway.
 //
 // Usage:
-//   playheadtv-updater prepare [--root <install root>]
+//   playheadtv-updater preflight | prepare [--root <install root>]
 //       The tar.gz user install. --root defaults to $PLAYHEADTV_ROOT.
-//   playheadtv-updater prepare --appimage <file> --version <running version> [--state-dir <dir>]
+//   playheadtv-updater preflight | prepare --appimage <file> --version <running version> [--state-dir <dir>]
 //       An AppImage: swaps <file> itself. The update state lives in --state-dir
 //       (default $XDG_STATE_HOME/playheadtv).
 //   playheadtv-updater keys
@@ -39,8 +42,8 @@ String? _option(List<String> args, String name) {
 
 Never _usage(String message) {
   stderr.writeln('playheadtv-updater: $message');
-  stderr.writeln('usage: playheadtv-updater prepare [--root <install root>]');
-  stderr.writeln('       playheadtv-updater prepare --appimage <file> --version <X.Y.Z> [--state-dir <dir>]');
+  stderr.writeln('usage: playheadtv-updater prepare|preflight [--root <install root>]');
+  stderr.writeln('       playheadtv-updater prepare|preflight --appimage <file> --version <X.Y.Z> [--state-dir <dir>]');
   exit(2);
 }
 
@@ -51,7 +54,10 @@ Future<void> main(List<String> args) async {
         '${allowUnsignedUpdatesBuild ? ' (development build: unsigned updates allowed when no key is pinned)' : ''}');
     exit(keys.isEmpty ? 1 : 0);
   }
-  if (args.isEmpty || args.first != 'prepare') _usage('expected the "prepare" or "keys" command');
+  if (args.isEmpty || (args.first != 'prepare' && args.first != 'preflight')) {
+    _usage('expected the "prepare", "preflight" or "keys" command');
+  }
+  final preflightOnly = args.first == 'preflight';
   final env = Platform.environment;
 
   final UpdateTarget target;
@@ -96,6 +102,18 @@ Future<void> main(List<String> args) async {
       Log.debug('update', m);
     },
   );
+  if (preflightOnly) {
+    final result = await updater.preflight();
+    final summary = result.inWindow
+        ? 'pendingStart: a previous update is still inside its confirmation window'
+        : result.rolledBackFrom == null
+            ? 'upToDate: nothing to resolve'
+            : 'rolledBack: ${result.rolledBackFrom}';
+    Log.info('update', 'preflight: $summary');
+    await Log.close();
+    stdout.writeln('playheadtv-updater: $summary');
+    exit(0);
+  }
   final result = await updater.prepare();
   final summary = '${result.outcome.name}: ${result.message}'
       '${result.rolledBackFrom == null ? '' : ' (rolled back ${result.rolledBackFrom})'}';

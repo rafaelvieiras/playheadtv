@@ -30,6 +30,7 @@ import 'video/video_engine.dart';
 
 import 'cache/offline_runtime.dart';
 import 'cache/schedule_cache.dart';
+import 'cache/stream_cache.dart';
 import 'cache/schedule_sync.dart';
 import 'config/config_file.dart';
 import 'config/connection_settings.dart';
@@ -379,6 +380,73 @@ List<ChannelEntry> unitsOfProgram(EpgEntry program, int ordinal, {DateTime? notB
   ];
 }
 
+/// The unit the channel opens with, and the position inside it, from what the
+/// cache already knows of the channel.
+///
+/// This is the same choice `_loadAndPlayChannel` makes for its head unit (the
+/// program on air, expanded by [unitsOfProgram], joined where it already
+/// started), so the boot prefetch asks the backend for exactly the url that
+/// playback is about to need. Null when nothing is playable yet: the cache
+/// knows nothing, or the first program already ended.
+({ChannelEntry entry, Duration seek, Duration position})? headUnitOf(List<EpgEntry> upcoming, DateTime now) {
+  if (upcoming.isEmpty) return null;
+  final units = unitsOfProgram(upcoming.first, 0, notBefore: now);
+  if (units.isEmpty) return null;
+  final head = units.first;
+  var seek = now.difference(head.startAt);
+  if (seek < Duration.zero) seek = Duration.zero;
+  if (seek > head.clipDuration) seek = head.clipDuration;
+  return (entry: head, seek: seek, position: head.itemOffset + seek);
+}
+
+/// Resolves the url of the item the app is about to open, before the first
+/// frame.
+///
+/// On a plugin-backed channel the expensive half of a channel start is one
+/// backend call: `GET /catalog-items/{id}/play` waits for an extractor run
+/// (250-350 ms when the plugin's own cache is warm, seconds when it is not).
+/// At boot everything that call needs is already known without the network —
+/// prefs say which channel, the guide is on disk — so it can start in parallel
+/// with the engine start, the first frame and `runApp` instead of after them.
+/// The answer goes into [StreamCache], which is what the player's own
+/// `_entrySource` reads, so the work is reused, not just warmed up.
+///
+/// Deliberately narrow: only the channel the app goes straight into (a mosaic
+/// start has no route yet), only its head unit, only when that unit needs a
+/// plugin at all (a media-server item is a plain url needing no resolve), and
+/// never awaited or retried — anything that fails just loads the old way a
+/// moment later. The usual mode order is used, so `pair` is asked for first and
+/// a prefetch does not open a remux process on the host for nothing.
+Future<void> prefetchFirstChannel() async {
+  final started = Stopwatch()..start();
+  try {
+    final settings = await SettingsService.create();
+    final channelId = settings.lastWatchedChannelId;
+    if (channelId == null) return; // the mosaic is the first screen: no route yet
+    final runtime = await OfflineRuntime.ensure();
+    final now = DateTime.now().toUtc();
+    final upcoming = runtime.cache
+        .entries(channelId, now, runtime.cache.horizonEnd)
+        .where((e) => e.endAt.isAfter(now) && e.endAt.isAfter(e.startAt))
+        .toList();
+    final head = headUnitOf(upcoming, now);
+    final program = head?.entry.program;
+    final itemId = program?.catalogItemId;
+    if (head == null || program == null || itemId == null || itemId.isEmpty) return;
+    final requires = program.requires;
+    if (requires.isEmpty) return;
+    if (StreamCache.instance.lookup(itemId, head.position) != null) return;
+    final stream = await runtime.api
+        .playUrl(itemId, startAt: head.position, modes: pluginPlaybackModes(videoEngine))
+        .timeout(const Duration(seconds: 30));
+    StreamCache.instance.store(itemId, head.position, stream);
+    Log.info('player', 'boot prefetch: item ${head.entry.id} resolved by "${requires.first.id}" in '
+        '${started.elapsedMilliseconds}ms (start=${head.position.inSeconds}s, mode=${stream.mode})');
+  } on Object catch (e) {
+    Log.debug('player', 'boot prefetch did nothing (${started.elapsedMilliseconds}ms)', error: e);
+  }
+}
+
 /// What reading the cache beyond the cursor adds to a channel's known
 /// programs: entries starting at or after [cursor], and the longer version of
 /// the last known tail run when the cache has one (the materializer keeps
@@ -442,12 +510,6 @@ const int channelLoadSkips = 3;
 // timing slop). Below this, items keep playing back to back exactly as
 // before issue #9.
 const epgSyncTolerance = Duration(seconds: 2);
-
-/// How long a url resolved for a plugin source is reused. Resolving is not free:
-/// the host runs an extractor and starts a second remux for the same item, so a
-/// retry of the same open must reuse the answer while the stream it names is
-/// still alive. Short enough that a dead stream is re-resolved soon.
-const pluginStreamReuse = Duration(seconds: 45);
 
 /// Minimum time between two focus steps while an arrow is held in the EPG.
 const epgHoldRepeatInterval = Duration(milliseconds: 90);
@@ -532,6 +594,19 @@ Future<void> main() async {
     directory: await _mobileLogDirectory(),
   );
   _installErrorLogging();
+  // The offline runtime is opened before the first frame instead of while the
+  // channel is being loaded: its SQLite open measured 44-892 ms (warm vs cold
+  // page cache) and everything that follows reuses the same instance
+  // (`ensure()` hands back the future in flight), so this window runs in
+  // parallel with the engine start and the first frame rather than after it.
+  // Nothing waits for it; a run that goes to pairing instead has no business
+  // opening a schedule cache, so only a configured install prewarms.
+  if (AppConfig.isConnectionConfigured) {
+    final prewarm = Stopwatch()..start();
+    unawaited(OfflineRuntime.ensure().then(
+        (_) => Log.info('cache', 'offline runtime opened in ${prewarm.elapsedMilliseconds}ms (boot prewarm)'),
+        onError: (Object e) => Log.warn('cache', 'prewarming the offline runtime failed', error: e)));
+  }
   // A device with no reachable log file needs the log on screen to be readable
   // at all, so the peek build also records every level.
   if (logPeekEnabled) {
@@ -551,6 +626,9 @@ Future<void> main() async {
   Log.info('video', 'engine: ${videoEngine.name}');
   videoEngine.register();
   BootTrace.mark('engine_registered');
+  // The channel's own resolve rides along with the start instead of after it
+  // (see prefetchFirstChannel): the answer is reused by playback, not wasted.
+  if (AppConfig.isConnectionConfigured) unawaited(prefetchFirstChannel());
   runApp(const PlayheadSpikeApp());
   WidgetsBinding.instance.addPostFrameCallback((_) => BootTrace.mark('first_frame'));
   // When the launcher started this process right after an update, confirm
@@ -1481,17 +1559,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     } catch (e) {
       Log.debug('player', 'item ${entry.id} failed to open after ${clock.elapsedMilliseconds}ms', error: e);
       // Whatever url was used may be the reason: never reuse it for the retry.
-      _resolvedStreams.remove(_streamKey(entry, entry.itemOffset + (seekTo ?? Duration.zero)));
+      final item = entry.program?.catalogItemId;
+      if (item != null && item.isNotEmpty) StreamCache.instance.forget(item, entry.itemOffset + (seekTo ?? Duration.zero));
       unawaited(disposeController(controller));
       rethrow;
     }
   }
-
-  // A url resolved for a plugin source, kept for [pluginStreamReuse]. Never
-  // handed to another item (the key carries the item and the exact position).
-  final Map<String, ({PluginStream stream, DateTime at})> _resolvedStreams = {};
-
-  String _streamKey(ChannelEntry entry, Duration position) => '${entry.id}|${position.inMilliseconds}';
 
   /// True when this unit has no media-server item of its own and can only be
   /// played by asking a plugin for a url (see `_entrySource`).
@@ -1530,22 +1603,23 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     }
     // The position travels with the request: the plugin starts its stream there,
     // so a viewer who tuned in 20 minutes into a program does not wait for it.
-    final key = _streamKey(entry, position);
-    final cached = _resolvedStreams[key];
-    if (cached != null && DateTime.now().difference(cached.at) < pluginStreamReuse) {
+    // An answer may already be here: from a retry of this open, from another
+    // tune-in inside [streamPositionBucket], or from the boot prefetch, which
+    // resolves the channel the app is about to open before the first frame.
+    final cached = StreamCache.instance.lookup(itemId, position);
+    if (cached != null) {
       Log.debug('player', 'item ${entry.id} reusing the url resolved '
-          '${DateTime.now().difference(cached.at).inSeconds}s ago (start=${position.inSeconds}s)');
-      return _sourceOf(cached.stream, position);
+          '${DateTime.now().difference(cached.at).inSeconds}s ago (start=${cached.requestedAt.inSeconds}s)');
+      // The offset is the position the CACHED stream was cut at, never this
+      // one: a remux that began a bucket earlier is at most that far behind,
+      // and its clock has to be read from where it actually starts.
+      return _sourceOf(cached.stream, cached.requestedAt);
     }
     final stream =
         await runtime.api.playUrl(itemId, startAt: position, modes: pluginPlaybackModes(videoEngine));
     Log.debug('player', 'item ${entry.id} resolved by "${requires.first.id}" '
         '(start=${position.inSeconds}s, mode=${stream.mode}${stream.audioUri == null ? '' : ', pair'})');
-    // Bounded: an entry that can no longer be reused is dropped on every insert,
-    // so a long session that hops channels never accumulates urls.
-    final now = DateTime.now();
-    _resolvedStreams.removeWhere((_, v) => now.difference(v.at) >= pluginStreamReuse);
-    _resolvedStreams[key] = (stream: stream, at: now);
+    StreamCache.instance.store(itemId, position, stream);
     return _sourceOf(stream, position);
   }
 

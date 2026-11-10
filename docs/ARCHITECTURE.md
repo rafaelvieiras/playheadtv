@@ -1845,6 +1845,86 @@ is on screen. The always-on clock keeps it there with the OSD closed: a setting
   own clock) and the color is the player's white: the feature exists to keep the
   time visible, not to become a widget editor.
 
+## Client boot: what runs before the first frame
+
+The boot is measured, not estimated: `BootTrace` marks each phase and logs
+`boot: phases (ms since start)`. Numbers from a desktop run (release build,
+warm cache, backend on the LAN):
+
+| phase | measured |
+|---|---|
+| launcher: release check at GitHub (`prepare`) | 650-900 ms, budget 120 s |
+| process start to `main()` (Flutter engine, GL) | ~210 ms |
+| `main()` to first frame | 6-9 ms |
+| offline runtime open (`runtime_open`) | 44-892 ms (warm/cold page cache) |
+| channel load (`runtime_open` to `channel_on_air`) | 136-932 ms |
+| backend on the LAN (`/healthz`) | 0.8 ms |
+
+Two things follow from that table, and both are implemented:
+
+- **No network before the picture.** The release check is the only network call
+  the start used to wait for; it now runs after the app is starting (see
+  "Headless auto-update"). A prefetched DNS/TCP connection would buy nothing
+  here (0.8 ms on a LAN), so there is none.
+- **The offline runtime opens early.** `main()` starts
+  `OfflineRuntime.ensure()` (only for a configured install — a pairing run has
+  no business opening a schedule cache) before the engine is registered, so its
+  SQLite open overlaps the engine start and the first frame. Every later caller
+  gets the same instance: `ensure()` hands back the future already in flight,
+  so this costs nothing and cannot open a second cache.
+
+### Boot prefetch (the channel's own resolve, before the UI)
+
+The expensive half of starting a channel is not in the app: on a plugin-backed
+channel it is one backend call, `GET /catalog-items/{id}/play`, which waits for
+an extractor run (250-350 ms when the plugin's cache is warm, seconds when it is
+not). Everything that call needs is known before the first frame — prefs say
+which channel, the guide is on disk — so `prefetchFirstChannel()`
+(`client/lib/main.dart`) resolves it in parallel with `runApp` and the page's
+own boot, and stores the answer in `StreamCache`, which is the same cache the
+player's `_entrySource` reads. The work is therefore reused, not merely warmed.
+
+The rules it follows, each one there to avoid making something else worse:
+
+- Only for the channel the app goes **straight into** (`lastWatchedChannelId`).
+  A mosaic start has no route yet, and pre-resolving a guess would cost the host
+  an extractor run for a channel nobody opens.
+- Only the **head unit**, computed by `headUnitOf` — the same choice
+  `_loadAndPlayChannel` makes (the program on air expanded by
+  `unitsOfProgram`, joined where it already started), so the prefetched url is
+  for the item and position playback will actually ask for.
+- Only when that unit needs a plugin at all: a media-server item is a plain url.
+- Only through the **normal mode order** (`pair` first), so a prefetch never
+  opens a remux process on the host for nothing.
+- Never awaited and never retried: anything that fails (no cache, offline,
+  extractor down) just loads the old way one settle later.
+
+## Plugin playback cache
+
+A plugin-backed item has no url until somebody asks the backend, and that answer
+is expensive on the host (an extractor run, plus a remux process for `remux`),
+so it is kept in memory for `pluginStreamReuse` (45 s) by
+[`StreamCache`](client/lib/cache/stream_cache.dart). It is deliberately not part
+of the offline cache: nothing survives the process and nothing is written to
+disk, because the url carries the plugin's token, expires, and a `remux` stream
+exists only while its process does.
+
+The cache is keyed by the item and by the **position bucket** the request falls
+in (`streamPositionBucket`, 2 s), which is what lets a resolve started at boot
+(when `now` is not yet the position playback will use) be the one playback
+uses. A shared answer never changes what the picture should show:
+
+- a `pair` (or a `single` file) is the item from its own zero and the player
+  seeks to the position it wants, so sharing costs nothing;
+- a `remux` is cut where it was asked to start, so a reused one plays from the
+  position it was cut at — at most one bucket behind the wall clock, the same
+  slop `epgSyncTolerance` already allows between the guide and the picture, and
+  the player reads every position from that stream's own start
+  (`_playbackOffset`), so the OSD stays consistent with what is on screen.
+
+A url is dropped the moment an open with it fails (`forget`), whatever the reuse
+window says.
+
 ## Client preload lead
 
 The client prepares the next unit (creates and initializes its controller) a
@@ -2409,12 +2489,12 @@ process that is still alive.
 ### Headless auto-update
 
 Where the logic lives, and why. The launcher script only does what must work
-when the new app cannot: run the updater with a timeout and ignore its status,
-fall back to `previous` if `current` is not runnable, then run the app under a
-small supervisor. Everything that decides anything (check, compare, download,
-verify, extract, swap, rollback) is Dart in `client/lib/update/`, compiled to a
-standalone executable shipped inside the bundle (`dart compile exe`, no
-display, no Flutter), so that
+when the new app cannot: run the updater's two halves with a timeout and ignore
+their status, fall back to `previous` if `current` is not runnable, then run the
+app under a small supervisor. Everything that decides anything (check, compare,
+download, verify, extract, swap, rollback) is Dart in `client/lib/update/`,
+compiled to a standalone executable shipped inside the bundle
+(`dart compile exe`, no display, no Flutter), so that
 
 - it is unit-tested end to end against a fake release server and real
   `tar.gz` packages, instead of untestable shell;
@@ -2426,9 +2506,22 @@ display, no Flutter), so that
   done: it would need the app to restart itself and would leave nothing to
   recover a crashing start.
 
-`playheadtv-updater prepare` on every start:
+**The updater runs in two halves, and only the first one is on the boot path.**
+`preflight` (steps 1 below) is local file work — a marker read and, at worst, a
+symlink swap — and runs before the app. `prepare` (steps 2-4, which is where the
+network is) is started by the launcher *after* the app is already starting, in
+the background, and the launcher only waits for it when the app exits. Measured
+reason: the release listing alone costs 0.65-0.9 s on a desktop connection
+(dns 63 ms, connect 218 ms), against a whole in-app boot of ~1.0-1.3 s, and its
+budget is 120 s — a slow or unreachable release server used to put two minutes
+of black screen in front of the picture. A swap that finishes while the app runs
+is simply what the next start runs; the app is never restarted behind the user's
+back. The rollback half has to stay in front: it is what protects a start from a
+version that cannot come up.
 
-1. **Resolve a pending update.** After a swap, `state.json` holds a pending
+`playheadtv-updater preflight` / `prepare` on every start, in that order:
+
+1. **Resolve a pending update** (`preflight`). After a swap, `state.json` holds a pending
    marker (new version, previous version, time). If it was confirmed, it is
    cleared and older versions are pruned. If it is still unconfirmed past the
    15 s window, the update is rolled back (`current` is pointed at the previous
@@ -2436,7 +2529,7 @@ display, no Flutter), so that
    newer release is). Inside the window nothing is done. A marker for a version
    that is not the installed one is stale and dropped. This runs even when
    auto-update is disabled.
-2. **Check** the releases of the repository over HTTPS: the newest
+2. **Check** the releases of the repository over HTTPS (`prepare`): the newest
    non-draft, non-prerelease `client-vX.Y.Z` release that has both assets of
    its own version (the repository also holds backend releases, so
    `/releases/latest` is not used; a release without a signature is still
