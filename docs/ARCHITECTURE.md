@@ -2346,6 +2346,30 @@ seam, deliberately with no visual change.
   Rejected in the plan, for the record: double-tap to seek (a linear channel has
   no seek, and it collides with tap-to-show-OSD), edge swipes (Android reserves
   them), pull-to-refresh (only the syncer writes the cache).
+- **The guide gets the same seam, with numbers that are not cosmetic.**
+  `GuideMetrics` (`lib/ui/guide_metrics.dart`) carries the visible span, the
+  channel column, the row height and the header height; `GuideMetrics.tv` is
+  exactly what the overlay used as module constants, so the television baselines
+  do not move. The grid is proportional, and that is what the phone broke: 220
+  design px of channel column and a 3 h span put a half-hour program at **24 dp**
+  on a 360 dp-wide screen — narrower than a touch target and too narrow for a
+  title. `GuideMetrics.phone` is a 90 min span and a 72 px column, which brings
+  the same cell to ~90 dp in portrait and ~230 dp in landscape, and drops the
+  channel name (`number [logo]` only) because 72 px cannot hold both. The row
+  height stays 84: a list of channels is no more compact on a phone.
+- **Two touch paths in the guide.** A tap on a program focuses it and tunes when
+  its displayed span covers now — the outcome Select on the focused cell has, so
+  a drag never tunes by accident (a drag does not fire a tap). A horizontal drag
+  on the grid moves the time axis one pixel per pixel, without animation while
+  the finger is down, bounded like the arrows; it is a
+  `HitTestBehavior.translucent` detector around the grid, so it catches a drag
+  started on empty row space while the cells keep their own taps and the
+  vertical `ListView` keeps vertical drags. Deliberately **not** in this slice:
+  pinch to change the span (a new affordance, and a scale recognizer would fight
+  the vertical list for the arena — it needs its own design), a Close button (the
+  system Back gesture already closes the guide and is in the six-button set), and
+  flipping `EpgThumbnailSetting`'s default per form factor (it stays a Settings
+  row the viewer controls).
 - **The player is immersive; the surfaces inside it read `viewPadding`.**
   `SystemBarsController` (`lib/services/system_bars.dart`) hides the bars with
   `immersiveSticky` while the player page is on screen and gives them back with

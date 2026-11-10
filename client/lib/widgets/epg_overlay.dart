@@ -13,7 +13,8 @@
 // Layout: details panel, then a TV-guide grid — a sticky time header (date at
 // its left, a tick every 30 min), one fixed-height row per channel (channel
 // column pinned on the left) and a vertical "now" line. The visible time span
-// is a constant (`_visibleSpan`); the pixels-per-minute scale is derived from
+// is a `GuideMetrics` value (`_m.visibleSpan`, tv or phone); the pixels-per-minute
+// scale is derived from
 // the available width on every build, so the grid adapts to any screen size.
 // Horizontal scrolling is a single animated offset in MINUTES from the loaded
 // window's start (resize-invariant) shared by the header, the rows and the
@@ -48,6 +49,8 @@ import '../cache/schedule_cache.dart';
 import '../main.dart' show jellyfinImageUrl;
 import '../playhead_api.dart';
 import '../services/perf_trace.dart';
+import '../ui/form_factor.dart';
+import '../ui/guide_metrics.dart';
 import '../ui/ui_scale.dart';
 import 'app_icons.dart';
 import 'art_image.dart';
@@ -55,7 +58,6 @@ import 'channel_logo.dart';
 
 // How much time the grid shows at once; pixels per minute follow from the
 // available width.
-const _visibleSpan = Duration(hours: 3);
 const _tickInterval = Duration(minutes: 30);
 // How much of the past the grid starts with, and how much each step of the
 // window adds. The offline cache only holds its window (the smaller of the
@@ -73,9 +75,7 @@ const _titleRowsPerFrame = 2;
 // Sizes are pixels at 1080p; `EpgOverlayState._u` multiplies them by the shared
 // UiScale (lib/ui/ui_scale.dart). The time axis is not part of this: the 3h
 // span is fitted to the available width in pixels-per-minute, as before.
-const _channelColumnWidth = 220.0;
-const _rowHeight = 84.0;
-const _headerHeight = 44.0;
+
 const _cellMarginH = 2.0;
 
 class EpgOverlay extends StatefulWidget {
@@ -105,6 +105,11 @@ class EpgOverlay extends StatefulWidget {
 }
 
 class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMixin {
+  // The layout family's design units: the visible span, the channel column and
+  // the row height. Resolved once — the form factor is decided at boot and never
+  // re-derived (docs/ARCHITECTURE.md "Client form factors").
+  late final GuideMetrics _m = GuideMetrics.of(ClientFormFactorState.notifier.value);
+
   bool _loading = true;
   String? _error;
 
@@ -408,7 +413,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
 
   void _maybeExtendAhead() {
     final visibleRight = _windowStart.add(
-      Duration(milliseconds: ((_hOffsetMinutes + _visibleSpan.inMinutes) * 60000).round()),
+      Duration(milliseconds: ((_hOffsetMinutes + _m.visibleSpan.inMinutes) * 60000).round()),
     );
     if (_windowEnd.difference(visibleRight) < _extendMargin) unawaited(_extendWindow());
   }
@@ -425,7 +430,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
   void _followFocusHorizontally() {
     final entry = _focusedEntry;
     if (entry == null) return;
-    final span = _visibleSpan.inMinutes.toDouble();
+    final span = _m.visibleSpan.inMinutes.toDouble();
     final startMin = _minutesFrom(entry.displayStart).clamp(0.0, double.infinity);
     final endMin = _minutesFrom(entry.displayEnd);
     var h = _hOffsetMinutes;
@@ -442,8 +447,8 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
 
   void _ensureRowVisible({bool animate = true}) {
     if (!_verticalController.hasClients || _rowsViewportHeight <= 0) return;
-    final top = _focusedRow * _u(_rowHeight);
-    final bottom = top + _u(_rowHeight);
+    final top = _focusedRow * _u(_m.rowHeight);
+    final bottom = top + _u(_m.rowHeight);
     final offset = _verticalController.offset;
     double? target;
     if (top < offset) {
@@ -547,6 +552,37 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
     }
   }
 
+  // Touch: a tap on a program focuses it and, when its displayed span covers
+  // now, tunes to that channel — the outcome Select on the focused cell has. A
+  // drag does not fire a tap, so panning the time axis never tunes by accident.
+  void _tapCell(int rowIndex, int col, GuideCell cell) {
+    if (_loading || _error != null || rowIndex >= widget.channels.length) return;
+    PerfTrace.burst('epg_navigate');
+    _showAllTitles();
+    _setFocus(rowIndex, col);
+    _detailsExpanded = false;
+    _followFocusHorizontally();
+    _ensureRowVisible(animate: false);
+    if (_isLive(cell, widget.clock().toUtc())) {
+      widget.onSelectLiveChannel(widget.channels[rowIndex].id);
+    }
+  }
+
+  // Touch: a horizontal drag moves the time axis one pixel per pixel (no
+  // animation while the finger is down, or the grid would trail it). Same
+  // bounds as the arrows: never left of the window start, never past its end.
+  void panTime(double deltaPx, double ppm) {
+    if (_loading || _error != null || ppm <= 0) return;
+    _showAllTitles();
+    final maxOffset = (_windowMinutes - _m.visibleSpan.inMinutes).clamp(0.0, double.infinity);
+    final next = (_hTo - deltaPx / ppm).clamp(0.0, maxOffset);
+    if (next == _hTo) return;
+    _hFrom = next;
+    _hTo = next;
+    _hController.value = 1.0;
+    _maybeExtendAhead();
+  }
+
   void _activateFocused() {
     final entry = _focusedEntry;
     if (entry == null) return;
@@ -611,8 +647,10 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
       left: left,
       top: _u(4),
       width: width,
-      height: _u(_rowHeight) - _u(8),
-      child: _FocusSelector<bool>(
+      height: _u(_m.rowHeight) - _u(8),
+      child: GestureDetector(
+        onTap: () => _tapCell(rowIndex, col, cell),
+        child: _FocusSelector<bool>(
         focus: _focus,
         select: (p) => p.row == rowIndex && p.col == col,
         child: content,
@@ -627,6 +665,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
           // only the 4px corners differ, and any clip costs the raster thread on every repaint.
           clipBehavior: Clip.none,
           child: child,
+        ),
         ),
       ),
     );
@@ -657,12 +696,12 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
       child: canvas,
       builder: (context, focusedRow, canvas) => Container(
         key: Key('epg-row-${channelObj.id}'),
-        height: _u(_rowHeight),
+        height: _u(_m.rowHeight),
         color: focusedRow ? Colors.white.withValues(alpha: 0.08) : null,
         child: Row(
           children: [
             SizedBox(
-              width: _u(_channelColumnWidth),
+              width: _u(_m.channelColumnWidth),
               child: Padding(
                 padding: EdgeInsets.only(right: _u(8)),
                 child: Row(
@@ -704,6 +743,32 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
     );
     final name = Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
     final logoUrl = channelLogoUrl(channel);
+    if (!_m.channelName) {
+      // A phone's column is 72 px: the number identifies the row, and the logo
+      // stands where the name would be. A clipped two-letter name reads worse
+      // than no name at all.
+      return Row(
+        key: Key('epg-channel-name-${channel.id}'),
+        children: [
+          Text('${channel.number}', style: style),
+          if (logoUrl != null) ...[
+            SizedBox(width: _u(6)),
+            Flexible(
+              child: LogoBox(
+                maxHeight: _u(28),
+                maxWidth: _u(_m.channelColumnWidth) - _u(24),
+                child: ChannelLogo(
+                  logoUrl,
+                  height: _u(28),
+                  imageKey: Key('epg-channel-logo-${channel.id}'),
+                  fallback: (_) => const SizedBox.shrink(),
+                ),
+              ),
+            ),
+          ],
+        ],
+      );
+    }
     if (logoUrl == null) {
       return Text(
         '${channel.number} ${channel.name}',
@@ -748,7 +813,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
   }
 
   Widget _buildTimeHeader(double hMin, double ppm) {
-    final span = _visibleSpan.inMinutes;
+    final span = _m.visibleSpan.inMinutes;
     final visibleLeft = _windowStart.add(Duration(milliseconds: (hMin * 60000).round()));
     final tickStep = _tickInterval.inMinutes;
     final firstTick = (hMin / tickStep).floor();
@@ -779,11 +844,11 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
     }
     return SizedBox(
       key: const Key('epg-time-header'),
-      height: _u(_headerHeight),
+      height: _u(_m.headerHeight),
       child: Row(
         children: [
           SizedBox(
-            width: _u(_channelColumnWidth),
+            width: _u(_m.channelColumnWidth),
             child: Text(
               key: const Key('epg-date-label'),
               '${_fmtDate(visibleLeft)}  ${_fmtHHmm(_now)}',
@@ -912,10 +977,15 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
       padding: EdgeInsets.symmetric(horizontal: _u(16)),
       child: LayoutBuilder(
         builder: (context, constraints) {
-          final channelColumn = _u(_channelColumnWidth);
+          final channelColumn = _u(_m.channelColumnWidth);
           final viewportWidth = (constraints.maxWidth - channelColumn).clamp(1.0, double.infinity);
-          final ppm = viewportWidth / _visibleSpan.inMinutes;
-          return Column(
+          final ppm = viewportWidth / _m.visibleSpan.inMinutes;
+          return GestureDetector(
+            // Translucent: it catches a horizontal drag started on empty row
+            // space without stealing the taps the cells handle themselves.
+            behavior: HitTestBehavior.translucent,
+            onHorizontalDragUpdate: (details) => panTime(details.delta.dx, ppm),
+            child: Column(
             children: [
               // Only the header follows the scroll and the clock frame by frame.
               AnimatedBuilder(
@@ -932,7 +1002,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
                         ListView.builder(
                           key: const Key('epg-rows'),
                           controller: _verticalController,
-                          itemExtent: _u(_rowHeight),
+                          itemExtent: _u(_m.rowHeight),
                           itemCount: widget.channels.length,
                           itemBuilder: (context, rowIndex) => _buildChannelRow(rowIndex, ppm),
                         ),
@@ -969,6 +1039,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
                 ),
               ),
             ],
+            ),
           );
         },
       ),
