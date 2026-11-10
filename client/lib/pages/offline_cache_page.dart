@@ -22,6 +22,7 @@ import '../cache/schedule_sync.dart';
 import '../input/input_action.dart';
 import '../services/settings_service.dart';
 import '../ui/ui_scale.dart';
+import '../widgets/focus_reveal.dart';
 
 String exhaustedBehaviorLabel(ExhaustedBehavior b) => switch (b) {
   ExhaustedBehavior.loopLast => 'Loop the last known programming',
@@ -186,44 +187,49 @@ class _OfflineCachePageState extends State<OfflineCachePage> {
       child: Scaffold(
         key: const Key('offline-cache-page'),
         appBar: AppBar(title: const Text('Offline cache'), toolbarHeight: context.ui(kToolbarHeight)),
-        body: ListView(
-          children: [
-            ListTile(
-              key: const Key('offline-exhausted-tile'),
-              autofocus: true,
-              title: const Text('When the schedule runs out'),
-              subtitle: Text(
-                exhaustedBehaviorLabel(settings.exhaustedBehavior),
-                key: const Key('offline-exhausted-value'),
-              ),
-              onTap: _cycleExhausted,
+        body: FocusReveal(
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                ListTile(
+                  key: const Key('offline-exhausted-tile'),
+                  autofocus: true,
+                  title: const Text('When the schedule runs out'),
+                  subtitle: Text(
+                    exhaustedBehaviorLabel(settings.exhaustedBehavior),
+                    key: const Key('offline-exhausted-value'),
+                  ),
+                  onTap: _cycleExhausted,
+                ),
+                ListTile(
+                  key: const Key('offline-window-tile'),
+                  title: const Text('Cache window limit'),
+                  subtitle: Text(
+                    '${hoursLabel(settings.cacheWindowLimit)}'
+                    '${backend == null ? '' : ' (backend keeps ${hoursLabel(backend)}; in use: ${hoursLabel(window)})'}',
+                    key: const Key('offline-window-value'),
+                  ),
+                  onTap: _cycleWindow,
+                ),
+                ValueListenableBuilder<SyncStatus>(
+                  valueListenable: runtime.syncer.status,
+                  builder: (context, status, _) => ListTile(
+                    key: const Key('offline-sync-tile'),
+                    title: const Text('Sync now'),
+                    subtitle: Text(_syncSubtitle(runtime, status), key: const Key('offline-sync-value')),
+                    onTap: () => unawaited(runtime.syncer.syncNow()),
+                  ),
+                ),
+                ListTile(
+                  key: const Key('offline-clear-tile'),
+                  title: const Text('Clear cache'),
+                  subtitle: const Text('Delete the saved schedule and images'),
+                  onTap: () => unawaited(_confirmClear()),
+                ),
+              ],
             ),
-            ListTile(
-              key: const Key('offline-window-tile'),
-              title: const Text('Cache window limit'),
-              subtitle: Text(
-                '${hoursLabel(settings.cacheWindowLimit)}'
-                '${backend == null ? '' : ' (backend keeps ${hoursLabel(backend)}; in use: ${hoursLabel(window)})'}',
-                key: const Key('offline-window-value'),
-              ),
-              onTap: _cycleWindow,
-            ),
-            ValueListenableBuilder<SyncStatus>(
-              valueListenable: runtime.syncer.status,
-              builder: (context, status, _) => ListTile(
-                key: const Key('offline-sync-tile'),
-                title: const Text('Sync now'),
-                subtitle: Text(_syncSubtitle(runtime, status), key: const Key('offline-sync-value')),
-                onTap: () => unawaited(runtime.syncer.syncNow()),
-              ),
-            ),
-            ListTile(
-              key: const Key('offline-clear-tile'),
-              title: const Text('Clear cache'),
-              subtitle: const Text('Delete the saved schedule and images'),
-              onTap: () => unawaited(_confirmClear()),
-            ),
-          ],
+          ),
         ),
       ),
     );

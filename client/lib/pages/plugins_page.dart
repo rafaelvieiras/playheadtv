@@ -28,6 +28,7 @@ import '../cache/offline_runtime.dart';
 import '../input/input_action.dart';
 import '../plugin/plugin_manifest.dart';
 import '../ui/ui_scale.dart';
+import '../widgets/focus_reveal.dart';
 import '../widgets/app_icons.dart';
 import '../widgets/plugin_source_settings_dialog.dart';
 
@@ -331,49 +332,55 @@ class _PluginsPageState extends State<PluginsPage> {
       child: Scaffold(
         key: const Key('plugins-page'),
         appBar: AppBar(title: const Text('Plugins'), toolbarHeight: context.ui(kToolbarHeight)),
-        body: ListView(
-          children: [
-            if (_registryError != null)
-              ListTile(
-                key: const Key('plugins-registry-error'),
-                leading: const Icon(AppIcons.pluginMissing),
-                title: const Text('The backend cannot be reached'),
-                subtitle: Text(_registryError!),
-              ),
-            if (registry != null && !registry.registryConfigured)
-              ListTile(
-                key: const Key('plugins-no-registry'),
-                leading: const Icon(AppIcons.pluginMissing),
-                title: const Text('This backend has no plugin registry'),
-                subtitle: const Text(
-                  'Channels whose content comes from a plugin cannot be installed until the backend is given one.',
-                ),
-              ),
-            if (rows.isEmpty && _registryError == null)
-              ListTile(
-                key: const Key('plugins-empty'),
-                leading: const Icon(AppIcons.plugin),
-                title: const Text('No plugins'),
-                subtitle: const Text(
-                  'A plugin is needed only for a channel whose content comes from outside the media server. '
-                  'Such a channel appears once its plugin is installed here.',
-                ),
-              ),
-            ...rows,
-            if (_sourcesError != null)
-              ListTile(
-                key: const Key('plugin-sources-error'),
-                leading: const Icon(AppIcons.pluginMissing),
-                title: Text(_sourcesError!),
-              ),
-            if (_sourceRows(installed).isNotEmpty) ...[
-              ListTile(
-                dense: true,
-                title: Text('Source settings', style: Theme.of(context).textTheme.labelLarge),
-              ),
-              ..._sourceRows(installed),
-            ],
-          ],
+        body: FocusReveal(
+          child: SingleChildScrollView(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                if (_registryError != null)
+                  ListTile(
+                    key: const Key('plugins-registry-error'),
+                    leading: const Icon(AppIcons.pluginMissing),
+                    title: const Text('The backend cannot be reached'),
+                    subtitle: Text(_registryError!),
+                  ),
+                if (registry != null && !registry.registryConfigured)
+                  ListTile(
+                    key: const Key('plugins-no-registry'),
+                    leading: const Icon(AppIcons.pluginMissing),
+                    title: const Text('This backend has no plugin registry'),
+                    subtitle: const Text(
+                      'Channels whose content comes from a plugin cannot be installed until the backend is given one.',
+                    ),
+                  ),
+                if (rows.isEmpty && _registryError == null)
+                  ListTile(
+                    key: const Key('plugins-empty'),
+                    leading: const Icon(AppIcons.plugin),
+                    title: const Text('No plugins'),
+                    subtitle: const Text(
+                      'A plugin is needed only for a channel whose content comes from outside the media server. '
+                      'Such a channel appears once its plugin is installed here.',
+                    ),
+                  ),
+                ...rows,
+                if (_sourcesError != null)
+                  ListTile(
+                    key: const Key('plugin-sources-error'),
+                    leading: const Icon(AppIcons.pluginMissing),
+                    title: Text(_sourcesError!),
+                  ),
+                if (_sourceRows(installed).isNotEmpty) ...[
+                  ListTile(
+                    dense: true,
+                    title: Text('Source settings', style: Theme.of(context).textTheme.labelLarge),
+                  ),
+                  ..._sourceRows(installed),
+                ],
+            
+              ],
+            ),
+          ),
         ),
       ),
     );
