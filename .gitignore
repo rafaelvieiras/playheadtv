@@ -53,3 +53,6 @@ Thumbs.db
 # Kotlin/Gradle build cache (generated)
 client/android/.kotlin/
 client/android/.gradle/
+
+# Golden-test diffs (flutter writes these next to the tests on failure)
+client/test/failures/

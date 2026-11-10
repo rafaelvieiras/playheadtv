@@ -238,6 +238,13 @@ or LLM, and to every artifact in the repo:
   `DismissAction` and the dialog never closes (that is how "Clear the offline
   cache?" stayed open on Escape). `popupOwnsBack` is that rule;
   `test/back_key_guard_test.dart` pins both sides of it.
+- A touch path calls the method the key path calls, never a second meaning, and
+  an overlay a tap can open must be leavable by tap: the track picker picks on
+  tap and closes on a tap outside, the dim level dialog has `-`/`+` and
+  Cancel/Save, the update banner and changelog close on a tap. Buttons added
+  beside a keyboard-driven dialog go inside `ExcludeFocus`, or they take the
+  focus and Select activates them instead of doing what the dialog's own
+  `Focus.onKeyEvent` does.
 - The mosaic's tiles and their order are decided in `buildMosaicTiles`
   (`lib/mosaic_tiles.dart`, pure) and an arrow is `mosaicMove`
   (`lib/mosaic_nav.dart`): `MosaicLayoutMode.ring` is the television's twelve-cell
