@@ -133,6 +133,15 @@ or LLM, and to every artifact in the repo:
   the host, so the client keeps a resolved url for `pluginStreamReuse` and drops
   it the moment an open with it fails, and a failing **plugin** preload backs off
   to `costlySourceRetryFloor` instead of the 1-2s a cheap source gets.
+- Those answers live in `StreamCache` (`client/lib/cache/stream_cache.dart`),
+  not in the player page, because `prefetchFirstChannel()` resolves the channel
+  the app boots straight into *before* the first frame and the player must reuse
+  that answer. The cache is keyed by item plus `streamPositionBucket` (2 s), and
+  the position an answer was resolved for travels with it: a reused `remux`
+  plays from where it was cut, and every read of its position goes through
+  `_playbackOffset`. Never widen those two constants without re-checking that
+  the OSD clock still matches the picture. Anything shared there is memory-only
+  — the url carries the plugin's token and a remux dies with its process.
 - A plugin-backed entry is played by its **catalog item id**, never by the source's
   own id (`entry.program.catalogItemId`, not `entry.id`, which is what a Jellyfin
   stream URL wants). And the play request is not a normal API call: it waits for an
@@ -416,7 +425,14 @@ keep in mind when touching `client/`:
 - The player, the EPG grid, the mosaic and channel switching read the local
   SQLite cache (`lib/cache/schedule_cache.dart`) and NEVER call the backend
   for schedule data; only `ScheduleSyncer` (`lib/cache/schedule_sync.dart`)
-  does. `OfflineRuntime.ensure()` is the one shared instance (cache, art
+  does.
+- The boot does not put anything of the sort on the way to the picture: the
+  offline runtime is opened in `main()` (prewarmed, only for a configured
+  install) and the first channel's plugin resolve is started before `runApp`
+  (`prefetchFirstChannel`), so both overlap the engine start and the first
+  frame instead of following it. Measured table in `docs/ARCHITECTURE.md`
+  "Client boot"; don't add a new `await` in front of `runApp` or of
+  `_startChannel` without one. `OfflineRuntime.ensure()` is the one shared instance (cache, art
   cache, syncer, `PlayheadApi`); a new reader asks it, it does not build its
   own `PlayheadApi`.
 - A failed refresh (backend down, `401`/`403`, any status) must leave the cache
@@ -554,6 +570,14 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   restarted a bounded number of times instead of vanishing silently. The
   AppImage entry point (`packaging/appimage/AppRun`) does the same.
   `client/tool/test_launcher.sh` tests both and `install.sh`.
+- **The updater runs in two halves, and only the local one is on the boot
+  path**: `preflight` (roll back an update that never confirmed itself — a
+  symlink swap) runs before the app; `prepare` (the release check, download,
+  verify, swap) is started in the *background* right after the app starts, so
+  its measured 0.65-0.9 s round trip (budget 120 s) is not in front of the
+  picture. Don't fold them back into one call, and don't move the rollback half
+  after the app: it is what protects a start from a version that cannot come
+  up. A swap finishing mid-session is simply what the next start runs.
 - Pin third-party GitHub Actions by commit SHA (with the version in a comment).
   The backend image has no `latest` tag.
 
@@ -662,6 +686,14 @@ device, driven by scripts that end in a file an agent or a human can read.
   set-top box, so a layout that only survives with a desktop's RAM fails here.
   `phone` is the AVD's own geometry. `lab profiles` prints them; images are
   overridable with `ANDROID_LAB_IMAGE_TV` / `ANDROID_LAB_IMAGE_PHONE`.
+- **The lab always runs the project's SDK** (`client/.fvm/flutter_sdk`, or
+  `FLUTTER=<cmd>`), never whatever `flutter` is first on `PATH`. One machine can
+  have two installs, both share `.dart_tool/hooks_runner`, and the precompiled
+  `hook.dill` one built cannot be loaded by the other's Dart: the hook exits
+  253, Gradle says "Building native assets failed", and the suite dies at
+  "loading <file>" in 20 s, which reads like a broken checkout. `attempt()` now
+  deletes that cache and retries once when it sees
+  `Can't load Kernel binary: Invalid SDK hash`.
 - The emulator needs `/dev/kvm`. Without it the lab stops with the fix instead of
   booting for half an hour in software: `sudo modprobe kvm_amd` and persist it in
   `/etc/modules-load.d/`.

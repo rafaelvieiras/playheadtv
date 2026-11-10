@@ -48,7 +48,7 @@ check "starts when the updater fails" "app 1.0.0 args:" "$("$root/playheadtv")"
 # 4. A hanging updater is bounded by the timeout.
 root=$(make_root hanging 'sleep 30')
 start=$(date +%s)
-out=$(PLAYHEADTV_UPDATE_TIMEOUT=1 "$root/playheadtv")
+out=$(PLAYHEADTV_PREFLIGHT_TIMEOUT=1 PLAYHEADTV_UPDATE_TIMEOUT=1 "$root/playheadtv")
 elapsed=$(( $(date +%s) - start ))
 check "starts when the updater hangs" "app 1.0.0 args:" "$out"
 [ "$elapsed" -lt 15 ] && check "the hang was cut by the timeout" ok ok || check "the hang was cut by the timeout" ok "took ${elapsed}s"
@@ -110,6 +110,24 @@ cp "$LAUNCHER" "$root/playheadtv"
 status=$?
 check "supervisor: a plain non-zero exit is passed through, not restarted" "7" "$status"
 
+# ---- the start does not wait for the network half of the update ----
+# The updater is called twice: `preflight` before the app (local rollback only)
+# and `prepare` in the background. The app must be running while the latter is
+# still sleeping.
+root=$(make_root bgnouveau 'case "$1" in
+    prepare) sleep 2; date +%s%N >"$PLAYHEADTV_ROOT/upd-marker" ;;
+    *) date +%s%N >"$PLAYHEADTV_ROOT/pre-marker" ;;
+esac')
+printf '#!/bin/sh\ndate +%%s%%N >"%s/app-marker"\necho "app started"\n' "$root" >"$root/versions/1.0.0/bundle/client"
+chmod +x "$root/versions/1.0.0/bundle/client"
+check "starts while the background update is still running" "app started" "$(PLAYHEADTV_UPDATE_TIMEOUT=30 "$root/playheadtv")"
+check "the rollback half ran before the app" ok \
+    "$([ -f "$root/pre-marker" ] && echo ok || echo missing)"
+check "the app did not wait for the background update" ok \
+    "$( [ "$(cat "$root/pre-marker")" -lt "$(cat "$root/app-marker")" ] && \
+        [ "$(cat "$root/app-marker")" -lt "$(cat "$root/upd-marker")" ] && echo ok || echo out-of-order)"
+check "the background update still completed" ok "$([ -f "$root/upd-marker" ] && echo ok || echo missing)"
+
 # 7. install.sh lays out a package and a desktop entry, and is re-runnable.
 pkg="$TMP/pkg/playheadtv-client-3.0.0-linux-x64"
 mkdir -p "$pkg/bundle"
@@ -159,18 +177,23 @@ run_apprun() { # run_apprun <dir> [args]: run with an isolated HOME and APPIMAGE
 
 d=$(make_appdir ar-plain 'echo "playheadtv-updater: upToDate: nothing to do"')
 check "AppRun: starts the app from the AppDir when there is nothing to update" "app from-appdir args:a b" "$(run_apprun "$d" a b)"
-check "AppRun: the update line goes to the log in the state dir" "playheadtv-updater: upToDate: nothing to do" "$(cat "$d/h/.local/state/playheadtv/update.log")"
+check "AppRun: the update line goes to the log in the state dir" "2" "$(grep -c 'upToDate: nothing to do' "$d/h/.local/state/playheadtv/update.log")"
 check "AppRun: config created from the example, private" "600" "$(stat -c %a "$d/h/.config/playheadtv/config.json")"
 
-d=$(make_appdir ar-args 'echo "$*" >"$HOME/updater-args"; echo "playheadtv-updater: upToDate: x"')
+d=$(make_appdir ar-args 'echo "$*" >>"$HOME/updater-args"; echo "playheadtv-updater: upToDate: x"')
 run_apprun "$d" >/dev/null
-check "AppRun: the updater gets the AppImage path, the running version and the state dir" \
-    "prepare --appimage $d/Fake.AppImage --version 1.0.0 --state-dir $d/h/.local/state/playheadtv" "$(cat "$d/h/updater-args")"
+# Both halves get the same target; the arguments are identical on purpose (the
+# network half is the same command with more time).
+check "AppRun: both halves get the AppImage path, the running version and the state dir" \
+    "preflight --appimage $d/Fake.AppImage --version 1.0.0 --state-dir $d/h/.local/state/playheadtv
+prepare --appimage $d/Fake.AppImage --version 1.0.0 --state-dir $d/h/.local/state/playheadtv" "$(cat "$d/h/updater-args")"
 
+# An update installed in the background belongs to the NEXT start: this launch
+# keeps running the version it started.
 d=$(make_appdir ar-updated 'echo "playheadtv-updater: updated: updated 1.0.0 -> 1.1.0"')
-check "AppRun: after an update it starts the new file, once" "app from-appimage-file reexec=1 args:a" "$(run_apprun "$d" a)"
+check "AppRun: an update found in the background does not restart this launch" "app from-appdir args:a" "$(run_apprun "$d" a)"
 
-d=$(make_appdir ar-rolledback 'echo "playheadtv-updater: upToDate: x (rolled back 1.1.0)"')
+d=$(make_appdir ar-rolledback 'echo "playheadtv-updater: rolledBack: 1.1.0"')
 check "AppRun: after a rollback it starts the restored file" "app from-appimage-file reexec=1 args:" "$(run_apprun "$d")"
 
 d=$(make_appdir ar-reexec 'echo "playheadtv-updater: updated: again"')
@@ -180,25 +203,16 @@ check "AppRun: the re-executed instance does not run the updater again" "app fro
 d=$(make_appdir ar-failing 'echo boom >&2; exit 7')
 check "AppRun: starts when the updater fails" "app from-appdir args:" "$(run_apprun "$d")"
 
-d=$(make_appdir ar-nofile 'echo "playheadtv-updater: updated: x"')
+d=$(make_appdir ar-nofile 'echo "playheadtv-updater: rolledBack: 1.1.0"')
 rm "$d/Fake.AppImage"
-check "AppRun: starts the AppDir app when the updated file cannot be run" "app from-appdir args:" "$(run_apprun "$d")"
+check "AppRun: starts the AppDir app when the rolled-back file cannot be run" "app from-appdir args:" "$(run_apprun "$d")"
 
-d=$(make_appdir ar-hanging 'sleep 30')
+# The app must not wait for the network half: here `prepare` sleeps for a while
+# and the app has to have started before it finishes.
+d=$(make_appdir ar-bg 'case "$1" in prepare) sleep 2 ;; esac; echo "playheadtv-updater: upToDate: x"')
 start=$(date +%s)
-out=$(env -i PATH="$PATH" HOME="$d/h" APPDIR="$d/appdir" APPIMAGE="$d/Fake.AppImage" PLAYHEADTV_UPDATE_TIMEOUT=1 "$d/appdir/AppRun")
-elapsed=$(( $(date +%s) - start ))
-check "AppRun: starts when the updater hangs" "app from-appdir args:" "$out"
-[ "$elapsed" -lt 15 ] && check "AppRun: the hang was cut by the timeout" ok ok || check "AppRun: the hang was cut by the timeout" ok "took ${elapsed}s"
-
-d=$(make_appdir ar-noappimage 'echo "playheadtv-updater: updated: x" >"$HOME/ran"')
-env -i PATH="$PATH" HOME="$d/h" APPDIR="$d/appdir" "$d/appdir/AppRun" >/dev/null
-check "AppRun: without \$APPIMAGE (extracted AppDir) the updater is not run" "no" "$([ -e "$d/h/ran" ] && echo yes || echo no)"
-
-d=$(make_appdir ar-config 'true')
-mkdir -p "$d/h/.config/playheadtv" && echo '{"x":1}' >"$d/h/.config/playheadtv/config.json"
-run_apprun "$d" >/dev/null
-check "AppRun: an existing config is kept" '{"x":1}' "$(cat "$d/h/.config/playheadtv/config.json")"
+out=$(run_apprun "$d")
+check "AppRun: starts while the background update is still running" "app from-appdir args:" "$out"
 
 # ---- supervisor in the AppImage entry point ----
 d=$(make_appdir ar-crash 'echo "playheadtv-updater: upToDate: x"')

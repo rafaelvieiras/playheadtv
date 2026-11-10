@@ -134,19 +134,35 @@ class Updater {
   })  : now = now ?? DateTime.now,
         log = log ?? ((_) {});
 
-  /// What the launcher runs before starting the app: resolve an unconfirmed
-  /// update (roll back), then, unless disabled, look for a newer release and
-  /// install it. Never throws.
-  Future<UpdateResult> prepare() async {
-    String? rolledBackFrom;
+  /// The local half of [prepare]: resolves an update that was swapped in and
+  /// never confirmed itself (rolls back to the previous version). File work
+  /// only, no network — the launcher runs it before the app, so it is never on
+  /// the way to the picture for longer than a filesystem rename. Never throws.
+  Future<PreflightResult> preflight() async {
     try {
       final resolution = _resolvePending();
       if (resolution.inWindow) {
-        return const UpdateResult(UpdateOutcome.pendingStart, 'previous update still within its confirmation window');
+        log('a previous update is still within its confirmation window; nothing to resolve');
+        return const PreflightResult(inWindow: true);
       }
-      rolledBackFrom = resolution.rolledBackFrom;
+      if (resolution.rolledBackFrom != null) {
+        log('rolled back the unconfirmed update ${resolution.rolledBackFrom}');
+      }
+      return PreflightResult(rolledBackFrom: resolution.rolledBackFrom);
     } on Object catch (e) {
       log('resolving the pending update failed: $e');
+      return const PreflightResult();
+    }
+  }
+
+  /// The full pass: [preflight], then, unless disabled, look for a newer
+  /// release and install it (the network half). The launcher starts the app
+  /// first and runs this in the background, so its round trip is off the boot
+  /// path. Never throws.
+  Future<UpdateResult> prepare() async {
+    final before = await preflight();
+    if (before.inWindow) {
+      return const UpdateResult(UpdateOutcome.pendingStart, 'previous update still within its confirmation window');
     }
 
     UpdateResult result;
@@ -158,8 +174,8 @@ class Updater {
       result = UpdateResult(UpdateOutcome.failed, 'unexpected error: $e');
     }
     _cleanStaging();
-    if (rolledBackFrom != null) {
-      return UpdateResult(result.outcome, result.message, version: result.version, rolledBackFrom: rolledBackFrom);
+    if (before.rolledBackFrom != null) {
+      return UpdateResult(result.outcome, result.message, version: result.version, rolledBackFrom: before.rolledBackFrom);
     }
     return result;
   }
@@ -321,6 +337,16 @@ class Updater {
       // Best effort.
     }
   }
+}
+
+/// What [Updater.preflight] found: an update that was rolled back, or a
+/// candidate that is still inside its confirmation window (so this start must
+/// not look for another one).
+class PreflightResult {
+  final String? rolledBackFrom;
+  final bool inWindow;
+
+  const PreflightResult({this.rolledBackFrom, this.inWindow = false});
 }
 
 class _Resolution {

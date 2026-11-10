@@ -1,13 +1,16 @@
 #!/bin/sh
 # Playhead TV AppImage entry point (the AppImage runtime runs this).
 #
-# Like the launcher of the tar.gz install, it runs the headless updater first
-# (rolls back an update that never came up healthy, installs a newer release if
-# there is one) and can never be kept from starting by it: the updater is
-# bounded by a timeout and its status is ignored. What differs is what an update
-# replaces: the AppImage FILE itself ($APPIMAGE, set by the runtime). The running
-# process keeps the old file's contents, so after an update or a rollback this
-# script starts the file now at $APPIMAGE instead (once: PLAYHEADTV_REEXEC).
+# Like the launcher of the tar.gz install, it runs the local half of the updater
+# before the app (roll back an update that never came up healthy) and the
+# network half afterwards, in the background, so the release-server round trip
+# is off the boot path. Neither can keep the app from starting: both are bounded
+# by a timeout and their status is ignored.
+# What differs from the tar.gz install is what an update replaces: the AppImage
+# FILE itself ($APPIMAGE, set by the runtime). The running process keeps the old
+# file's contents, so after a rollback this script starts the file now at
+# $APPIMAGE instead (once: PLAYHEADTV_REEXEC). An update that finishes while the
+# app runs is what the next start runs.
 #
 # State (state.json, update.log) lives in ${XDG_STATE_HOME:-~/.local/state}/playheadtv;
 # the config is looked up like for any other run: PLAYHEADTV_CONFIG, else
@@ -15,7 +18,8 @@
 # on first start).
 #
 # Environment:
-#   PLAYHEADTV_UPDATE_TIMEOUT  seconds the update step may take (default 150)
+#   PLAYHEADTV_PREFLIGHT_TIMEOUT  seconds the rollback step may take (20)
+#   PLAYHEADTV_UPDATE_TIMEOUT  seconds the background update may take (150)
 #   PLAYHEADTV_AUTO_UPDATE=0   skip the update check (config.json auto_update
 #                              does the same); rollback still happens
 #   PLAYHEADTV_CONFIG          config file
@@ -42,16 +46,18 @@ if [ -n "${APPIMAGE:-}" ] && [ -z "${PLAYHEADTV_REEXEC:-}" ] && [ -x "$UPDATER" 
         : >"$LOG"
     fi
     VERSION=$(cat "$APPDIR/VERSION")
+    UPDATE_PID=
     if command -v timeout >/dev/null 2>&1; then
-        OUT=$(timeout -k 5 "${PLAYHEADTV_UPDATE_TIMEOUT:-150}" "$UPDATER" prepare --appimage "$APPIMAGE" --version "$VERSION" --state-dir "$STATE_DIR" 2>>"$LOG")
+        OUT=$(timeout -k 5 "${PLAYHEADTV_PREFLIGHT_TIMEOUT:-20}" "$UPDATER" preflight \
+            --appimage "$APPIMAGE" --version "$VERSION" --state-dir "$STATE_DIR" 2>>"$LOG")
     else
-        OUT=$("$UPDATER" prepare --appimage "$APPIMAGE" --version "$VERSION" --state-dir "$STATE_DIR" 2>>"$LOG")
+        OUT=$("$UPDATER" preflight --appimage "$APPIMAGE" --version "$VERSION" --state-dir "$STATE_DIR" 2>>"$LOG")
     fi
     # Deliberately ignored: any outcome still starts the app below.
     [ -n "$OUT" ] && echo "$OUT" >>"$LOG"
     case "$OUT" in
-        *": updated:"* | *"(rolled back "*)
-            # The file at $APPIMAGE is another version now: run that one.
+        *": rolledBack:"*)
+            # The file at $APPIMAGE is the previous version again: run that one.
             if [ -x "$APPIMAGE" ]; then
                 PLAYHEADTV_REEXEC=1
                 export PLAYHEADTV_REEXEC
@@ -59,6 +65,14 @@ if [ -n "${APPIMAGE:-}" ] && [ -z "${PLAYHEADTV_REEXEC:-}" ] && [ -x "$UPDATER" 
             fi
             ;;
     esac
+    # Network half, once the app is on its way; its result is the next start's.
+    if command -v timeout >/dev/null 2>&1; then
+        timeout -k 5 "${PLAYHEADTV_UPDATE_TIMEOUT:-150}" "$UPDATER" prepare \
+            --appimage "$APPIMAGE" --version "$VERSION" --state-dir "$STATE_DIR" >>"$LOG" 2>&1 </dev/null &
+    else
+        "$UPDATER" prepare --appimage "$APPIMAGE" --version "$VERSION" --state-dir "$STATE_DIR" >>"$LOG" 2>&1 </dev/null &
+    fi
+    UPDATE_PID=$!
 fi
 
 # The app runs under a small supervisor: a process killed by a signal (SIGSEGV
@@ -69,11 +83,11 @@ restarts=0
 while :; do
     "$APPDIR/bundle/client" "$@"
     status=$?
-    [ "$status" -eq 0 ] && exit 0
+    [ "$status" -eq 0 ] && break
     signal=$((status - 128))
     if [ "$signal" -le 0 ]; then
         echo "playheadtv: the app exited with status $status" >&2
-        exit "$status"
+        break
     fi
     restarts=$((restarts + 1))
     echo "playheadtv: the app was killed by signal $signal (restart $restarts of ${PLAYHEADTV_CRASH_RESTARTS:-3})" >&2
@@ -83,7 +97,12 @@ while :; do
     fi
     if [ "$restarts" -ge "${PLAYHEADTV_CRASH_RESTARTS:-3}" ]; then
         echo "playheadtv: giving up after $restarts crashes; see the app log" >&2
-        exit "$status"
+        break
     fi
     sleep "${PLAYHEADTV_CRASH_DELAY:-3}" 2>/dev/null || true
 done
+
+# A background update may still be downloading: an interrupted swap is worse
+# than a slightly later exit, so wait for it (it is bounded already).
+[ -n "${UPDATE_PID:-}" ] && wait "$UPDATE_PID" 2>/dev/null
+exit "$status"

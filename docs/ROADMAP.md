@@ -1337,6 +1337,16 @@ repo never contains.
 
 ## Backlog / cleanup
 
+- [x] Boot is not blocked by the network (2026-11-10): the updater is split
+      into `preflight` (local rollback, before the app) and `prepare` (release
+      check, download, swap — started in the background once the app is
+      starting), the offline runtime is prewarmed in `main()`, and the channel
+      the app boots straight into has its plugin url resolved before the first
+      frame (`prefetchFirstChannel` + `StreamCache`). Measured on a desktop
+      release build: the release check alone was 0.65-0.9 s of the ~1.0-1.3 s
+      total, with a 120 s budget. `docs/ARCHITECTURE.md` "Client boot".
+- [ ] Measure the boot again with the perf suite (`perf_boot_epg_test`) and a
+      cold cache, and record the before/after numbers there.
 - [x] GUI integration suites headless in containers
       (`client/tool/run_gui_suites.sh`, `client/test/docker/`,
       `.github/workflows/gui-suites.yml`; `docs/ARCHITECTURE.md` "Headless GUI

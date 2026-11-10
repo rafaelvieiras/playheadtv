@@ -39,6 +39,18 @@ set -uo pipefail
 ROOT=${ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)}
 CLIENT=${CLIENT:-$ROOT/client}
 SDK=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}
+# The SDK this project pins (.fvmrc), not whatever `flutter` is first on PATH: a
+# machine can have more than one Flutter install, they share one
+# .dart_tool/hooks_runner, and a precompiled hook.dill built by one cannot be
+# loaded by the other's Dart ("Can't load Kernel binary: Invalid SDK hash", the
+# hook exits 253 and Gradle reports "Building native assets failed"). FLUTTER
+# overrides; the rest mirrors tool/package_linux.sh.
+lab_flutter() {
+  if [ -n "${FLUTTER:-}" ]; then echo "$FLUTTER"; return; fi
+  if [ -x "$CLIENT/.fvm/flutter_sdk/bin/flutter" ]; then echo "$CLIENT/.fvm/flutter_sdk/bin/flutter"; return; fi
+  if command -v fvm >/dev/null 2>&1 && [ -f "$CLIENT/.fvmrc" ]; then echo "fvm flutter"; return; fi
+  command -v flutter
+}
 STATE=${ANDROID_LAB_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/android-lab}
 # The device layer — boot, tame, lease, press, screenshot, the widget tree — lives
 # in the shared kit, so the next Android project uses the same one. Point
@@ -275,9 +287,21 @@ attempt() {
   # 9>&- everywhere a child outlives the attempt: the lease fd must die with
   # this process, or the next run finds its own device leased by a ghost (and a
   # gradle daemon under `flutter test` would hold it for hours).
-  ( cd "$CLIENT" && timeout --signal=TERM "$TMO" "$(command -v flutter)" test \
-      "integration_test/$suite.dart" -d "$serial" "${extra[@]}" ) >"$out/suite.log" 2>&1 9>&-
+  # shellcheck disable=SC2046 # lab_flutter may answer "fvm flutter": two words
+  run_suite() {
+    ( cd "$CLIENT" && timeout --signal=TERM "$TMO" $(lab_flutter) test \
+        "integration_test/$suite.dart" -d "$serial" "${extra[@]}" ) >"$out/suite.log" 2>&1 9>&-
+  }
+  run_suite
   rc=$?
+  if [ $rc != 0 ] && grep -q 'Invalid SDK hash' "$out/suite.log"; then
+    # Flutter does not key that cache by SDK, so a hook.dill from another
+    # install poisons every later build until it is dropped. Cheap, once.
+    note "$suite: build hooks were built by another Flutter SDK; rebuilding them"
+    rm -rf "$CLIENT/.dart_tool/hooks_runner"
+    run_suite
+    rc=$?
+  fi
   if [ -n "$watcher" ]; then
     kill "$watcher" 2>/dev/null
     wait "$watcher" 2>/dev/null
