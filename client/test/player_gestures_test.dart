@@ -19,7 +19,7 @@ void main() {
               onSwipeUp: () => events.add('up'),
             ),
           ),
-          if (above != null) above,
+          ?above,
         ],
       ),
     ),
