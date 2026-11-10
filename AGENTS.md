@@ -750,6 +750,14 @@ device, driven by scripts that end in a file an agent or a human can read.
   suites need an emulator with `/dev/kvm` plus the host backend and media, which
   is this lab, so they run on a developer machine and the physical device is the
   final gate for what the lab cannot see.
+- The `phone` profile pins `wm density 440` before running (in
+  `run_android_suites.sh`). The emulator image reports 320 dpi on a 1080 px
+  panel, which is **540 dp** of shortest side — the same geometry as a 1080p
+  television box at that density, so the app picks the ten-foot layout and the
+  phone suites fail saying the home never became a list. A phone of that panel
+  reports 440 dpi (393 dp). Measured on the lab: `dumpsys uimode` says `0x11`
+  (normal) and there is no `leanback` feature, so the platform flag is right and
+  only the fallback size guard was misfiring.
 - Profiles: `tv` is Android TV, 1920x1080 @ 320dpi, 2 GB of RAM — a 1080p
   set-top box, so a layout that only survives with a desktop's RAM fails here.
   `phone` is the AVD's own geometry. `lab profiles` prints them; images are
@@ -765,6 +773,13 @@ device, driven by scripts that end in a file an agent or a human can read.
 - The emulator needs `/dev/kvm`. Without it the lab stops with the fix instead of
   booting for half an hour in software: `sudo modprobe kvm_amd` and persist it in
   `/etc/modules-load.d/`.
+- Three sets say which layout a suite asserts: `DESKTOP_ONLY` (needs the backend
+  on the same machine), `TV_ONLY` (`mosaic_nav_scale_test`, `epg_layout_test`,
+  `settings_navigation_visual_test`) and `PHONE_ONLY` (`phone_touch_test`,
+  `phone_layout_test`). A sweep skips what does not match `-p`; naming a suite
+  with the wrong profile is an error on purpose, so a phone run never reports a
+  television assertion as a failure. `run_gui_suites.sh` has the matching
+  `ANDROID_ONLY`.
 - The backend stays on the host. On a device there is no `go` and no checkout, so
   the lab builds `backend/cmd/server` once, starts it on a free port with a
   temporary DB, maps it into the device with `adb reverse` and passes the address

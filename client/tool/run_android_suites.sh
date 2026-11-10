@@ -40,6 +40,10 @@ set -uo pipefail
 TOOL=${TOOL:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}
 ROOT=${ROOT:-$(cd "$TOOL/../.." && pwd)}
 LAB=$TOOL/android_lab.sh
+# adb, for the one thing this script does to the device itself (the phone
+# profile's density, below); everything else goes through the lab.
+ADB=${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/Android/Sdk}}/platform-tools/adb
+[ -x "$ADB" ] || ADB=$(command -v adb || echo "$ADB")
 OUTROOT=$ROOT/client/build/android-runs
 PROFILE=tv; PORT=5554; SERIAL=; TMO=900; SHARD=; RETRY=1; BACKEND=1; KEEP=0; RECORD=0; WATCH=1
 CHANGED=0; SINCE=; DRY=0; ALLSUITES=0
@@ -84,24 +88,45 @@ done
 DESKTOP_ONLY="offline_coldstart_test offline_exhausted_test offline_playback_test
 offline_reconcile_test settings_offline_test epg_window_test
 settings_navigation_visual_test"
+# Suites that assert the ten-foot layout: a ring around a featured block, a 3 h
+# guide span, a window resized at will. On the phone profile they fail for the
+# reason they exist, so they are not selected there — and asking for one by name
+# with `-p phone` is an error, not a run that wastes four minutes to say so.
+TV_ONLY="mosaic_nav_scale_test epg_layout_test settings_navigation_visual_test"
+# Suites that assert the phone layout, which a television box cannot show.
+PHONE_ONLY="phone_touch_test phone_layout_test"
 # Boot and wiring: what to run when a change is central enough to reach anything.
 BOOT_SUITES="osd_test exit_flow_test fullscreen_test warm_start_test
 focus_lifecycle_test screen_awake_test loading_navigation_test"
 
 all_suites() { local f; for f in "$ROOT"/client/integration_test/*_test.dart; do basename "$f" .dart; done; }
 is_desktop_only() { case " $(echo $DESKTOP_ONLY) " in *" $1 "*) return 0;; esac; return 1; }
+is_tv_only() { case " $(echo $TV_ONLY) " in *" $1 "*) return 0;; esac; return 1; }
+is_phone_only() { case " $(echo $PHONE_ONLY) " in *" $1 "*) return 0;; esac; return 1; }
 
 suites=()
 if [ $# -gt 0 ]; then
   for s in "$@"; do
     s=${s#client/}; s=${s#integration_test/}; s=${s%.dart}
     [ -f "$ROOT/client/integration_test/$s.dart" ] || { echo "no such suite: $s" >&2; exit 2; }
+    if [ "$PROFILE" = phone ] && is_tv_only "$s"; then
+      echo "$s asserts the ten-foot layout: it cannot run on the phone profile" >&2
+      exit 2
+    fi
+    if [ "$PROFILE" != phone ] && is_phone_only "$s"; then
+      echo "$s asserts the phone layout: run it with -p phone" >&2
+      exit 2
+    fi
     suites+=("$s")
   done
 elif [ $CHANGED = 0 ]; then
   for s in $(all_suites); do
     if is_desktop_only "$s" && [ $ALLSUITES = 0 ]; then
       echo "skipping $s: it needs the backend on the device (see AGENTS.md)"
+    elif [ "$PROFILE" = phone ] && is_tv_only "$s"; then
+      echo "skipping $s: it asserts the ten-foot layout (see AGENTS.md)"
+    elif [ "$PROFILE" != phone ] && is_phone_only "$s"; then
+      echo "skipping $s: it asserts the phone layout (run with -p phone)"
     else
       suites+=("$s")
     fi
@@ -233,6 +258,18 @@ elif [ -n "$SERIAL" ]; then
   # A physical device is shared with a human: lease it for the whole run so a
   # second run is told it is busy instead of fighting for the screen.
   "$LAB" lease "$SERIAL" || exit 3
+fi
+
+# The phone profile means a phone, and the emulator image says otherwise: its
+# panel is 1080 px wide at density 320, i.e. 540 dp of shortest side, which is
+# exactly the geometry of a 1080p television box at the same density — the app
+# then picks the ten-foot layout for a reason that has nothing to do with this
+# test, and `phone_touch_test`/`phone_layout_test` fail saying "never became the
+# list". A 2020-era phone reports 440 dpi for that panel (393 dp), so the profile
+# pins it, the same way the TV profile's 1080p geometry is pinned.
+if [ "$PROFILE" = phone ]; then
+  "$ADB" -s "$SERIAL" shell wm density 440 >/dev/null 2>&1 || true
+  echo "phone profile: wm density 440 ($("$ADB" -s "$SERIAL" shell wm size 2>/dev/null | tr -d '\r'))"
 fi
 
 # A leftover child of the previous suite can still hold the lease for a
