@@ -371,6 +371,7 @@ void main() {
     // Moves to [rowKey] with real Up/Down taps; when focus is not on a row,
     // falls back to the test-only recovery.
     Future<void> goTo(WidgetTester tester, String pageKey, List<String> rows, String rowKey) async {
+      out('goTo $rowKey from ${focusedRow(rows)}');
       for (var i = 0; i < rows.length + 2; i++) {
         final current = focusedRow(rows);
         if (current == rowKey) return;
@@ -380,6 +381,9 @@ void main() {
         }
         await tap(tester, rows.indexOf(current) < rows.indexOf(rowKey) ? LogicalKeyboardKey.arrowDown : LogicalKeyboardKey.arrowUp);
       }
+      final landed = focusedRow(rows);
+      out('goTo $rowKey ended on $landed');
+      if (landed != rowKey) violations.add('goTo could not reach $rowKey with Up/Down (landed on $landed)');
     }
 
     Future<void> setWindow(WidgetTester tester, double w, double h) async {
@@ -535,6 +539,7 @@ void main() {
       // ---- Interface size back to Automatic, Log level, Diagnostics ---------
       await setWindow(tester, 1280, 720);
       await goTo(tester, sp, _settingsRows, 'settings-ui-scale-tile');
+      await step(tester, 'back_to_automatic_before_select', sp, _settingsRows);
       await tap(tester, LogicalKeyboardKey.enter); // 200 -> Automatic
       out('interface size override reset = ${UiScaleOverride.notifier.value}');
       await goTo(tester, sp, _settingsRows, 'settings-log-level-tile');
