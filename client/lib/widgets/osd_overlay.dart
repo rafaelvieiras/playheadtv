@@ -27,6 +27,8 @@ import '../video/video_engine.dart';
 import '../cache/offline_runtime.dart';
 import '../dimmer.dart';
 import '../osd_subject.dart';
+import '../ui/form_factor.dart';
+import '../ui/osd_metrics.dart';
 import '../ui/ui_scale.dart';
 import 'app_icons.dart';
 import 'art_image.dart';
@@ -137,6 +139,14 @@ class ChannelOsdState extends State<ChannelOsd> {
   // Pixels at 1080p scaled to this screen (the app-wide UiScale). Reading it
   // subscribes only this widget, never the player page.
   double _u(double px) => context.ui(px);
+
+  // This family's design units (lib/ui/osd_metrics.dart). Read from the
+  // inherited scope, so only this widget rebuilds when either changes.
+  OsdMetrics get _m => OsdMetrics.of(context.formFactor);
+
+  /// A design size with this family's touch floor. Zero on a television, so a
+  /// control keeps exactly the box it had before the phone existed.
+  double _tap(double px) => context.uiTouch(px, min: _m.minTapTarget);
 
   Timer? _tickTimer;
   String? _focused;
@@ -269,74 +279,96 @@ class ChannelOsdState extends State<ChannelOsd> {
   }
 
   Widget _chip(String text) => Container(
-        margin: EdgeInsets.only(left: _u(8)),
-        padding: EdgeInsets.symmetric(horizontal: _u(6), vertical: _u(1)),
+        margin: EdgeInsets.only(left: _u(_m.chipMarginLeft)),
+        padding: EdgeInsets.symmetric(horizontal: _u(_m.chipPaddingH), vertical: _u(_m.chipPaddingV)),
         decoration: BoxDecoration(
           color: Colors.white24,
-          borderRadius: BorderRadius.circular(_u(3)),
+          borderRadius: BorderRadius.circular(_u(_m.chipRadius)),
         ),
-        child: Text(text, style: TextStyle(color: Colors.white, fontSize: _u(11), fontWeight: FontWeight.bold)),
+        child: Text(
+          text,
+          style: TextStyle(color: Colors.white, fontSize: _u(_m.chipFontSize), fontWeight: FontWeight.bold),
+        ),
       );
 
-  Widget _button(Key key, IconData icon, {String? label, bool enabled = true, bool focused = false}) {
-    return Opacity(
+  Widget _button(
+    Key key,
+    IconData icon, {
+    String? label,
+    bool enabled = true,
+    bool focused = false,
+    VoidCallback? onTap,
+  }) {
+    final box = Opacity(
       opacity: enabled ? 1 : 0.3,
       child: Container(
         key: key,
-        padding: EdgeInsets.symmetric(horizontal: _u(label == null ? 10 : 12), vertical: _u(8)),
+        constraints: BoxConstraints(minWidth: _tap(0), minHeight: _tap(0)),
+        padding: EdgeInsets.symmetric(
+          horizontal: _u(label == null ? _m.buttonPaddingH : _m.buttonPaddingHLabel),
+          vertical: _u(_m.buttonPaddingV),
+        ),
         decoration: BoxDecoration(
           color: focused ? Colors.white24 : Colors.transparent,
-          border: Border.all(color: focused ? Colors.white : Colors.transparent, width: _u(2)),
-          borderRadius: BorderRadius.circular(_u(8)),
+          border: Border.all(color: focused ? Colors.white : Colors.transparent, width: _u(_m.buttonBorder)),
+          borderRadius: BorderRadius.circular(_u(_m.buttonRadius)),
         ),
+        alignment: Alignment.center,
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: Colors.white, size: _u(28)),
+            Icon(icon, color: Colors.white, size: _u(_m.buttonIconSize)),
             if (label != null) ...[
-              SizedBox(width: _u(8)),
-              Text(label, style: TextStyle(color: Colors.white, fontSize: _u(16))),
+              SizedBox(width: _u(_m.buttonGap)),
+              Text(label, style: TextStyle(color: Colors.white, fontSize: _u(_m.buttonLabelSize))),
             ],
           ],
         ),
       ),
     );
+    // A tap activates the same thing Select does on the focused control. On a
+    // television it is an extra path, never a replacement.
+    if (onTap == null || !enabled) return box;
+    return GestureDetector(onTap: onTap, child: box);
   }
 
   Widget _channelCard(OsdChannelShortcut c, {required bool focused}) {
     final url = c.artUrl;
-    Widget fallback() => Icon(AppIcons.channels, color: Colors.white, size: _u(20));
+    Widget fallback() => Icon(AppIcons.channels, color: Colors.white, size: _u(_m.cardIconSize));
     return Container(
       key: Key('osd-recent-${c.id}'),
-      width: _u(170),
-      margin: EdgeInsets.only(right: _u(12)),
-      padding: EdgeInsets.all(_u(8)),
+      width: _u(_m.cardWidth),
+      margin: EdgeInsets.only(right: _u(_m.cardMarginRight)),
+      padding: EdgeInsets.all(_u(_m.cardPadding)),
       decoration: BoxDecoration(
         color: focused ? Colors.white24 : Colors.white10,
-        border: Border.all(color: focused ? Colors.white : Colors.transparent, width: _u(2)),
-        borderRadius: BorderRadius.circular(_u(8)),
+        border: Border.all(color: focused ? Colors.white : Colors.transparent, width: _u(_m.cardBorder)),
+        borderRadius: BorderRadius.circular(_u(_m.cardRadius)),
       ),
       child: Row(
         children: [
           Container(
-            width: _u(36),
-            height: _u(36),
+            width: _u(_m.cardThumbSize),
+            height: _u(_m.cardThumbSize),
             decoration: const BoxDecoration(color: Colors.white12, shape: BoxShape.circle),
             clipBehavior: Clip.antiAlias,
             alignment: Alignment.center,
             child: url == null ? fallback() : ArtImage(url, fallback: (_) => fallback()),
           ),
-          SizedBox(width: _u(8)),
+          SizedBox(width: _u(_m.cardGap)),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('${c.number}', style: TextStyle(color: Colors.white, fontSize: _u(14), fontWeight: FontWeight.bold)),
+                Text(
+                  '${c.number}',
+                  style: TextStyle(color: Colors.white, fontSize: _u(_m.cardNumberSize), fontWeight: FontWeight.bold),
+                ),
                 Text(
                   c.name,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: TextStyle(color: Colors.white70, fontSize: _u(12)),
+                  style: TextStyle(color: Colors.white70, fontSize: _u(_m.cardNameSize)),
                 ),
               ],
             ),
@@ -357,12 +389,12 @@ class ChannelOsdState extends State<ChannelOsd> {
   }
 
   Widget _logo() {
-    Widget fallback() => Icon(AppIcons.channels, color: Colors.white, size: _u(32));
+    Widget fallback() => Icon(AppIcons.channels, color: Colors.white, size: _u(_m.logoIconSize));
     final url = widget.channelArtUrl;
     return Container(
       key: const Key('osd-channel-logo'),
-      width: _u(64),
-      height: _u(64),
+      width: _u(_m.logoSize),
+      height: _u(_m.logoSize),
       decoration: const BoxDecoration(color: Colors.white12, shape: BoxShape.circle),
       clipBehavior: Clip.antiAlias,
       alignment: Alignment.center,
@@ -379,15 +411,15 @@ class ChannelOsdState extends State<ChannelOsd> {
       key: const Key('osd-channel-name'),
       maxLines: 1,
       overflow: TextOverflow.ellipsis,
-      style: TextStyle(color: Colors.white70, fontSize: _u(15), letterSpacing: 0.5),
+      style: TextStyle(color: Colors.white70, fontSize: _u(_m.nameFontSize), letterSpacing: _m.nameLetterSpacing),
     );
     if (logoUrl == null) return name;
     return LogoBox(
-      maxHeight: _u(26),
-      maxWidth: _u(220),
+      maxHeight: _u(_m.inlineLogoHeight),
+      maxWidth: _u(_m.inlineLogoMaxWidth),
       child: ChannelLogo(
         logoUrl,
-        height: _u(26),
+        height: _u(_m.inlineLogoHeight),
         imageKey: const Key('osd-channel-logo-inline'),
         fallback: (_) => name,
       ),
@@ -430,21 +462,21 @@ class ChannelOsdState extends State<ChannelOsd> {
       key: const Key('channel-osd'),
       children: [
         Positioned(
-          top: _u(24),
-          right: _u(32),
+          top: _u(_m.clockTop),
+          right: _u(_m.clockRight),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             children: [
               Text(
                 _hhmm(widget.now()),
                 key: const Key('osd-clock'),
-                style: TextStyle(color: Colors.white, fontSize: _u(28), fontWeight: FontWeight.w500),
+                style: TextStyle(color: Colors.white, fontSize: _u(_m.clockFontSize), fontWeight: FontWeight.w500),
               ),
               if (!channelOnly)
                 Text(
                   'Ends ${_hhmm(endAt)}',
                   key: const Key('osd-ends-at'),
-                  style: TextStyle(color: Colors.white70, fontSize: _u(14)),
+                  style: TextStyle(color: Colors.white70, fontSize: _u(_m.endsAtFontSize)),
                 ),
             ],
           ),
@@ -454,7 +486,7 @@ class ChannelOsdState extends State<ChannelOsd> {
           right: 0,
           bottom: 0,
           child: Container(
-            padding: EdgeInsets.fromLTRB(_u(32), _u(48), _u(32), _u(20)),
+            padding: EdgeInsets.fromLTRB(_u(_m.panelLeft), _u(_m.panelTop), _u(_m.panelRight), _u(_m.panelBottom)),
             decoration: const BoxDecoration(
               gradient: LinearGradient(
                 begin: Alignment.topCenter,
@@ -483,23 +515,31 @@ class ChannelOsdState extends State<ChannelOsd> {
                             key: const Key('osd-item-title'),
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
-                            style: TextStyle(color: Colors.white, fontSize: _u(26), fontWeight: FontWeight.bold),
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: _u(_m.titleFontSize),
+                              fontWeight: FontWeight.bold,
+                            ),
                           ),
-                          SizedBox(height: _u(4)),
+                          SizedBox(height: _u(_m.titleGap)),
                           Row(
                             children: [
                               Text(
                                 '${widget.channelNumber}',
                                 key: const Key('osd-channel-number'),
-                                style: TextStyle(color: Colors.white, fontSize: _u(15), fontWeight: FontWeight.bold),
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: _u(_m.metaFontSize),
+                                  fontWeight: FontWeight.bold,
+                                ),
                               ),
-                              Text(' · ', style: TextStyle(color: Colors.white70, fontSize: _u(15))),
+                              Text(' · ', style: TextStyle(color: Colors.white70, fontSize: _u(_m.metaFontSize))),
                               Flexible(child: _channelName(logoUrl)),
                               if (!channelOnly)
                               Text(
                                 ' · ${_hhmm(startAt)}–${_hhmm(endAt)}',
                                 key: const Key('osd-program-times'),
-                                style: TextStyle(color: Colors.white70, fontSize: _u(15)),
+                                style: TextStyle(color: Colors.white70, fontSize: _u(_m.metaFontSize)),
                               ),
                               for (final c in _chips()) _chip(c),
                             ],
@@ -509,35 +549,37 @@ class ChannelOsdState extends State<ChannelOsd> {
                     ),
                   ],
                 ),
-                SizedBox(height: _u(8)),
+                SizedBox(height: _u(_m.headerGap)),
                 // Transport controls: laid out now, wired by the follow-up
-                // (seek / skip / back to live) — dimmed and never focused.
-                Row(
-                  children: [
-                    _button(const Key('osd-btn-play-pause'), AppIcons.pause, enabled: false),
-                    _button(const Key('osd-btn-previous'), AppIcons.skipPrevious, enabled: false),
-                    _button(const Key('osd-btn-rewind'), AppIcons.rewind, enabled: false),
-                    _button(const Key('osd-btn-fast-forward'), AppIcons.fastForward, enabled: false),
-                    _button(const Key('osd-btn-next'), AppIcons.skipNext, enabled: false),
-                  ],
-                ),
-                SizedBox(height: _u(4)),
+                // (seek / skip / back to live) — dimmed and never focused. A
+                // phone does not carry a row of disabled buttons at all.
+                if (_m.transportRow)
+                  Row(
+                    children: [
+                      _button(const Key('osd-btn-play-pause'), AppIcons.pause, enabled: false),
+                      _button(const Key('osd-btn-previous'), AppIcons.skipPrevious, enabled: false),
+                      _button(const Key('osd-btn-rewind'), AppIcons.rewind, enabled: false),
+                      _button(const Key('osd-btn-fast-forward'), AppIcons.fastForward, enabled: false),
+                      _button(const Key('osd-btn-next'), AppIcons.skipNext, enabled: false),
+                    ],
+                  ),
+                if (_m.transportRow) SizedBox(height: _u(_m.transportGap)),
                 Row(
                   children: [
                     Expanded(
                       child: ClipRRect(
-                        borderRadius: BorderRadius.circular(_u(4)),
+                        borderRadius: BorderRadius.circular(_u(_m.progressRadius)),
                         child: LinearProgressIndicator(
                           key: const Key('osd-progress'),
                           value: progress,
-                          minHeight: _u(6),
+                          minHeight: _u(_m.progressHeight),
                           backgroundColor: Colors.white24,
                           valueColor: const AlwaysStoppedAnimation<Color>(Colors.lightBlueAccent),
                         ),
                       ),
                     ),
                     if (!channelOnly) ...[
-                      SizedBox(width: _u(12)),
+                      SizedBox(width: _u(_m.elapsedGap)),
                       Text(
                         // A length the engine could not be believed about (a
                         // stream still being produced) is left out rather than
@@ -546,18 +588,28 @@ class ChannelOsdState extends State<ChannelOsd> {
                             ? '${_fmtDuration(position)} / ${_fmtDuration(duration)}'
                             : _fmtDuration(position),
                         key: const Key('osd-elapsed'),
-                        style: TextStyle(color: Colors.white70, fontSize: _u(13)),
+                        style: TextStyle(color: Colors.white70, fontSize: _u(_m.elapsedFontSize)),
                       ),
                     ],
                   ],
                 ),
-                SizedBox(height: _u(8)),
+                SizedBox(height: _u(_m.controlsGap)),
                 Row(
                   children: [
                     if (has(_captions))
-                      _button(const Key('osd-btn-captions'), AppIcons.captions, focused: _focused == _captions),
+                      _button(
+                        const Key('osd-btn-captions'),
+                        AppIcons.captions,
+                        focused: _focused == _captions,
+                        onTap: widget.onOpenSubtitles,
+                      ),
                     if (has(_audio))
-                      _button(const Key('osd-btn-audio'), AppIcons.audioTrack, focused: _focused == _audio),
+                      _button(
+                        const Key('osd-btn-audio'),
+                        AppIcons.audioTrack,
+                        focused: _focused == _audio,
+                        onTap: widget.onOpenAudio,
+                      ),
                     // Tap toggles, a long press opens the level dialog (mouse
                     // and touch accelerators; keys go through focus mode).
                     GestureDetector(
@@ -571,34 +623,46 @@ class ChannelOsdState extends State<ChannelOsd> {
                         AppIcons.dimmer,
                         label: dimLevelLabel(Dimmer.level.value),
                         focused: _focused == _dimmerLevel,
+                        onTap: widget.onOpenDimmerLevel,
                       ),
                     if (nextItemLabel != null) ...[
-                      SizedBox(width: _u(16)),
+                      SizedBox(width: _u(_m.upNextGap)),
                       Flexible(
                         child: Text(
                           'Up next: $nextItemLabel',
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: TextStyle(color: Colors.white60, fontSize: _u(13), fontStyle: FontStyle.italic),
+                          style: TextStyle(
+                            color: Colors.white60,
+                            fontSize: _u(_m.upNextFontSize),
+                            fontStyle: FontStyle.italic,
+                          ),
                         ),
                       ),
                     ],
                   ],
                 ),
-                if (widget.recentChannels.isNotEmpty) ...[
-                  SizedBox(height: _u(12)),
+                if (_m.recentChannelCards && widget.recentChannels.isNotEmpty) ...[
+                  SizedBox(height: _u(_m.channelsGap)),
                   Text(
                     'Channels',
                     key: const Key('osd-channels-title'),
-                    style: TextStyle(color: Colors.white, fontSize: _u(16), fontWeight: FontWeight.bold),
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: _u(_m.channelsTitleFontSize),
+                      fontWeight: FontWeight.bold,
+                    ),
                   ),
-                  SizedBox(height: _u(8)),
+                  SizedBox(height: _u(_m.channelsTitleGap)),
                   SingleChildScrollView(
                     scrollDirection: Axis.horizontal,
                     child: Row(
                       children: [
                         for (final c in widget.recentChannels)
-                          _channelCard(c, focused: _focused == '$_channelPrefix${c.id}'),
+                          GestureDetector(
+                            onTap: () => widget.onSelectChannel(c.id),
+                            child: _channelCard(c, focused: _focused == '$_channelPrefix${c.id}'),
+                          ),
                       ],
                     ),
                   ),
