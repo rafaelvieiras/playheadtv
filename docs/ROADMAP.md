@@ -1160,6 +1160,18 @@ actionable checklist.
       `ui_scale_screens_golden_test.dart` (goldens in `client/test/goldens/`),
       `client/integration_test/mosaic_nav_scale_test.dart`. A fixed Interface
       size is capped by what fits the window.
+- [x] Client form-factor seam: one layout family per process (`tv` or `phone`),
+      resolved at boot from the platform's television flag and the shortest side
+      and never re-derived from a resize; a phone uses its own scale reference and
+      range, and `context.uiTouch(px)` puts Material's 48 dp floor under anything
+      a finger must hit. No visual change on any existing screen (the goldens are
+      byte-identical). Design: `docs/ARCHITECTURE.md` "Client form factors"; the
+      phone plan is `docs/PHONE_UI_PLAN.md`. Tests:
+      `client/test/form_factor_test.dart`, `ui_scale_test.dart`.
+      Not done / known: everything a phone actually needs is still the plan —
+      per-screen metrics, the phone mosaic list, the touch gesture layer, system
+      bars and safe areas, and touch on the overlays that only answer to a key
+      today (track picker, dimmer level dialog, update banner, guide cells).
 
 ## Phase 6 — Platforms
 

@@ -250,7 +250,15 @@ or LLM, and to every artifact in the repo:
   the EPG's thumbnail rect is scaled with the same factor). A fixed Settings
   choice is capped by `maxFitUiScale` so it cannot overflow the OSD; keep
   `uiScaleFitHeight`/`uiScaleFitWidth` in step if the OSD grows. Never drive it
-  through `setState` on the player page.
+  through `setState` on the player page. A phone is a different **layout family**
+  (`ClientFormFactor`, `lib/ui/form_factor.dart`): one factor per process,
+  resolved at boot before the first page builds (bounded platform-channel call,
+  falls back to `tv`) and never re-derived from a window resize; a desktop
+  window of any size stays `tv`, which is what keeps every existing desktop suite
+  and golden meaningful. Pages then pick a **metrics object** per family, never
+  `if (isPhone)`. Touch is additive on a phone — it never removes a key path —
+  and `context.uiTouch(px)` applies Material's 48 dp floor after the scale. Plan:
+  `docs/PHONE_UI_PLAN.md`; design: `docs/ARCHITECTURE.md` "Client form factors".
 - A page-level wrapper that only catches Back (`Focus(onKeyEvent:)`,
   `KeyboardListener`) is non-focusable (`canRequestFocus: false,
   skipTraversal: true`), else it takes traversal focus past the last row
