@@ -289,6 +289,16 @@ or LLM, and to every artifact in the repo:
   (`lib/ui/osd_metrics.dart`), one const object per layout family; `OsdMetrics.tv`
   must stay the literals the widget always used (the `osd_*.png` goldens prove
   it), and a phone-only change never gates on anything but those fields.
+- **A list whose rows take focus builds all of them.** The settings-like pages
+  (Settings, Diagnostics, Offline cache, Plugins, Remap controls) are
+  `SingleChildScrollView` + `Column`, not a `ListView`: a row the viewport drops
+  is a row the focus cannot come back to, and a shrink with a large interface
+  size drops exactly the neighbours the next arrow needs (measured:
+  `settings_navigation_visual_test`, `focus=...-tile lastRowRect=null`).
+  `FocusReveal` (`lib/widgets/focus_reveal.dart`) keeps that row on screen when
+  it takes focus and after a resize, and does nothing when the focused context
+  has lost its render object. A lazy list is fine when its rows are not focus
+  targets.
 - A page-level wrapper that only catches Back (`Focus(onKeyEvent:)`,
   `KeyboardListener`) is non-focusable (`canRequestFocus: false,
   skipTraversal: true`), else it takes traversal focus past the last row

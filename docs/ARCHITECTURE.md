@@ -2525,7 +2525,12 @@ and CI needs no display.
   `LIBGL_ALWAYS_SOFTWARE=1` and `LP_NUM_THREADS=2`. No audio device by default
   (a PulseAudio null sink made the suites less stable; `WITH_AUDIO=1` opts in).
 - Each run uses a snapshot (`git archive HEAD`, or `--worktree`) copied inside
-  the container, never the live checkout. Containers are named, limited
+  the container, never the live checkout. `--worktree` takes the tracked files
+  **and the new ones** (`git ls-files --others --exclude-standard`): it took only
+  tracked files at first, so a file the tree had gained arrived as a missing
+  import and a working change failed the build at 12 s, which reads like a
+  product failure (hit on 2026-11-10, twice, before the cause was obvious).
+  Containers are named, limited
   (2 CPUs, 4 GB, 1 GB shm) and removed on timeout. The pub and Go caches live in
   the named volumes `playheadtv-gui-pub` and `playheadtv-gui-go`
   (`run_gui_suites.sh --prune` removes them).
