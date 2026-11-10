@@ -232,7 +232,12 @@ or LLM, and to every artifact in the repo:
   never compare against `defaultKeyBindings[...]` or a key constant in a page.
   `BackKeyGuard` (above the Navigator) consumes any Back a page left unhandled,
   so the platform default (finish the activity) can never skip the exit dialog;
-  a new page that reacts to Back still handles it itself.
+  a new page that reacts to Back still handles it itself. It must **not** eat a
+  Back while a dismissible popup route holds focus: the guard sits below
+  `WidgetsApp`'s `Shortcuts`, so consuming the key there stops Flutter's own
+  `DismissAction` and the dialog never closes (that is how "Clear the offline
+  cache?" stayed open on Escape). `popupOwnsBack` is that rule;
+  `test/back_key_guard_test.dart` pins both sides of it.
 - The mosaic's featured-tile preview plays whatever the channel is airing, from
   the offline cache: a media-server item as a plain url, and an item behind a
   plugin through the backend's play route, exactly as the player does (the url
