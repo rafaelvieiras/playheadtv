@@ -20,7 +20,6 @@
 // Cancel has the focus; Back or Cancel closes it; Exit tears down (preview
 // controller, display wake lock, syncer) and terminates (services/app_exit.dart).
 import 'dart:async';
-import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -32,26 +31,19 @@ import '../plugin/channel_filter.dart';
 import '../cache/schedule_sync.dart';
 import '../main.dart';
 import '../playhead_api.dart';
+import '../ui/form_factor.dart';
 import '../ui/ui_scale.dart';
 import '../mosaic_nav.dart';
+import '../mosaic_tiles.dart';
 import '../widgets/exit_dialog.dart';
 import '../widgets/mosaic_frame.dart';
+import '../widgets/phone_mosaic_view.dart';
 import '../input/input_action.dart';
 import '../services/app_exit.dart';
 import '../services/screen_awake.dart';
 import '../services/settings_service.dart';
 import 'settings_page.dart';
 import '../log/log.dart';
-
-class _MosaicTile {
-  final PlayheadChannel? channel;
-  final bool isSettings;
-
-  const _MosaicTile.forChannel(this.channel) : isSettings = false;
-  const _MosaicTile.forSettings()
-      : channel = null,
-        isSettings = true;
-}
 
 class MosaicPage extends StatefulWidget {
   const MosaicPage({super.key});
@@ -78,7 +70,7 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
 
   List<PlayheadChannel> _allChannels = [];
   PlayheadChannel? _featured;
-  List<_MosaicTile> _tiles = [];
+  List<MosaicTile> _tiles = [];
   List<FocusNode> _focusNodes = [];
   int _focusedIndex = 0;
   // The previous arrow move (where it came from and which way), so the exact
@@ -92,6 +84,13 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
   bool _appHidden = false;
 
   final FocusNode _pageFocusNode = FocusNode();
+
+  /// Ring on a television and on the desktop, one column on a phone. Resolved
+  /// once, at construction: the form factor is decided at boot and never
+  /// re-derived from a resize (docs/ARCHITECTURE.md "Client form factors").
+  late final MosaicLayoutMode _layoutMode = ClientFormFactorState.notifier.value == ClientFormFactor.phone
+      ? MosaicLayoutMode.list
+      : MosaicLayoutMode.ring;
 
   @override
   void initState() {
@@ -219,51 +218,17 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
     }
   }
 
-  // Resolves the featured channel (the most recently watched, or the one with
-  // the lowest `number` — same fallback `_bootstrapChannels` already uses in
-  // the player) and up to 11 surrounding tiles (the whole frame,
-  // `mosaicRingSlots.length`): first the rest of the recent history, then random
-  // channels not yet shown, never repeating a channel.
+  // Which tiles this form factor shows, and in what order: the pure decision
+  // lives in mosaic_tiles.dart. The ring caps at the frame's cells and shuffles
+  // the tail; the phone's list holds every channel in number order.
   void _resolveTiles() {
-    final byId = {for (final c in _allChannels) c.id: c};
-    final sortedByNumber = [..._allChannels]..sort((a, b) => a.number.compareTo(b.number));
-    final recentIds = _settings.recentChannelIds;
-
-    PlayheadChannel featured;
-    Iterable<String> recentRest;
-    if (recentIds.isNotEmpty && byId.containsKey(recentIds.first)) {
-      featured = byId[recentIds.first]!;
-      recentRest = recentIds.skip(1);
-    } else {
-      featured = sortedByNumber.first;
-      recentRest = recentIds;
-    }
-
-    // The frame has `mosaicRingSlots.length` cells; one of them is always the fixed
-    // Settings tile, so at most `_ringSlots.length - 1` surrounding channels
-    // fit.
-    final maxSurrounding = mosaicRingSlots.length - 1;
-    final shown = <String>{featured.id};
-    final surrounding = <PlayheadChannel>[];
-    for (final id in recentRest) {
-      if (surrounding.length >= maxSurrounding) break;
-      final candidate = byId[id];
-      if (candidate != null && shown.add(candidate.id)) surrounding.add(candidate);
-    }
-    if (surrounding.length < maxSurrounding) {
-      final remainingPool = _allChannels.where((c) => !shown.contains(c.id)).toList()..shuffle(Random());
-      for (final candidate in remainingPool) {
-        if (surrounding.length >= maxSurrounding) break;
-        if (shown.add(candidate.id)) surrounding.add(candidate);
-      }
-    }
-
-    _featured = featured;
-    _tiles = [
-      _MosaicTile.forChannel(featured),
-      for (final c in surrounding) _MosaicTile.forChannel(c),
-      const _MosaicTile.forSettings(),
-    ];
+    final built = buildMosaicTiles(
+      channels: _allChannels,
+      recentIds: _settings.recentChannelIds,
+      mode: _layoutMode,
+    );
+    _featured = built.tiles.isEmpty ? null : built.tiles[0].channel;
+    _tiles = built.tiles;
     _focusNodes = List.generate(_tiles.length, (_) => FocusNode());
     _focusedIndex = 0;
   }
@@ -374,10 +339,11 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
   }
 
   // Spatial move (see mosaic_nav.dart); the focus stays when nothing lies that
-  // way.
+  // way. On a phone the same arrows walk the column, one row at a time.
   void _move(MosaicDirection direction) {
     final last = _lastMove;
-    final target = mosaicNavigate(
+    final target = mosaicMove(
+      mode: _layoutMode,
       tileCount: _tiles.length,
       focused: _focusedIndex,
       direction: direction,
@@ -405,8 +371,17 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
   // on the EPG's ValueListenableBuilder there, isolated by reverse
   // bisection). This await was never confirmed as necessary to reproduce or
   // fix that specific bug.
-  Future<void> _activateFocused() async {
-    final tile = _tiles[_focusedIndex];
+  Future<void> _activateFocused() => _activate(_focusedIndex);
+
+  /// A tap on a row is the same outcome as Select on it: focus, then open.
+  void _tapTile(int index) {
+    if (index < 0 || index >= _tiles.length) return;
+    _focusIndex(index);
+    unawaited(_activate(index));
+  }
+
+  Future<void> _activate(int index) async {
+    final tile = _tiles[index];
     if (tile.isSettings) {
       await Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsPage()));
       if (!mounted) return;
@@ -503,11 +478,26 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
     super.dispose();
   }
 
-  MosaicTileSpec _specFor(_MosaicTile tile) {
+  MosaicTileSpec _specFor(MosaicTile tile) {
     if (tile.isSettings) return const MosaicTileSpec.settings();
     final c = tile.channel!;
     return MosaicTileSpec.channel(
-        key: Key('mosaic-tile-${c.id}'), number: c.number, name: c.name, artUrl: c.guideArtUrl);
+      key: Key('mosaic-tile-${c.id}'),
+      number: c.number,
+      name: c.name,
+      artUrl: c.guideArtUrl,
+      // Only the phone's column shows it, and only when the cache knows.
+      nowTitle: _layoutMode == MosaicLayoutMode.list ? _nowTitle(c.id) : null,
+    );
+  }
+
+  /// What [channelId] is showing right now, from the offline cache: the row's
+  /// subtitle on a phone. Null when the guide has nothing for it.
+  String? _nowTitle(String channelId) {
+    final now = DateTime.now().toUtc();
+    final entries = _runtime.cache.entries(channelId, now, now.add(const Duration(minutes: 1)));
+    if (entries.isEmpty) return null;
+    return entries.first.displayTitle;
   }
 
   // The featured tile's picture: the preview video once it is playing, else
@@ -564,13 +554,21 @@ class _MosaicPageState extends State<MosaicPage> with WidgetsBindingObserver {
         // own black background, so the insets are its job. Zero on a television
         // and on the desktop, so not a pixel of the mosaic goldens moves.
         body: SafeArea(
-          child: MosaicFrameView(
-            tiles: [for (final t in _tiles) _specFor(t)],
-            focusNodes: _focusNodes,
-            focusedIndex: _focusedIndex,
-            featuredBackground: _featuredBackground(),
-            safeMargin: AppConfig.mosaicSafeMargin,
-          ),
+          child: _layoutMode == MosaicLayoutMode.list
+              ? PhoneMosaicView(
+                  tiles: [for (final t in _tiles) _specFor(t)],
+                  focusNodes: _focusNodes,
+                  focusedIndex: _focusedIndex,
+                  featuredBackground: _featuredBackground(),
+                  onSelect: _tapTile,
+                )
+              : MosaicFrameView(
+                  tiles: [for (final t in _tiles) _specFor(t)],
+                  focusNodes: _focusNodes,
+                  focusedIndex: _focusedIndex,
+                  featuredBackground: _featuredBackground(),
+                  safeMargin: AppConfig.mosaicSafeMargin,
+                ),
         ),
       ),
     );
