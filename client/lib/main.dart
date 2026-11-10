@@ -1417,8 +1417,18 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // backend really has nothing" (it answered) from "the cache ran out while
   // the backend is out of reach" (it did not): only the latter is an
   // exhausted cache that the degraded behavior setting applies to.
-  Future<bool> _backendUnreachable() async {
-    final outcome = await _runtime.syncer.syncNow().timeout(const Duration(seconds: 4), onTimeout: () => SyncOutcome.offline);
+  // A load with nothing in the cache for the channel is a cold start: the first
+  // refresh is already in flight, and its answer is the only thing that can make
+  // the channel playable, so this waits longer than a normal probe. Measured on
+  // the Android lab against a backend that needs per-item lookups: the refresh
+  // took 7.8 s, the 4 s probe called the backend unreachable, the load reported
+  // "nothing scheduled in the next 48h" 1.5 s before the guide arrived, and
+  // nothing tried again (docs/ROADMAP.md). Twenty seconds is well past that
+  // refresh and still bounded, and it is only paid when there is nothing to play.
+  static const coldStartSyncBound = Duration(seconds: 20);
+
+  Future<bool> _backendUnreachable({Duration bound = const Duration(seconds: 4)}) async {
+    final outcome = await _runtime.syncer.syncNow().timeout(bound, onTimeout: () => SyncOutcome.offline);
     return outcome != SyncOutcome.updated && outcome != SyncOutcome.unchanged;
   }
 
@@ -1473,7 +1483,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       final channelRulesFuture = _streamPrefs.ensureChannelRules(target.id);
       var upcoming = _upcomingFromCache(target.id, now);
       if (upcoming.isEmpty) {
-        final unreachable = await _backendUnreachable();
+        final coldStart = _cache.allEntries(target.id).isEmpty;
+        if (coldStart) Log.info('player', 'cold start: nothing cached for channel ${target.number}, waiting for the guide');
+        final unreachable = await _backendUnreachable(bound: coldStart ? coldStartSyncBound : const Duration(seconds: 4));
         if (generation != _loadGeneration) return;
         upcoming = _upcomingFromCache(target.id, now);
         if (upcoming.isEmpty && unreachable) {
