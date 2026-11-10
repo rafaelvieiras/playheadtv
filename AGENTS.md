@@ -333,6 +333,13 @@ or LLM, and to every artifact in the repo:
   instead of building the URL by hand, and keep the widget findable by a stable
   key (`epg-channel-name-<id>`, `osd-channel-name`). See
   `docs/ARCHITECTURE.md` "Channel logo".
+- The player's touch surface is `PlayerGestureLayer`
+  (`lib/widgets/player_gestures.dart`): tap = show/hide the OSD, horizontal
+  fling = channel, swipe up = guide. It is a `Positioned.fill` child of the
+  player's Stack **above the video and below the OSD/spinner/error/guide**, and
+  that ordering is load-bearing (a widget test pins it). Each callback calls the
+  same page method the key path calls; a new gesture must not invent a second
+  meaning for an outcome that already has one.
 - The always-on clock (`lib/clock.dart`, `widgets/clock_overlay.dart`) is the
   OSD's time kept on screen with the OSD closed: top-right, above the dimmer
   and the guide. It steps aside while the OSD or the guide is open (they draw
@@ -667,6 +674,14 @@ Android behaviour is checked on the lab, never on somebody's phone or on the TV
 in use. The lab is a headless emulator with the geometry and memory of the target
 device, driven by scripts that end in a file an agent or a human can read.
 
+- The desktop runner and the Android runner keep mirrored exclusion lists:
+  `DESKTOP_ONLY` in `run_android_suites.sh` (suites that take the backend down)
+  and `ANDROID_ONLY` in `run_gui_suites.sh` (suites whose subject only exists on
+  Android — `exo_pair_test` drives a Kotlin/Media3 class behind the
+  `playheadtv/paired` channel and dies with `MissingPluginException` on a
+  desktop engine). A new suite belongs in one of them the moment it stops being
+  platform-neutral; a suite that fails for its own platform reason hides real
+  failures in the job's output.
 - `client/tool/run_android_suites.sh [suite ...]` — runs the Android integration
   suites on one emulator reused across suites; `-p phone` for the phone profile,
   `--shard I/N` to split the list, `--serial <adb-serial>` for a physical device
