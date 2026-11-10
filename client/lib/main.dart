@@ -69,6 +69,7 @@ import 'dimmer.dart';
 import 'epg_thumbnail.dart';
 import 'widgets/epg_overlay.dart';
 import 'widgets/osd_overlay.dart';
+import 'widgets/player_gestures.dart';
 import 'widgets/debug_overlay.dart';
 import 'widgets/track_selector_overlay.dart';
 import 'widgets/clock_overlay.dart';
@@ -2912,6 +2913,27 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
   bool get _channelLoaded => channel.isNotEmpty && _currentIndex >= 0 && _currentIndex < channel.length;
 
+  // Touch: a tap on the picture shows the OSD or hides it again. It skips the
+  // "armed" state on purpose — that exists to disambiguate Select from the
+  // arrows on a remote, and a tap has no such ambiguity.
+  void _toggleOsdFromTouch() {
+    if (_osdVisibleNotifier.value) {
+      _osdHideTimer?.cancel();
+      _osdVisibleNotifier.value = false;
+    } else {
+      _showOsd();
+    }
+  }
+
+  // Touch: a swipe up opens the guide. The same two notifier writes the OSD's
+  // own path does, minus `_suppressNextEpgSelectUp` (that flag exists for a
+  // Select whose release lands after the guide opened; a swipe has no Select).
+  void _openEpgFromTouch() {
+    _osdHideTimer?.cancel();
+    _osdVisibleNotifier.value = false;
+    _epgOpenNotifier.value = true;
+  }
+
   void _openEpgFromOsd() {
     _osdHideTimer?.cancel();
     _osdVisibleNotifier.value = false;
@@ -3321,6 +3343,21 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
             // the dimmer (children after this one); pointer-transparent and
             // never focusable.
             WatermarkOverlay(source: _watermarkNotifier),
+            // The touch surface: above the video, below the OSD, the spinner,
+            // the error banner and the guide, so every one of those keeps the
+            // taps it already had. An extra pointer path for a television with
+            // a mouse; the only way in on a phone.
+            Positioned.fill(
+              child: ValueListenableBuilder<bool>(
+                valueListenable: _epgOpenNotifier,
+                builder: (context, epgOpen, _) => PlayerGestureLayer(
+                  enabled: !epgOpen && !_trackPickerOpenNotifier.value,
+                  onTapPicture: _toggleOsdFromTouch,
+                  onHorizontalFling: (direction) => unawaited(_switchChannel(direction)),
+                  onSwipeUp: _openEpgFromTouch,
+                ),
+              ),
+            ),
             if (logPeekEnabled) const _LogPeek(),
             // Loading a channel (boot or switch): a spinner in the middle of the
             // screen until playback starts. Errors keep the plain status card.

@@ -2330,6 +2330,22 @@ seam, deliberately with no visual change.
   Tests: `client/test/phone_layout_golden_test.dart` (goldens in
   `client/test/goldens/phone_*.png`, deliberately a separate file from the
   frozen television ones).
+- **Touch is a layer, not a mode.** `PlayerGestureLayer`
+  (`lib/widgets/player_gestures.dart`) is one `Positioned.fill` child of the
+  player's Stack: above the video and the watermark, below the OSD, the spinner,
+  the error banner and the guide, so every one of those keeps the taps it
+  already had (a widget test pins that ordering). A tap toggles the OSD — it
+  skips the "armed" state, which exists only to disambiguate Select from the
+  arrows on a remote; a horizontal fling switches channel (left is next, the
+  picture follows the finger) and only counts above `gestureFlingVelocity`
+  (300 px/s), so a slip is not a channel change; a swipe up opens the guide; a
+  swipe down does nothing, because a linear channel has nothing coherent to do
+  with it. It is disabled while the guide or a track picker is open. Every
+  callback calls the same page method the key path calls, which is what keeps
+  touch additive for a television with a mouse rather than a second meaning.
+  Rejected in the plan, for the record: double-tap to seek (a linear channel has
+  no seek, and it collides with tap-to-show-OSD), edge swipes (Android reserves
+  them), pull-to-refresh (only the syncer writes the cache).
 - **Scale per family.** `autoUiScale` uses a 420 dp reference and a 0.85-1.3
   range for a phone (stock Material sizes; the 1080p reference would put every
   phone on the 0.6 floor and shrink body text to ~9.6 sp). `maxFitUiScale` uses
