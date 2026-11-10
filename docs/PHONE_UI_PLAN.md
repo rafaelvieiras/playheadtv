@@ -362,3 +362,24 @@ Each slice is independently shippable and leaves the TV profile green. "TV guard
 - **Audio focus on a phone.** The `mixWithOthers` consequence (channel plays over a music app) is inference from `ARCHITECTURE.md` "ExoPlayer engine"; I did not test it, and it affects only the ExoPlayer path — the `fvp` path's audio behaviour on Android is likewise unverified here.
 - **Whether `fvp` on a phone's GPU has the same black-picture class of problem as the TV box** that motivated the opt-in ExoPlayer engine (`AGENTS.md` gotcha). The phone may need ExoPlayer as a *default*, not an option — that is a decision for a real device run, and it would change the "Settings → Video player (Android only)" row's default per form factor, which this plan does not propose.
 - **The `404`-shaped question of `docs/ARCHITECTURE.md` "Client offline cache" wording** ("the same engine on Linux/Windows now and Android/Android TV later") suggests the Android cache path is newer than the doc; I did not confirm the SQLite file location behaviour on a phone's scoped storage beyond `path_provider`.
+
+## Status
+
+All eight slices are implemented and committed (2026-11-10):
+
+1. form factor seam — `lib/ui/form_factor.dart`, phone/tv resolved once at boot;
+2. OSD metrics and touch on its controls — `lib/ui/osd_metrics.dart`;
+3. the gesture layer over the picture — `lib/widgets/player_gestures.dart`;
+4. safe area and system bars — `lib/services/system_bars.dart`, `viewPadding`;
+5. guide metrics and its two touch paths — `lib/ui/guide_metrics.dart`;
+6. the mosaic as a column — `lib/mosaic_tiles.dart`, `widgets/phone_mosaic_view.dart`;
+7. the overlays a finger can open and leave — track picker, dim level dialog,
+   update banner/changelog, plugin settings box;
+8. the phone suites and the lab bookkeeping — `phone_touch_test`,
+   `phone_layout_test`, `TV_ONLY`/`PHONE_ONLY` in `run_android_suites.sh`.
+
+What is **not** done, on purpose, and where it is recorded: pinch to change the
+guide's span and a Close button in the guide (`docs/ARCHITECTURE.md`, "Client
+form factors"); the thumbnail's default per form factor (still a Settings row);
+and the mosaic in portrait with a phone that reports a television flag — the flag
+is measured on both lab profiles, and the size guard is only a fallback.
