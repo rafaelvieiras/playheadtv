@@ -23,7 +23,11 @@ import '../services/device_identity.dart';
 import '../services/pairing_boot.dart' show ServerUrlResolver;
 import '../services/pairing_service.dart';
 import '../services/settings_service.dart';
+import '../ui/first_run_metrics.dart';
+import '../ui/form_factor.dart';
 import '../ui/ui_scale.dart';
+import '../widgets/first_run_action.dart';
+import '../widgets/focus_reveal.dart';
 import 'mosaic_page.dart';
 import 'server_url_page.dart';
 import 'setup_page.dart';
@@ -265,6 +269,35 @@ class _PairingPageState extends State<PairingPage> {
     );
   }
 
+  // Both escapes from a PIN that will not work. The television wraps them side
+  // by side; a phone stacks them at thumb size (lib/ui/first_run_metrics.dart).
+  Widget _secondaryActions(BuildContext context) {
+    final other = OutlinedButton(
+      key: const Key('pairing-select-server-button'),
+      onPressed: _goToServerUrl,
+      child: Padding(
+        padding: EdgeInsets.all(context.ui(10)),
+        child: Text('Select another server', style: TextStyle(fontSize: context.ui(20))),
+      ),
+    );
+    final manual = OutlinedButton(
+      key: const Key('pairing-manual-button'),
+      onPressed: _goToManual,
+      child: Padding(
+        padding: EdgeInsets.all(context.ui(10)),
+        child: Text('Enter details manually', style: TextStyle(fontSize: context.ui(20))),
+      ),
+    );
+    if (FirstRunMetrics.of(context.formFactor).fullWidthActions) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        FirstRunAction(child: other),
+        SizedBox(height: context.ui(12)),
+        FirstRunAction(child: manual),
+      ]);
+    }
+    return Wrap(spacing: context.ui(16), runSpacing: context.ui(12), children: [other, manual]);
+  }
+
   Widget _buildPage(BuildContext context) {
     final pin = _pin;
     return Focus(
@@ -285,9 +318,12 @@ class _PairingPageState extends State<PairingPage> {
         ),
         body: FocusTraversalGroup(
           policy: OrderedTraversalPolicy(),
-          child: ListView(
-            padding: EdgeInsets.symmetric(vertical: context.ui(12)),
-            children: [
+          child: FocusReveal(
+            child: SingleChildScrollView(
+              padding: EdgeInsets.symmetric(vertical: context.ui(12)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
               if (_loading)
                 Padding(
                   padding: EdgeInsets.all(context.ui(24)),
@@ -340,26 +376,11 @@ class _PairingPageState extends State<PairingPage> {
               SizedBox(height: context.ui(12)),
               Padding(
                 padding: EdgeInsets.symmetric(horizontal: context.ui(24)),
-                child: Wrap(spacing: context.ui(16), runSpacing: context.ui(12), children: [
-                  OutlinedButton(
-                    key: const Key('pairing-select-server-button'),
-                    onPressed: _goToServerUrl,
-                    child: Padding(
-                      padding: EdgeInsets.all(context.ui(10)),
-                      child: Text('Select another server', style: TextStyle(fontSize: context.ui(20))),
-                    ),
-                  ),
-                  OutlinedButton(
-                    key: const Key('pairing-manual-button'),
-                    onPressed: _goToManual,
-                    child: Padding(
-                      padding: EdgeInsets.all(context.ui(10)),
-                      child: Text('Enter details manually', style: TextStyle(fontSize: context.ui(20))),
-                    ),
-                  ),
-                ]),
+                child: _secondaryActions(context),
               ),
-            ],
+                ],
+              ),
+            ),
           ),
         ),
       ),

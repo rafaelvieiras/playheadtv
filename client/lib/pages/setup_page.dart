@@ -22,7 +22,11 @@ import '../input/input_action.dart';
 import '../log/log.dart';
 import '../main.dart' show AppConfig;
 import '../services/settings_service.dart';
+import '../ui/first_run_metrics.dart';
+import '../ui/form_factor.dart';
 import '../ui/ui_scale.dart';
+import '../widgets/first_run_action.dart';
+import '../widgets/focus_reveal.dart';
 
 /// Called after a successful save with the setup page's own context. The first
 /// run uses it to move on to the home page; a Settings visit leaves it null and
@@ -215,6 +219,37 @@ class _SetupPageState extends State<SetupPage> {
     );
   }
 
+  // Two actions that have to share a row on a television and stack full width
+  // on a phone. A Wrap was enough to stop them clipping (they were 135 px wider
+  // than a 393 dp screen as a Row), but a Wrap still leaves two half-width
+  // controls to aim at; a phone gets one thumb-sized action per line.
+  Widget _actions(BuildContext context) {
+    final test = OutlinedButton(
+      key: const Key('setup-test-button'),
+      onPressed: _testing ? null : () => unawaited(_test()),
+      child: Padding(
+        padding: EdgeInsets.all(context.ui(10)),
+        child: Text('Test connection', style: TextStyle(fontSize: context.ui(20))),
+      ),
+    );
+    final save = FilledButton(
+      key: const Key('setup-save-button'),
+      onPressed: () => unawaited(_save()),
+      child: Padding(
+        padding: EdgeInsets.all(context.ui(10)),
+        child: Text('Save', style: TextStyle(fontSize: context.ui(20))),
+      ),
+    );
+    if (FirstRunMetrics.of(context.formFactor).fullWidthActions) {
+      return Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        FirstRunAction(child: test),
+        SizedBox(height: context.ui(12)),
+        FirstRunAction(child: save),
+      ]);
+    }
+    return Wrap(spacing: context.ui(16), runSpacing: context.ui(12), children: [test, save]);
+  }
+
   Widget _buildPage(BuildContext context) {
     final ready = _settings != null;
     return Focus(
@@ -242,9 +277,12 @@ class _SetupPageState extends State<SetupPage> {
             ? const Center(child: CircularProgressIndicator())
             : FocusTraversalGroup(
                 policy: OrderedTraversalPolicy(),
-                child: ListView(
-                  padding: EdgeInsets.symmetric(vertical: context.ui(12)),
-                  children: [
+                child: FocusReveal(
+                  child: SingleChildScrollView(
+                    padding: EdgeInsets.symmetric(vertical: context.ui(12)),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
                     Padding(
                       padding: EdgeInsets.symmetric(horizontal: context.ui(24), vertical: context.ui(8)),
                       child: Text(
@@ -275,27 +313,11 @@ class _SetupPageState extends State<SetupPage> {
                     SizedBox(height: context.ui(12)),
                     Padding(
                       padding: EdgeInsets.symmetric(horizontal: context.ui(24)),
-                      child: Row(children: [
-                        OutlinedButton(
-                          key: const Key('setup-test-button'),
-                          onPressed: _testing ? null : () => unawaited(_test()),
-                          child: Padding(
-                            padding: EdgeInsets.all(context.ui(10)),
-                            child: Text('Test connection', style: TextStyle(fontSize: context.ui(20))),
-                          ),
-                        ),
-                        SizedBox(width: context.ui(16)),
-                        FilledButton(
-                          key: const Key('setup-save-button'),
-                          onPressed: () => unawaited(_save()),
-                          child: Padding(
-                            padding: EdgeInsets.all(context.ui(10)),
-                            child: Text('Save', style: TextStyle(fontSize: context.ui(20))),
-                          ),
-                        ),
-                      ]),
+                      child: _actions(context),
                     ),
-                  ],
+                      ],
+                    ),
+                  ),
                 ),
               ),
       ),
