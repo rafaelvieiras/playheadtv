@@ -19,7 +19,11 @@ import '../input/input_action.dart';
 import '../log/log.dart';
 import '../services/pairing_boot.dart' show ServerUrlResolver;
 import '../services/settings_service.dart';
+import '../ui/first_run_metrics.dart';
+import '../ui/form_factor.dart';
 import '../ui/ui_scale.dart';
+import '../widgets/first_run_action.dart';
+import '../widgets/focus_reveal.dart';
 import 'pairing_page.dart';
 
 class ServerUrlPage extends StatefulWidget {
@@ -175,9 +179,12 @@ class _ServerUrlPageState extends State<ServerUrlPage> {
             ? const Center(child: CircularProgressIndicator())
             : FocusTraversalGroup(
                 policy: OrderedTraversalPolicy(),
-                child: ListView(
-                  padding: EdgeInsets.symmetric(vertical: context.ui(12)),
-                  children: [
+                child: FocusReveal(
+                  child: SingleChildScrollView(
+                    padding: EdgeInsets.symmetric(vertical: context.ui(12)),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
                     Padding(
                       padding: EdgeInsets.symmetric(horizontal: context.ui(24), vertical: context.ui(8)),
                       child: Text(
@@ -225,18 +232,34 @@ class _ServerUrlPageState extends State<ServerUrlPage> {
                     SizedBox(height: context.ui(12)),
                     Padding(
                       padding: EdgeInsets.symmetric(horizontal: context.ui(24)),
-                      child: Row(children: [
-                        FilledButton(
-                          key: const Key('server-url-continue-button'),
-                          onPressed: _probing ? null : () => unawaited(_continue()),
-                          child: Padding(
-                            padding: EdgeInsets.all(context.ui(10)),
-                            child: Text('Continue', style: TextStyle(fontSize: context.ui(20))),
-                          ),
-                        ),
-                      ]),
+                      // The one thing this screen asks for. On a phone it takes
+                      // the content width and a thumb's height; the television
+                      // keeps the intrinsic-width button it has always drawn.
+                      child: FirstRunMetrics.of(context.formFactor).fullWidthActions
+                          ? FirstRunAction(
+                              child: FilledButton(
+                                key: const Key('server-url-continue-button'),
+                                onPressed: _probing ? null : () => unawaited(_continue()),
+                                child: Padding(
+                                  padding: EdgeInsets.all(context.ui(10)),
+                                  child: Text('Continue', style: TextStyle(fontSize: context.ui(20))),
+                                ),
+                              ),
+                            )
+                          : Row(children: [
+                              FilledButton(
+                                key: const Key('server-url-continue-button'),
+                                onPressed: _probing ? null : () => unawaited(_continue()),
+                                child: Padding(
+                                  padding: EdgeInsets.all(context.ui(10)),
+                                  child: Text('Continue', style: TextStyle(fontSize: context.ui(20))),
+                                ),
+                              ),
+                            ]),
                     ),
-                  ],
+                      ],
+                    ),
+                  ),
                 ),
               ),
       ),

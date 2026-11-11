@@ -1375,12 +1375,25 @@ repo never contains.
       (`client/lib/widgets/focus_reveal.dart`) centres the focused row when it
       takes focus and again after the metrics change, which is the case with no
       focus event to react to. `test/focus_reveal_test.dart` pins both.
+- [x] The first-run screens had no phone layout at all (fixed 2026-11-10). The
+      eight phone slices covered every screen a *configured* install reaches, so
+      an install that has not paired yet — `ServerUrlPage`, `PairingPage`,
+      `SetupPage` — kept drawing a desktop form. On a 393 dp phone the primary
+      action measured 65x35 dp and `SetupPage`'s two buttons were 135 px wider
+      than the screen. `FirstRunMetrics` + `FirstRunAction` give the phone
+      full-width actions with a finger floor and leave the television's intrinsic
+      buttons alone. Found by a real phone after a lab sweep of 45 desktop suites
+      and two phone suites came back green: none of them ever booted *without* a
+      connection.
 - [ ] `leave_during_load_test` is flaky on the hosted runner and nobody has
       seen why yet. The 2026-11-10 nightly dispatches are the record: it answered
       FLAKY (58 s, passed on retry) on a run where the other 44 suites were
       green, and it has never flaked on a developer machine or in the GUI
       container there. The runner is slower and has 2 vCPU, so the first thing to
       look at is what its waits are keyed on: a wall-clock bound, or a condition.
+      One local sighting of the same class: `boot_prefetch_flow_test` failed once
+      inside a full `flutter test` run (parallel files) and passed alone and in
+      the two runs after it, 639 green each time.
 - [x] A cold boot could declare "nothing scheduled in the next 48h" for a
       channel that was about to play (fixed 2026-11-10). Found on the Android lab
       with `epg_window_test`'s legacy case, which passes on the desktop; the run
