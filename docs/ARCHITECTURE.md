@@ -2276,7 +2276,36 @@ client and takes the screen back when it ends), so leaving is part of the app.
   pixels), so a large choice on a small window cannot overflow it; the
   automatic factor needs no cap.
 
-### Client form factors
+### First-run screens on a phone
+
+The eight phone slices (docs/PHONE_UI_PLAN.md) covered the home, the player, the
+OSD, the guide, the overlays and the mosaics — every screen a *configured*
+install reaches. A real phone found the gap on the way in: an install that has
+not paired yet lands on `ServerUrlPage`, `PairingPage` or `SetupPage`, and those
+three still drew a desktop form. Measured on a 393 dp phone, at the phone scale
+the app had already chosen: the primary action ("Continue") was 65x35 dp, sized
+by its own label, below the 48 dp a thumb needs; and `SetupPage`'s two buttons
+in a `Row` were 135 px wider than the screen.
+
+What they use now, and why it is not an `if (isPhone)` in each page:
+
+- `FirstRunMetrics` (`lib/ui/first_run_metrics.dart`) says what a family needs:
+  `tv` (intrinsic-width actions, no floor — a no-op, so the television layout is
+  byte-identical) and `phone` (full-width actions, a 48 dp finger floor).
+  `FirstRunAction` (`lib/widgets/first_run_action.dart`) is the phone half.
+- The pages branch on that object for *layout* only; every size still comes from
+  `context.ui(...)` through `UiScale`, and every text still scales.
+- All three bodies are `FocusReveal` -> `SingleChildScrollView` -> `Column`, not
+  `ListView`: same rule as the Settings pages (a row the viewport drops is a row
+  the focus cannot come back to), and it is what makes the last action reachable
+  in landscape with the keyboard up.
+- `test/phone_first_run_test.dart` holds the contract: at 360x780 and 780x360
+  nothing overflows, every control is at least a finger tall, every control can be
+  scrolled into the window, and every action is at least 60% of the content width
+  — plus one case asserting the *television* still gets intrinsic-width buttons on
+  a single line, so the phone branch cannot quietly move it.
+
+## Client form factors
 
 Design plan for the phone UI: `PHONE_UI_PLAN.md`. What exists today is only the
 seam, deliberately with no visual change.

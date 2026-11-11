@@ -285,6 +285,17 @@ or LLM, and to every artifact in the repo:
   misclassifies it. Plan: `docs/PHONE_UI_PLAN.md`; design:
   `docs/ARCHITECTURE.md` "Client form factors".
 
+- **The first-run screens are a layout family too**
+  (`FirstRunMetrics`, `lib/ui/first_run_metrics.dart`): `ServerUrlPage`,
+  `PairingPage` and `SetupPage` are the only screens a *not yet paired* install
+  reaches, so the eight phone slices never touched them and a real phone found a
+  65x35 dp "Continue" sized by its label. On a phone their actions take the
+  content width with a 48 dp floor (`FirstRunAction`); on a television the
+  metrics are a no-op and the buttons keep the intrinsic width they always had
+  (`test/phone_first_run_test.dart` pins both halves). Their bodies are
+  `FocusReveal` + `SingleChildScrollView` + `Column` for the same reason the
+  Settings pages are.
+
 - The channel OSD's design units live in `OsdMetrics`
   (`lib/ui/osd_metrics.dart`), one const object per layout family; `OsdMetrics.tv`
   must stay the literals the widget always used (the `osd_*.png` goldens prove
