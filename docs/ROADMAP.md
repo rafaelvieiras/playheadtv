@@ -1375,6 +1375,12 @@ repo never contains.
       (`client/lib/widgets/focus_reveal.dart`) centres the focused row when it
       takes focus and again after the metrics change, which is the case with no
       focus event to react to. `test/focus_reveal_test.dart` pins both.
+- [ ] `leave_during_load_test` is flaky on the hosted runner and nobody has
+      seen why yet. The 2026-11-10 nightly dispatches are the record: it answered
+      FLAKY (58 s, passed on retry) on a run where the other 44 suites were
+      green, and it has never flaked on a developer machine or in the GUI
+      container there. The runner is slower and has 2 vCPU, so the first thing to
+      look at is what its waits are keyed on: a wall-clock bound, or a condition.
 - [x] A cold boot could declare "nothing scheduled in the next 48h" for a
       channel that was about to play (fixed 2026-11-10). Found on the Android lab
       with `epg_window_test`'s legacy case, which passes on the desktop; the run
