@@ -69,15 +69,15 @@ func TestReachableURLRewritesOnlyTheHost(t *testing.T) {
 func TestReachableURLUsesTheConfiguredStreamHost(t *testing.T) {
 	r := httptest.NewRequest("GET", "http://example.test/x", nil)
 	r.Host = "tv.example.test"
-	got, err := reachableURL("http://127.0.0.1:41234/s/index.m3u8", r, "192.168.1.10")
+	got, err := reachableURL("http://127.0.0.1:41234/s/index.m3u8", r, "192.0.2.11")
 	if err != nil {
 		t.Fatalf("reachableURL: %v", err)
 	}
-	if got != "http://192.168.1.10:41234/s/index.m3u8" {
+	if got != "http://192.0.2.11:41234/s/index.m3u8" {
 		t.Errorf("got %q, want the configured host with the plugin's own port", got)
 	}
 	// A url that already names somewhere else is still the plugin's business.
-	got, err = reachableURL("https://cdn.example.test/v.mp4", r, "192.168.1.10")
+	got, err = reachableURL("https://cdn.example.test/v.mp4", r, "192.0.2.11")
 	if err != nil || got != "https://cdn.example.test/v.mp4" {
 		t.Errorf("a remote url must not be rewritten: %q, %v", got, err)
 	}

@@ -11,9 +11,8 @@
 #   tool/android_lab.sh verdict <attempt-dir>
 #
 # The device layer is not here. Booting, taming, leasing, pressing, the widget
-# tree, the screenshot and the golden diff belong to the shared kit at
-# ~/ai-workspace/scripts/android-lab (ANDROID_LAB_BIN), so the next Android
-# project uses the same one and only one script knows how an emulator is driven.
+# tree, the screenshot and the golden diff belong to an external kit that this
+# repository does not ship: point ANDROID_LAB_BIN at it, or have `lab` on PATH.
 # What is left here is what belongs to this project: the host backend, the media
 # the suites play, the evidence a failing suite leaves behind, and the verdict.
 #
@@ -52,10 +51,11 @@ lab_flutter() {
   command -v flutter
 }
 STATE=${ANDROID_LAB_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/android-lab}
-# The device layer — boot, tame, lease, press, screenshot, the widget tree — lives
-# in the shared kit, so the next Android project uses the same one. Point
-# ANDROID_LAB_BIN at it, or have `lab` on PATH.
-LAB=${ANDROID_LAB_BIN:-$(command -v lab 2>/dev/null || echo "${ANDROID_LAB_HOME:-$HOME/ai-workspace/scripts/android-lab}/lab")}
+# The device layer — boot, tame, lease, press, screenshot, the widget tree — is an
+# external kit this repository does not ship. Point ANDROID_LAB_BIN at it, or have
+# `lab` on PATH.
+LAB=${ANDROID_LAB_BIN:-${ANDROID_LAB_HOME:+$ANDROID_LAB_HOME/lab}}
+[ -n "$LAB" ] || LAB=$(command -v lab 2>/dev/null || echo lab)
 TMO=900; OUT=; SERIAL=; PROFILE=; PORT=5554; COLD=1; WIPE=0; RETRY=1; BACKEND=1; MEDIA=1; WATCH=1; FRAME_UI=0
 RECORD=0; WAIT=0; LEASE_WAIT=0; PKG=io.github.rafaelvieiras.playheadtv.client
 FLAKE_RE='Unable to start the app|Error waiting for a debug connection|did not complete|Test process is no longer needed|stalled|device offline'
@@ -72,7 +72,7 @@ if [ -z "${LAB_SELF_COPY:-}" ]; then
 fi
 
 die() { echo "android_lab: $*" >&2; exit 2; }
-[ -x "$LAB" ] || die "the shared kit is not at $LAB; set ANDROID_LAB_BIN to its lab script"
+[ -x "$LAB" ] || die "the device-layer kit is not at $LAB; set ANDROID_LAB_BIN to its lab script"
 note() { echo "android_lab: $*" >&2; }
 
 sdk_paths() {

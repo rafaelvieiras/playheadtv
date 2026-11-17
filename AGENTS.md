@@ -760,12 +760,12 @@ device, driven by scripts that end in a file an agent or a human can read.
   the media the suites play, the evidence a failing attempt leaves behind (`run`
   for a single suite, `verdict` to (re)build a verdict from an attempt directory).
 - The device layer is not here. Booting, taming, leasing, pressing, the widget
-  tree, the screenshot and the golden diff live in the shared kit at
-  `~/ai-workspace/scripts/android-lab` (`ANDROID_LAB_BIN`, or `lab` on PATH), so
-  the next Android project uses the same one. `avd up|down`, `profiles`, `device`,
-  `grab` and `lease` remain in this repository because the suites script and the
-  habit of the repo already call them; each one passes straight through to
-  `lab up|down|profiles|status|evidence|lease` and prints what the kit prints.
+  tree, the screenshot and the golden diff belong to an external kit that this
+  repository does not ship (`ANDROID_LAB_BIN`, or `lab` on PATH). `avd up|down`,
+  `profiles`, `device`, `grab` and `lease` remain in this repository because the
+  suites script and the habit of the repo already call them; each one passes
+  straight through to `lab up|down|profiles|status|evidence|lease` and prints
+  what the kit prints.
 - CI does not validate Android, and it cannot. `.github/workflows/gui-suites.yml`
   runs the desktop GUI suites on a hosted runner, manual or nightly; the device
   suites need an emulator with `/dev/kvm` plus the host backend and media, which
