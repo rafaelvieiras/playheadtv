@@ -1,0 +1,22 @@
+* text=auto eol=lf
+
+*.go text eol=lf
+*.sql text eol=lf
+*.sh text eol=lf
+*.yml text eol=lf
+*.dart text eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.mp4 binary
+*.tar.gz binary
+
+*.sqlite binary
+*.sqlite-wal binary
+*.sqlite-shm binary
