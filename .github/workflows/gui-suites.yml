@@ -23,7 +23,7 @@ name: GUI suites (desktop)
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 6 * * *' # 03:00 in São Paulo
+    - cron: '0 6 * * *' # 06:00 UTC
 
 permissions:
   contents: read
