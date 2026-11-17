@@ -1496,3 +1496,14 @@ repo never contains.
       Tests: `client/test/clock_test.dart`,
       `client/integration_test/channel_logo_clock_test.dart`. Not checked on a
       real display beyond the headless GUI container.
+
+- [x] Open-source readiness (2026-11-11): the community files a public
+      repository needs (`CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`,
+      a PR template, `dependabot.yml`, `.editorconfig`, `.gitattributes`,
+      `CHANGELOG.md`), a README that matches what ships today (Android TV and
+      phone, plugins), and the personal-infrastructure scrub: real LAN addresses
+      replaced by the RFC 5737 documentation ranges, a local hardware fact
+      stated as a condition, no private path for the Android device kit, and the
+      GUI suites cron comment in UTC. Remaining before the repository can be
+      made public: rewrite the history for the LAN address that predates the
+      scrub, decide the public support address, then flip the visibility.
