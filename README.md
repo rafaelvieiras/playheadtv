@@ -17,10 +17,12 @@ original files itself (direct-play when possible), stitching programs, commercia
 and bumpers together with its own preload+crossfade logic. The backend never touches
 video — it only owns scheduling metadata and user/device sync.
 
-- **Client** (`client/`): Flutter, desktop-first (Linux/Windows), then Android +
-  Android TV, then iOS/tvOS. Video engine: [`fvp`](https://github.com/wang-bin/fvp)
-  (libmdk), behind a playback abstraction so the engine can be swapped per platform
-  later.
+- **Client** (`client/`): Flutter, on Linux/Windows desktop, Android TV and
+  Android phones, with iOS/tvOS still ahead. One codebase, two layout families
+  (a television and a phone each pick theirs at boot). Video engine:
+  [`fvp`](https://github.com/wang-bin/fvp) (libmdk) behind a playback
+  abstraction, plus an opt-in ExoPlayer engine on Android for decoders that
+  reject libmdk's surface.
 - **Backend** (`backend/`): Go. Owns channels, program blocks, filler/commercial
   rules (pre-roll/mid-roll/post-roll/tail), users, devices, and media source catalog
   sync (Jellyfin in v1; the schema is source-agnostic — see
@@ -50,13 +52,25 @@ Working today:
 - **Admin web UI** (`webui/`): React SPA embedded in the Go binary and
   served under `/admin/` — EPG grid, channels, blocks, schedule, filler,
   media sources and devices.
-- **Flutter client** (`client/`, Linux desktop so far): real playback from
-  the materialized EPG with preload+crossfade, a mosaic home screen, a
-  full-screen EPG overlay and remappable controls.
+- **Flutter client** (`client/`): Linux and Windows desktop, Android TV and
+  Android phones. Real playback from the materialized EPG with
+  preload+crossfade, a mosaic home screen (twelve-cell ring on a television, a
+  channel column on a phone), a full-screen EPG overlay, remappable controls, a
+  channel OSD with an always-on clock, channel logos, an offline cache that
+  keeps the guide readable with the backend down, and an updater that verifies
+  signed release checksums.
+- **Plugins** (`docs/PLUGINS.md`): a source that needs an extractor is an
+  external plugin that runs on the backend, never in the client and never as
+  site-specific code here. A plugin declares its own settings, and the client
+  draws the settings screen from that declaration. The first one, the
+  [Playhead TV plugin for YouTube](https://github.com/rafaelvieiras/playheadtv-plugin-youtube),
+  is its own repository, MIT like this one.
 
-Not done yet: Android/Android TV builds, Plex/local-folder media sources,
-the Cloudflare D1 storage backend for the cloud-sync tier. See
-[`docs/ROADMAP.md`](docs/ROADMAP.md) for the full checklist.
+Not done yet: Plex and local-folder media sources, iOS and tvOS builds, the
+Cloudflare D1 storage backend for the cloud-sync tier, and a real multi-user
+permission model (every deployment is one tenant today). See
+[`docs/ROADMAP.md`](docs/ROADMAP.md) for the full checklist and
+[`CHANGELOG.md`](CHANGELOG.md) for what shipped recently.
 
 ### Run with Docker
 
@@ -105,6 +119,15 @@ export PLAYHEADTV_ENCRYPTION_KEY=$(openssl rand -base64 32)
 Build, test and run commands for the backend, web UI and client, plus the
 project's working conventions, are in [`AGENTS.md`](AGENTS.md). The Flutter
 client has its own notes in [`client/README.md`](client/README.md).
+
+## Contributing
+
+Contributions are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) has the
+prerequisites, the commands to run before opening a pull request, and the rules
+this repository does not bend (English only, no personal infrastructure in the
+files, no AI co-authorship, no site-specific source code). Security problems go
+through [`SECURITY.md`](SECURITY.md) - please do not open a public issue for
+them.
 
 ## License
 
