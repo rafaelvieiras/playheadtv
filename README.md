@@ -1,6 +1,25 @@
-# Playhead TV 📺
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="assets/logo.svg">
+    <img alt="Playhead TV" src="assets/logo.svg" width="330">
+  </picture>
+</p>
 
-A self-hosted, multiplatform simulated linear TV app for your own media library.
+<p align="center">
+  Your own linear TV channels, assembled on the client.<br>
+  No server-side transcoding, no tuner.
+</p>
+
+<p align="center">
+  <a href="https://github.com/rafaelvieiras/playheadtv/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/rafaelvieiras/playheadtv/ci.yml?branch=main&label=CI"></a>
+  <a href="https://github.com/rafaelvieiras/playheadtv/releases?q=client-v"><img alt="Client release" src="https://img.shields.io/github/v/release/rafaelvieiras/playheadtv?filter=client-v*&label=client"></a>
+  <a href="https://github.com/rafaelvieiras/playheadtv/releases?q=v"><img alt="Backend release" src="https://img.shields.io/github/v/release/rafaelvieiras/playheadtv?filter=v*&label=backend"></a>
+  <a href="https://github.com/rafaelvieiras/playheadtv/pkgs/container/playheadtv-backend"><img alt="Image" src="https://img.shields.io/badge/ghcr.io-playheadtv--backend-blue?logo=docker&logoColor=white"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/rafaelvieiras/playheadtv"></a>
+  <img alt="Go" src="https://img.shields.io/badge/go-1.26-00ADD8?logo=go&logoColor=white">
+  <img alt="Flutter" src="https://img.shields.io/badge/dart-3.13%2B-0175C2?logo=dart&logoColor=white">
+</p>
 
 Playhead TV exists because the apps that already do this — NostalgiaTV, QuasiTV —
 are Android TV/Fire TV only, closed source, and assemble the channel stream on a
