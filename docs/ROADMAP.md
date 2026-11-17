@@ -1504,6 +1504,13 @@ repo never contains.
       phone, plugins), and the personal-infrastructure scrub: real LAN addresses
       replaced by the RFC 5737 documentation ranges, a local hardware fact
       stated as a condition, no private path for the Android device kit, and the
-      GUI suites cron comment in UTC. Remaining before the repository can be
-      made public: rewrite the history for the LAN address that predates the
-      scrub, decide the public support address, then flip the visibility.
+      GUI suites cron comment in UTC. The history was rewritten for the LAN
+      address that predated the scrub (and for the private device-kit path,
+      the time-zone comment and the local hardware sentence), and the
+      repository went public on 2026-11-11 with `hello@rafaelvieiras.com` as
+      the support address. Known residue: the pull-request refs of the two
+      dependabot pull requests that existed before the last rewrite still make
+      the pre-rewrite commits reachable (`refs/pull/91/head`,
+      `refs/pull/92/head`); nothing secret, no address, and GitHub keeps those
+      refs for closed pull requests. Only recreating the repository removes
+      them.
