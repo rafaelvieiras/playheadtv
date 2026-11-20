@@ -7,7 +7,7 @@ Two independent release streams share this repository. Design:
 |---|---|---|
 | Tag | `vX.Y.Z` | `client-vX.Y.Z` |
 | Workflow | `.github/workflows/backend-release.yml` | `.github/workflows/client-release.yml` |
-| Output | `ghcr.io/<owner>/<repo>-backend:vX.Y.Z` and `:sha-<commit>` (amd64 + arm64), GitHub Release | on a GitHub Release: `playheadtv-client-X.Y.Z-linux-x64.tar.gz`, `playheadtv-client-X.Y.Z-linux-x64.AppImage`, `playheadtv-client-X.Y.Z-checksums.txt` and its signature `...-checksums.txt.sig` |
+| Output | `ghcr.io/<owner>/<repo>-backend:vX.Y.Z`, `:sha-<commit>` (both immutable) and `:latest` (follows the newest release), amd64 + arm64, GitHub Release | on a GitHub Release: `playheadtv-client-X.Y.Z-linux-x64.tar.gz`, `playheadtv-client-X.Y.Z-linux-x64.AppImage`, `playheadtv-client-X.Y.Z-checksums.txt` and its signature `...-checksums.txt.sig` |
 | Consumed by | the operator's GitOps repository (`deploy/README.md`) | installed clients (headless updater) and first installs |
 
 Pushes and pull requests run `.github/workflows/ci.yml` (backend build, vet,

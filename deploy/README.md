@@ -16,7 +16,10 @@ admin).
 - The image `ghcr.io/rafaelvieiras/playheadtv-backend`, published by the
   [backend release workflow](../.github/workflows/backend-release.yml) for
   `linux/amd64` and `linux/arm64`, with immutable tags `vX.Y.Z` and
-  `sha-<commit>`. There is no `latest` tag.
+  `sha-<commit>`, plus a `latest` that follows the newest release. Pin `vX.Y.Z`
+  to hold a version; use `latest` to follow releases, remembering that the tag
+  moves but a running container does not — pulling and recreating is still an
+  explicit step.
 - A named volume `playheadtv-prod-data` holding the SQLite database and
   `encryption.key`.
 - A healthcheck that runs `/server healthcheck` (the image has no shell or

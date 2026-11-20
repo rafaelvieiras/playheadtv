@@ -2688,8 +2688,11 @@ the design.
 
 A `vX.Y.Z` tag runs `.github/workflows/backend-release.yml`: build, vet and
 test as a gate, then one multi-arch image (`linux/amd64`, `linux/arm64`) pushed
-to `ghcr.io/<owner>/<repo>-backend` with the tags `vX.Y.Z` and `sha-<commit>`
-(no `latest`: a deployment pins a version), and a GitHub Release. The Dockerfile
+to `ghcr.io/<owner>/<repo>-backend` with the immutable tags `vX.Y.Z` and
+`sha-<commit>`, a `latest` that follows the newest release, and a GitHub Release.
+`vX.Y.Z` is the tag to pin when a deployment must not move; `latest` is for one
+that follows releases, and it still only changes when the image is pulled and
+the container recreated. The Dockerfile
 cross-compiles with the build platform's Go toolchain (`GOOS`/`GOARCH` from
 `TARGETOS`/`TARGETARCH`) instead of emulating the target, and the final stage is
 distroless, which is why the server has a `healthcheck` subcommand (probes the

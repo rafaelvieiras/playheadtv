@@ -2,8 +2,10 @@ name: Backend release
 
 # A `vX.Y.Z` tag builds the backend image (web UI embedded) for amd64 and arm64
 # and pushes it to GitHub Container Registry as ghcr.io/<owner>/<repo>-backend
-# with immutable tags: vX.Y.Z and sha-<commit>. There is deliberately no
-# `latest`: a deployment pins a version tag (deploy/README.md).
+# with the immutable tags vX.Y.Z and sha-<commit>, plus a moving `latest` that
+# always follows the newest release (deploy/README.md). A deployment that wants
+# to pin a version uses vX.Y.Z; one that wants to follow releases uses `latest`
+# and updates only when it is told to (the tag moves, the container does not).
 # Client releases use `client-vX.Y.Z` tags and their own workflow.
 on:
   push:
@@ -48,6 +50,7 @@ jobs:
           tags: |
             type=raw,value=${{ github.ref_name }}
             type=sha,prefix=sha-,format=long
+            type=raw,value=latest
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
