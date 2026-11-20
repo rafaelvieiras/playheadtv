@@ -14,6 +14,14 @@ import (
 type (
 	noArgs struct{}
 
+	// importPlanArgs is a programming plan document plus the two query knobs of
+	// the import; the embedded plan's fields are inlined in the JSON body.
+	importPlanArgs struct {
+		api.ProgrammingPlan
+		DryRun     bool   `json:"dry_run,omitempty" jsonschema:"report what would change without writing anything"`
+		OnConflict string `json:"on_conflict,omitempty" jsonschema:"what to do with an object that already exists: update (default), skip or reject"`
+	}
+
 	idArgs struct {
 		ID string `json:"id" jsonschema:"the id of the resource"`
 	}
@@ -61,7 +69,9 @@ type (
 	}
 	scheduleItemArgs struct {
 		ID             string  `json:"id" jsonschema:"the schedule item to replace"`
-		BlockID        string  `json:"block_id" jsonschema:"the block that airs"`
+		BlockID        string  `json:"block_id,omitempty" jsonschema:"the block that airs; mutually exclusive with collection_id"`
+		CollectionID   string  `json:"collection_id,omitempty" jsonschema:"the collection that airs, with no block; mutually exclusive with block_id"`
+		PlaybackOrder  string  `json:"playback_order,omitempty" jsonschema:"collection items only: title, release_date, random, shuffle or interleaved"`
 		RecurrenceType string  `json:"recurrence_type" jsonschema:"one of: weekly, once, continuous"`
 		DaysOfWeek     []int   `json:"days_of_week,omitempty" jsonschema:"weekdays 0 (Sunday)-6; weekly only"`
 		StartTimeLocal *string `json:"start_time_local,omitempty" jsonschema:"HH:MM; weekly only"`
@@ -223,6 +233,19 @@ func registerRESTTools(s *mcp.Server, db storage.DB, mux http.Handler) {
 		"Replace a schedule item (a full replace). Resets the EPG grid of the channels the schedule is assigned to.", false)
 	addREST[idConfirmArgs](s, rc, "delete_schedule_item", "DELETE /schedule-items/{id}",
 		"Delete a schedule item. Resets the EPG grid of the channels the schedule is assigned to.", true)
+
+	// Programming plan (issue #101).
+	addREST[noArgs](s, rc, "export_programming_plan", "GET /programming-plan",
+		"Export this instance's whole programming grid as one JSON document: collections (name + query), blocks "+
+			"(settings + items, referenced by media source name and external id), schedules (their rules, including "+
+			"items that name a collection) and channels (number, timezone, schedule names). No ids, no credentials, "+
+			"no paths. Deterministic: two exports of the same instance are byte-identical.", false)
+	addREST[importPlanArgs](s, rc, "import_programming_plan", "POST /programming-plan",
+		"Apply a programming plan exported from any instance: idempotent, matched by name (collections, blocks, "+
+			"schedules) and by number (channels), in dependency order. Set dry_run to get the full report "+
+			"(created/updated/unchanged/skipped/rejected) without writing anything, and on_conflict to choose what "+
+			"happens to an object that already exists: update (default), skip, or reject.", false,
+		asQuery("dry_run", "on_conflict"))
 
 	// Filler pools, pool items and rules.
 	addREST[idArgs](s, rc, "get_filler_pool", "GET /filler-pools/{id}", "Read one filler pool.", false)

@@ -33,7 +33,7 @@ const scheduleColumns = "id, tenant_id, name, description, created_at, updated_a
 // scheduleItemColumns aliases recurrence_type to Recurrence, the struct field
 // name domain.ScheduleItem actually has — same pattern as fillerRuleColumns
 // in filler.go.
-const scheduleItemColumns = "id, tenant_id, schedule_id, block_id, recurrence_type AS recurrence, days_of_week, start_time_local, start_at, active, created_at, updated_at"
+const scheduleItemColumns = "id, tenant_id, schedule_id, COALESCE(block_id, '') AS block_id, COALESCE(collection_id, '') AS collection_id, COALESCE(playback_order, '') AS playback_order, recurrence_type AS recurrence, days_of_week, start_time_local, start_at, active, created_at, updated_at"
 
 type scheduleRequest struct {
 	Name        string  `json:"name"`
@@ -182,8 +182,12 @@ func deleteSchedule(db storage.DB, mat *materializer.Materializer) http.HandlerF
 	}
 }
 
+// scheduleItemRequest is one recurrence rule. Exactly one target: block_id (an
+// authored list) or collection_id (a rule aired as it is, with playback_order).
 type scheduleItemRequest struct {
 	BlockID        string  `json:"block_id"`
+	CollectionID   string  `json:"collection_id"`
+	PlaybackOrder  string  `json:"playback_order"`
 	RecurrenceType string  `json:"recurrence_type"`
 	DaysOfWeek     []int   `json:"days_of_week"`
 	StartTimeLocal *string `json:"start_time_local"`
@@ -202,8 +206,17 @@ func requestWeekdays(req scheduleItemRequest) domain.Weekdays {
 }
 
 func validateScheduleItemRequest(req scheduleItemRequest) (string, bool) {
-	if req.BlockID == "" {
-		return "block_id is required", false
+	switch {
+	case req.BlockID == "" && req.CollectionID == "":
+		return "one of block_id or collection_id is required", false
+	case req.BlockID != "" && req.CollectionID != "":
+		return "block_id and collection_id are mutually exclusive", false
+	case req.CollectionID != "" && req.PlaybackOrder == "":
+		return "playback_order is required for a collection item", false
+	case req.CollectionID == "" && req.PlaybackOrder != "":
+		return "playback_order is only valid for a collection item", false
+	case req.PlaybackOrder != "" && !domain.ValidCriteriaOrder(req.PlaybackOrder):
+		return "playback_order must be one of title, release_date, random, shuffle, interleaved", false
 	}
 	switch domain.RecurrenceType(req.RecurrenceType) {
 	case domain.RecurrenceWeekly:
@@ -276,6 +289,10 @@ func createScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 			writeError(w, http.StatusBadRequest, msg)
 			return
 		}
+		if _, err := collectionRef(r.Context(), db, &req.CollectionID); err != nil {
+			writeCollectionRefError(w, err)
+			return
+		}
 		if req.RecurrenceType == string(domain.RecurrenceContinuous) {
 			ok, err := checkSingleContinuous(db, r, scheduleID, "")
 			if err != nil {
@@ -298,6 +315,8 @@ func createScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 			TenantID:       DefaultTenantID,
 			ScheduleID:     scheduleID,
 			BlockID:        req.BlockID,
+			CollectionID:   req.CollectionID,
+			PlaybackOrder:  req.PlaybackOrder,
 			Recurrence:     domain.RecurrenceType(req.RecurrenceType),
 			DaysOfWeek:     requestWeekdays(req),
 			StartTimeLocal: req.StartTimeLocal,
@@ -307,9 +326,10 @@ func createScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 			UpdatedAt:      now,
 		}
 		err := db.Exec(r.Context(),
-			`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, recurrence_type, days_of_week, start_time_local, start_at, active, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			si.ID, si.TenantID, si.ScheduleID, si.BlockID, string(si.Recurrence), si.DaysOfWeek, si.StartTimeLocal,
+			`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, collection_id, playback_order, recurrence_type, days_of_week, start_time_local, start_at, active, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			si.ID, si.TenantID, si.ScheduleID, nullIfEmpty(si.BlockID), nullIfEmpty(si.CollectionID),
+			nullIfEmpty(si.PlaybackOrder), string(si.Recurrence), si.DaysOfWeek, si.StartTimeLocal,
 			si.StartAt, si.Active, si.CreatedAt, si.UpdatedAt,
 		)
 		if err != nil {
@@ -369,6 +389,10 @@ func updateScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 			writeError(w, http.StatusBadRequest, msg)
 			return
 		}
+		if _, err := collectionRef(r.Context(), db, &req.CollectionID); err != nil {
+			writeCollectionRefError(w, err)
+			return
+		}
 		if req.RecurrenceType == string(domain.RecurrenceContinuous) {
 			ok, err := checkSingleContinuous(db, r, existing.ScheduleID, id)
 			if err != nil {
@@ -387,9 +411,10 @@ func updateScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 		}
 		// scheduleID is immutable via PUT (items don't move between schedules).
 		err = db.Exec(r.Context(),
-			`UPDATE schedule_item SET block_id = ?, recurrence_type = ?, days_of_week = ?,
-			 start_time_local = ?, start_at = ?, active = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`,
-			req.BlockID, req.RecurrenceType, requestWeekdays(req), req.StartTimeLocal, req.StartAt,
+			`UPDATE schedule_item SET block_id = ?, collection_id = ?, playback_order = ?, recurrence_type = ?,
+			 days_of_week = ?, start_time_local = ?, start_at = ?, active = ?, updated_at = ? WHERE tenant_id = ? AND id = ?`,
+			nullIfEmpty(req.BlockID), nullIfEmpty(req.CollectionID), nullIfEmpty(req.PlaybackOrder),
+			req.RecurrenceType, requestWeekdays(req), req.StartTimeLocal, req.StartAt,
 			active, time.Now().UnixMilli(), DefaultTenantID, id,
 		)
 		if err != nil {

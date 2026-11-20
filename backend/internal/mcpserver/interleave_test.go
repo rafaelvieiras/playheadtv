@@ -56,7 +56,7 @@ func TestMCPInterleavedOrder(t *testing.T) {
 
 	for i, args := range []map[string]any{
 		{"name": "x", "playback_order": "interleaved"}, // manual block
-		{"name": "x", "collection_id": col.ID, "playback_order": "shuffle"},
+		{"name": "x", "collection_id": col.ID, "playback_order": "backwards"},
 		{"name": "x", "collection_id": "nope"},
 		{"name": "x", "collection_id": col.ID, "interleave": map[string]any{"per_round": 2}},
 		{"name": "x", "collection_id": col.ID, "playback_order": "interleaved", "interleave": map[string]any{"per_round": 0}},
@@ -66,6 +66,15 @@ func TestMCPInterleavedOrder(t *testing.T) {
 	} {
 		if msg := callToolExpectError(t, ctx, session, "create_block", args); msg == "" {
 			t.Errorf("create_block case %d: empty error", i)
+		}
+	}
+
+	// A dynamic block walks its matches in any criteria order (issue #102).
+	for _, order := range []string{"release_date", "random", "shuffle"} {
+		b := callTool[domain.Block](t, ctx, session, "create_block", map[string]any{
+			"name": "Order " + order, "collection_id": col.ID, "playback_order": order})
+		if b.PlaybackOrder != order || !b.Dynamic {
+			t.Fatalf("%s: block = %+v", order, b)
 		}
 	}
 

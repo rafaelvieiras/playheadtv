@@ -193,7 +193,8 @@ func TestDynamicBlockPlaybackSettings(t *testing.T) {
 
 	for name, body := range map[string]string{
 		"interleaved on a manual block": `{"name":"M","playback_order":"interleaved"}`,
-		"unknown order":                 `{"name":"X","collection_id":` + criteria + `,"playback_order":"shuffle"}`,
+		"unknown order":                 `{"name":"X","collection_id":` + criteria + `,"playback_order":"backwards"}`,
+		"order on a manual block":       `{"name":"M","playback_order":"shuffle"}`,
 		"interleave with title":         `{"name":"X","collection_id":` + criteria + `,"interleave":{"per_round":2}}`,
 		"zero per round":                `{"name":"X","collection_id":` + criteria + `,"playback_order":"interleaved","interleave":{"per_round":0}}`,
 		"bad exhaustion":                `{"name":"X","collection_id":` + criteria + `,"playback_order":"interleaved","interleave":{"on_exhaustion":"x"}}`,
@@ -201,6 +202,28 @@ func TestDynamicBlockPlaybackSettings(t *testing.T) {
 	} {
 		if _, code, body := create(body); code != http.StatusBadRequest {
 			t.Errorf("%s: %d %s, want 400", name, code, body)
+		}
+	}
+
+	// A dynamic block walks its matches in any criteria order (issue #102): a
+	// collection looped on a channel can be shuffled or randomized without a
+	// wrapper block, and the seed that makes the order reproducible is stored.
+	for _, order := range []string{"release_date", "random", "shuffle"} {
+		_, code, body := create(`{"name":"Dyn ` + order + `","collection_id":` + criteria + `,"playback_order":"` + order + `"}`)
+		if code != http.StatusCreated {
+			t.Fatalf("%s: %d %s, want 201", order, code, body)
+		}
+		var b domain.Block
+		mustDecode(t, []byte(body), &b)
+		if b.PlaybackOrder != order {
+			t.Errorf("%s: order stored as %q", order, b.PlaybackOrder)
+		}
+		var seeds []int64
+		if err := db.Query(context.Background(), &seeds, "SELECT playback_seed FROM block WHERE id = ?", b.ID); err != nil || len(seeds) != 1 {
+			t.Fatalf("%s: read seed: %v %v", order, seeds, err)
+		}
+		if seeds[0] == 0 {
+			t.Errorf("%s: no seed stored, the order would not be reproducible", order)
 		}
 	}
 

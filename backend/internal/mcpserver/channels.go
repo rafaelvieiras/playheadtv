@@ -20,8 +20,11 @@ func registerChannelTools(s *mcp.Server, db storage.DB, mat *materializer.Materi
 	mcp.AddTool(s, &mcp.Tool{
 		Name: "create_channel",
 		Description: "Create a new linear TV channel (the numbered entry that appears in the " +
-			"program guide). Mirrors POST /channels.",
-	}, createChannelHandler(db))
+			"program guide). Mirrors POST /channels. Pass loop to air one collection 24/7 in " +
+			"this one call: the backend creates the Schedule and its continuous collection item, " +
+			"and the returned channel carries the schedule_id (list_schedule_items shows the item " +
+			"id) so the author can edit or replace it later.",
+	}, createChannelHandler(db, mat))
 
 	mcp.AddTool(s, &mcp.Tool{
 		Name:        "list_channels",
@@ -46,14 +49,21 @@ func registerChannelTools(s *mcp.Server, db storage.DB, mat *materializer.Materi
 	}, assignChannelBaseScheduleHandler(db, mat))
 }
 
+type channelLoopInput struct {
+	CollectionID  string `json:"collection_id" jsonschema:"the collection whose matches air, looped"`
+	PlaybackOrder string `json:"playback_order" jsonschema:"title, release_date, random, shuffle or interleaved"`
+}
+
 type createChannelInput struct {
 	Number      int     `json:"number" jsonschema:"channel number shown in the guide (e.g. 1, 2, 101)"`
 	Name        string  `json:"name" jsonschema:"channel display name"`
 	GuideArtURL *string `json:"guide_art_url,omitempty" jsonschema:"optional guide artwork/logo URL"`
 	Timezone    string  `json:"timezone,omitempty" jsonschema:"IANA timezone name (e.g. America/Sao_Paulo); defaults to UTC when omitted"`
+	// Loop is the one-call shortcut of issue #103: a collection looped 24/7.
+	Loop *channelLoopInput `json:"loop,omitempty" jsonschema:"optional: air one collection 24/7. Creates the Schedule and its continuous collection item (one write instead of four). Mutually exclusive with a schedule_id (there is none on create)"`
 }
 
-func createChannelHandler(db storage.DB) mcp.ToolHandlerFor[createChannelInput, domain.Channel] {
+func createChannelHandler(db storage.DB, mat *materializer.Materializer) mcp.ToolHandlerFor[createChannelInput, domain.Channel] {
 	return func(ctx context.Context, _ *mcp.CallToolRequest, in createChannelInput) (*mcp.CallToolResult, domain.Channel, error) {
 		if in.Name == "" {
 			return nil, domain.Channel{}, errors.New("name is required")
@@ -64,6 +74,14 @@ func createChannelHandler(db storage.DB) mcp.ToolHandlerFor[createChannelInput, 
 		}
 
 		now := nowMillis()
+		var scheduleID *string
+		if in.Loop != nil {
+			sched, _, err := api.CreateLoop(ctx, db, api.ChannelLoop{CollectionID: in.Loop.CollectionID, PlaybackOrder: in.Loop.PlaybackOrder}, in.Name, now)
+			if err != nil {
+				return nil, domain.Channel{}, err
+			}
+			scheduleID = &sched
+		}
 		ch := domain.Channel{
 			ID:          uuid.NewString(),
 			TenantID:    defaultTenantID,
@@ -71,16 +89,20 @@ func createChannelHandler(db storage.DB) mcp.ToolHandlerFor[createChannelInput, 
 			Name:        in.Name,
 			GuideArtURL: in.GuideArtURL,
 			Timezone:    tz,
+			ScheduleID:  scheduleID,
 			CreatedAt:   now,
 			UpdatedAt:   now,
 		}
 		err := db.Exec(ctx,
-			`INSERT INTO channel (id, tenant_id, number, name, guide_art_url, timezone, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-			ch.ID, ch.TenantID, ch.Number, ch.Name, ch.GuideArtURL, ch.Timezone, ch.CreatedAt, ch.UpdatedAt,
+			`INSERT INTO channel (id, tenant_id, number, name, guide_art_url, timezone, schedule_id, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			ch.ID, ch.TenantID, ch.Number, ch.Name, ch.GuideArtURL, ch.Timezone, ch.ScheduleID, ch.CreatedAt, ch.UpdatedAt,
 		)
 		if err != nil {
 			return nil, domain.Channel{}, err
+		}
+		if ch.ScheduleID != nil {
+			mat.ResetAfterChannelEdit(ctx, defaultTenantID, ch)
 		}
 		return nil, ch, nil
 	}

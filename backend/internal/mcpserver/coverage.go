@@ -113,6 +113,11 @@ var RouteTools = map[string]string{
 	"PUT /schedule-items/{id}":    "update_schedule_item",
 	"DELETE /schedule-items/{id}": "delete_schedule_item",
 
+	// Programming plan (issue #101): export and import a whole grid as one
+	// JSON document.
+	"GET /programming-plan":  "export_programming_plan",
+	"POST /programming-plan": "import_programming_plan",
+
 	// EPG.
 	"GET /epg":      "get_epg",
 	"GET /epg/meta": "get_epg_meta",

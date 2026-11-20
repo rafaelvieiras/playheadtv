@@ -130,10 +130,18 @@ type Schedule struct {
 // Block/BlockItems and any FillerRules in scope) into flat EpgEntry rows
 // ahead of time.
 type ScheduleItem struct {
-	ID             string         `json:"id"`
-	TenantID       string         `json:"tenant_id"`
-	ScheduleID     string         `json:"schedule_id"`
-	BlockID        string         `json:"block_id"`
+	ID         string `json:"id"`
+	TenantID   string `json:"tenant_id"`
+	ScheduleID string `json:"schedule_id"`
+	// BlockID and CollectionID are the item's target, mutually exclusive: a
+	// block (an authored list of items) or a collection aired as the rule it
+	// is. Exactly one is set.
+	BlockID      string `json:"block_id,omitempty"`
+	CollectionID string `json:"collection_id,omitempty"`
+	// PlaybackOrder is how a collection item walks its matches (the orders a
+	// criteria block item accepts: title, release_date, random, shuffle,
+	// interleaved). Set iff CollectionID is set.
+	PlaybackOrder  string         `json:"playback_order,omitempty"`
 	Recurrence     RecurrenceType `json:"recurrence_type"`
 	DaysOfWeek     Weekdays       `json:"days_of_week"`     // 0 (Sunday)..6, at least one iff Recurrence == RecurrenceWeekly, empty otherwise
 	StartTimeLocal *string        `json:"start_time_local"` // "HH:MM", set iff Recurrence == RecurrenceWeekly
@@ -141,6 +149,36 @@ type ScheduleItem struct {
 	Active         bool           `json:"active"`
 	CreatedAt      int64          `json:"created_at"`
 	UpdatedAt      int64          `json:"updated_at"`
+}
+
+// HasCollection reports whether the item airs a collection instead of a block.
+func (s ScheduleItem) HasCollection() bool { return s.CollectionID != "" }
+
+// ScheduleCollectionKey is the key the materializer files a collection
+// schedule item's walk under: the item is walked as a single criteria item
+// whose id is the schedule item's own (see scheduleItemRunKey), so the ids of a
+// block and of a schedule item can never collide in one channel's run map.
+const scheduleCollectionKeyPrefix = "schedule_item:"
+
+// ScheduleCollectionKey returns the block-shaped key of a collection schedule
+// item, used where the materializer expects a block id.
+func ScheduleCollectionKey(scheduleItemID string) string {
+	return scheduleCollectionKeyPrefix + scheduleItemID
+}
+
+// RunKey is what the materializer keys the item's walk by: its block id, or the
+// synthetic key of a collection item (see ScheduleCollectionKey).
+func (s ScheduleItem) RunKey() string {
+	if s.HasCollection() {
+		return ScheduleCollectionKey(s.ID)
+	}
+	return s.BlockID
+}
+
+// IsScheduleCollectionKey reports whether a materializer key belongs to a
+// collection schedule item rather than to a block.
+func IsScheduleCollectionKey(key string) bool {
+	return len(key) > len(scheduleCollectionKeyPrefix) && key[:len(scheduleCollectionKeyPrefix)] == scheduleCollectionKeyPrefix
 }
 
 type EpgEntryKind string

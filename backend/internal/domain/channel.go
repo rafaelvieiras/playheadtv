@@ -78,8 +78,9 @@ type Block struct {
 	// slice that explicitly names season 0 wins over the default.
 	IncludeSpecials bool `json:"include_specials"`
 	// InterleaveSpec is the stored JSON of Interleave, set iff PlaybackOrder is
-	// OrderInterleaved; PlaybackSeed makes its shuffle/random series order
-	// reproducible. Both internal: clients read Interleave.
+	// OrderInterleaved. PlaybackSeed makes any walking order (interleaved,
+	// random, shuffle) reproducible and survives a regeneration. Both are
+	// internal: clients read Interleave.
 	InterleaveSpec *string `json:"-"`
 	PlaybackSeed   int64   `json:"-"`
 	// Interleave is the decoded InterleaveSpec, filled by FillInterleave; nil

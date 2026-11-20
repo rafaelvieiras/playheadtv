@@ -52,8 +52,14 @@ type channelInput struct {
 	// block always loops and is never consulted.
 	RepeatBlockIDs map[string]bool
 	// Series holds the walk of every series block item the channel's blocks
-	// contain, keyed by block_item.id. Expansion mutates the runs.
+	// contain, keyed by block_item.id (and, for a collection schedule item,
+	// by its own id). Expansion mutates the runs.
 	Series map[string]*seriesRun
+	// ScheduleCollectionRuns marks the walked items that belong to a
+	// collection schedule item rather than to a block item: their cursor lives
+	// in schedule_item_cursor (series_cursor and block_cursor both key on a
+	// block or a block item).
+	ScheduleCollectionRuns map[string]bool
 
 	// ContinuousStart is the persisted rotation position the continuous
 	// schedule item (if any) resumes from: the block-item index its next
@@ -167,7 +173,7 @@ func buildOccurrences(items []domain.ScheduleItem, loc *time.Location, scanFrom,
 				continue
 			}
 			if t, ok := onceOccurrenceTime(*e.StartAt, scanFrom, windowEnd); ok {
-				out = append(out, occurrence{ScheduleItemID: e.ID, BlockID: e.BlockID, NominalStart: t})
+				out = append(out, occurrence{ScheduleItemID: e.ID, BlockID: e.RunKey(), NominalStart: t})
 			}
 		case domain.RecurrenceWeekly:
 			if len(e.DaysOfWeek) == 0 || e.StartTimeLocal == nil {
@@ -181,7 +187,7 @@ func buildOccurrences(items []domain.ScheduleItem, loc *time.Location, scanFrom,
 				continue
 			}
 			for _, t := range times {
-				out = append(out, occurrence{ScheduleItemID: e.ID, BlockID: e.BlockID, NominalStart: t})
+				out = append(out, occurrence{ScheduleItemID: e.ID, BlockID: e.RunKey(), NominalStart: t})
 			}
 		}
 	}
@@ -1132,22 +1138,22 @@ func expandLayer(in channelInput, now, scanFrom, windowEnd time.Time, state *sel
 		if start.Equal(in.KeptUntil) {
 			stage = in.ContinuousStage
 		}
-		pre, mid, post := in.breakSources(continuous.BlockID, state)
+		pre, mid, post := in.breakSources(continuous.RunKey(), state)
 		br := newBreakLoop(pre, mid, post, stage, in.TenantID, in.ChannelID, generatedAt, &continuous.ID)
-		br.cuts, br.blockID = in.CutPlanner, continuous.BlockID
-		loopEntries, end := fillLoopingBlock(in.BlockItems[continuous.BlockID], in.Series, in.CatalogDuration, start, to, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, continuousKey, resume, br, playOnce(continuous.BlockID), state)
+		br.cuts, br.blockID = in.CutPlanner, continuous.RunKey()
+		loopEntries, end := fillLoopingBlock(in.BlockItems[continuous.RunKey()], in.Series, in.CatalogDuration, start, to, domain.EpgProgram, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, continuousKey, resume, br, playOnce(continuous.RunKey()), state)
 		entries = append(entries, loopEntries...)
 		// Whole programs no longer fit: the tail covers the leftover
 		// before the fallback does.
 		if end.Before(to) {
-			tailRule := resolveFillerRule(in.FillerRules, domain.FillerTail, continuous.BlockID, in.ChannelID)
+			tailRule := resolveFillerRule(in.FillerRules, domain.FillerTail, continuous.RunKey(), in.ChannelID)
 			tailEntries, tailEnd := fillGap(tailRule, in.PoolItems, in.CatalogDuration, end, to, domain.EpgTail, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, state)
 			entries = append(entries, tailEntries...)
 			end = tailEnd
 		}
 		if end.Before(to) {
 			if boundary {
-				noteResidual(continuous.BlockID, end, to)
+				noteResidual(continuous.RunKey(), end, to)
 			}
 			fillFallbackOnly(end, to)
 		}

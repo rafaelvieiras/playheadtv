@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/rafaelvieiras/playheadtv/backend/internal/catalogsync"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/materializer"
 	"github.com/rafaelvieiras/playheadtv/backend/internal/storage"
@@ -60,8 +61,12 @@ func createScheduleHandler(db storage.DB) mcp.ToolHandlerFor[createScheduleInput
 }
 
 type createScheduleItemInput struct {
-	ScheduleID     string  `json:"schedule_id" jsonschema:"the Schedule this item belongs to"`
-	BlockID        string  `json:"block_id" jsonschema:"the block that airs"`
+	ScheduleID string `json:"schedule_id" jsonschema:"the Schedule this item belongs to"`
+	// Exactly one target: BlockID (an authored list) or CollectionID (a rule
+	// aired as it is, with PlaybackOrder).
+	BlockID        string  `json:"block_id,omitempty" jsonschema:"the block that airs; mutually exclusive with collection_id"`
+	CollectionID   string  `json:"collection_id,omitempty" jsonschema:"the collection that airs, with no block; mutually exclusive with block_id. Its matches air in playback_order"`
+	PlaybackOrder  string  `json:"playback_order,omitempty" jsonschema:"how a collection item walks its matches: title, release_date, random, shuffle or interleaved; required with collection_id and invalid without it"`
 	RecurrenceType string  `json:"recurrence_type" jsonschema:"one of: weekly, once, continuous (no time fields; fills whatever timed items leave, resuming its block rotation; at most one per schedule)"`
 	DaysOfWeek     []int   `json:"days_of_week,omitempty" jsonschema:"weekdays 0 (Sunday)-6, at least one and no duplicates; required and only valid for recurrence_type=weekly (e.g. [4,5] for Thursday and Friday)"`
 	StartTimeLocal *string `json:"start_time_local,omitempty" jsonschema:"local time of day as HH:MM; required and only valid for recurrence_type=weekly"`
@@ -77,8 +82,17 @@ func validateCreateScheduleItemInput(in createScheduleItemInput) error {
 	if in.ScheduleID == "" {
 		return errors.New("schedule_id is required")
 	}
-	if in.BlockID == "" {
-		return errors.New("block_id is required")
+	switch {
+	case in.BlockID == "" && in.CollectionID == "":
+		return errors.New("one of block_id or collection_id is required")
+	case in.BlockID != "" && in.CollectionID != "":
+		return errors.New("block_id and collection_id are mutually exclusive")
+	case in.CollectionID != "" && in.PlaybackOrder == "":
+		return errors.New("playback_order is required for a collection item")
+	case in.CollectionID == "" && in.PlaybackOrder != "":
+		return errors.New("playback_order is only valid for a collection item")
+	case in.PlaybackOrder != "" && !domain.ValidCriteriaOrder(in.PlaybackOrder):
+		return errors.New("playback_order must be one of title, release_date, random, shuffle, interleaved")
 	}
 	switch domain.RecurrenceType(in.RecurrenceType) {
 	case domain.RecurrenceWeekly:
@@ -128,6 +142,11 @@ func createScheduleItemHandler(db storage.DB, mat *materializer.Materializer) mc
 				return nil, domain.ScheduleItem{}, errors.New("a schedule can have at most one continuous item")
 			}
 		}
+		if in.CollectionID != "" {
+			if _, err := catalogsync.LoadCollectionQuery(ctx, db, defaultTenantID, in.CollectionID); err != nil {
+				return nil, domain.ScheduleItem{}, errors.New("collection_id does not match a collection")
+			}
+		}
 		days := domain.Weekdays{}
 		if domain.RecurrenceType(in.RecurrenceType) == domain.RecurrenceWeekly {
 			days, _ = domain.NormalizeWeekdays(in.DaysOfWeek) // validated above
@@ -142,6 +161,8 @@ func createScheduleItemHandler(db storage.DB, mat *materializer.Materializer) mc
 			TenantID:       defaultTenantID,
 			ScheduleID:     in.ScheduleID,
 			BlockID:        in.BlockID,
+			CollectionID:   in.CollectionID,
+			PlaybackOrder:  in.PlaybackOrder,
 			Recurrence:     domain.RecurrenceType(in.RecurrenceType),
 			DaysOfWeek:     days,
 			StartTimeLocal: in.StartTimeLocal,
@@ -151,9 +172,10 @@ func createScheduleItemHandler(db storage.DB, mat *materializer.Materializer) mc
 			UpdatedAt:      now,
 		}
 		err := db.Exec(ctx,
-			`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, recurrence_type, days_of_week, start_time_local, start_at, active, created_at, updated_at)
-			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			si.ID, si.TenantID, si.ScheduleID, si.BlockID, string(si.Recurrence), si.DaysOfWeek, si.StartTimeLocal,
+			`INSERT INTO schedule_item (id, tenant_id, schedule_id, block_id, collection_id, playback_order, recurrence_type, days_of_week, start_time_local, start_at, active, created_at, updated_at)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			si.ID, si.TenantID, si.ScheduleID, nullableString(si.BlockID), nullableString(si.CollectionID),
+			nullableString(si.PlaybackOrder), string(si.Recurrence), si.DaysOfWeek, si.StartTimeLocal,
 			si.StartAt, si.Active, si.CreatedAt, si.UpdatedAt,
 		)
 		if err != nil {
@@ -162,4 +184,13 @@ func createScheduleItemHandler(db storage.DB, mat *materializer.Materializer) mc
 		mat.ResetAfterScheduleEdit(ctx, defaultTenantID, si.ScheduleID)
 		return nil, si, nil
 	}
+}
+
+// nullableString is the DB value of an optional text column: nil when empty, so
+// the mutual-exclusion CHECK of schedule_item sees a real NULL.
+func nullableString(s string) any {
+	if s == "" {
+		return nil
+	}
+	return s
 }
