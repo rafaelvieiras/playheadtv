@@ -3,6 +3,7 @@ import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/rea
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 
+import { ChannelLoopForm } from '@/components/ChannelLoopForm'
 import { InlineWarning } from '@/components/InlineWarning'
 import { ScheduleItemDialog } from '@/components/ScheduleItemDialog'
 import {
@@ -57,7 +58,7 @@ export function ChannelProgramming({
   const manualBlockIds = useMemo(() => {
     const ids = new Set<string>()
     for (const item of items ?? []) {
-      const block = blocksById.get(item.block_id)
+      const block = blocksById.get(item.block_id ?? '')
       if (block && !block.dynamic) ids.add(block.id)
     }
     return [...ids]
@@ -127,10 +128,11 @@ export function ChannelProgramming({
 
   if (!scheduleId) {
     return (
-      <div className="flex flex-col items-start gap-3" data-testid="programming-no-schedule">
+      <div className="flex flex-col items-start gap-4" data-testid="programming-no-schedule">
         <p className="text-sm text-muted-foreground">
-          This channel has no schedule yet. Assign or create one in Settings to program it.
+          This channel has no schedule yet. Loop one collection below, or assign or create a schedule in Settings.
         </p>
+        <ChannelLoopForm channel={channel} />
         <Button variant="outline" size="sm" onClick={onGoToSettings}>
           Go to Settings
         </Button>
@@ -227,8 +229,8 @@ export function ChannelProgramming({
                 </TableHeader>
                 <TableBody>
                   {section.rows.map((item) => {
-                    const block = blocksById.get(item.block_id)
-                    const count = countByBlock.get(item.block_id)
+                    const block = blocksById.get(item.block_id ?? '')
+                    const count = countByBlock.get(item.block_id ?? '')
                     return (
                       <TableRow key={item.id} data-testid="schedule-item-row">
                         <TableCell>{summarizeRecurrence(item)}</TableCell>
@@ -237,13 +239,20 @@ export function ChannelProgramming({
                             <Link to={`/blocks/${block.id}`} className="hover:underline" data-testid="item-block-link">
                               {block.name}
                             </Link>
+                          ) : item.collection_id ? (
+                            <span data-testid="item-collection">
+                              <Badge variant="default">Collection</Badge>{' '}
+                              <span className="text-muted-foreground">
+                                {item.collection_name ?? item.collection_id} ({item.playback_order})
+                              </span>
+                            </span>
                           ) : (
                             <span className="text-muted-foreground">{item.block_id}</span>
                           )}
                         </TableCell>
                         <TableCell data-testid="item-fill">
                           {!block ? (
-                            '—'
+                            item.collection_id ? 'Rule' : '—'
                           ) : block.dynamic ? (
                             <span>
                               <Badge variant="default">Dynamic</Badge>{' '}

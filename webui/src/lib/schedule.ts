@@ -68,7 +68,7 @@ export function legacyDailyDynamicBlock(items: ScheduleItem[], blocksById: Map<s
   if (!items.every((i) => i.recurrence_type === 'weekly' && i.start_time_local === '00:00')) return undefined
   const days = items.flatMap((i) => i.days_of_week)
   if (days.length !== 7 || new Set(days).size !== 7 || !days.every((d) => d >= 0 && d <= 6)) return undefined
-  const blockId = items[0].block_id
-  if (!items.every((i) => i.block_id === blockId)) return undefined
+  const blockId = items[0].block_id ?? ''
+  if (!items.every((i) => (i.block_id ?? '') === blockId)) return undefined
   return blocksById.get(blockId)?.dynamic ? blockId : undefined
 }

@@ -109,7 +109,7 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
   const usedBlocks = useMemo(() => {
     const seen = new Map<string, Block>()
     for (const item of active) {
-      const block = blocksById.get(item.block_id)
+      const block = blocksById.get(item.block_id ?? '')
       if (block) seen.set(block.id, block)
     }
     return [...seen.values()]
@@ -154,7 +154,7 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
   const durationIds = useMemo(() => {
     const ids: string[] = []
     for (const slot of slots) {
-      for (const bi of blockItems.get(slot.item.block_id) ?? []) {
+      for (const bi of blockItems.get(slot.item.block_id ?? '') ?? []) {
         if (airsUntilSlotEnd(bi)) break
         if (bi.trim_duration_ms === null && bi.catalog_item_id) ids.push(bi.catalog_item_id)
       }

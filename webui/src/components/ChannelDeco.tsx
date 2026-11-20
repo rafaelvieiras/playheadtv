@@ -117,7 +117,7 @@ export function ChannelDeco({ channel }: { channel: Channel }) {
     hasAdvancedRules(
       rules,
       channel.id,
-      (scheduleItems ?? []).map((i) => i.block_id),
+      (scheduleItems ?? []).map((i) => i.block_id ?? ''),
     )
   const [advancedOverride, setAdvancedOverride] = useState<boolean | null>(null)
   const advancedOpen = advancedOverride ?? advancedRules

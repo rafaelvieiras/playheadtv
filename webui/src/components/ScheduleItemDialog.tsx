@@ -65,7 +65,7 @@ function epochToDatetimeLocalInput(ms: number): string {
 
 function itemToForm(item: ScheduleItem): FormState {
   return {
-    block_id: item.block_id,
+    block_id: item.block_id ?? '',
     recurrence_type: item.recurrence_type,
     days_of_week: item.days_of_week,
     start_time_local: item.start_time_local ?? '',

@@ -458,7 +458,12 @@ export interface ScheduleItem {
   id: string
   tenant_id: string
   schedule_id: string
-  block_id: string
+  // Exactly one target: a block, or a collection aired as the rule it is
+  // (issue #100) with its own playback order.
+  block_id?: string
+  collection_id?: string
+  collection_name?: string
+  playback_order?: CriteriaOrder
   recurrence_type: RecurrenceType
   // Weekdays 0 (Sunday)..6; at least one for a weekly item, empty otherwise.
   days_of_week: number[]
@@ -472,7 +477,9 @@ export interface ScheduleItem {
 // ScheduleItemInput is the body shape for POST /schedules/{id}/items and
 // PUT /schedule-items/{id} (schedule_id is the URL path, not a body field).
 export interface ScheduleItemInput {
-  block_id: string
+  block_id?: string
+  collection_id?: string
+  playback_order?: CriteriaOrder
   recurrence_type: RecurrenceType
   days_of_week: number[]
   start_time_local: string | null
