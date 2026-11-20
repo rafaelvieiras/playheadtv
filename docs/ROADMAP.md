@@ -1514,3 +1514,43 @@ repo never contains.
       `refs/pull/92/head`); nothing secret, no address, and GitHub keeps those
       refs for closed pull requests. Only recreating the repository removes
       them.
+
+- [x] A schedule item can target a collection (2026-11-20, #100):
+      `block_id` and `collection_id` are mutually exclusive (table CHECK), the
+      item carries its own `playback_order` (title, release_date, random,
+      shuffle, interleaved — the orders a criteria block item accepts), and the
+      materializer walks it as one criteria item whose id is the schedule item's
+      own, with its cursor in `schedule_item_cursor` (migration `0029`). "Air
+      this collection 24/7" stopped needing a collection + a block + a criteria
+      block item: it is one schedule item
+      (`docs/ARCHITECTURE.md` "Scheduling model"). Tests:
+      `internal/materializer/schedule_collection_test.go` (no block, resumes
+      where it stopped, a weekly item fills its slot and stops at the next
+      timed one), `internal/api/programming_plan_test.go`
+      (`TestScheduleItemCollectionTarget`).
+- [x] A dynamic block walks its matches in any criteria order (2026-11-20,
+      #102): `release_date`, `random` and `shuffle` next to `title` and
+      `interleaved`, sharing the criteria-item walk, with the seed kept while
+      the order is the same and mixed with the channel id. Before this, a
+      collection looped on a channel was silently alphabetical: `title` was the
+      only non-interleaved order a dynamic block accepted, and nothing said so
+      (`docs/ARCHITECTURE.md` "dynamic block's order").
+- [x] One-call channel from a collection (2026-11-20, #103): `loop:
+      {collection_id, playback_order}` on `POST /channels` (and on
+      `PUT /channels/{id}` for a channel with no schedule) creates the schedule
+      and its continuous collection item, and answers the ids it created; a
+      repeated identical call is a no-op, a channel that already has a schedule
+      is refused. Web UI: "Loop 24/7" in the Programming tab's empty state.
+      Not done: no dedicated dialog for graduating the created schedule, and the
+      loop form only appears when the channel has no schedule at all.
+- [x] Programming plan export and import (2026-11-20, #101):
+      `GET /programming-plan` and `POST /programming-plan` move a whole grid
+      between instances as one deterministic JSON document with no ids, no
+      credentials and no paths — collections, blocks (items referenced by media
+      source name + external id), schedules (including collection-targeted
+      items) and channels. Idempotent by name/number, `dry_run=true` for the
+      full report, `on_conflict=update|skip|reject`. Tests:
+      `internal/api/programming_plan_test.go` (round trip byte-identical, dry
+      run writes nothing, a missing reference rejects instead of half-applying,
+      the three conflict policies). Not done: filler pools, rules and break
+      templates are not in the plan yet.

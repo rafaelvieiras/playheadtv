@@ -458,14 +458,19 @@ next boundary), a removed one leaves with no hole. Switching a block between
 `restart` and `drop` mid-run keeps the cursor; going to `drop` may start the
 rotation over once.
 
-A dynamic block's order is `block.playback_order` (`title`, the default and
-exactly the old behavior, or `interleaved`) with `interleave_spec` (JSON) and a
-`playback_seed` (migration `0013`; PUT is a full replace, omitted means
-`title`). An interleaved dynamic block is walked as one stand-in criteria item
-that airs until the slot ends; since its `block_item` rows are recreated on
-every catalog change, its cursor is `block_cursor` (per channel and block) and
-its entries record the block id in `source_block_item_id`. Changing the order,
-`per_round` or `series_order` restarts the cursor.
+A dynamic block's order is `block.playback_order` — `title` (the default and
+exactly the old behavior), `release_date`, `random`, `shuffle` or `interleaved`
+(issue #102) — with `interleave_spec` (JSON) and a `playback_seed` (migrations
+`0013`, `0029`; PUT is a full replace, omitted means `title`). Every order but
+`title` is walked as one stand-in criteria item, exactly like a criteria block
+item: `title` plays the resolved `block_item` rows, the others load their own
+matches and air until the slot ends. Since a dynamic block's `block_item` rows
+are recreated on every catalog change, its cursor is `block_cursor` (per
+channel and block) and its entries record the block id in
+`source_block_item_id`. The seed is kept while the order is the same, so a
+regeneration resumes the same sequence, and it mixes the channel id, so two
+channels never shuffle alike. Changing the order (or `per_round`/`series_order`)
+restarts the cursor.
 
 ## Scheduling model
 
@@ -614,6 +619,29 @@ edges):
   is enough, since `internal/materializer/expand.go`'s `fillFallbackGap`
   already drains a channel's fallback pool continuously to fill any window
   with no schedule covering it.
+- **`schedule_item` target** (issue #100): an item names a `block_id` or a
+  `collection_id`, never both and never neither (a table CHECK). A collection
+  item is the shortest way to say "this rule, 24/7, in this order": it carries
+  its own `playback_order` (the orders a criteria block item accepts) and needs
+  no block, no block item and no wrapper of any kind. The materializer walks it
+  as a single criteria item whose id is the schedule item's own, so
+  `epg_entry.source_block_item_id` holds that id and the existing rebuild of a
+  walk from its own rows works unchanged; its cursor lives in
+  `schedule_item_cursor` (per channel and item — `series_cursor` and
+  `block_cursor` both key on a block or a block item, with a foreign key to it).
+  A reset or an order change moves that origin to "now", like every other walk.
+  In `catalog_item` terms it airs "all matches" per visit, which for the single
+  item of the loop is the whole collection, over and over.
+
+- **`channel.loop`** (issue #103): `POST /channels` (and `PUT /channels/{id}` on
+  a channel with no schedule) accepts `loop: {collection_id, playback_order}`
+  and creates the supporting `schedule` (named `Loop · <channel>`) plus its one
+  continuous collection item in the same request, answering
+  `{channel, schedule_id, schedule_item_id}` so nothing is hidden and the author
+  can graduate to a full schedule by editing what was created. A repeated
+  identical create is a no-op that answers the same ids; a channel that already
+  has a schedule is refused with a 409 instead of being silently replaced.
+
 - **`schedule`** / **`schedule_item`** / **`channel.schedule_id`** (issue #7,
   the ErsatzTV Schedule/Playout split — see
   `docs/competitive-analysis/ersatztv.md` section 4): `schedule` is a
@@ -644,6 +672,38 @@ edges):
   (and therefore one dynamic block) don't silently share loop position —
   the concrete instance of ErsatzTV's "channels may not have the same
   content playing at the same time" guarantee this project actually needed.
+
+### Programming plan (export and import)
+
+`GET /programming-plan` exports the whole grid as one deterministic JSON
+document and `POST /programming-plan` applies one back (issue #101). This is the
+answer to "the grid is a dependency graph, so authoring it object by object is
+the reason a migration becomes a script nobody can reuse".
+
+- The document carries no numeric ids, no credentials and no paths: a
+  collection, block or schedule is referenced by name, a catalog item by media
+  source name + external id. Two exports of the same instance are byte
+  identical (collections by name, blocks by name, schedules by name, channels by
+  number).
+- An import resolves references in dependency order (collections → blocks →
+  schedules → channels), matches objects by name (channels by number) and is
+  idempotent: importing the same document twice changes nothing. `dry_run=true`
+  returns the full report (`created`, `updated`, `skipped`, `rejected` with the
+  reason) without writing. `on_conflict=update|skip|reject` decides what happens
+  to an object that already exists; the default is `update`.
+- A rejected object rejects the objects that depend on it, with the missing name
+  in the reason, and the HTTP status tells the caller (`422` when anything was
+  rejected). A dry run resolves the dependencies it would have created, so the
+  report of a fresh instance is complete instead of a cascade of "not in the
+  plan".
+- The item lists of a block or schedule are a full replace, like their REST
+  writing is: an import deletes the rows and writes the document's. Materialized
+  rows that point at a replaced schedule item are detached first (`epg_entry`
+  has no `ON DELETE` action), and the affected channels are regenerated at the
+  end when anything was written.
+- Filler pools, rules and break templates are NOT part of the plan yet: they
+  hang off blocks by id and their own scoping is a second graph. A plan exports
+  and imports programming only.
 
 None of the above is ever read directly by a client. It's authoring input to
 EPG materialization.
