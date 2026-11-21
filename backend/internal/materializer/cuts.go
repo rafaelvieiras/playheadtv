@@ -135,7 +135,7 @@ func (s segmenter) split(prog domain.EpgEntry) []domain.EpgEntry {
 		segFrom = to
 	}
 	for _, cut := range cuts {
-		parts := s.mid.pickBreak()
+		parts := s.mid.pickBreak(time.UnixMilli(at).UTC())
 		if len(parts) == 0 {
 			continue // nothing to air at this cut: the segment just goes on
 		}

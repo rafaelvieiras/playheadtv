@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Link } from 'react-router-dom'
+import { TriangleAlert } from 'lucide-react'
 
 import {
   AlertDialog,
@@ -82,6 +83,16 @@ export function ChannelsPage() {
                   <Link to={`/channels/${channel.id}`} className="hover:underline">
                     {channel.name}
                   </Link>
+                  {channel.notices && channel.notices.length > 0 && (
+                    <span
+                      className="ml-2 inline-flex items-center gap-1 text-xs text-destructive"
+                      title={channel.notices.map((n) => n.message).join(' ')}
+                      data-testid={`channel-notice-${channel.number}`}
+                    >
+                      <TriangleAlert className="size-3.5" />
+                      cannot air
+                    </span>
+                  )}
                 </TableCell>
                 <TableCell>{channel.timezone}</TableCell>
                 <TableCell className="flex justify-end gap-2 text-right">

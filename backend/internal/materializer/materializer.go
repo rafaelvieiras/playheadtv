@@ -82,6 +82,14 @@ type Materializer struct {
 	// mu serializes Run and ResetChannel: both rewrite epg_entry rows with
 	// multi-statement sequences that must not interleave.
 	mu sync.Mutex
+	// noticesMu guards notices, the warnings the last run found in each
+	// channel's stored configuration (an empty block, a series with no
+	// airable episode). They cost nothing to keep and let a caller list the
+	// channels that cannot air anything without expanding a week of every
+	// channel first (GET /channels/{id}/epg-warnings does exactly that, and
+	// costs ~30 s per channel).
+	noticesMu sync.RWMutex
+	notices   map[string][]Warning
 }
 
 // New creates a Materializer. window is how far ahead of "now" epg_entry is
@@ -94,6 +102,7 @@ func New(db storage.DB, window time.Duration) *Materializer {
 		window:  window,
 		freeze:  DefaultFreezeMargin,
 		trigger: make(chan struct{}, 1),
+		notices: make(map[string][]Warning),
 	}
 }
 
@@ -214,6 +223,52 @@ func (m *Materializer) Run(ctx context.Context) error {
 	return nil
 }
 
+// Notices reports the configuration warnings the last run found for one
+// channel (see Materializer.notices). Empty when the channel's configuration
+// can air programming.
+func (m *Materializer) Notices(channelID string) []Warning {
+	m.noticesMu.RLock()
+	defer m.noticesMu.RUnlock()
+	return m.notices[channelID]
+}
+
+// setNotices replaces one channel's notices. Called from the run, which is the
+// only writer (Run holds m.mu), while readers only ever take noticesMu.
+func (m *Materializer) setNotices(channelID string, warnings []Warning) {
+	m.noticesMu.Lock()
+	defer m.noticesMu.Unlock()
+	if len(warnings) == 0 {
+		delete(m.notices, channelID)
+		return
+	}
+	m.notices[channelID] = warnings
+}
+
+// orderByCoverage moves the channels with no entry covering now to the front,
+// keeping the query order inside each group. A run has a fixed budget
+// (runTimeout) and every channel costs a full expansion, so the order decides
+// who waits for the next run: a channel with nothing on air is the one whose
+// viewers see a hole in the guide, so it must not wait behind channels that
+// are already correct (issue #105).
+func (m *Materializer) orderByCoverage(ctx context.Context, tenantID string, channels []domain.Channel, nowMs int64) {
+	var covered []string
+	if err := m.db.Query(ctx, &covered,
+		"SELECT DISTINCT channel_id FROM epg_entry WHERE tenant_id = ? AND start_at <= ? AND end_at > ?",
+		tenantID, nowMs, nowMs,
+	); err != nil {
+		// Ordering is an optimization: a failure here must not cost the run.
+		logging.Errorf("materializer: tenant %s: read coverage: %v", tenantID, err)
+		return
+	}
+	isCovered := make(map[string]bool, len(covered))
+	for _, id := range covered {
+		isCovered[id] = true
+	}
+	sort.SliceStable(channels, func(i, j int) bool {
+		return !isCovered[channels[i].ID] && isCovered[channels[j].ID]
+	})
+}
+
 func (m *Materializer) runTenant(ctx context.Context, tenantID string, now, scanFrom, windowEnd time.Time, cache *catalogDurationCache, state *selectionState) {
 	var channels []domain.Channel
 	if err := m.db.Query(ctx, &channels,
@@ -222,6 +277,7 @@ func (m *Materializer) runTenant(ctx context.Context, tenantID string, now, scan
 		logging.Errorf("materializer: tenant %s: list channels: %v", tenantID, err)
 		return
 	}
+	m.orderByCoverage(ctx, tenantID, channels, now.UnixMilli())
 
 	for _, ch := range channels {
 		chCtx, cancel := context.WithTimeout(ctx, channelTimeout)
@@ -620,6 +676,7 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 	if err != nil {
 		return err
 	}
+	m.setNotices(ch.ID, in.Warnings)
 	scheduleItems := in.ScheduleItems
 
 	// Grid stability, continuous channels only: keep the already-materialized
@@ -665,10 +722,22 @@ func (m *Materializer) materializeChannel(ctx context.Context, ch domain.Channel
 		// Walk the kept rows: a gap before the first one (nothing on air) or
 		// between two of them is not preserved. A head hole discards the
 		// whole kept head; an interior hole discards from the hole onwards.
+		// A stretch shorter than unfilledSlotMin does not count as a hole: the
+		// tail filler only fits whole items, so every slot boundary can end
+		// with a few seconds uncovered (a seam the guide has always had), and
+		// rewriting the whole window because of one would move every program
+		// after it for no reason (issue #105).
+		seamMs := unfilledSlotMin.Milliseconds()
 		contiguousEnd := nowMs
 		headHole := false
 		for i, k := range kept {
 			if k.StartAt > contiguousEnd {
+				if k.StartAt-contiguousEnd <= seamMs {
+					if k.EndAt > contiguousEnd {
+						contiguousEnd = k.EndAt
+					}
+					continue
+				}
 				if i == 0 {
 					headHole = true
 				} else {

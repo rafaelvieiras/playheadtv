@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
 )
@@ -154,12 +155,12 @@ type stepSource struct {
 // fills, so max_fit_attempts applies; what no candidate can fill stays unfilled
 // (the break is just shorter), and the block's tail absorbs the difference
 // at the end of the slot.
-func (m *midrollSource) pickBreak() breakParts {
+func (m *midrollSource) pickBreak(at time.Time) breakParts {
 	if m == nil {
 		return nil
 	}
 	if m.tmpl == nil {
-		item, dur, ok := pickFiller(m.rule, m.pools, m.durations, m.state)
+		item, dur, ok := pickFiller(m.rule, m.pools, m.durations, m.state, at)
 		if !ok {
 			return nil
 		}
@@ -184,7 +185,7 @@ func (m *midrollSource) pickBreak() breakParts {
 			}
 			remaining := ss.step.TargetMs
 			for n := 0; n < maxFillStepParts; n++ {
-				item, dur, ok := ss.picker.pick(remaining)
+				item, dur, ok := ss.picker.pick(remaining, at)
 				if !ok {
 					break
 				}
@@ -192,7 +193,7 @@ func (m *midrollSource) pickBreak() breakParts {
 				remaining -= dur
 			}
 		default: // BreakStepSingle
-			if item, dur, ok := pickFiller(ss.rule, m.pools, m.durations, m.state); ok {
+			if item, dur, ok := pickFiller(ss.rule, m.pools, m.durations, m.state, at); ok {
 				parts = append(parts, breakPart{item: item, dur: dur})
 			}
 		}

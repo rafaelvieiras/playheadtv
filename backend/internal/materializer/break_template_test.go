@@ -122,7 +122,7 @@ func TestBreakTemplate_FillStepTargetAndFitAttempts(t *testing.T) {
 			src := &midrollSource{tmpl: ptrTemplate(fillRule("pool", tc.target*sec, tc.attempts)), pools: pool, durations: dur, state: newSelectionState()}
 			var got []string
 			total := int64(0)
-			for _, p := range src.pickBreak() {
+			for _, p := range src.pickBreak(t0) {
 				got = append(got, p.item.CatalogItemID)
 				total += p.dur
 			}
@@ -145,7 +145,7 @@ func TestBreakTemplate_SequentialRotationContinuesAcrossBreaks(t *testing.T) {
 	src := &midrollSource{tmpl: ptrTemplate(fillRule("pool", 20*sec, 1)), pools: pool, durations: dur, state: newSelectionState()}
 	var got []string
 	for i := 0; i < 3; i++ {
-		for _, p := range src.pickBreak() {
+		for _, p := range src.pickBreak(t0) {
 			got = append(got, p.item.CatalogItemID)
 		}
 	}

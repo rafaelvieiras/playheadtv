@@ -17,6 +17,20 @@ export interface LoginResponse {
   user: User
 }
 
+// ChannelNotice is a configuration problem the last materialization run found
+// in a channel: an empty block, a series with no airable episode, an item with
+// no positive duration. It means the channel cannot air what its schedule
+// says, so its time stays empty until the configuration is fixed. Sent inside
+// each channel by GET /channels (omitted when there is nothing wrong), which
+// saves asking GET /channels/{id}/epg-warnings per channel: that one expands a
+// week of the channel's programming and costs ~30 s per channel.
+export interface ChannelNotice {
+  kind: string
+  block_id: string
+  block_item_id?: string
+  message: string
+}
+
 export interface Channel {
   id: string
   tenant_id: string
@@ -33,6 +47,9 @@ export interface Channel {
   base_schedule_id: string | null
   created_at: number
   updated_at: number
+  // notices is what the last materialization run found wrong with this
+  // channel's configuration (see ChannelNotice).
+  notices?: ChannelNotice[]
 }
 
 // ChannelInput is the body shape for POST /channels and PUT /channels/{id}.

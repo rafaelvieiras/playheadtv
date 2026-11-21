@@ -130,7 +130,7 @@ func (b *breakLoop) flushPost(cursor, limit time.Time, rot int) (entries []domai
 		return nil, cursor, true
 	}
 	b.owePost = false
-	parts := b.post.pickBreak()
+	parts := b.post.pickBreak(cursor)
 	if len(parts) == 0 {
 		return nil, cursor, true
 	}
@@ -152,10 +152,10 @@ func (b *breakLoop) flushPost(cursor, limit time.Time, rot int) (entries []domai
 func (b *breakLoop) unit(cursor, limit time.Time, rotBefore int, plan func(start time.Time) (domain.EpgEntry, bool)) (entries []domain.EpgEntry, end time.Time, progIdx int, ok bool) {
 	var mid, pre breakParts
 	if b.oweMid {
-		mid = b.mid.pickBreak()
+		mid = b.mid.pickBreak(cursor)
 	}
 	if b.owePre {
-		pre = b.pre.pickBreak()
+		pre = b.pre.pickBreak(cursor)
 	}
 	start := cursor.Add(time.Duration(mid.total()+pre.total()) * time.Millisecond)
 	prog, planned := plan(start)
@@ -166,7 +166,7 @@ func (b *breakLoop) unit(cursor, limit time.Time, rotBefore int, plan func(start
 	// breaks between them sit between the preroll and the postroll.
 	progEntries := segmenter{planner: b.cuts, mid: b.mid, channelID: b.channelID, blockID: b.blockID}.split(prog)
 	progEnd := spanEnd(progEntries)
-	post := b.post.pickBreak()
+	post := b.post.pickBreak(cursor)
 	end = progEnd.Add(time.Duration(post.total()) * time.Millisecond)
 	if end.After(limit) {
 		return nil, cursor, 0, false

@@ -1,7 +1,8 @@
 package materializer
 
 import (
-	"math/rand"
+	"encoding/binary"
+	"hash/fnv"
 	"sort"
 	"time"
 
@@ -240,8 +241,30 @@ func lowestPosition(candidates []domain.FillerRule) *domain.FillerRule {
 	return &best
 }
 
+// fillerHash maps one filler placement to a stable 64-bit value: the rule (or
+// template step) that draws it, the absolute instant it airs and which attempt
+// of that draw it is. Filler selection must not use math/rand: every
+// regeneration would pick different clips, and since a clip's duration decides
+// where the next program starts, the whole guide would re-time itself on each
+// run (issue #105). With this, two expansions of the same window produce the
+// same rows — the same placement always draws the same item, no matter where
+// the expansion started or how many draws came before it.
+func fillerHash(ruleID string, atMs int64, attempt int) uint64 {
+	var buf [16]byte
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(ruleID))
+	binary.LittleEndian.PutUint64(buf[0:8], uint64(atMs))
+	binary.LittleEndian.PutUint32(buf[8:12], uint32(attempt))
+	_, _ = h.Write(buf[:12])
+	return h.Sum64()
+}
+
 // selectFillerItem picks one item from pool per rule.Selection, mutating
 // state for the "sequential" strategy. Reports ok=false iff pool is empty.
+//
+// Only "sequential" depends on the order the draws happen in (see
+// selectionState): "random" and "weighted" derive from at and attempt, so the
+// same placement always draws the same item.
 //
 // For "sequential", the pick-then-check-fit loop in fillGap always commits
 // this call's advance even when the picked item ends up not fitting and the
@@ -249,7 +272,7 @@ func lowestPosition(candidates []domain.FillerRule) *domain.FillerRule {
 // state anyway (see selectionState), so a burned rotation slot on a
 // gap-fill's last, rejected candidate is not worth the extra bookkeeping a
 // peek/commit split would add.
-func selectFillerItem(rule domain.FillerRule, pool []domain.FillerPoolItem, state *selectionState) (domain.FillerPoolItem, bool) {
+func selectFillerItem(rule domain.FillerRule, pool []domain.FillerPoolItem, state *selectionState, at time.Time, attempt int) (domain.FillerPoolItem, bool) {
 	if len(pool) == 0 {
 		return domain.FillerPoolItem{}, false
 	}
@@ -266,7 +289,7 @@ func selectFillerItem(rule domain.FillerRule, pool []domain.FillerPoolItem, stat
 		if total <= 0 {
 			return pool[0], true
 		}
-		roll := rand.Intn(total)
+		roll := int(fillerHash(rule.ID, at.UnixMilli(), attempt) % uint64(total))
 		acc := 0
 		for _, it := range pool {
 			acc += it.Weight
@@ -276,7 +299,7 @@ func selectFillerItem(rule domain.FillerRule, pool []domain.FillerPoolItem, stat
 		}
 		return pool[len(pool)-1], true
 	default: // SelectionRandom, or any unrecognized value
-		return pool[rand.Intn(len(pool))], true
+		return pool[int(fillerHash(rule.ID, at.UnixMilli(), attempt)%uint64(len(pool)))], true
 	}
 }
 
@@ -286,11 +309,11 @@ func selectFillerItem(rule domain.FillerRule, pool []domain.FillerPoolItem, stat
 // deciding where program items must stop (issue #10's overrun policy).
 // ok is false for exactly the same reasons insertFiller used to silently
 // no-op: a nil rule, an empty pool, or a non-positive duration.
-func pickFiller(rule *domain.FillerRule, poolItems map[string][]domain.FillerPoolItem, catalogDuration map[string]int64, state *selectionState) (domain.FillerPoolItem, int64, bool) {
+func pickFiller(rule *domain.FillerRule, poolItems map[string][]domain.FillerPoolItem, catalogDuration map[string]int64, state *selectionState, at time.Time) (domain.FillerPoolItem, int64, bool) {
 	if rule == nil {
 		return domain.FillerPoolItem{}, 0, false
 	}
-	item, ok := selectFillerItem(*rule, poolItems[rule.FillerPoolID], state)
+	item, ok := selectFillerItem(*rule, poolItems[rule.FillerPoolID], state, at, 0)
 	if !ok {
 		return domain.FillerPoolItem{}, 0, false
 	}
@@ -364,7 +387,7 @@ func (p *fitPicker) wasTried(idx int) bool {
 
 // candidate returns the pool index of the k-th candidate of a round (k counts
 // from 0), or false when the strategy has nothing left to offer.
-func (p *fitPicker) candidate(k, seqStart int) (int, bool) {
+func (p *fitPicker) candidate(k, seqStart int, at time.Time) (int, bool) {
 	n := len(p.pool)
 	switch p.rule.Selection {
 	case domain.SelectionSequential:
@@ -384,7 +407,7 @@ func (p *fitPicker) candidate(k, seqStart int) (int, bool) {
 			}
 			return 0, false
 		}
-		roll := rand.Intn(remaining)
+		roll := int(fillerHash(p.rule.ID, at.UnixMilli(), k) % uint64(remaining))
 		acc := 0
 		for i, it := range p.pool {
 			if p.wasTried(i) {
@@ -400,18 +423,22 @@ func (p *fitPicker) candidate(k, seqStart int) (int, bool) {
 		if k >= n {
 			return 0, false
 		}
-		for {
-			idx := rand.Intn(n)
+		// Start at a hashed offset and probe forward, so the deterministic
+		// draw still never offers a candidate this round already rejected.
+		base := int(fillerHash(p.rule.ID, at.UnixMilli(), 0) % uint64(n))
+		for step := 0; step < n; step++ {
+			idx := (base + step) % n
 			if !p.wasTried(idx) {
 				return idx, true
 			}
 		}
+		return 0, false
 	}
 }
 
 // pick returns an item that ends within remaining milliseconds, trying up to
 // attempts candidates; ok is false when none fit.
-func (p *fitPicker) pick(remaining int64) (domain.FillerPoolItem, int64, bool) {
+func (p *fitPicker) pick(remaining int64, at time.Time) (domain.FillerPoolItem, int64, bool) {
 	if p.minDur == 0 || remaining < p.minDur {
 		return domain.FillerPoolItem{}, 0, false
 	}
@@ -421,7 +448,7 @@ func (p *fitPicker) pick(remaining int64) (domain.FillerPoolItem, int64, bool) {
 	}
 	p.tried = p.tried[:0]
 	for k := 0; k < p.attempts; k++ {
-		idx, ok := p.candidate(k, seqStart)
+		idx, ok := p.candidate(k, seqStart, at)
 		if !ok {
 			break
 		}
@@ -439,6 +466,18 @@ func (p *fitPicker) pick(remaining int64) (domain.FillerPoolItem, int64, bool) {
 	return domain.FillerPoolItem{}, 0, false
 }
 
+// minTrimmedFillMs is the shortest stretch of a slot worth filling by cutting
+// a filler item short, and maxTrimmedFillMs the longest. The tail filler only
+// fits whole items, so a slot that ends on a round clock boundary is otherwise
+// left with whatever the last item could not cover (0.1-14 s in practice),
+// which the client shows as a seam in the guide. Above the cap the stretch is
+// a real hole worth reporting (see unfilledSlotWarnings) rather than hiding
+// behind a clip cut in half.
+const (
+	minTrimmedFillMs = 1000
+	maxTrimmedFillMs = 60000
+)
+
 // fillGap inserts, starting at cursor, as many whole items selected from
 // rule's pool as fit before target, advancing the cursor after each one. It
 // never cuts an item short. When a picked item does not fit it tries other
@@ -449,6 +488,15 @@ func (p *fitPicker) pick(remaining int64) (domain.FillerPoolItem, int64, bool) {
 // fitPicker). What no candidate can fill is left without an epg_entry, for the
 // caller's next layer (the fallback rule, then a gap). It is a no-op
 // (returns cursor unchanged) when rule is nil or its pool is empty.
+//
+// trimToTarget makes the last resort one cut item instead of a hole: when no
+// whole item fits the residual and it is between minTrimmedFillMs and
+// maxTrimmedFillMs, the shortest item longer than the residual is emitted
+// ending exactly at target.
+// The client plays that entry for its duration, so a short entry plays a short
+// piece of the item — which is what keeps a slot boundary seam-free (issue
+// #105). Only the tail uses it: it ends on a scheduled boundary, unlike a
+// fallback fill that just runs until the next thing starts.
 func fillGap(
 	rule *domain.FillerRule,
 	poolItemsByPool map[string][]domain.FillerPoolItem,
@@ -459,6 +507,7 @@ func fillGap(
 	generatedAt int64,
 	sourceScheduleItemID *string,
 	state *selectionState,
+	trimToTarget bool,
 ) ([]domain.EpgEntry, time.Time) {
 	if rule == nil {
 		return nil, cursor
@@ -472,7 +521,7 @@ func fillGap(
 	var entries []domain.EpgEntry
 	for len(entries) < maxLoopEntries {
 		remaining := target.Sub(cursor).Milliseconds()
-		item, durMs, ok := picker.pick(remaining)
+		item, durMs, ok := picker.pick(remaining, cursor)
 		if !ok {
 			break
 		}
@@ -490,10 +539,60 @@ func fillGap(
 		})
 		cursor = end
 	}
+	if trimToTarget {
+		entries, cursor = trimFill(pool, catalogDuration, entries, cursor, target, kind, tenantID, channelID, generatedAt, sourceScheduleItemID)
+	}
 	if len(entries) >= maxLoopEntries {
 		warnLoopCap(channelID, sourceScheduleItemID)
 	}
 	return entries, cursor
+}
+
+// trimFill closes the last stretch of a gap by cutting one pool item short:
+// the shortest item longer than the gap, appended ending exactly at target.
+// A residual outside [minTrimmedFillMs, maxTrimmedFillMs], or a pool whose
+// items are all shorter than it (they would have fitted whole), is left as it
+// is.
+func trimFill(
+	pool []domain.FillerPoolItem,
+	catalogDuration map[string]int64,
+	entries []domain.EpgEntry,
+	cursor, target time.Time,
+	kind domain.EpgEntryKind,
+	tenantID, channelID string,
+	generatedAt int64,
+	sourceScheduleItemID *string,
+) ([]domain.EpgEntry, time.Time) {
+	remaining := target.Sub(cursor).Milliseconds()
+	if remaining < minTrimmedFillMs || remaining > maxTrimmedFillMs {
+		return entries, cursor
+	}
+	var chosen *domain.FillerPoolItem
+	var chosenDur int64
+	for i := range pool {
+		dur := catalogDuration[pool[i].CatalogItemID]
+		if dur <= remaining {
+			continue
+		}
+		if chosen == nil || dur < chosenDur {
+			chosen, chosenDur = &pool[i], dur
+		}
+	}
+	if chosen == nil {
+		return entries, cursor
+	}
+	entries = append(entries, domain.EpgEntry{
+		ID:                   uuid.NewString(),
+		TenantID:             tenantID,
+		ChannelID:            channelID,
+		Kind:                 kind,
+		CatalogItemID:        chosen.CatalogItemID,
+		StartAt:              cursor.UnixMilli(),
+		EndAt:                target.UnixMilli(),
+		SourceScheduleItemID: sourceScheduleItemID,
+		GeneratedAt:          generatedAt,
+	})
+	return entries, target
 }
 
 // seriesVisit describes one visit of a series item: how much it airs, how
@@ -665,7 +764,7 @@ func emitSeries(
 		// no block item id, so they are never mistaken for episodes when a
 		// later run rebuilds the cursor.
 		if prevEpisode && !slot.Skip {
-			if parts := visit.Mid.pickBreak(); len(parts) > 0 {
+			if parts := visit.Mid.pickBreak(cursor); len(parts) > 0 {
 				midEnd := cursor.Add(time.Duration(parts.total()) * time.Millisecond)
 				if strict && midEnd.After(limit) {
 					break
@@ -1090,7 +1189,7 @@ func expandLayer(in channelInput, now, scanFrom, windowEnd time.Time, state *sel
 			*in.Residuals = append(*in.Residuals, residual{BlockID: lastSlotBlock, Length: to.Sub(from)})
 		}
 		rule := resolveFillerRule(in.FillerRules, domain.FillerFallback, "", in.ChannelID)
-		gapEntries, _ := fillGap(rule, in.PoolItems, in.CatalogDuration, from, to, domain.EpgFallback, in.TenantID, in.ChannelID, generatedAt, nil, state)
+		gapEntries, _ := fillGap(rule, in.PoolItems, in.CatalogDuration, from, to, domain.EpgFallback, in.TenantID, in.ChannelID, generatedAt, nil, state, false)
 		entries = append(entries, gapEntries...)
 	}
 
@@ -1147,7 +1246,7 @@ func expandLayer(in channelInput, now, scanFrom, windowEnd time.Time, state *sel
 		// before the fallback does.
 		if end.Before(to) {
 			tailRule := resolveFillerRule(in.FillerRules, domain.FillerTail, continuous.RunKey(), in.ChannelID)
-			tailEntries, tailEnd := fillGap(tailRule, in.PoolItems, in.CatalogDuration, end, to, domain.EpgTail, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, state)
+			tailEntries, tailEnd := fillGap(tailRule, in.PoolItems, in.CatalogDuration, end, to, domain.EpgTail, in.TenantID, in.ChannelID, generatedAt, &continuous.ID, state, false)
 			entries = append(entries, tailEntries...)
 			end = tailEnd
 		}
@@ -1221,7 +1320,7 @@ func expandLayer(in channelInput, now, scanFrom, windowEnd time.Time, state *sel
 			}
 		}
 		insertFiller := func(src *midrollSource, kind domain.EpgEntryKind) {
-			emitBreak(src.pickBreak(), kind)
+			emitBreak(src.pickBreak(cursor), kind)
 		}
 
 		if in.DynamicBlockIDs[occ.BlockID] {
@@ -1244,7 +1343,7 @@ func expandLayer(in channelInput, now, scanFrom, windowEnd time.Time, state *sel
 			entries = append(entries, loopEntries...)
 			cursor = newCursor
 			if cursor.Before(nominalNextStart) && tailRule != nil {
-				tailEntries, tailEnd := fillGap(tailRule, in.PoolItems, in.CatalogDuration, cursor, nominalNextStart, domain.EpgTail, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, state)
+				tailEntries, tailEnd := fillGap(tailRule, in.PoolItems, in.CatalogDuration, cursor, nominalNextStart, domain.EpgTail, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, state, true)
 				entries = append(entries, tailEntries...)
 				cursor = tailEnd
 			}
@@ -1277,7 +1376,7 @@ func expandLayer(in channelInput, now, scanFrom, windowEnd time.Time, state *sel
 		var postrollParts breakParts
 		itemsCutoff := nominalNextStart
 		if hasNextOccurrence {
-			postrollParts = postroll.pickBreak()
+			postrollParts = postroll.pickBreak(cursor)
 			if len(postrollParts) > 0 {
 				itemsCutoff = nominalNextStart.Add(-time.Duration(postrollParts.total()) * time.Millisecond)
 			}
@@ -1305,7 +1404,7 @@ func expandLayer(in channelInput, now, scanFrom, windowEnd time.Time, state *sel
 			if idx == len(items)-1 && !repeat {
 				return true
 			}
-			parts := midSrc.pickBreak()
+			parts := midSrc.pickBreak(cursor)
 			if len(parts) == 0 {
 				return true
 			}
@@ -1406,7 +1505,7 @@ func expandLayer(in channelInput, now, scanFrom, windowEnd time.Time, state *sel
 		postActualEnd := cursor
 
 		if postActualEnd.Before(nominalNextStart) && tailRule != nil {
-			tailEntries, tailEnd := fillGap(tailRule, in.PoolItems, in.CatalogDuration, postActualEnd, nominalNextStart, domain.EpgTail, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, state)
+			tailEntries, tailEnd := fillGap(tailRule, in.PoolItems, in.CatalogDuration, postActualEnd, nominalNextStart, domain.EpgTail, in.TenantID, in.ChannelID, generatedAt, &scheduleItemID, state, true)
 			entries = append(entries, tailEntries...)
 			cursor = tailEnd
 		} else {

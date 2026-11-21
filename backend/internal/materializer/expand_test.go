@@ -137,7 +137,7 @@ func TestSelectFillerItem_SequentialAdvancesAndWraps(t *testing.T) {
 
 	var picks []string
 	for i := 0; i < 7; i++ {
-		item, ok := selectFillerItem(rule, pool, state)
+		item, ok := selectFillerItem(rule, pool, state, t0.Add(time.Duration(i)*time.Minute), 0)
 		if !ok {
 			t.Fatalf("selectFillerItem: expected ok=true")
 		}
@@ -158,12 +158,12 @@ func TestSelectFillerItem_SequentialIsPerRule(t *testing.T) {
 	r1 := domain.FillerRule{ID: "r1", Selection: domain.SelectionSequential}
 	r2 := domain.FillerRule{ID: "r2", Selection: domain.SelectionSequential}
 
-	first, _ := selectFillerItem(r1, pool, state)
+	first, _ := selectFillerItem(r1, pool, state, t0, 0)
 	if first.ID != "a" {
 		t.Fatalf("r1 first pick = %q, want a", first.ID)
 	}
 	// r2's cursor is independent of r1's.
-	otherFirst, _ := selectFillerItem(r2, pool, state)
+	otherFirst, _ := selectFillerItem(r2, pool, state, t0, 0)
 	if otherFirst.ID != "a" {
 		t.Fatalf("r2 first pick = %q, want a (rules should have independent cursors)", otherFirst.ID)
 	}
@@ -171,7 +171,7 @@ func TestSelectFillerItem_SequentialIsPerRule(t *testing.T) {
 
 func TestSelectFillerItem_EmptyPool(t *testing.T) {
 	rule := domain.FillerRule{ID: "r1", Selection: domain.SelectionSequential}
-	_, ok := selectFillerItem(rule, nil, newSelectionState())
+	_, ok := selectFillerItem(rule, nil, newSelectionState(), t0, 0)
 	if ok {
 		t.Errorf("expected ok=false for empty pool")
 	}
@@ -188,7 +188,7 @@ func TestSelectFillerItem_Weighted(t *testing.T) {
 	const trials = 20000
 	counts := map[string]int{}
 	for i := 0; i < trials; i++ {
-		item, ok := selectFillerItem(rule, pool, state)
+		item, ok := selectFillerItem(rule, pool, state, t0.Add(time.Duration(i)*time.Minute), 0)
 		if !ok {
 			t.Fatalf("selectFillerItem: expected ok=true")
 		}
@@ -208,12 +208,41 @@ func TestSelectFillerItem_RandomStaysInBounds(t *testing.T) {
 	valid := map[string]bool{"a": true, "b": true, "c": true}
 
 	for i := 0; i < 500; i++ {
-		item, ok := selectFillerItem(rule, pool, state)
+		item, ok := selectFillerItem(rule, pool, state, t0.Add(time.Duration(i)*time.Minute), 0)
 		if !ok {
 			t.Fatalf("selectFillerItem: expected ok=true")
 		}
 		if !valid[item.ID] {
 			t.Fatalf("selectFillerItem returned out-of-pool item %q", item.ID)
+		}
+	}
+}
+
+// The whole point of issue #105: the same placement always draws the same item,
+// so a regeneration cannot re-time the programming that follows it.
+func TestSelectFillerItem_IsStableForTheSamePlacement(t *testing.T) {
+	pool := []domain.FillerPoolItem{{ID: "a", Weight: 1}, {ID: "b", Weight: 1}, {ID: "c", Weight: 1}, {ID: "d", Weight: 1}}
+	for _, sel := range []domain.SelectionStrategy{domain.SelectionRandom, domain.SelectionWeighted} {
+		rule := domain.FillerRule{ID: "r1", Selection: sel}
+		at := t0.Add(37 * time.Minute)
+		first, ok := selectFillerItem(rule, pool, newSelectionState(), at, 0)
+		if !ok {
+			t.Fatalf("%s: expected ok=true", sel)
+		}
+		for i := 0; i < 20; i++ {
+			again, _ := selectFillerItem(rule, pool, newSelectionState(), at, 0)
+			if again.ID != first.ID {
+				t.Fatalf("%s: same placement drew %q then %q", sel, first.ID, again.ID)
+			}
+		}
+		// Different placements must still reach the whole pool.
+		seen := map[string]bool{}
+		for i := 0; i < 200; i++ {
+			item, _ := selectFillerItem(rule, pool, newSelectionState(), t0.Add(time.Duration(i)*time.Minute), 0)
+			seen[item.ID] = true
+		}
+		if len(seen) != len(pool) {
+			t.Errorf("%s: 200 placements reached %d of %d pool items", sel, len(seen), len(pool))
 		}
 	}
 }
@@ -227,7 +256,7 @@ func TestFillGap_ItemsThatFitAreInserted(t *testing.T) {
 	cursor := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	target := cursor.Add(25 * time.Second) // room for 2 full items, 5s residual
 
-	entries, end := fillGap(rule, pool, catalogDuration, cursor, target, domain.EpgFallback, "tenant1", "chan1", 1000, nil, newSelectionState())
+	entries, end := fillGap(rule, pool, catalogDuration, cursor, target, domain.EpgFallback, "tenant1", "chan1", 1000, nil, newSelectionState(), false)
 	if len(entries) != 2 {
 		t.Fatalf("expected 2 entries, got %d: %+v", len(entries), entries)
 	}
@@ -257,7 +286,7 @@ func TestFillGap_ItemThatDoesNotFitLeavesResidual(t *testing.T) {
 	cursor := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	target := cursor.Add(10 * time.Second)
 
-	entries, end := fillGap(rule, pool, catalogDuration, cursor, target, domain.EpgTail, "tenant1", "chan1", 1000, nil, newSelectionState())
+	entries, end := fillGap(rule, pool, catalogDuration, cursor, target, domain.EpgTail, "tenant1", "chan1", 1000, nil, newSelectionState(), false)
 	if len(entries) != 0 {
 		t.Fatalf("expected no entries when the only item doesn't fit, got %+v", entries)
 	}
@@ -270,13 +299,13 @@ func TestFillGap_NilRuleOrEmptyPoolIsNoop(t *testing.T) {
 	cursor := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	target := cursor.Add(time.Hour)
 
-	entries, end := fillGap(nil, nil, nil, cursor, target, domain.EpgFallback, "t", "c", 0, nil, newSelectionState())
+	entries, end := fillGap(nil, nil, nil, cursor, target, domain.EpgFallback, "t", "c", 0, nil, newSelectionState(), false)
 	if len(entries) != 0 || !end.Equal(cursor) {
 		t.Errorf("nil rule: expected no-op, got entries=%v end=%v", entries, end)
 	}
 
 	rule := &domain.FillerRule{ID: "r1", FillerPoolID: "pool1"}
-	entries, end = fillGap(rule, map[string][]domain.FillerPoolItem{}, nil, cursor, target, domain.EpgFallback, "t", "c", 0, nil, newSelectionState())
+	entries, end = fillGap(rule, map[string][]domain.FillerPoolItem{}, nil, cursor, target, domain.EpgFallback, "t", "c", 0, nil, newSelectionState(), false)
 	if len(entries) != 0 || !end.Equal(cursor) {
 		t.Errorf("empty pool: expected no-op, got entries=%v end=%v", entries, end)
 	}

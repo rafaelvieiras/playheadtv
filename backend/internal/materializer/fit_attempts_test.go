@@ -27,7 +27,7 @@ func gapPool(names []string, secs []int64) (map[string][]domain.FillerPoolItem, 
 func runGap(rule *domain.FillerRule, pool map[string][]domain.FillerPoolItem, dur map[string]int64, residualSecs int64, state *selectionState) ([]domain.EpgEntry, time.Time, time.Time) {
 	cursor := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	target := cursor.Add(time.Duration(residualSecs) * time.Second)
-	entries, end := fillGap(rule, pool, dur, cursor, target, domain.EpgTail, "t", "c", 0, nil, state)
+	entries, end := fillGap(rule, pool, dur, cursor, target, domain.EpgTail, "t", "c", 0, nil, state, false)
 	return entries, end, target
 }
 

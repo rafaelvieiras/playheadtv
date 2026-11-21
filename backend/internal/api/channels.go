@@ -18,7 +18,7 @@ import (
 // Schedule/Playout split. Nothing else about a channel does.
 func registerChannels(mux Router, db storage.DB, mat *materializer.Materializer) {
 	mux.HandleFunc("POST /channels", createChannel(db, mat))
-	mux.HandleFunc("GET /channels", listChannels(db))
+	mux.HandleFunc("GET /channels", listChannels(db, mat))
 	mux.HandleFunc("GET /channels/{id}", getChannel(db))
 	mux.HandleFunc("PUT /channels/{id}", updateChannel(db, mat))
 	mux.HandleFunc("DELETE /channels/{id}", deleteChannel(db))
@@ -251,7 +251,16 @@ func createChannel(db storage.DB, mat *materializer.Materializer) http.HandlerFu
 	}
 }
 
-func listChannels(db storage.DB) http.HandlerFunc {
+// channelWithNotices is a channel plus what the last materialization run found
+// wrong with its configuration. The field is additive and omitted when the
+// channel can air programming, so a client that ignores it sees the same
+// channel it always did.
+type channelWithNotices struct {
+	domain.Channel
+	Notices []materializer.Warning `json:"notices,omitempty"`
+}
+
+func listChannels(db storage.DB, mat *materializer.Materializer) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var channels []domain.Channel
 		err := db.Query(r.Context(), &channels,
@@ -262,7 +271,15 @@ func listChannels(db storage.DB) http.HandlerFunc {
 			handleDBError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, channels)
+		if mat == nil {
+			writeJSON(w, http.StatusOK, channels)
+			return
+		}
+		out := make([]channelWithNotices, len(channels))
+		for i, ch := range channels {
+			out[i] = channelWithNotices{Channel: ch, Notices: mat.Notices(ch.ID)}
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }
 

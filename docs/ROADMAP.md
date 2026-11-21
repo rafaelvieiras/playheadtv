@@ -1554,3 +1554,22 @@ repo never contains.
       run writes nothing, a missing reference rejects instead of half-applying,
       the three conflict policies). Not done: filler pools, rules and break
       templates are not in the plan yet.
+- [x] A guide that does not re-time itself (2026-11-21, #105): filler selection
+      moved off the package-level `math/rand` onto `fillerHash(rule, at,
+      attempt)` — a hash of the placement, not a draw from a stream — so the
+      same window always expands to the same rows and regenerating no longer
+      moves every program after a filler clip. `fitPicker` keeps its
+      attempts/no-replacement semantics with a hashed offset instead of a
+      retry loop; only `sequential` pools stay order-based, as documented.
+      Also: the tail fill closes a residual between 1 s and 60 s by cutting the
+      shortest item longer than it short (`trimFill`), instead of leaving the
+      sub-minute seam every slot boundary used to have; a head hole shorter
+      than `unfilledSlotMin` no longer forces a full window rewrite; a run
+      processes the channels with no entry covering `now` first; and
+      `GET /channels` carries each channel's loader warnings (`notices`), so a
+      channel whose schedule cannot air anything shows up without expanding a
+      week per channel. Tests: `TestSelectFillerItem_IsStableForTheSamePlacement`
+      (same placement twice, whole pool still reachable), the existing
+      `expand`/`fit_attempts`/`endless_fillers` suites unchanged in intent.
+      Not done: the web UI badge is a first pass (`ChannelsPage`), and a
+      `sequential` pool still rotates per run.
