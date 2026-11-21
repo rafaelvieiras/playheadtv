@@ -1571,5 +1571,6 @@ repo never contains.
       week per channel. Tests: `TestSelectFillerItem_IsStableForTheSamePlacement`
       (same placement twice, whole pool still reachable), the existing
       `expand`/`fit_attempts`/`endless_fillers` suites unchanged in intent.
-      Not done: the web UI badge is a first pass (`ChannelsPage`), and a
-      `sequential` pool still rotates per run.
+      The web UI badge on `ChannelsPage` is a first pass. Still open: a
+      `sequential` pool keeps rotating per run, because its order is the
+      configuration, not a draw.
