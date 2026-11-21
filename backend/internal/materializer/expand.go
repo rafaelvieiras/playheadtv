@@ -475,7 +475,7 @@ func (p *fitPicker) pick(remaining int64, at time.Time) (domain.FillerPoolItem, 
 // behind a clip cut in half.
 const (
 	minTrimmedFillMs = 1000
-	maxTrimmedFillMs = 60000
+	maxTrimmedFillMs = 240000
 )
 
 // fillGap inserts, starting at cursor, as many whole items selected from

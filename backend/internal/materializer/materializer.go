@@ -51,13 +51,20 @@ const tickInterval = 5 * time.Minute
 // can't wedge the background worker forever. It covers every tenant and
 // channel of the run, so it is generous; channelTimeout is what bounds one
 // channel.
-const runTimeout = 5 * time.Minute
+//
+// It used to be 5 minutes, which one pass over a few dozen channels does not
+// fit: the moment the deadline expired, every channel still pending failed
+// with "list schedule items: context deadline exceeded" and kept whatever the
+// previous run had laid down, so the grid went stale (and its freshly expired
+// rows read as holes) until the next pass got further. A full pass is the unit
+// of work here, so the budget has to cover one.
+const runTimeout = 20 * time.Minute
 
 // channelTimeout is the budget of one channel's regeneration (loading,
 // expansion and the transactional rewrite of its rows) inside a run, so one
 // pathological channel can neither starve the others nor wedge the worker.
 // A channel that exceeds it is logged and keeps its previous materialization.
-const channelTimeout = 30 * time.Second
+const channelTimeout = 90 * time.Second
 
 // scheduleItemColumns/fillerRuleColumns alias columns whose DB name doesn't
 // spell out to the domain struct's field name, same pattern (and same
@@ -244,6 +251,17 @@ func (m *Materializer) setNotices(channelID string, warnings []Warning) {
 	m.notices[channelID] = warnings
 }
 
+// countPending counts how many channels come at or after fromID in the run's
+// order, i.e. how much of the tenant the run did not get to.
+func countPending(channels []domain.Channel, fromID string) int {
+	for i, ch := range channels {
+		if ch.ID == fromID {
+			return len(channels) - i
+		}
+	}
+	return 0
+}
+
 // orderByCoverage moves the channels with no entry covering now to the front,
 // keeping the query order inside each group. A run has a fixed budget
 // (runTimeout) and every channel costs a full expansion, so the order decides
@@ -279,11 +297,25 @@ func (m *Materializer) runTenant(ctx context.Context, tenantID string, now, scan
 	}
 	m.orderByCoverage(ctx, tenantID, channels, now.UnixMilli())
 
+	pending := 0
 	for _, ch := range channels {
+		if err := ctx.Err(); err != nil {
+			// The run's own deadline: say how much was left instead of
+			// failing every remaining channel one by one, which reads like
+			// dozens of unrelated per-channel problems in the log.
+			pending = countPending(channels, ch.ID)
+			logging.Warnf("materializer: tenant %s: run budget exhausted with %d channel(s) still pending, they keep their previous materialization until the next run", tenantID, pending)
+			break
+		}
 		chCtx, cancel := context.WithTimeout(ctx, channelTimeout)
 		err := m.materializeChannel(chCtx, ch, tenantID, now, scanFrom, windowEnd, cache, state)
 		cancel()
 		if err != nil {
+			if ctx.Err() != nil {
+				pending = countPending(channels, ch.ID)
+				logging.Warnf("materializer: tenant %s: run budget exhausted with %d channel(s) still pending (the last one failed: %v), they keep their previous materialization until the next run", tenantID, pending, err)
+				break
+			}
 			logging.Errorf("materializer: channel %s: %v", ch.ID, err)
 		}
 	}

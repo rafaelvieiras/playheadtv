@@ -1574,3 +1574,14 @@ repo never contains.
       The web UI badge on `ChannelsPage` is a first pass. Still open: a
       `sequential` pool keeps rotating per run, because its order is the
       configuration, not a draw.
+- [x] A run that fits the tenant (2026-11-21, #105 follow-up): `runTimeout`
+      went from 5 to 20 minutes and `channelTimeout` from 30 to 90 s. One pass
+      over a few dozen channels does not fit in 5 minutes — the measurement that
+      forced this: a single-channel 48 h expansion costs ~27 s, so 49 channels
+      are ~22 minutes — and the moment the deadline expired every channel still
+      pending failed with "list schedule items: context deadline exceeded" and
+      kept the previous materialization, which is what made the grid go stale
+      and read as holes. The run now also logs one line saying how many channels
+      it did not get to, instead of failing each one. The tail trim cap went
+      from 60 s to 4 minutes, so the 65-101 s residuals a long-clip pool cannot
+      fit are closed too (a 5 minute residual is still reported, not hidden).
