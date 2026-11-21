@@ -1,6 +1,7 @@
 package io.github.rafaelvieiras.playheadtv.client
 
 import android.app.UiModeManager
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.os.Build
@@ -33,5 +34,51 @@ class MainActivity : FlutterActivity() {
         // A plugin's `pair` answer is two addresses; the `video_player` plugin
         // opens one per player, so the app builds that player here.
         PairedVideos(applicationContext, flutterEngine.renderer, flutterEngine.dartExecutor.binaryMessenger)
+    }
+
+    override fun onCreate(savedInstanceState: android.os.Bundle?) {
+        super.onCreate(savedInstanceState)
+        maybeRunLoudnessProbe(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        maybeRunLoudnessProbe(intent)
+    }
+
+    /**
+     * Validation hook for the loudness work: `am start ... --es probe_ids`
+     * measures the given items without playing them and logs the result. The
+     * app behaves exactly as before when the extras are absent.
+     *
+     * The server and its key come from the settings this app already stored, so
+     * no credential ever travels through a command line.
+     */
+    private fun maybeRunLoudnessProbe(intent: Intent?) {
+        // `probe_jobs` is `id:offset;id:offset;...` so a job can never be paired
+        // with the wrong offset.
+        val jobs = intent?.getStringExtra("probe_jobs")
+            ?.split(";")
+            ?.mapNotNull { entry ->
+                val i = entry.indexOf(':')
+                if (i <= 0) return@mapNotNull null
+                val off = entry.substring(i + 1).toDoubleOrNull() ?: return@mapNotNull null
+                entry.substring(0, i) to off
+            }
+            ?.filter { it.first.isNotBlank() }
+            ?: return
+        val prefs = getSharedPreferences("FlutterSharedPreferences", MODE_PRIVATE)
+        // SettingsService stores the connection under `connection_<key>`.
+        val base = intent.getStringExtra("probe_base")
+            ?: prefs.getString("flutter.connection_jellyfin_url", null)
+            ?: prefs.getString("flutter.jellyfin_url", null)
+            ?: return
+        val key = intent.getStringExtra("probe_key")
+            ?: prefs.getString("flutter.connection_jellyfin_api_key", null)
+            ?: prefs.getString("flutter.jellyfin_api_key", null)
+            ?: return
+        val seconds = intent.getStringExtra("probe_seconds")?.toDoubleOrNull() ?: 30.0
+        LoudnessProbe.runFromIntent(applicationContext, jobs, seconds, base.trimEnd('/'), key)
     }
 }
