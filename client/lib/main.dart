@@ -21,6 +21,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' show PlatformDispatcher;
 
 import 'package:flutter/material.dart';
@@ -47,6 +48,8 @@ import 'services/perf_trace.dart';
 import 'services/screen_awake.dart';
 import 'services/system_bars.dart';
 import 'services/settings_service.dart';
+import 'services/loudness_probe.dart';
+import 'services/loudness_service.dart';
 import 'services/app_window.dart';
 import 'services/stream_preferences_service.dart';
 import 'services/stream_selection_resolver.dart';
@@ -239,6 +242,20 @@ class AppConfig {
   // else the installation default.
   static Duration configuredPreloadLead(SettingsService settings) =>
       _preloadLead ?? Duration(seconds: settings.preloadLeadSeconds ?? preloadLeadDefaultSeconds);
+
+  // Leveling: measure each piece of audio on the device and pull the player's
+  // volume down to a common target (`loudness_enabled`/`loudness_target_lufs`
+  // in the config file). On by default: without it a channel change between a
+  // quiet film and a loud cartoon is a 9 dB jump.
+  static bool get loudnessEnabled => resolveBoolSetting(
+        override: null,
+        envValue: const String.fromEnvironment('LOUDNESS_LEVELING'),
+        file: _file,
+        key: 'loudness_enabled',
+        fallback: true,
+      );
+
+  static double get loudnessTargetLufs => readLoudnessTarget(_file);
 
   // Base of the preload retry back-off, shrunk by tests.
   static Duration get preloadRetryBase => _preloadRetryBase ?? defaultPreloadRetryBase;
@@ -490,6 +507,16 @@ Future<void> prefetchFirstChannel() async {
 List<ChannelEntry> channel = <ChannelEntry>[];
 
 const crossfadeDuration = Duration(milliseconds: 800);
+
+// Leveling. Five seconds of audio is what the measurement decodes: on the box
+// that costs about 2.8 s of wall clock, and a shorter window stops being about
+// the content and starts being about one sound effect.
+const gainMeasureWindow = Duration(seconds: 5);
+// The correction is a fade, not a step: long enough to be inaudible as a change,
+// short enough that two levels are not both remembered.
+const gainRampDuration = Duration(seconds: 4);
+// Below this a correction is not worth a fade.
+const gainRampMinDeltaDb = 1.0;
 
 // Last-resort floor under _scheduleTransitions' `effective` duration. The
 // GET /epg filters in _loadAndPlayChannel/_doFetchNextEpgSlice (and
@@ -907,6 +934,14 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   bool _stallBufferedReported = false;
   Timer? _advanceTimer;
   Timer? _volumeRampTimer;
+  // Leveling (lib/services/loudness_service.dart): the gain the on-air item is
+  // held at, the timer that is walking the volume towards a new one, and the
+  // device-side measurement. `_itemGain` is what the crossfade and the end of a
+  // fade read, so a level correction never fights a fade.
+  final LoudnessProbe _loudnessProbe = const LoudnessProbe();
+  LoudnessService? _loudness;
+  double _itemGain = 1.0;
+  Timer? _gainRampTimer;
   final FocusNode _focusNode = FocusNode();
 
   // OSD (on-screen channel guide): shown on every item change (channel start
@@ -1155,6 +1190,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     try {
       _settings = await SettingsService.create();
       _keyBindings = KeyBindingsService(_settings);
+      _loudness = await LoudnessService.create();
       Dimmer.level.value = AppConfig.configuredDimLevel(_settings);
       EpgThumbnailSetting.enabled.value = _settings.epgThumbnail;
       ClockOverlaySettings.alwaysVisible.value = _settings.clockAlwaysVisible;
@@ -1275,6 +1311,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _advanceTimer?.cancel();
     _resetPreload();
     _volumeRampTimer?.cancel();
+    _gainRampTimer?.cancel();
     _stallTimer?.cancel();
     _stallTimer = null;
     _stall.reset();
@@ -1775,8 +1812,13 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       unawaited(disposeController(controller));
       return;
     }
+    // A channel change has no lead time to measure anything, so it enters at the
+    // level this channel was last at (or this item's own, if it was leveled
+    // before): a known number keeps the jump small, and the measurement that
+    // follows corrects it slowly, once there is real audio on the wire.
+    _itemGain = _knownGain(entry);
     try {
-      await controller.setVolume(1);
+      await controller.setVolume(_itemGain);
       await controller.play();
     } catch (_) {
       unawaited(disposeController(controller));
@@ -1807,6 +1849,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // initialSeek before the crossfade fires.
     _armStallWatch(generation);
     _scheduleTransitions(0, remaining: entry.clipDuration - initialSeek, generation: generation);
+    // Joined mid-programme: the level is measured where the viewer landed, not
+    // at the head of the file.
+    unawaited(_levelItem(entry, controller, generation, startAt: initialSeek, from: _itemGain));
     unawaited(_maybeExtendGrid(0, generation));
     if (_reconcilePending) {
       _reconcilePending = false;
@@ -2003,6 +2048,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       });
       if (replaced != null) unawaited(disposeController(replaced));
       _preloadReadyIndex = nextIndex;
+      // Leveled before it airs: the fade into it can then carry the right gain
+      // instead of a correction heard seconds into the programme.
+      unawaited(_measureIntoCache(nextEntry));
       return;
     }
   }
@@ -2147,7 +2195,17 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
     setState(() => _status = 'CROSSFADE -> ${nextEntry.label}');
     Log.debug('crossfade', 'ramp to item $nextIndex starting');
-    final onAir = await _rampCrossfade(outgoing: outgoing, incoming: incoming, generation: generation);
+    // The item that was measured during its preload arrives already leveled.
+    final outgoingGain = _itemGain;
+    final incomingGain = _knownGain(nextEntry);
+    _itemGain = incomingGain;
+    final onAir = await _rampCrossfade(
+      outgoing: outgoing,
+      incoming: incoming,
+      generation: generation,
+      incomingGain: incomingGain,
+      outgoingGain: outgoingGain,
+    );
     if (generation != _loadGeneration) return;
     Log.info('crossfade', 'item $nextIndex on air (${onAir.inMilliseconds}ms on air at the end of the ramp, seeked ${seeked.inMilliseconds}ms)');
     if (!mounted) return;
@@ -2184,6 +2242,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     required VideoPlayback? outgoing,
     required VideoPlayback incoming,
     required int generation,
+    double incomingGain = 1.0,
+    double? outgoingGain,
   }) async {
     if (generation != _loadGeneration) return Duration.zero;
     try {
@@ -2224,9 +2284,13 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       // Neither call waits for the other (or for the previous step): a platform
       // call that is slow on one controller must not hold back the other's
       // volume, nor the end of the ramp. Calls on one controller stay in order.
+      // Each side fades at its own level: the incoming item may be 6 dB quieter
+      // than the one leaving, and a ramp that ignored that would jump at the
+      // end of the fade.
       final out = outgoing;
-      if (out != null) unawaited(_bestEffort(() => out.setVolume(1 - progress)));
-      unawaited(_bestEffort(() => incoming.setVolume(progress)));
+      final from = outgoingGain ?? 1.0;
+      if (out != null) unawaited(_bestEffort(() => out.setVolume(from * (1 - progress))));
+      unawaited(_bestEffort(() => incoming.setVolume(incomingGain * progress)));
       if (step >= steps) {
         t.cancel();
         unawaited(_finishRamp(outgoing, incoming, generation).whenComplete(() {
@@ -2246,6 +2310,165 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     } catch (_) {}
   }
 
+  // The channel being tuned, for the per-channel level memory.
+  String? get _currentChannelId =>
+      (_channelIndex >= 0 && _channelIndex < _channels.length) ? _channels[_channelIndex].id : null;
+
+  // The level an item enters at, before anything is measured for it.
+  //
+  // Order matters: an item leveled before is exact; with a channel already on
+  // air, the level being heard right now is the best guess for what the viewer
+  // expects next (and it is what keeps a channel change from jumping); a channel
+  // that was watched in an earlier session is the fallback at boot, when nothing
+  // is playing yet.
+  double _knownGain(ChannelEntry entry) {
+    final service = _loudness;
+    if (service == null || !AppConfig.loudnessEnabled) return 1.0;
+    final own = service.itemGain(entry.id);
+    if (own != null) return own;
+    // A level already in force is what the viewer is hearing: entering the new
+    // channel at anything else is the jump this is here to avoid.
+    if (_itemGain != 1.0) return _itemGain;
+    final channelId = _currentChannelId;
+    return (channelId == null ? null : service.channelGain(channelId)) ?? 1.0;
+  }
+
+  // Measures [entry] at [startAt] and turns the result into a player volume.
+  // Null when there was nothing usable to measure (silence, no audio track).
+  Future<double?> _measureGain(ChannelEntry entry, Duration startAt) async {
+    final measurement = await _loudnessProbe.measure(
+      url: streamUrl(entry.id),
+      startAt: startAt,
+      window: gainMeasureWindow,
+    );
+    Log.debug('loudness', '${entry.label} at ${startAt.inSeconds}s: $measurement');
+    if (measurement == null) return null;
+    if (!measurement.usable) {
+      Log.debug('loudness', '${entry.label}: not enough signal to level (${measurement.blocks} blocks)');
+      return null;
+    }
+    return clampLoudnessGain(loudnessGain(
+      lufs: measurement.lufs,
+      peakDb: measurement.peakDb,
+      targetLufs: AppConfig.loudnessTargetLufs,
+    ));
+  }
+
+  // Levels an item that is already on air, ramping from the level it entered at.
+  // Never throws: a channel that cannot be measured keeps playing as it is.
+  Future<void> _levelItem(
+    ChannelEntry entry,
+    VideoPlayback controller,
+    int generation, {
+    required Duration startAt,
+    required double from,
+  }) async {
+    try {
+      await _levelItemInner(entry, controller, generation, startAt: startAt, from: from);
+    } catch (e, stack) {
+      // Leveling is a nice-to-have: a failure here must never reach the player.
+      Log.error('loudness', 'leveling ${entry.label} failed', error: e, stack: stack);
+    }
+  }
+
+  Future<void> _levelItemInner(
+    ChannelEntry entry,
+    VideoPlayback controller,
+    int generation, {
+    required Duration startAt,
+    required double from,
+  }) async {
+    final service = _loudness;
+    Log.debug('loudness', 'leveling ${entry.label}: service=${service != null} enabled=${AppConfig.loudnessEnabled} from=$from');
+    if (service == null || !AppConfig.loudnessEnabled) return;
+    // A gain measured near the item's start is the item's level; anything
+    // sampled mid-programme is only what that stretch sounds like, so it levels
+    // this playback and is not remembered as the item's own level.
+    final representative = startAt < const Duration(seconds: 30);
+    var target = service.itemGain(entry.id);
+    if (target != null) {
+      // Known before it aired (the preload measures every item that follows):
+      // nothing to decode, and no chance of a noisy window overriding it.
+      Log.debug('loudness', '${entry.label}: gain $target from the cache');
+    } else {
+      target = await _measureGain(entry, startAt);
+      if (target == null) {
+        Log.debug('loudness', '${entry.label}: nothing usable to measure, keeping $from');
+        return;
+      }
+      if (representative) {
+        await service.remember(entry.id, _currentChannelId, target);
+      }
+    }
+    // The channel may have moved on while the measurement was decoding.
+    if (generation != _loadGeneration || !mounted || !identical(controller, _headController)) {
+      Log.debug(
+        'loudness',
+        'measurement for ${entry.label} arrived after it left the air '
+        '(gen $generation vs $_loadGeneration, mounted=$mounted, same=${identical(controller, _headController)})',
+      );
+      return;
+    }
+    _itemGain = target;
+    await _rampGainTo(controller, from: from, to: target, generation: generation);
+  }
+
+  // Levels an item before it airs (called from the preload): the fade into it
+  // then carries the right gain instead of a correction heard seconds later.
+  Future<void> _measureIntoCache(ChannelEntry entry) async {
+    final service = _loudness;
+    if (service == null || !AppConfig.loudnessEnabled) return;
+    if (service.itemGain(entry.id) != null) return;
+    final gain = await _measureGain(entry, Duration.zero);
+    if (gain == null) return;
+    await service.remember(entry.id, _currentChannelId, gain);
+    Log.debug('loudness', '${entry.label} leveled before airing: volume $gain');
+  }
+
+  // Walks the player's volume from [from] to [to] over [gainRampDuration],
+  // interpolating in dB so the move sounds even.
+  Future<void> _rampGainTo(
+    VideoPlayback controller, {
+    required double from,
+    required double to,
+    required int generation,
+  }) async {
+    if (!from.isFinite || !to.isFinite || from <= 0 || to <= 0) return;
+    final fromDb = 20 * math.log(from) / math.ln10;
+    final toDb = 20 * math.log(to) / math.ln10;
+    final deltaDb = toDb - fromDb;
+    if (deltaDb.abs() < gainRampMinDeltaDb) {
+      await _bestEffort(() => controller.setVolume(to));
+      return;
+    }
+    Log.info('loudness', 'ramping from ${fromDb.toStringAsFixed(1)}dB to ${toDb.toStringAsFixed(1)}dB');
+    const steps = 20;
+    final stepDuration = gainRampDuration ~/ steps;
+    final completer = Completer<void>();
+    _gainRampTimer?.cancel();
+    var i = 0;
+    _gainRampTimer = Timer.periodic(stepDuration, (t) {
+      if (generation != _loadGeneration || !mounted) {
+        t.cancel();
+        if (!completer.isCompleted) completer.complete();
+        return;
+      }
+      i++;
+      final progress = (i / steps).clamp(0.0, 1.0);
+      final gain = math.pow(10.0, (fromDb + deltaDb * progress) / 20.0).toDouble();
+      // Kept current so a crossfade starting mid ramp fades from where the
+      // volume actually is, not from where the ramp began.
+      _itemGain = gain;
+      unawaited(_bestEffort(() => controller.setVolume(gain)));
+      if (i >= steps) {
+        t.cancel();
+        _itemGain = to;
+        if (!completer.isCompleted) completer.complete();
+      }
+    });
+    await completer.future;
+  }
+
   // The end of a crossfade: the outgoing item is silenced and stopped for good,
   // the incoming one is at full volume, the slots are swapped and the outgoing
   // controller is disposed (through the shared GL queue, not awaited: the next
@@ -2256,7 +2479,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       await _bestEffort(() => outgoing.setVolume(0));
       await _bestEffort(() => outgoing.pause());
     }
-    await _bestEffort(() => incoming.setVolume(1));
+    await _bestEffort(() => incoming.setVolume(_itemGain));
     // A channel switch meanwhile already took both slots and disposes them.
     if (generation != _loadGeneration) return;
     if (outgoing != null) unawaited(disposeController(outgoing));
@@ -2320,7 +2543,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     });
     // The slate carries no watermark.
     _watermarkNotifier.value = null;
-    await _rampCrossfade(outgoing: outgoing, incoming: slate, generation: generation);
+    // Our own asset has a known level; the gain of the item that left is kept
+    // for the fade out, and the item waiting keeps its own.
+    final leftGain = _itemGain;
+    _itemGain = 1.0;
+    await _rampCrossfade(
+      outgoing: outgoing,
+      incoming: slate,
+      generation: generation,
+      outgoingGain: leftGain,
+    );
     if (generation != _loadGeneration) {
       unawaited(disposeController(pending));
       return;
@@ -2346,7 +2578,15 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         }
         _status = 'CROSSFADE -> ${nextEntry.label}';
       });
-      final onAir = await _rampCrossfade(outgoing: slateOutgoing, incoming: pending, generation: generation);
+      final pendingGain = _knownGain(nextEntry);
+      _itemGain = pendingGain;
+      final onAir = await _rampCrossfade(
+        outgoing: slateOutgoing,
+        incoming: pending,
+        generation: generation,
+        incomingGain: pendingGain,
+      );
+      unawaited(_levelItem(nextEntry, pending, generation, startAt: Duration.zero, from: pendingGain));
       if (generation != _loadGeneration) return;
       if (!mounted) return;
       final previousKey = _osdSubjectAt(_currentIndex)?.key;

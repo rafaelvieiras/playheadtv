@@ -1985,6 +1985,48 @@ uses. A shared answer never changes what the picture should show:
 A url is dropped the moment an open with it fails (`forget`), whatever the reuse
 window says.
 
+## Leveling the channels
+
+A channel change used to be a level jump: over 30 s windows, a sample of the
+library spans 9.5 dB between two channels and up to 10 dB inside one film. The
+client levels it with a static gain per piece of audio (ReplayGain, not a
+compressor): nothing is re-encoded and the audio path is untouched.
+
+- **Where the number comes from.** The device measures it (`LoudnessChannel.kt`
+  over `Media3Probe.kt`): ExoPlayer reads the stream, the platform MediaCodec
+  decodes it, and a `ForwardingAudioSink` reads a duplicate of every decoded
+  buffer, so nothing is heard and the audio continues untouched. The measurement
+  is ITU-R BS.1770: K-weighting, 400 ms blocks with 75 % overlap, a -70 LUFS
+  absolute gate and a -10 LU relative gate.
+- **Why on the device.** Not a shortcut — the accurate path. The platform
+  decoder applies Dolby downmix/dialnorm, so an ffmpeg measurement behind the
+  backend lands up to 8 dB away from what a viewer hears (AC3 -7.8 dB, EAC3
+  -3.9 dB, measured on the same windows).
+- **A position can be asked for.** ExoPlayer seeks by reading the container
+  index with range requests, which is how a tune-in mid-programme already works.
+  `MediaExtractor` cannot seek over HTTP on the same box (its sample time stays
+  at 0), so a probe built on it can only read a file's head.
+- **The gain**: `min(10^((target - LUFS)/20), 10^((-1 - peak)/20))`, attenuated
+  only, because a player volume cannot boost. The target is
+  `loudness_target_lufs` (-24 LUFS by default): the library lands at the level of
+  its quietest content and the system volume makes up the rest.
+- **How it is applied**:
+  - during the preload the item is measured at its start and remembered, so the
+    800 ms crossfade into it carries the right gain instead of a correction
+    heard seconds later;
+  - on a channel change the level in force goes in immediately, the point being
+    watched is measured (5 s of audio, about 3 s of wall clock), and the
+    correction ramps in over 4 s;
+  - an item measured before enters at its own gain and nothing is decoded;
+  - a window with too little signal (under 4 blocks) keeps the current level;
+  - a mid-programme window levels that playback only; it is not stored as the
+    item's level, so an unlucky quiet scene cannot become the item's gain.
+- **Config**: `loudness_enabled` (default true) and `loudness_target_lufs`.
+
+Cost on the box (Amlogic S905X over 5 GHz): 5 s of audio takes 2.6-4.6 s of wall
+clock, 10 s takes 5-10 s, and a probe running while a channel plays drops no
+frame.
+
 ## Client preload lead
 
 The client prepares the next unit (creates and initializes its controller) a

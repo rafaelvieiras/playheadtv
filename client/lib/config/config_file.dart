@@ -14,6 +14,8 @@
 //     "start_fullscreen": true,
 //     "mosaic_safe_margin_percent": 2,
 //     "auto_update": true,
+//     "loudness_enabled": true,
+//     "loudness_target_lufs": -24,
 //     "update_channel": "stable"
 //   }
 //

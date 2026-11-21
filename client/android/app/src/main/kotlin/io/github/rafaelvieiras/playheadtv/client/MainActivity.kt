@@ -31,6 +31,9 @@ class MainActivity : FlutterActivity() {
                     result.notImplemented()
                 }
             }
+        // Leveling: measures how loud a piece of a stream is, on the device,
+        // with the same decoders playback uses (see LoudnessChannel.kt).
+        LoudnessChannel(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
         // A plugin's `pair` answer is two addresses; the `video_player` plugin
         // opens one per player, so the app builds that player here.
         PairedVideos(applicationContext, flutterEngine.renderer, flutterEngine.dartExecutor.binaryMessenger)
