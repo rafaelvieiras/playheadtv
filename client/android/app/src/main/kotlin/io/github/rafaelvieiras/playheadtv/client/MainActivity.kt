@@ -48,9 +48,13 @@ class MainActivity : FlutterActivity() {
     }
 
     /**
-     * Validation hook for the loudness work: `am start ... --es probe_ids`
+     * Validation hook for the loudness work: `am start ... --es probe_jobs`
      * measures the given items without playing them and logs the result. The
      * app behaves exactly as before when the extras are absent.
+     *
+     * `probe_mode` picks the reader: `media3` decodes where playback is (it can
+     * seek, so `offset` means the point being watched), anything else decodes
+     * the head of the file with MediaExtractor.
      *
      * The server and its key come from the settings this app already stored, so
      * no credential ever travels through a command line.
@@ -79,6 +83,11 @@ class MainActivity : FlutterActivity() {
             ?: prefs.getString("flutter.jellyfin_api_key", null)
             ?: return
         val seconds = intent.getStringExtra("probe_seconds")?.toDoubleOrNull() ?: 30.0
-        LoudnessProbe.runFromIntent(applicationContext, jobs, seconds, base.trimEnd('/'), key)
+        val mode = intent.getStringExtra("probe_mode") ?: "extractor"
+        if (mode == "media3") {
+            Media3Probe.runFromIntent(applicationContext, jobs, seconds, base.trimEnd('/'), key)
+        } else {
+            LoudnessProbe.runFromIntent(applicationContext, jobs, seconds, base.trimEnd('/'), key)
+        }
     }
 }
