@@ -200,12 +200,12 @@ func run() error {
 	// Where programs are cut into segments comes from the stored cut rule sets
 	// (docs/ARCHITECTURE.md "Cut points"); without a set nothing is cut.
 	mat.SetCutPlanner(materializer.RuleSetCuts(db))
-	// Run once synchronously at boot so GET /epg has something to serve as
-	// soon as the server comes up, without blocking startup on a broken
-	// schedule forever — a failure here is logged, not fatal.
-	if err := mat.Run(ctx); err != nil {
-		logging.Errorf("materializer: initial run failed: %v", err)
-	}
+	// No synchronous run at boot: Start below runs one immediately in its own
+	// goroutine (with the run's own budget, see materializer.runTimeout) and
+	// epg_entry holds the previous materialization on disk, so GET /epg has
+	// something to serve before this process even starts. Doing it here instead
+	// tied the first pass to the short startup deadline above, which cut it
+	// after 30 s and left most channels on the previous run (see #105).
 	matCtx, matCancel := context.WithCancel(context.Background())
 	defer matCancel()
 	mat.Start(matCtx)
