@@ -2076,6 +2076,17 @@ holds the pure policy:
   current item (or the gap slate) stays on screen and the crossfade happens as
   soon as the preload is ready. One preload runs at a time per channel; a
   channel switch drops any attempt in flight and disposes its controller.
+- **Promotion.** The parked controller has not read anything since it was
+  opened, so the connection it holds can be closed as idle; the engine reports
+  that only when the item is asked to play, which is the transition itself. So
+  the incoming item is started (and judged, by `judgePromotion` in
+  `lib/playback_promotion.dart`) before the fade begins: an item that shows
+  progress is promoted at once, a failure reopens the same unit
+  (`playbackPromotionAttempts` = 2) and, still failing, the channel resumes it
+  with a hard cut. The fade never starts on an item that has not shown a
+  picture, the item on screen keeps the screen meanwhile, and no unit is ever
+  skipped. The same promotion runs before the slate leaves after a gap hold,
+  where the item waited even longer.
 - **End of a crossfade.** The transition follows the schedule entry, not the
   file, so the outgoing file may still have material left. Its volume is set to
   zero, it is paused and disposed (through the GL queue) when the ramp ends,
