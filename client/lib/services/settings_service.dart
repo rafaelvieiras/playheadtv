@@ -136,6 +136,21 @@ class SettingsService implements UpdateNoticeStore {
 
   /// The user's saved preload lead in seconds (see preload_lead.dart), or null
   /// when never chosen (the installation default applies).
+  /// Leveling choices made in Settings. Null means "not chosen here", and the
+  /// config file / dart-define decides (the same precedence the other rows use).
+  static const _loudnessEnabledKey = 'loudness_on';
+  static const _loudnessTargetKey = 'loudness_target';
+  static const _loudnessPreampKey = 'loudness_preamp';
+
+  bool? get loudnessEnabled => _prefs.getBool(_loudnessEnabledKey);
+  Future<void> setLoudnessEnabled(bool value) => _prefs.setBool(_loudnessEnabledKey, value);
+
+  double? get loudnessTargetLufs => _prefs.getDouble(_loudnessTargetKey);
+  Future<void> setLoudnessTargetLufs(double value) => _prefs.setDouble(_loudnessTargetKey, value);
+
+  double? get loudnessPreampDb => _prefs.getDouble(_loudnessPreampKey);
+  Future<void> setLoudnessPreampDb(double value) => _prefs.setDouble(_loudnessPreampKey, value);
+
   int? get preloadLeadSeconds {
     final v = _prefs.getInt(_preloadLeadKey);
     return v == null ? null : sanitizePreloadLeadSeconds(v);

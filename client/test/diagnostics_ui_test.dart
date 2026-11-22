@@ -38,7 +38,9 @@ void main() {
   String text(WidgetTester tester, String key) => tester.widget<Text>(find.byKey(Key(key))).data!;
 
   // Moves the focus with Down until [key]'s tile has it (at most [max] steps).
-  Future<void> downTo(WidgetTester tester, String key, {int max = 12}) async {
+  // The bound only needs to exceed the number of focusable rows in Settings, so
+  // that adding a row does not turn this into a test of the row count.
+  Future<void> downTo(WidgetTester tester, String key, {int max = 30}) async {
     for (var i = 0; i < max; i++) {
       final focused = FocusManager.instance.primaryFocus?.context;
       final within = focused?.findAncestorWidgetOfExactType<ListTile>()?.key == Key(key);

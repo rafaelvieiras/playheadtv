@@ -17,6 +17,8 @@ import '../clock.dart';
 import '../dimmer.dart';
 import '../epg_thumbnail.dart';
 import '../preload_lead.dart';
+import '../services/audio_preamp.dart';
+import '../services/loudness_service.dart';
 import '../services/settings_service.dart';
 import '../ui/ui_scale.dart';
 import '../widgets/focus_reveal.dart';
@@ -74,6 +76,43 @@ class _SettingsPageState extends State<SettingsPage> {
       if (mounted) setState(() {});
     }));
     UiScaleOverride.notifier.value = next;
+  }
+
+  // Leveling: the on/off switch and the two numbers it is made of. The pre-amp
+  // is the only gain above unity the app has, so it is the knob that answers
+  // "everything is too quiet"; the target is what the channels are brought to.
+  void _toggleLoudness() {
+    final settings = _settings;
+    if (settings == null) return;
+    final next = !(settings.loudnessEnabled ?? AppConfig.loudnessEnabled);
+    unawaited(settings.setLoudnessEnabled(next).then((_) {
+      if (mounted) setState(() {});
+    }));
+    // The remembered gains were computed under the old setting.
+    unawaited(LoudnessService.create().then((s) => s.clearItems()));
+    if (!next) unawaited(const AudioPreamp().set(0));
+  }
+
+  void _cycleLoudnessTarget() {
+    final settings = _settings;
+    if (settings == null) return;
+    final next = nextLoudnessTargetChoice(settings.loudnessTargetLufs ?? AppConfig.loudnessTargetLufs);
+    unawaited(settings.setLoudnessTargetLufs(next).then((_) {
+      if (mounted) setState(() {});
+    }));
+    unawaited(LoudnessService.create().then((s) => s.clearItems()));
+  }
+
+  void _cycleLoudnessPreamp() {
+    final settings = _settings;
+    if (settings == null) return;
+    final next = nextLoudnessPreampChoice(settings.loudnessPreampDb ?? AppConfig.loudnessPreampDb);
+    unawaited(settings.setLoudnessPreampDb(next).then((_) {
+      if (mounted) setState(() {});
+    }));
+    // Unlike the target, this one can be heard immediately.
+    unawaited(const AudioPreamp().set(next));
+    unawaited(LoudnessService.create().then((s) => s.clearItems()));
   }
 
   // Select steps through the preload lead choices (seconds) and saves.
@@ -328,6 +367,39 @@ class _SettingsPageState extends State<SettingsPage> {
                       key: const Key('settings-epg-thumbnail-value'),
                     ),
                     onTap: _toggleEpgThumbnail,
+                  ),
+                if (_settings != null)
+                  ListTile(
+                    key: const Key('settings-loudness-tile'),
+                    leading: const Icon(AppIcons.volume),
+                    title: const Text('Level the channels'),
+                    subtitle: Text(
+                      (_settings!.loudnessEnabled ?? AppConfig.loudnessEnabled) ? 'On' : 'Off',
+                      key: const Key('settings-loudness-value'),
+                    ),
+                    onTap: _toggleLoudness,
+                  ),
+                if (_settings != null && (_settings!.loudnessEnabled ?? AppConfig.loudnessEnabled))
+                  ListTile(
+                    key: const Key('settings-loudness-target-tile'),
+                    leading: const Icon(AppIcons.volume),
+                    title: const Text('Leveling target'),
+                    subtitle: Text(
+                      loudnessTargetLabel(_settings!.loudnessTargetLufs ?? AppConfig.loudnessTargetLufs),
+                      key: const Key('settings-loudness-target-value'),
+                    ),
+                    onTap: _cycleLoudnessTarget,
+                  ),
+                if (_settings != null && (_settings!.loudnessEnabled ?? AppConfig.loudnessEnabled))
+                  ListTile(
+                    key: const Key('settings-loudness-preamp-tile'),
+                    leading: const Icon(AppIcons.volume),
+                    title: const Text('Pre-amp (boost)'),
+                    subtitle: Text(
+                      loudnessPreampLabel(_settings!.loudnessPreampDb ?? AppConfig.loudnessPreampDb),
+                      key: const Key('settings-loudness-preamp-value'),
+                    ),
+                    onTap: _cycleLoudnessPreamp,
                   ),
                 if (_settings != null && Platform.isAndroid)
                   ListTile(

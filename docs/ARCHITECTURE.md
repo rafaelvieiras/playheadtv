@@ -2006,10 +2006,22 @@ compressor): nothing is re-encoded and the audio path is untouched.
   index with range requests, which is how a tune-in mid-programme already works.
   `MediaExtractor` cannot seek over HTTP on the same box (its sample time stays
   at 0), so a probe built on it can only read a file's head.
-- **The gain**: `min(10^((target - LUFS)/20), 10^((-1 - peak)/20))`, attenuated
-  only, because a player volume cannot boost. The target is
-  `loudness_target_lufs` (-24 LUFS by default): the library lands at the level of
-  its quietest content and the system volume makes up the rest.
+- **The gain**: `min(10^((target - LUFS - preamp)/20), 10^((-1 - peak - preamp)/20))`,
+  where `preamp` is the global gain above unity described below. Two terms, both
+  attenuations, the smaller wins: one brings the average level to the target, the
+  other keeps the peak under -1 dBFS.
+- **The pre-amp** (`AudioPreamp.kt`): a `LoudnessEnhancer` on the output mix
+  (audio session 0), which is the only gain above unity the app can get — a
+  player volume stops at 1. Measured before it was written: it applies the
+  requested gain exactly (+6 -> +6.00 dB, +40 -> +39.90 dB) and has a limiter, so
+  peaks pushed past full scale compress instead of clipping. Attaching it to the
+  mix instead of a player session is what keeps `video_player_android`
+  unpatched. Where the platform refuses it, `hasControl()` is false and leveling
+  degrades to attenuation only.
+- **Defaults**: `loudness_target_lufs` -18, `loudness_preamp_db` 12. Over a
+  measured sample of 47 items (loudest of two windows each) that lifts the
+  library 4.1 dB on average, 36 of 47 items louder, and takes the final spread
+  from 28 dB to 1.3 dB.
 - **How it is applied**:
   - during the preload the item is measured at its start and remembered, so the
     800 ms crossfade into it carries the right gain instead of a correction
@@ -2020,12 +2032,22 @@ compressor): nothing is re-encoded and the audio path is untouched.
   - an item measured before enters at its own gain and nothing is decoded;
   - a window with too little signal (under 4 blocks) keeps the current level;
   - a mid-programme window levels that playback only; it is not stored as the
-    item's level, so an unlucky quiet scene cannot become the item's gain.
-- **Config**: `loudness_enabled` (default true) and `loudness_target_lufs`.
+    item's level, so an unlucky quiet scene cannot become the item's gain;
+  - before an item's gain is remembered, a second window is measured at 40 % of
+    the item. Two windows of the same item differ by 2.6 dB typically and 9.8 dB
+    at p90; past 6 dB they are not describing the same audio (a malformed file
+    measured 14 dB apart at two offsets), and the item is then left unleveled
+    rather than remembered with a guess;
+  - a different audio track is a different master — one film carries a 2.0 dub at
+    -6.2 LUFS and a 5.1 track at -26.9 — so choosing another track forgets the
+    item's gain and levels again at the current position.
+- **Config**: `loudness_enabled` (default true), `loudness_target_lufs` (-18) and
+  `loudness_preamp_db` (12). All three are also settable in Settings, since
+  Android has no config file to edit.
 
 Cost on the box (Amlogic S905X over 5 GHz): 5 s of audio takes 2.6-4.6 s of wall
 clock, 10 s takes 5-10 s, and a probe running while a channel plays drops no
-frame.
+frame. The preload measures two windows, which fits in the 20 s preload lead.
 
 ## Client preload lead
 

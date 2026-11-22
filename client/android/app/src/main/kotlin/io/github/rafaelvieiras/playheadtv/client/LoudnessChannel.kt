@@ -1,5 +1,7 @@
-// The `playheadtv/loudness` channel: one method, `measure`, which answers with
-// the loudness of a piece of a stream (see Media3Probe.kt for how it decodes).
+// The `playheadtv/loudness` channel: `measure` answers with the loudness of a
+// piece of a stream (see Media3Probe.kt for how it decodes), and `setPreamp`
+// sets the global gain above unity that the player's own volume cannot express
+// (see AudioPreamp.kt).
 //
 // Answering with a null map means "no opinion" — no audio track, or the timeout
 // fired. The Dart side then keeps whatever gain it was using, which is why a
@@ -23,6 +25,15 @@ class LoudnessChannel(
     }
 
     override fun onMethodCall(call: MethodCall, result: MethodChannel.Result) {
+        if (call.method == "setPreamp") {
+            val db = (call.argument<Number>("db") ?: 0).toDouble()
+            result.success(AudioPreamp.set(db))
+            return
+        }
+        if (call.method == "preampState") {
+            result.success(AudioPreamp.state())
+            return
+        }
         if (call.method != "measure") {
             result.notImplemented()
             return

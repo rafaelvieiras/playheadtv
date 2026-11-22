@@ -63,6 +63,20 @@ class MainActivity : FlutterActivity() {
      * no credential ever travels through a command line.
      */
     private fun maybeRunLoudnessProbe(intent: Intent?) {
+        // `probe_mode=effect` answers a different question: how much a platform
+        // audio effect changes the output. It plays for real and needs only a
+        // URL, so it runs before the stored connection is read.
+        if (intent?.getStringExtra("probe_mode") == "effect") {
+            val url = intent.getStringExtra("probe_url") ?: return
+            val gainMb = intent.getStringExtra("probe_effect")?.toIntOrNull() ?: 0
+            val seconds = intent.getStringExtra("probe_seconds")?.toDoubleOrNull() ?: 12.0
+            // `probe_global=1` asks the different question: can the effect go on
+            // the output mix (session 0) instead of the player's own session? A
+            // global pre-amp would boost everything without touching the player.
+            val global = intent.getStringExtra("probe_global") in listOf("1", "true")
+            EffectProbe.run(applicationContext, url, gainMb, seconds, global)
+            return
+        }
         // `probe_jobs` is `id:offset;id:offset;...` so a job can never be paired
         // with the wrong offset.
         val jobs = intent?.getStringExtra("probe_jobs")

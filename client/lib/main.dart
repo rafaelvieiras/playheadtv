@@ -50,6 +50,7 @@ import 'services/system_bars.dart';
 import 'services/settings_service.dart';
 import 'services/loudness_probe.dart';
 import 'services/loudness_service.dart';
+import 'services/audio_preamp.dart';
 import 'services/app_window.dart';
 import 'services/stream_preferences_service.dart';
 import 'services/stream_selection_resolver.dart';
@@ -256,6 +257,11 @@ class AppConfig {
       );
 
   static double get loudnessTargetLufs => readLoudnessTarget(_file);
+
+  // How much the global pre-amp lifts everything, in dB. This is the only gain
+  // above unity the app has (the player's volume stops at 1), so it is what
+  // makes the quiet end of the library reachable at all.
+  static double get loudnessPreampDb => readLoudnessPreamp(_file);
 
   // Base of the preload retry back-off, shrunk by tests.
   static Duration get preloadRetryBase => _preloadRetryBase ?? defaultPreloadRetryBase;
@@ -512,6 +518,13 @@ const crossfadeDuration = Duration(milliseconds: 800);
 // that costs about 2.8 s of wall clock, and a shorter window stops being about
 // the content and starts being about one sound effect.
 const gainMeasureWindow = Duration(seconds: 5);
+
+// How far apart the two windows of one item may be before the item is left
+// unleveled. Within one item the head and a mid-programme window differ by 2.6
+// dB typically and 9.8 dB at p90; past this the two are not describing the same
+// audio (a malformed file measured 14 dB apart at two offsets), and a gain
+// derived from either would be a guess.
+const loudnessWindowDisagreementDb = 6.0;
 // The correction is a fade, not a step: long enough to be inaudible as a change,
 // short enough that two levels are not both remembered.
 const gainRampDuration = Duration(seconds: 4);
@@ -939,7 +952,14 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // device-side measurement. `_itemGain` is what the crossfade and the end of a
   // fade read, so a level correction never fights a fade.
   final LoudnessProbe _loudnessProbe = const LoudnessProbe();
+  final AudioPreamp _preamp = const AudioPreamp();
   LoudnessService? _loudness;
+  PreampState? _preampState;
+  // Leveling choices in force: the config file/dart-define seeds them, Settings
+  // overrides them at boot (there is no config file to edit on Android).
+  bool _loudnessOn = AppConfig.loudnessEnabled;
+  double _loudnessTarget = AppConfig.loudnessTargetLufs;
+  double _loudnessPreamp = AppConfig.loudnessPreampDb;
   double _itemGain = 1.0;
   Timer? _gainRampTimer;
   final FocusNode _focusNode = FocusNode();
@@ -1189,8 +1209,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     BootTrace.mark('player_init');
     try {
       _settings = await SettingsService.create();
+      _loudnessOn = _settings.loudnessEnabled ?? _loudnessOn;
+      _loudnessTarget = _settings.loudnessTargetLufs ?? _loudnessTarget;
+      _loudnessPreamp = _settings.loudnessPreampDb ?? _loudnessPreamp;
       _keyBindings = KeyBindingsService(_settings);
       _loudness = await LoudnessService.create();
+      unawaited(_applyPreamp());
       Dimmer.level.value = AppConfig.configuredDimLevel(_settings);
       EpgThumbnailSetting.enabled.value = _settings.epgThumbnail;
       ClockOverlaySettings.alwaysVisible.value = _settings.clockAlwaysVisible;
@@ -2314,6 +2338,27 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   String? get _currentChannelId =>
       (_channelIndex >= 0 && _channelIndex < _channels.length) ? _channels[_channelIndex].id : null;
 
+  // The pre-amp actually in force, in dB. What the effect reports, not what was
+  // asked for: a platform that refused it means nothing is lifting the output,
+  // and the gain math must not assume it is.
+  double get _activePreampDb {
+    final state = _preampState;
+    if (state == null || !state.active) return 0;
+    return state.targetMb / 100.0;
+  }
+
+  // Lifts the whole output (or stops lifting it). Called at boot; the knob only
+  // moves in Settings, which restarts the app.
+  Future<void> _applyPreamp() async {
+    final wanted = _loudnessOn ? _loudnessPreamp : 0.0;
+    _preampState = await _preamp.set(wanted);
+    final state = _preampState;
+    if (wanted > 0 && (state == null || !state.control)) {
+      // Leveling degrades to attenuation only; the channels still play.
+      Log.warn('loudness', 'the platform refused the pre-amp; leveling is attenuation only');
+    }
+  }
+
   // The level an item enters at, before anything is measured for it.
   //
   // Order matters: an item leveled before is exact; with a channel already on
@@ -2323,7 +2368,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // is playing yet.
   double _knownGain(ChannelEntry entry) {
     final service = _loudness;
-    if (service == null || !AppConfig.loudnessEnabled) return 1.0;
+    if (service == null || !_loudnessOn) return 1.0;
     final own = service.itemGain(entry.id);
     if (own != null) return own;
     // A level already in force is what the viewer is hearing: entering the new
@@ -2333,9 +2378,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     return (channelId == null ? null : service.channelGain(channelId)) ?? 1.0;
   }
 
-  // Measures [entry] at [startAt] and turns the result into a player volume.
-  // Null when there was nothing usable to measure (silence, no audio track).
-  Future<double?> _measureGain(ChannelEntry entry, Duration startAt) async {
+  // Measures [entry] at [startAt]. Null when there was nothing usable to
+  // measure (silence, no audio track).
+  Future<LoudnessMeasurement?> _measureAudio(ChannelEntry entry, Duration startAt) async {
     final measurement = await _loudnessProbe.measure(
       url: streamUrl(entry.id),
       startAt: startAt,
@@ -2347,11 +2392,21 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       Log.debug('loudness', '${entry.label}: not enough signal to level (${measurement.blocks} blocks)');
       return null;
     }
-    return clampLoudnessGain(loudnessGain(
-      lufs: measurement.lufs,
-      peakDb: measurement.peakDb,
-      targetLufs: AppConfig.loudnessTargetLufs,
-    ));
+    return measurement;
+  }
+
+  // The player volume a measurement calls for, given the pre-amp in force.
+  double _gainFor(LoudnessMeasurement measurement) => clampLoudnessGain(loudnessGain(
+        lufs: measurement.lufs,
+        peakDb: measurement.peakDb,
+        targetLufs: _loudnessTarget,
+        preampDb: _activePreampDb,
+      ));
+
+  // Measures [entry] at [startAt] and turns the result into a player volume.
+  Future<double?> _measureGain(ChannelEntry entry, Duration startAt) async {
+    final measurement = await _measureAudio(entry, startAt);
+    return measurement == null ? null : _gainFor(measurement);
   }
 
   // Levels an item that is already on air, ramping from the level it entered at.
@@ -2379,8 +2434,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     required double from,
   }) async {
     final service = _loudness;
-    Log.debug('loudness', 'leveling ${entry.label}: service=${service != null} enabled=${AppConfig.loudnessEnabled} from=$from');
-    if (service == null || !AppConfig.loudnessEnabled) return;
+    Log.debug('loudness', 'leveling ${entry.label}: service=${service != null} enabled=$_loudnessOn from=$from');
+    if (service == null || !_loudnessOn) return;
     // A gain measured near the item's start is the item's level; anything
     // sampled mid-programme is only what that stretch sounds like, so it levels
     // this playback and is not remembered as the item's own level.
@@ -2417,10 +2472,30 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // then carries the right gain instead of a correction heard seconds later.
   Future<void> _measureIntoCache(ChannelEntry entry) async {
     final service = _loudness;
-    if (service == null || !AppConfig.loudnessEnabled) return;
+    if (service == null || !_loudnessOn) return;
     if (service.itemGain(entry.id) != null) return;
-    final gain = await _measureGain(entry, Duration.zero);
-    if (gain == null) return;
+    final head = await _measureAudio(entry, entry.itemOffset);
+    if (head == null) return;
+    var gain = _gainFor(head);
+    // A second window guards the cache. One stretch is not the item, and a gain
+    // remembered from a window that happened to land on quiet dialogue is worse
+    // than no gain: it would be trusted forever, without measuring again.
+    if (entry.clipDuration > const Duration(minutes: 3)) {
+      final mid = await _measureAudio(entry, entry.itemOffset + entry.clipDuration * 0.4);
+      if (mid == null) return;
+      final apart = (mid.lufs - head.lufs).abs();
+      if (apart > loudnessWindowDisagreementDb) {
+        Log.warn(
+          'loudness',
+          '${entry.label}: windows ${head.lufs.toStringAsFixed(1)} and '
+          '${mid.lufs.toStringAsFixed(1)} LUFS are ${apart.toStringAsFixed(1)}dB apart, not leveling it',
+        );
+        return;
+      }
+      // They agree on the level, so the louder stretch decides the volume: that
+      // is the one that has to stay inside the peak ceiling.
+      gain = math.min(gain, _gainFor(mid));
+    }
     await service.remember(entry.id, _currentChannelId, gain);
     Log.debug('loudness', '${entry.label} leveled before airing: volume $gain');
   }
@@ -3066,6 +3141,29 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     controller.selectAudio([index]);
     unawaited(_settings.setAudioTrackOverride(channelId, index));
     _showTrackToast('Audio: $label');
+    unawaited(_relevelForTrackChange(controller));
+  }
+
+  // A different audio track is a different master: one film in the library
+  // carries a 2.0 dub at -6.2 LUFS and a 5.1 track at -26.9, so a gain measured
+  // on one of them is 20 dB wrong on the other. The remembered gain has to go,
+  // and what is playing now has to be leveled again — at this position, so the
+  // result corrects this playback and is not remembered as the item's level.
+  Future<void> _relevelForTrackChange(VideoPlayback controller) async {
+    final service = _loudness;
+    if (service == null || !_loudnessOn) return;
+    if (_headIndex < 0 || _headIndex >= channel.length) return;
+    if (!identical(controller, _headController)) return;
+    final entry = channel[_headIndex];
+    await service.forgetItem(entry.id);
+    Log.info('loudness', 'audio track changed on ${entry.label}: forgetting its gain');
+    await _levelItem(
+      entry,
+      controller,
+      _loadGeneration,
+      startAt: entry.itemOffset + controller.state.position,
+      from: _itemGain,
+    );
   }
 
   // Same as _applyAudioTrack, for subtitles. `index == -1` is the picker's

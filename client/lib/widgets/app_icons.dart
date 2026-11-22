@@ -13,6 +13,7 @@ abstract final class AppIcons {
   static const IconData fastForward = Symbols.fast_forward;
   static const IconData captions = Symbols.closed_caption;
   static const IconData audioTrack = Symbols.music_note;
+  static const IconData volume = Symbols.volume_up;
   static const IconData channels = Symbols.live_tv;
   static const IconData history = Symbols.history;
   static const IconData clock = Symbols.schedule;

@@ -11,6 +11,43 @@ and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-21 (client)
+
+Leveling that makes the library louder instead of quieter. The 0.6.0 leveling
+could only attenuate (`Player.setVolume` stops at 1), so the whole library came
+down to its quietest content and the result was reported as too quiet.
+
+### Added
+
+- A global pre-amp: `LoudnessEnhancer` on the output mix (session 0), which is
+  the only gain above unity available without patching the video player plugin.
+  Measured on API 28 and API 36: it applies the requested gain exactly and has a
+  limiter, so peaks pushed past full scale compress instead of clipping. When the
+  platform refuses it, leveling degrades to attenuation only and the channels
+  still play.
+- Settings rows for leveling on/off, the target (-16, -18, -20, -22 LUFS) and the
+  pre-amp (0, +6, +9, +12, +15 dB). The pre-amp applies immediately; the target
+  clears the remembered gains, since they were computed against the old pair.
+- `loudness_preamp_db` in the config file.
+
+### Changed
+
+- The default target moved from -24 to -18 LUFS. Over a measured sample of 47
+  items that lifts the library 4.1 dB on average, makes 36 of 47 items louder,
+  and takes the final spread from 28 dB to 1.3 dB.
+- The gain is now `min(10^((target - LUFS - preamp)/20), 10^((-1 - peak - preamp)/20))`:
+  the pre-amp counts toward both the average level and the peak ceiling.
+
+### Fixed
+
+- A different audio track no longer reuses the previous track's gain. One film in
+  the library carries a 2.0 dub at -6.2 LUFS next to a 5.1 track at -26.9 LUFS,
+  so the wrong pair of these is a 20 dB error.
+- An item whose two windows disagree by more than 6 dB is left unleveled instead
+  of remembered with a guess: two windows of one item differ by 2.6 dB typically,
+  but a malformed file measured 14 dB apart at two offsets.
+
+
 ## [0.5.0] - 2026-11-10 (client)
 
 The phone release: the same app, with a second layout family that a phone and a
