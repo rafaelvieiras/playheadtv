@@ -72,3 +72,50 @@ class StallWatcher {
     _progressAt = null;
   }
 }
+
+/// How long a channel that should be on air may go with no live picture at all
+/// (no controller, the controller that is not in the active slot, or one that
+/// never finished opening) before it is reopened.
+///
+/// This is not [playbackStallBound] with another number: [StallWatcher] watches
+/// a position that stopped advancing, so it needs a controller to watch. The
+/// case measured on a device was a transition whose incoming controller was
+/// built, took a video surface and then never played while the outgoing one had
+/// already been disposed: no position to observe, nothing scheduled, a black
+/// screen with the app claiming to play until somebody restarted it.
+///
+/// The bound is above the opening timeout of one item, so an item that is
+/// merely slow to open is never reopened over.
+const Duration playbackPictureLostBound = Duration(seconds: 45);
+
+/// How many reopenings a channel with no picture gets before the failure is
+/// reported instead.
+const int playbackPictureLostReopensBeforeGivingUp = 2;
+
+/// Watches for a channel that claims to be on air but has no live picture.
+class PictureLostWatcher {
+  PictureLostWatcher({this.bound = playbackPictureLostBound});
+
+  /// How long the channel may stay without a live picture before it counts as
+  /// lost.
+  final Duration bound;
+
+  DateTime? _lostAt;
+
+  /// One observation: [onAir] is "the channel is supposed to be playing" and
+  /// [healthy] is "an initialized controller sits in the active slot".
+  ///
+  /// Only a continuous absence counts: as soon as a picture is back, the clock
+  /// (and the caller's own attempt counter) is free again.
+  bool observe({required bool onAir, required bool healthy, required DateTime now}) {
+    if (!onAir || healthy) {
+      _lostAt = null;
+      return false;
+    }
+    final lostAt = _lostAt ??= now;
+    return now.difference(lostAt) >= bound;
+  }
+
+  /// Forgets the observation, so the next absence counts from zero.
+  void reset() => _lostAt = null;
+}

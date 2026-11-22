@@ -43,4 +43,46 @@ void main() {
     expect(watcher.observe(position: const Duration(seconds: 30), playing: true, now: t0.add(playbackStallBound)),
         StallState.progressing);
   });
+
+  group('PictureLostWatcher', () {
+    test('a picture present is never a loss', () {
+      final watcher = PictureLostWatcher();
+      var now = t0;
+      for (var i = 0; i < 20; i++) {
+        expect(watcher.observe(onAir: true, healthy: true, now: now), isFalse);
+        now = now.add(const Duration(seconds: 5));
+      }
+    });
+
+    test('a channel on air with no picture is lost once the bound passes', () {
+      final watcher = PictureLostWatcher();
+      expect(watcher.observe(onAir: true, healthy: false, now: t0), isFalse);
+      expect(watcher.observe(onAir: true, healthy: false, now: t0.add(const Duration(seconds: 20))), isFalse);
+      expect(watcher.observe(onAir: true, healthy: false, now: t0.add(playbackPictureLostBound)), isTrue);
+    });
+
+    test('a channel that is not on air never counts', () {
+      final watcher = PictureLostWatcher();
+      expect(watcher.observe(onAir: false, healthy: false, now: t0), isFalse);
+      expect(watcher.observe(onAir: false, healthy: false, now: t0.add(playbackPictureLostBound * 2)), isFalse);
+    });
+
+    test('a picture that comes back restarts the clock', () {
+      final watcher = PictureLostWatcher();
+      expect(watcher.observe(onAir: true, healthy: false, now: t0), isFalse);
+      expect(watcher.observe(onAir: true, healthy: true, now: t0.add(const Duration(seconds: 10))), isFalse);
+      // The absence counted so far does not carry over.
+      expect(watcher.observe(onAir: true, healthy: false, now: t0.add(const Duration(seconds: 11))), isFalse);
+      expect(watcher.observe(onAir: true, healthy: false, now: t0.add(const Duration(seconds: 30))), isFalse);
+      expect(watcher.observe(onAir: true, healthy: false, now: t0.add(const Duration(seconds: 56))), isTrue);
+    });
+
+    test('reset forgets the absence', () {
+      final watcher = PictureLostWatcher();
+      expect(watcher.observe(onAir: true, healthy: false, now: t0), isFalse);
+      watcher.reset();
+      expect(watcher.observe(onAir: true, healthy: false, now: t0.add(playbackPictureLostBound)), isFalse);
+      expect(watcher.observe(onAir: true, healthy: false, now: t0.add(playbackPictureLostBound * 2)), isTrue);
+    });
+  });
 }

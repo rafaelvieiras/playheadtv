@@ -11,6 +11,21 @@ and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-11-22 (client)
+
+### Fixed
+
+- A channel that claims to be playing while it has no live picture is now
+  reopened instead of showing black until somebody restarts the app. Seen after
+  a transition whose incoming controller was built and took a video surface but
+  never played, while the outgoing one had already been disposed: no position
+  existed to observe, so the picture-stall watch could not see it, and the
+  preload of the next unit kept retrying with nothing on screen. The new watch
+  covers the missing-controller case (`PictureLostWatcher`,
+  `lib/playback_stall.dart`); it reopens the same channel and never skips a
+  unit, because a skipped unit is invisible to the viewer and the guide would
+  disagree with what is on screen. Two reopenings, then an error on screen.
+
 ## [0.7.1] - 2026-11-21 (client)
 
 ### Fixed

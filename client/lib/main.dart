@@ -1396,6 +1396,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _knownExpanded = 0;
       _epgLoadedUntil = null;
       _channelInputBuffer = null;
+      _onAir = false;
+      _pictureLost.reset();
+      _pictureLostReopens = 0;
       _status = load ? 'switching channel…' : 'paused';
     });
 
@@ -1875,6 +1878,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _currentIndex = 0;
       _headController = controller;
       _headIndex = 0;
+      _onAir = true;
       _status = 'playing: ${entry.label}';
     });
     _syncWatermark();
@@ -1911,17 +1915,42 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       // outside the two slots, so the position it reports is not the channel's.
       if (_gapHoldTimer != null || _gapHoldPending != null) return;
       final head = _headController;
-      if (head == null || _currentIndex < 0 || _currentIndex >= channel.length) {
-        _stall.reset();
+      final active = _aIsActive ? _controllerA : _controllerB;
+      final healthy = head != null &&
+          _currentIndex >= 0 &&
+          _currentIndex < channel.length &&
+          identical(head, active) &&
+          head.state.isInitialized;
+      if (healthy) _pictureLostReopens = 0;
+      // A channel that says it is on air with nothing to show is a transition
+      // that never completed: the incoming controller was built and took a
+      // video surface, the outgoing one was disposed, and nothing ever played.
+      // There is no position to watch, so StallWatcher below cannot see it —
+      // this is the case for the picture watchdog.
+      if (_pictureLost.observe(onAir: _onAir, healthy: healthy, now: DateTime.now())) {
+        _pictureLost.reset();
+        if (_pictureLostReopens >= playbackPictureLostReopensBeforeGivingUp) {
+          Log.error('player', 'no picture for ${playbackPictureLostBound.inSeconds}s again after '
+              '$_pictureLostReopens reopen(s); giving up');
+          setState(() => _status = 'ERROR: the channel stopped playing and reopening it '
+              'did not help. Press Back and pick the channel again.');
+          _stallTimer?.cancel();
+          _stallTimer = null;
+          return;
+        }
+        _pictureLostReopens++;
+        Log.warn('player', 'no picture for ${playbackPictureLostBound.inSeconds}s while on air '
+            '(controller ${head == null ? 'none' : 'not in the active slot'}, '
+            'unit $_currentIndex of ${channel.length}); reopening the channel '
+            '(attempt $_pictureLostReopens of $playbackPictureLostReopensBeforeGivingUp)');
+        unawaited(_switchToChannelIndex(_channelIndex));
         return;
       }
-      final active = _aIsActive ? _controllerA : _controllerB;
-      if (!identical(head, active)) {
+      if (!healthy) {
         _stall.reset();
         return;
       }
       final state = head.state;
-      if (!state.isInitialized) return;
       final verdict = _stall.observe(
         position: state.position,
         playing: state.isPlaying && !state.isBuffering,
@@ -1979,6 +2008,13 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // other items always play from zero, so they use clipDuration.
   // `generation` travels with the Timer so _preloadNext/_crossfadeTo can
   // detect whether the channel changed again before firing.
+  // The picture watchdog (see PictureLostWatcher in playback_stall.dart): set
+  // while a channel is supposed to be on air, and how many reopenings the
+  // current absence of picture already caused.
+  bool _onAir = false;
+  final PictureLostWatcher _pictureLost = PictureLostWatcher();
+  int _pictureLostReopens = 0;
+
   void _scheduleTransitions(int index, {Duration? remaining, required int generation}) {
     final entry = channel[index];
     var effective = remaining ?? entry.clipDuration;
