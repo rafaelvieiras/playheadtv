@@ -4,6 +4,7 @@ import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
+import { ChannelLogoImage } from '@/components/ChannelLogoImage'
 import { api } from '@/lib/http'
 import { epgItemClipCount, epgItemTitle } from '@/lib/guide'
 import { allEntriesAsCells, buildGuideCells, type GuideCell } from '@/lib/guideDisplay'
@@ -222,11 +223,21 @@ export function EpgPage() {
                   return (
                     <div key={channel.id} className="flex border-b border-border last:border-b-0">
                       <div
-                        className="sticky left-0 z-10 flex shrink-0 flex-col justify-center gap-0.5 border-r border-border bg-card px-3"
+                        className="sticky left-0 z-10 flex shrink-0 items-center gap-2 border-r border-border bg-card px-3"
                         style={{ width: CHANNEL_COLUMN_WIDTH, height: ROW_HEIGHT }}
                       >
-                        <span className="text-xs text-muted-foreground">{channel.number}</span>
-                        <span className="truncate text-sm font-medium">{channel.name}</span>
+                        {/* Fixed slot: a square logo and a wide one take the same
+                            room, so the number and the name start at the same x
+                            on every row. The logo is contained, never stretched. */}
+                        <ChannelLogoImage
+                          imageId={channel.logo_image_id}
+                          name={channel.name}
+                          className="h-8 w-16 shrink-0 object-contain"
+                        />
+                        <div className="flex min-w-0 flex-col gap-0.5">
+                          <span className="text-xs text-muted-foreground">{channel.number}</span>
+                          <span className="truncate text-sm font-medium">{channel.name}</span>
+                        </div>
                       </div>
                       <div
                         className="relative shrink-0"

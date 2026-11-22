@@ -31,12 +31,24 @@ export interface ChannelNotice {
   message: string
 }
 
+// ChannelLogo is the metadata of a channel's uploaded logo (PUT /channels/{id}/logo
+// returns it). The bytes are served separately, at /channel-logos/{image_id}/image.
+export interface ChannelLogo {
+  channel_id: string
+  image_id: string
+  content_type: string
+  updated_at: number
+}
+
 export interface Channel {
   id: string
   tenant_id: string
   number: number
   name: string
   guide_art_url: string | null
+  // logo_image_id names the uploaded logo image (GET /channel-logos/{id}/image).
+  // null means the channel has none and clients fall back to the channel name.
+  logo_image_id: string | null
   timezone: string
   // schedule_id is which Schedule (if any) drives this channel — issue #7's
   // Schedule/Playout split. null means no schedule assigned (e.g. a channel

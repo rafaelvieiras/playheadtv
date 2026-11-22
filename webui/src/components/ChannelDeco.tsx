@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { ChannelFillerRules } from '@/components/ChannelFillerRules'
+import { ChannelLogoSection } from '@/components/ChannelLogoSection'
 import { SaveBar } from '@/components/SaveBar'
 import { WatermarkSection } from '@/components/WatermarkSection'
 import { Button } from '@/components/ui/button'
@@ -168,6 +169,8 @@ export function ChannelDeco({ channel }: { channel: Channel }) {
           error={baseError}
         />
       </section>
+
+      <ChannelLogoSection channel={channel} />
 
       <WatermarkSection ownerType="channel" ownerId={channel.id} />
 
