@@ -152,4 +152,26 @@ void main() {
       expect(service.channelGain('channel-1'), closeTo(0.7, 1e-9));
     });
   });
+
+  group('conservative entry level', () {
+    test('is the level of the loudest material, never of an average one', () {
+      final guess = loudnessConservativeGain(targetLufs: -18, preampDb: 12);
+      // Quiet material needs far more than this: the correction goes up.
+      expect(guess, lessThan(loudnessGain(lufs: -30.0, peakDb: -20.0, targetLufs: -18, preampDb: 12)));
+      // Nothing louder than the guess exists in the library, so it is not risked.
+      final loudest = loudnessGain(lufs: loudnessConservativeLufs, peakDb: -1.0, targetLufs: -18, preampDb: 12);
+      expect(guess, closeTo(loudest, 1e-9));
+    });
+
+    test('drops when the pre-amp rises, like every other gain', () {
+      final off = loudnessConservativeGain(targetLufs: -18, preampDb: 0);
+      final on = loudnessConservativeGain(targetLufs: -18, preampDb: 12);
+      expect(on, lessThan(off));
+    });
+
+    test('never goes under the floor that keeps a channel audible', () {
+      final guess = loudnessConservativeGain(targetLufs: -16, preampDb: 15);
+      expect(guess, greaterThanOrEqualTo(loudnessMinGain));
+    });
+  });
 }

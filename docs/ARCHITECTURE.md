@@ -2026,9 +2026,15 @@ compressor): nothing is re-encoded and the audio path is untouched.
   - during the preload the item is measured at its start and remembered, so the
     800 ms crossfade into it carries the right gain instead of a correction
     heard seconds later;
-  - on a channel change the level in force goes in immediately, the point being
-    watched is measured (5 s of audio, about 3 s of wall clock), and the
-    correction ramps in over 4 s;
+  - on a channel change the new channel starts from its own prior (the level it
+    was last leveled to), never from the level of the item that was on air: that
+    inheritance played a loud item at a quiet item's volume until the correction
+    landed, which is heard as the channel arriving several dB too loud. With no
+    prior either (a channel never watched), it enters at the level of the loudest
+    material the library holds and the correction goes up, so the error is always
+    on the quiet side. The point being watched is then measured (5 s of audio,
+    about 3 s of wall clock) and the correction ramps in — over 2 s when it goes
+    up, over 4 s when it comes down;
   - an item measured before enters at its own gain and nothing is decoded;
   - a window with too little signal (under 4 blocks) keeps the current level;
   - a mid-programme window levels that playback only; it is not stored as the

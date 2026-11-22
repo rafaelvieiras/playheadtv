@@ -41,6 +41,11 @@ const double loudnessPreampMaxDb = 15.0;
 /// needs the player at 5%.
 const double loudnessMinGain = 0.02; // about -34 dB
 
+/// The loud end of what the library holds, in LUFS. The measured sample reached
+/// -3.2 (music clips go higher); this leaves room above it so that a guess made
+/// from it is never quieter than the material it is guessing about.
+const double loudnessConservativeLufs = -9.0;
+
 /// The gain to apply to content measured at [lufs] with a peak of [peakDb], as a
 /// 0..1 multiplier for the player's volume, given that [preampDb] is already
 /// lifting the output.
@@ -67,6 +72,30 @@ double clampLoudnessGain(double gain) {
   if (!gain.isFinite) return 1.0;
   return gain.clamp(loudnessMinGain, 1.0);
 }
+
+/// The volume to enter an item nothing is known about yet, with no channel prior
+/// either: the level of the loudest material the library holds, peak on the
+/// ceiling.
+///
+/// The first correction after this can only go up, which is the whole point. A
+/// channel change used to inherit the outgoing item's level instead, so a quiet
+/// item (volume near 1.0) handing over to a loud one played the loud one at the
+/// quiet one's volume: several dB above target until the measurement and the
+/// fade caught up, heard as "it was much louder for a moment". Entering low
+/// costs a short swell on a quiet item; entering high costs a burst, and only
+/// one of the two is worth risking.
+double loudnessConservativeGain({
+  double targetLufs = loudnessTargetLufsDefault,
+  double preampDb = loudnessPreampDbDefault,
+  double peakCeilingDb = loudnessPeakCeilingDb,
+}) =>
+    clampLoudnessGain(loudnessGain(
+      lufs: loudnessConservativeLufs,
+      peakDb: peakCeilingDb,
+      targetLufs: targetLufs,
+      preampDb: preampDb,
+      peakCeilingDb: peakCeilingDb,
+    ));
 
 /// The configured target from the config file (`loudness_target_lufs`), or the
 /// default when it is absent or out of range. A target above 0 LUFS or below

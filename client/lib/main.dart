@@ -528,6 +528,10 @@ const loudnessWindowDisagreementDb = 6.0;
 // The correction is a fade, not a step: long enough to be inaudible as a change,
 // short enough that two levels are not both remembered.
 const gainRampDuration = Duration(seconds: 4);
+// A correction that moves the volume up from a guess is a different thing: the
+// guess is an estimate, so getting to the truth quickly is better than a slow
+// swell that keeps the channel quiet for seconds after it aired.
+const gainRampUpDuration = Duration(seconds: 2);
 // Below this a correction is not worth a fade.
 const gainRampMinDeltaDb = 1.0;
 
@@ -1356,6 +1360,14 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _pendingExpand = null;
     _degraded = _Degraded.none;
     _reconcilePending = false;
+    // A channel change has nothing in common with the level of the item that was
+    // on air: inheriting it is how a quiet item (volume near 1.0) handed the next
+    // channel several dB too loud until the measurement and the fade caught up.
+    // Dropping it here makes the new channel start from its own prior (or from
+    // the conservative guess), never from the neighbour's level. Internal item
+    // transitions keep inheriting on purpose: there the level in force is what
+    // the viewer is hearing.
+    _itemGain = 1.0;
     _channelInputCommitTimer?.cancel();
     _channelInputCommitTimer = null;
     // Fire-and-forget, but routed through serializeGlOp (see its doc
@@ -2375,7 +2387,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // channel at anything else is the jump this is here to avoid.
     if (_itemGain != 1.0) return _itemGain;
     final channelId = _currentChannelId;
-    return (channelId == null ? null : service.channelGain(channelId)) ?? 1.0;
+    final prior = channelId == null ? null : service.channelGain(channelId);
+    if (prior != null) return prior;
+    // Nothing is known about this channel at all: enter at the level of the
+    // loudest material the library holds, so the measurement can only raise it.
+    return loudnessConservativeGain(targetLufs: _loudnessTarget, preampDb: _activePreampDb);
   }
 
   // Measures [entry] at [startAt]. Null when there was nothing usable to
@@ -2500,8 +2516,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     Log.debug('loudness', '${entry.label} leveled before airing: volume $gain');
   }
 
-  // Walks the player's volume from [from] to [to] over [gainRampDuration],
-  // interpolating in dB so the move sounds even.
+  // Walks the player's volume from [from] to [to], interpolating in dB so the
+  // move sounds even. A move up is faster ([gainRampUpDuration]): it starts from
+  // an estimate, and an estimate should not be heard for long.
   Future<void> _rampGainTo(
     VideoPlayback controller, {
     required double from,
@@ -2518,7 +2535,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     }
     Log.info('loudness', 'ramping from ${fromDb.toStringAsFixed(1)}dB to ${toDb.toStringAsFixed(1)}dB');
     const steps = 20;
-    final stepDuration = gainRampDuration ~/ steps;
+    final stepDuration = (toDb > fromDb ? gainRampUpDuration : gainRampDuration) ~/ steps;
     final completer = Completer<void>();
     _gainRampTimer?.cancel();
     var i = 0;

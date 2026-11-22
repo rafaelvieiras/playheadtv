@@ -11,6 +11,20 @@ and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-11-21 (client)
+
+### Fixed
+
+- A channel change no longer inherits the level of the item that was on air. A
+  quiet item (volume near 1.0) handing over to a loud one played the loud one at
+  the quiet one's volume for the seconds the measurement and the fade took, which
+  on the music channels was heard as "it was much louder for a moment". The new
+  channel now starts from its own prior; with no prior either, it starts at the
+  level of the loudest material the library holds, so the correction can only go
+  up (a short swell instead of a burst).
+- A correction that raises the volume now ramps in 2 s instead of 4 s: it starts
+  from an estimate, and an estimate should not be heard for long.
+
 ## [0.7.0] - 2026-11-21 (client)
 
 Leveling that makes the library louder instead of quieter. The 0.6.0 leveling
