@@ -707,13 +707,13 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
                 child: Row(
                   children: [
                     SizedBox(
-                      width: _u(32),
+                      width: _u(28),
                       child: playing
                           ? Icon(
                               AppIcons.play,
                               key: Key('epg-playing-${channelObj.id}'),
                               color: Colors.white,
-                              size: _u(24),
+                              size: _u(22),
                             )
                           : null,
                     ),
@@ -731,17 +731,32 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
     );
   }
 
-  /// The channel column label: `number name`, or `number [logo]` when the
-  /// channel has an uploaded logo (see docs/ARCHITECTURE.md "Channel logo").
-  /// The number stays either way, so the guide is still navigable by number and
-  /// the row keeps reading as the same channel.
+  /// The channel column label: a small number, then the logo when the channel
+  /// has one, then the name clipped to whatever room is left (`number [logo]
+  /// name`, see docs/ARCHITECTURE.md "Channel logo"). The number stays either
+  /// way, so the guide is still navigable by number and the row keeps reading as
+  /// the same channel. The number is deliberately smaller than the name: it is
+  /// the row's address, not its identity, and shrinking it buys the logo the
+  /// height it needs to be recognisable.
   Widget _channelLabel(PlayheadChannel channel, {required bool highlighted}) {
+    final numberStyle = TextStyle(
+      color: highlighted ? Colors.white70 : Colors.white38,
+      fontSize: _u(13),
+      fontWeight: FontWeight.w600,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
     final style = TextStyle(
       color: highlighted ? Colors.white : Colors.white70,
-      fontSize: _u(18),
+      fontSize: _u(15),
       fontWeight: FontWeight.bold,
     );
     final name = Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
+    final number = Text(
+      '${channel.number}',
+      key: Key('epg-channel-number-${channel.id}'),
+      maxLines: 1,
+      style: numberStyle,
+    );
     final logoUrl = channelLogoUrl(channel);
     if (!_m.channelName) {
       // A phone's column is 72 px: the number identifies the row, and the logo
@@ -770,31 +785,38 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
       );
     }
     if (logoUrl == null) {
-      return Text(
-        '${channel.number} ${channel.name}',
+      return Row(
         key: Key('epg-channel-name-${channel.id}'),
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: style,
+        children: [
+          SizedBox(width: _u(30), child: number),
+          SizedBox(width: _u(6)),
+          Expanded(child: name),
+        ],
       );
     }
     return Row(
       key: Key('epg-channel-name-${channel.id}'),
       children: [
-        Text('${channel.number}', style: style),
-        SizedBox(width: _u(8)),
-        Flexible(
-          child: LogoBox(
-            maxHeight: _u(30),
-            maxWidth: _u(150),
+        SizedBox(width: _u(30), child: number),
+        SizedBox(width: _u(6)),
+        // A fixed slot, not a box that shrinks to the image: a square logo and
+        // a wide one then take the same room, so the name starts at the same x
+        // on every row and the column reads as a column. The logo is centred
+        // inside the slot and keeps its own aspect ratio (`BoxFit.contain`).
+        SizedBox(
+          width: _u(92),
+          height: _u(44),
+          child: Center(
             child: ChannelLogo(
               logoUrl,
-              height: _u(30),
+              height: _u(44),
               imageKey: Key('epg-channel-logo-${channel.id}'),
-              fallback: (_) => name,
+              fallback: (_) => const SizedBox.shrink(),
             ),
           ),
         ),
+        SizedBox(width: _u(8)),
+        Expanded(child: name),
       ],
     );
   }

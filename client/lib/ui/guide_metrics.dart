@@ -16,7 +16,8 @@ class GuideMetrics {
   /// How much of the time axis is on screen at once.
   final Duration visibleSpan;
 
-  /// The channel column: number, plus a logo when the channel has one.
+  /// The channel column: a small number, the logo when the channel has one, and
+  /// the name clipped after them.
   final double channelColumnWidth;
 
   /// One channel row.
@@ -41,7 +42,7 @@ class GuideMetrics {
   /// What the overlay used before the phone existed.
   static const tv = GuideMetrics(
     visibleSpan: Duration(hours: 3),
-    channelColumnWidth: 220,
+    channelColumnWidth: 260,
     rowHeight: 84,
     headerHeight: 44,
   );

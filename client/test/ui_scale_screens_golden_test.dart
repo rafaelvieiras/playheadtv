@@ -165,7 +165,7 @@ void main() {
         final first = tester.getTopLeft(ticks.at(1)).dx - tester.getTopLeft(ticks.at(0)).dx;
         await tester.pumpWidget(const SizedBox());
         // The time viewport is the rows' width minus the scaled channel column.
-        return (row, first * 6, rows.width - 220 * k);
+        return (row, first * 6, rows.width - 260 * k);
       }
 
       final small = await measure(const Size(1280, 720));

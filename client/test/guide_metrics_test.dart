@@ -38,7 +38,7 @@ void main() {
     test('the television keeps the numbers the overlay always had', () {
       const m = GuideMetrics.tv;
       expect(m.visibleSpan, const Duration(hours: 3));
-      expect(m.channelColumnWidth, 220);
+      expect(m.channelColumnWidth, 260);
       expect(m.rowHeight, 84);
       expect(m.headerHeight, 44);
       expect(m.channelName, isTrue, reason: 'a television has room for the name');

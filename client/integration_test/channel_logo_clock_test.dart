@@ -176,11 +176,33 @@ void main() {
         findsOneWidget,
         reason: 'the logo sits inside the channel column label',
       );
-      expect(find.text('100 LOGO CHANNEL 100'), findsNothing, reason: 'the logo replaced the name in the guide');
+      expect(
+        find.descendant(
+          of: find.byKey(Key('epg-channel-name-$withLogoId')),
+          matching: find.text('LOGO CHANNEL 100'),
+        ),
+        findsOneWidget,
+        reason: 'the guide keeps the name after the logo, clipped when it does not fit',
+      );
 
-      // Channel 200: no logo, so the label is still one text with number and name.
-      final plainLabel = tester.widget<Text>(find.byKey(Key('epg-channel-name-$withoutLogoId')));
-      expect(plainLabel.data, '200 LOGO CHANNEL 200');
+      // Channel 200: no logo, so the label is the small number followed by the
+      // name — the same two pieces, minus the image.
+      expect(
+        find.descendant(
+          of: find.byKey(Key('epg-channel-name-$withoutLogoId')),
+          matching: find.text('LOGO CHANNEL 200'),
+        ),
+        findsOneWidget,
+        reason: 'the name is drawn next to the number, not instead of it',
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(Key('epg-channel-name-$withoutLogoId')),
+          matching: find.text('200'),
+        ),
+        findsOneWidget,
+        reason: 'the number keeps its place in the channel column',
+      );
       expect(find.byKey(Key('epg-channel-logo-$withoutLogoId')), findsNothing,
           reason: 'a channel without a logo draws no image');
 
