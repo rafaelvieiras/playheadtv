@@ -100,6 +100,9 @@ class ExoPairedPlayback implements VideoPlayback {
       bufferedUntil: _buffered > Duration.zero ? _buffered : null,
       size: _size,
       volume: _volume,
+      // The host clears it when a new open succeeds, so a non-null one is the
+      // current verdict on this source.
+      hasError: _error != null,
     );
   }
 

@@ -66,6 +66,7 @@ import 'util/open_retry.dart';
 import 'epg_guide.dart' as guide show defaultTailAttributionCap, tailAttributionCap;
 import 'epg_guide.dart' show guideContextLookback, isHiddenGuideKind;
 import 'osd_subject.dart';
+import 'playback_promotion.dart';
 import 'playback_stall.dart';
 import 'preload_lead.dart';
 import 'clock.dart';
@@ -2233,7 +2234,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       if (!await _awaitPreload(nextIndex, generation)) return;
       Log.warn('crossfade', 'preload for item $nextIndex became ready after ${waiting.elapsedMilliseconds}ms');
     }
-    final incoming = _aIsActive ? _controllerB : _controllerA;
+    var incoming = _aIsActive ? _controllerB : _controllerA;
     if (incoming == null) return;
     // Whatever is on air now (the wait above can be long): this is what fades out.
     final outgoing = _aIsActive ? _controllerA : _controllerB;
@@ -2264,6 +2265,17 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       if (generation != _loadGeneration) return;
       seeked = seek;
     }
+
+    // The controller waited off screen for the preload lead, and an idle
+    // connection can be closed under it meanwhile: the engine then fails only
+    // when it is asked to play. Promote it before the fade, so a dead one is
+    // reopened instead of being put on air, and the item on screen keeps the
+    // screen while that happens.
+    final promoted = await _promoteIncoming(nextIndex, incoming, nextEntry, generation);
+    if (generation != _loadGeneration) return;
+    // Null: the channel was resumed on this item another way, done here.
+    if (promoted == null) return;
+    incoming = promoted;
 
     setState(() => _status = 'CROSSFADE -> ${nextEntry.label}');
     Log.debug('crossfade', 'ramp to item $nextIndex starting');
@@ -2298,6 +2310,115 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // falls on the entry's end instead of drifting by the ramp every time.
     _scheduleTransitions(nextIndex, remaining: nextEntry.clipDuration - seeked - onAir, generation: generation);
     unawaited(_maybeExtendGrid(nextIndex, generation));
+  }
+
+  // Starts the incoming item and answers with a controller that is playing,
+  // opening the unit again when the engine fails on it first. Null means the
+  // channel was resumed on this item some other way (a hard cut), so the caller
+  // stops where it is.
+  //
+  // Reopening, never skipping: a skipped unit is invisible to the viewer, and
+  // the guide would disagree with what is on screen. The item that is on air is
+  // untouched the whole time, because the fade has not started yet.
+  Future<VideoPlayback?> _promoteIncoming(
+    int nextIndex,
+    VideoPlayback first,
+    ChannelEntry entry,
+    int generation,
+  ) async {
+    var controller = first;
+    for (var attempt = 0;; attempt++) {
+      if (await _awaitPlaying(controller, generation)) return controller;
+      if (!mounted || generation != _loadGeneration) return null;
+      _dropIncoming(controller);
+      unawaited(disposeController(controller));
+      if (attempt >= playbackPromotionAttempts) {
+        Log.error('crossfade', 'item $nextIndex failed to start after ${attempt + 1} attempts; resuming it with a hard cut');
+        await _resumeAt(nextIndex, generation);
+        return null;
+      }
+      Log.warn('crossfade', 'item $nextIndex failed to start (attempt ${attempt + 1} of ${playbackPromotionAttempts + 1}); reopening it before it airs');
+      final reopened = await _openIncoming(entry, generation);
+      if (reopened == null) {
+        // Opening it again did not even produce a controller: hand the item to
+        // the hard cut, which opens it from scratch and reports what it can.
+        await _resumeAt(nextIndex, generation);
+        return null;
+      }
+      controller = reopened;
+      _parkIncoming(controller);
+    }
+  }
+
+  // Tells the incoming item to play and holds the fade back until the engine
+  // has had its chance to fail on it. False when it did fail.
+  Future<bool> _awaitPlaying(VideoPlayback incoming, int generation) async {
+    final startedAt = incoming.state.position;
+    final waited = Stopwatch()..start();
+    try {
+      await incoming.play();
+    } catch (e) {
+      Log.warn('crossfade', 'the incoming item refused to play', error: e);
+      return false;
+    }
+    while (mounted && generation == _loadGeneration) {
+      final verdict = judgePromotion(
+        state: incoming.state,
+        startedAt: startedAt,
+        waited: waited.elapsed,
+      );
+      switch (verdict) {
+        case PromotionVerdict.reopen:
+          return false;
+        case PromotionVerdict.promote:
+          return true;
+        case PromotionVerdict.wait:
+          await Future<void>.delayed(playbackPromotionPoll);
+      }
+    }
+    return false;
+  }
+
+  // A fresh controller for `entry`, silent, ready to be promoted.
+  Future<VideoPlayback?> _openIncoming(ChannelEntry entry, int generation) async {
+    VideoPlayback? created;
+    try {
+      created = (await _createController(entry)).playback;
+      await created.setVolume(0);
+    } catch (e) {
+      if (created != null) unawaited(disposeController(created));
+      Log.warn('crossfade', 'reopening ${entry.label} failed', error: e);
+      return null;
+    }
+    if (!mounted || generation != _loadGeneration) {
+      unawaited(disposeController(created));
+      return null;
+    }
+    return created;
+  }
+
+  // Takes a dead incoming controller out of its slot, so nothing fades into it.
+  void _dropIncoming(VideoPlayback controller) {
+    if (!mounted) return;
+    setState(() {
+      if (identical(_controllerB, controller)) {
+        _controllerB = null;
+      } else if (identical(_controllerA, controller)) {
+        _controllerA = null;
+      }
+    });
+  }
+
+  // Puts a reopened controller in the slot the preload would have used.
+  void _parkIncoming(VideoPlayback controller) {
+    if (!mounted) return;
+    setState(() {
+      if (_aIsActive) {
+        _controllerB = controller;
+      } else {
+        _controllerA = controller;
+      }
+    });
   }
 
   // Manual crossfade of video (opacity) + audio (volume, 0.0-1.0) between
@@ -2698,11 +2819,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       }
       final nextEntry = channel[nextIndex];
       final slateOutgoing = _aIsActive ? _controllerA : _controllerB;
+      // The item waited for the whole gap held off screen, so its connection
+      // had even longer to go idle: promote it before the slate leaves.
+      final ready = await _promoteIncoming(nextIndex, pending, nextEntry, generation);
+      if (generation != _loadGeneration) return;
+      if (ready == null) return;
       setState(() {
         if (_aIsActive) {
-          _controllerB = pending;
+          _controllerB = ready;
         } else {
-          _controllerA = pending;
+          _controllerA = ready;
         }
         _status = 'CROSSFADE -> ${nextEntry.label}';
       });
@@ -2710,11 +2836,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _itemGain = pendingGain;
       final onAir = await _rampCrossfade(
         outgoing: slateOutgoing,
-        incoming: pending,
+        incoming: ready,
         generation: generation,
         incomingGain: pendingGain,
       );
-      unawaited(_levelItem(nextEntry, pending, generation, startAt: Duration.zero, from: pendingGain));
+      unawaited(_levelItem(nextEntry, ready, generation, startAt: Duration.zero, from: pendingGain));
       if (generation != _loadGeneration) return;
       if (!mounted) return;
       final previousKey = _osdSubjectAt(_currentIndex)?.key;

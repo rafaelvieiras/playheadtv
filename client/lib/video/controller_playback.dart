@@ -65,6 +65,7 @@ abstract class ControllerPlayback implements VideoPlayback {
       bufferedUntil: bufferedUntil,
       size: v.size,
       volume: v.volume,
+      hasError: v.hasError,
     );
   }
 

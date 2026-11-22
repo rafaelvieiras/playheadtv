@@ -31,6 +31,11 @@ class PlaybackState {
   final Size size;
   final double volume;
 
+  /// The engine gave up on this source. It stays false while it retries on its
+  /// own, so a true here means the controller will not play this item without
+  /// being opened again.
+  final bool hasError;
+
   const PlaybackState({
     this.isInitialized = false,
     this.isPlaying = false,
@@ -40,6 +45,7 @@ class PlaybackState {
     this.bufferedUntil,
     this.size = Size.zero,
     this.volume = 1,
+    this.hasError = false,
   });
 
   static const PlaybackState uninitialized = PlaybackState();

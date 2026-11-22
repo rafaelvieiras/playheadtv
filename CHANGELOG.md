@@ -9,6 +9,24 @@ The backend and the client are released separately: a backend tag is `vX.Y.Z`
 and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
 0.4.0 (client) are recorded on the [releases page][releases] only.
 
+## [0.7.3] - 2026-11-22 (client)
+
+### Fixed
+
+- A transition no longer puts a dead player on air. A preloaded controller
+  waits off screen for the preload lead - or for a whole schedule gap - and an
+  idle connection can be closed under it meanwhile; the engine reports that only
+  when the item is asked to play, which is the transition itself. The client
+  promoted it anyway, logged the item on air and dropped the outgoing
+  controller, leaving the channel black with nothing left to ask: the preload
+  retry loop only covers the preparation phase, and the stall watch needs a
+  controller whose position is frozen. The incoming item is now started before
+  the fade begins and promoted only once it is reading its source
+  (`lib/playback_promotion.dart`); a failure reopens the same unit and tries
+  again, and after that resumes it with a hard cut. The fade never starts on an
+  item that has not shown a picture, the item on screen keeps the screen while
+  this happens, and no unit is ever skipped.
+
 ## [Unreleased]
 
 ## [0.7.2] - 2026-11-22 (client)
