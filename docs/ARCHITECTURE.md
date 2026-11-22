@@ -1130,14 +1130,32 @@ builds the absolute URL; the syncer prefetches one file per channel into the art
 cache **with the device token** next to the posters and the watermarks, so a
 channel watched offline still draws its logo. `ChannelLogo`
 (`client/lib/widgets/channel_logo.dart`, an `ArtImage` with the backend's
-headers) replaces the name: in the guide, `number [logo]` (the number always
-stays, so the grid still reads as channels by number, and the row keeps the
-`epg-channel-name-<id>` key); in the OSD header, the logo takes the name's place
-and the leading guide-art badge is dropped, since drawing the same image twice
-in one line is noise. A channel without a logo is unchanged: `number NAME` in
-the guide, guide art plus the upper-cased name in the OSD. A logo that is not on
-disk yet and cannot be downloaded falls back to the name — the logo replaces the
-name, it never hides the channel. Storing the id in the cached channel JSON is
+headers) is drawn in two places.
+
+**In the guide's channel column** the row reads `number [logo] name`: a small
+number (13 px, muted, fixed width), a fixed 92x44 logo slot, then the name at
+15 px, clipped with an ellipsis (the row keeps the `epg-channel-name-<id>` key).
+The number is deliberately smaller than the name — it is the row's address, not
+its identity — and shrinking it is what buys the logo the height it needs to be
+recognisable. The slot has a fixed width instead of shrinking to the image:
+logos arrive in whatever aspect ratio they were uploaded in (square brand marks
+next to 16:9 wordmarks), and a box that followed each one would start the name
+at a different x on every row. The logo is centred inside the slot and keeps its
+own ratio (`BoxFit.contain`), so a square and a wide mark take the same room and
+the names line up. A logo that is not on disk yet and cannot be downloaded
+leaves the slot empty; the name is drawn either way, it no longer stands in for
+the logo.
+
+**In the OSD header** the logo takes the name's place and the leading guide-art
+badge is dropped, since drawing the same image twice in one line is noise. A
+channel without a logo is unchanged there: guide art plus the upper-cased name.
+
+**Web UI.** The logo is uploaded in the channel's Deco tab
+(`webui/src/components/ChannelLogoSection.tsx`: preview, save, replace, remove,
+PNG/JPEG/WebP up to 1 MiB) and drawn in the EPG page's channel column. Both go
+through `webui/src/lib/storedImage.ts`, which fetches the bytes with the session
+token and hands back an object URL — an `<img src>` cannot send that header — and
+revokes it on change. Storing the id in the cached channel JSON is
 why `scheduleCacheSchemaVersion` moved to 4 (an older file is recreated and
 refilled by the next sync).
 

@@ -1486,9 +1486,10 @@ repo never contains.
       immutable URL keyed by the image id), drawn in place of the channel name
       in the guide's channel column and in the OSD header, cached on the client
       with the other art (`docs/ARCHITECTURE.md` "Channel logo"). MCP:
-      `get_channel_logo` / `set_channel_logo` / `clear_channel_logo`. Not done:
-      no web UI section for it yet, and the mosaic tiles and the OSD's
-      recent-channel cards keep text names.
+      `get_channel_logo` / `set_channel_logo` / `clear_channel_logo`. The web UI
+      uploads it in the channel's Deco tab and draws it in the EPG page's channel
+      column. Not done: the mosaic tiles and the OSD's recent-channel cards keep
+      text names.
 - [x] Always-on clock: Settings -> "Always show the clock" keeps the local time
       in the player's top-right corner with the OSD closed, with its own opacity
       (20-100%) and size (0.6-2.0x the OSD clock), stepping aside while the OSD
