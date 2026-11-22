@@ -2271,7 +2271,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // when it is asked to play. Promote it before the fade, so a dead one is
     // reopened instead of being put on air, and the item on screen keeps the
     // screen while that happens.
-    final promoted = await _promoteIncoming(nextIndex, incoming, nextEntry, generation);
+    final promoted = await _promoteIncoming(nextIndex, incoming, nextEntry, generation, seek: seeked);
     if (generation != _loadGeneration) return;
     // Null: the channel was resumed on this item another way, done here.
     if (promoted == null) return;
@@ -2324,8 +2324,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     int nextIndex,
     VideoPlayback first,
     ChannelEntry entry,
-    int generation,
-  ) async {
+    int generation, {
+    Duration seek = Duration.zero,
+  }) async {
     var controller = first;
     for (var attempt = 0;; attempt++) {
       if (await _awaitPlaying(controller, generation)) return controller;
@@ -2338,7 +2339,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         return null;
       }
       Log.warn('crossfade', 'item $nextIndex failed to start (attempt ${attempt + 1} of ${playbackPromotionAttempts + 1}); reopening it before it airs');
-      final reopened = await _openIncoming(entry, generation);
+      // A reopened unit starts from its own beginning, so the resync seek the
+      // dead one had already taken has to be applied again.
+      final reopened = await _openIncoming(entry, generation, seek: seek);
       if (reopened == null) {
         // Opening it again did not even produce a controller: hand the item to
         // the hard cut, which opens it from scratch and reports what it can.
@@ -2380,11 +2383,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   }
 
   // A fresh controller for `entry`, silent, ready to be promoted.
-  Future<VideoPlayback?> _openIncoming(ChannelEntry entry, int generation) async {
+  Future<VideoPlayback?> _openIncoming(
+    ChannelEntry entry,
+    int generation, {
+    Duration seek = Duration.zero,
+  }) async {
     VideoPlayback? created;
     try {
       created = (await _createController(entry)).playback;
       await created.setVolume(0);
+      if (seek > Duration.zero) await created.seekTo(entry.itemOffset + seek);
     } catch (e) {
       if (created != null) unawaited(disposeController(created));
       Log.warn('crossfade', 'reopening ${entry.label} failed', error: e);
