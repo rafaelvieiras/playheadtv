@@ -9,6 +9,17 @@ The backend and the client are released separately: a backend tag is `vX.Y.Z`
 and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
 0.4.0 (client) are recorded on the [releases page][releases] only.
 
+## [0.8.1] - 2026-11-23 (client)
+
+### Fixed
+
+- The dimmer now survives a restart. The level was saved and the on/off toggle
+  was not, on the theory that a dimmed picture at boot reads as a fault, so
+  every update - and any other restart - brought the picture back at full
+  brightness and the viewer had to find the button again. Both are saved now
+  (`dim_level_percent`, `dim_active`): the app opens as the viewer left it, and
+  an installation nobody dimmed still starts undimmed.
+
 ## [0.8.0] - 2026-11-22 (client)
 
 ### Added

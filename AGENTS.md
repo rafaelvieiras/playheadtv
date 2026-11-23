@@ -351,8 +351,9 @@ or LLM, and to every artifact in the repo:
   layer, the last child of the player's `Stack`, driven by `Dimmer.active`/
   `Dimmer.level` notifiers (never `setState`). In OSD focus mode Select on its
   button toggles; while dimmed a level chip beside it opens the level dialog
-  with Select. Holding Select is only an accelerator to that dialog. The level
-  is persisted, the toggle is not (`docs/ARCHITECTURE.md` "Client dimmer").
+  with Select. Holding Select is only an accelerator to that dialog. Both the
+  level and the toggle are persisted, so a restart brings the picture back as
+  the viewer left it (`docs/ARCHITECTURE.md` "Client dimmer").
 - The watermark (`lib/widgets/watermark_overlay.dart`) is a pointer-transparent,
   never-focusable layer above the video and below the OSD, driven by
   `_watermarkNotifier` (set by `_syncWatermark` wherever `_currentIndex`

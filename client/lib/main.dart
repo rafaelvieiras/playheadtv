@@ -240,6 +240,9 @@ class AppConfig {
   // default.
   static int configuredDimLevel(SettingsService settings) => settings.dimLevelPercent ?? dimLevelDefaultPercent;
 
+  // Whether the dimmer comes back on at launch: only if the viewer left it on.
+  static bool configuredDimActive(SettingsService settings) => settings.dimActive ?? false;
+
   // The configured preload lead (before the adaptive growth): a test override
   // (not clamped, so a test can shrink it), else the user's Settings choice,
   // else the installation default.
@@ -1242,6 +1245,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _loudness = await LoudnessService.create();
       unawaited(_applyPreamp());
       Dimmer.level.value = AppConfig.configuredDimLevel(_settings);
+      Dimmer.active.value = AppConfig.configuredDimActive(_settings);
       EpgThumbnailSetting.enabled.value = _settings.epgThumbnail;
       ClockOverlaySettings.alwaysVisible.value = _settings.clockAlwaysVisible;
       ClockOverlaySettings.opacityPct.value = _settings.clockOpacityPct;
@@ -3418,6 +3422,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
   void _toggleDimmer() {
     Dimmer.active.value = !Dimmer.active.value;
+    unawaited(_settings.setDimActive(Dimmer.active.value));
     _showOsd();
   }
 
@@ -3460,7 +3465,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       Dimmer.active.value = wasActive;
     } else {
       Dimmer.level.value = chosen;
+      Dimmer.active.value = true;
       await _settings.setDimLevelPercent(chosen);
+      await _settings.setDimActive(true);
     }
     if (mounted) _focusNode.requestFocus();
   }

@@ -1,4 +1,5 @@
 import 'package:client/dimmer.dart';
+import 'package:client/main.dart' show AppConfig;
 import 'package:client/services/settings_service.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -52,6 +53,34 @@ void main() {
     Dimmer.reset();
     expect(Dimmer.active.value, isFalse);
     expect(Dimmer.level.value, defaultDimLevelPercent);
+  });
+
+  test('the toggle is stored too, null until it is first touched', () async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = SettingsService(await SharedPreferences.getInstance());
+    expect(settings.dimActive, isNull);
+    expect(AppConfig.configuredDimActive(settings), isFalse, reason: 'a fresh install starts undimmed');
+
+    await settings.setDimActive(true);
+    expect(AppConfig.configuredDimActive(settings), isTrue);
+
+    await settings.setDimActive(false);
+    expect(AppConfig.configuredDimActive(settings), isFalse);
+  });
+
+  test('a restart brings the picture back as it was left', () async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = SettingsService(await SharedPreferences.getInstance());
+    await settings.setDimActive(true);
+    await settings.setDimLevelPercent(70);
+
+    // The next launch: fresh notifiers, state applied from storage.
+    Dimmer.reset();
+    Dimmer.active.value = AppConfig.configuredDimActive(settings);
+    Dimmer.level.value = AppConfig.configuredDimLevel(settings);
+    expect(Dimmer.active.value, isTrue);
+    expect(Dimmer.level.value, 70);
+    expect(dimOpacity(active: Dimmer.active.value, levelPercent: Dimmer.level.value), 0.7);
   });
 
   test('SettingsService stores a sanitized level, null when never chosen', () async {

@@ -43,6 +43,7 @@ class SettingsService implements UpdateNoticeStore {
   static const _uiScaleKey = 'ui_scale_override';
   static const _preloadLeadKey = 'preload_lead_seconds';
   static const _dimLevelKey = 'dim_level_percent';
+  static const _dimActiveKey = 'dim_active';
   static const _epgThumbnailKey = 'epg_thumbnail';
   static const _clockAlwaysVisibleKey = 'clock_always_visible';
   static const _clockOpacityKey = 'clock_opacity_percent';
@@ -174,6 +175,12 @@ class SettingsService implements UpdateNoticeStore {
   }
 
   Future<void> setDimLevelPercent(int percent) => _prefs.setInt(_dimLevelKey, sanitizeDimLevelPercent(percent));
+
+  /// Whether the viewer left the dimmer on (see dimmer.dart), or null when they
+  /// never touched it: the app starts undimmed in that case.
+  bool? get dimActive => _prefs.getBool(_dimActiveKey);
+
+  Future<void> setDimActive(bool active) => _prefs.setBool(_dimActiveKey, active);
 
   /// The connection settings typed into the setup screen (empty until then).
   /// They rank below the config file and a build's --dart-define.

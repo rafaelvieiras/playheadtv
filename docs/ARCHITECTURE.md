@@ -1883,8 +1883,14 @@ The mosaic has no layer.
 
 - **Level.** 10 to 80% in steps of 10, 50 by default (`dim_level_percent` in the
   config file, else the user's saved level from Settings -> Dim level or the
-  dialog). The level is persisted; the on/off toggle is not, it starts off on
-  every launch (a dimmed picture at boot reads as a fault).
+  dialog).
+- **Persistence.** Both the level and the on/off toggle are saved
+  (`dim_level_percent`, `dim_active`), so an update, a crash or a power cycle
+  brings the picture back as the viewer left it and nobody has to find the
+  button again after every install. An installation nobody dimmed has no
+  `dim_active` and starts undimmed, which is what a first run should look
+  like; a viewer who dims and then dislikes the dark start turns it off once
+  and that is remembered too.
 - **OSD.** A dimmer button sits next to the audio and subtitle buttons. In OSD
   focus mode Select toggles the dim. While dimmed, a level chip appears beside
   the button: Select on it opens the level dialog, the six-button path from the

@@ -39,9 +39,10 @@ String dimLevelLabel(int percent) => '$percent%';
 double dimOpacity({required bool active, required int levelPercent}) => active ? levelPercent / 100 : 0.0;
 
 /// The dimmer's state, shared by the player page, its OSD and the Settings
-/// page. Static on purpose: there is one screen per process. The toggle starts
-/// off on every launch (it is not persisted: a dimmed picture at boot reads as
-/// a fault); the level is persisted by SettingsService.
+/// page. Static on purpose: there is one screen per process. Both the toggle and
+/// the level are persisted by SettingsService, so a restart (an update, a crash,
+/// a power cycle) brings the picture back as the viewer left it; a fresh install
+/// starts undimmed.
 class Dimmer {
   static final ValueNotifier<bool> active = ValueNotifier<bool>(false);
   static final ValueNotifier<int> level = ValueNotifier<int>(defaultDimLevelPercent);
