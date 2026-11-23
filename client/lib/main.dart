@@ -24,6 +24,7 @@ import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui' show PlatformDispatcher;
 
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
@@ -866,7 +867,12 @@ class ChannelPlayerPage extends StatefulWidget {
 const bool logPeekEnabled = bool.fromEnvironment('PLAYHEADTV_LOG_PEEK');
 
 class _LogPeek extends StatefulWidget {
-  const _LogPeek();
+  const _LogPeek({required this.visible});
+
+  /// Whether the lines are drawn: the OSD's Logs button toggles it while the
+  /// log keeps recording. A listenable, not a bool, because this widget is
+  /// built once and kept (AGENTS.md, "Client app structure").
+  final ValueListenable<bool> visible;
 
   @override
   State<_LogPeek> createState() => _LogPeekState();
@@ -880,7 +886,8 @@ class _LogPeekState extends State<_LogPeek> {
   void initState() {
     super.initState();
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (!mounted) return;
+      // Hidden: no rebuild and no tail read. The log itself is untouched.
+      if (!mounted || !widget.visible.value) return;
       setState(() => _lines = Log.tail(7));
     });
   }
@@ -897,21 +904,29 @@ class _LogPeekState extends State<_LogPeek> {
       left: 8,
       right: 8,
       bottom: 8,
-      child: IgnorePointer(
-        child: Container(
-          color: const Color(0xDD000000),
-          padding: const EdgeInsets.all(6),
-          child: DefaultTextStyle(
-            style: const TextStyle(color: Colors.white, fontSize: 11, height: 1.2),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: <Widget>[
-                for (final String line in _lines) Text(line, maxLines: 2, overflow: TextOverflow.ellipsis),
-              ],
+      child: ValueListenableBuilder<bool>(
+        valueListenable: widget.visible,
+        builder: (BuildContext context, bool visible, Widget? _) {
+          if (!visible) {
+            return const SizedBox.shrink();
+          }
+          return IgnorePointer(
+            child: Container(
+              color: const Color(0xDD000000),
+              padding: const EdgeInsets.all(6),
+              child: DefaultTextStyle(
+                style: const TextStyle(color: Colors.white, fontSize: 11, height: 1.2),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: <Widget>[
+                    for (final String line in _lines) Text(line, maxLines: 2, overflow: TextOverflow.ellipsis),
+                  ],
+                ),
+              ),
             ),
-          ),
-        ),
+          );
+        },
       ),
     );
   }
@@ -1020,6 +1035,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // ValueNotifier pattern as above, for the same reason (never cause a rebuild
   // of the parent/the video tree).
   final ValueNotifier<bool> _debugOverlayVisibleNotifier = ValueNotifier(false);
+
+  // The on-screen log (log peek builds): a peek build starts with it drawn,
+  // because that build exists to show it, and the OSD's Logs button turns it
+  // off without stopping the log — the log keeps recording to its file and to
+  // the platform console either way.
+  final ValueNotifier<bool> _debugLogVisibleNotifier = ValueNotifier(logPeekEnabled);
 
   // Tier 1 track selector overlay (arrowRight — InputAction.trackSelector):
   // same isolated ValueNotifier pattern as above, for the same GL-texture
@@ -1225,6 +1246,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       ClockOverlaySettings.alwaysVisible.value = _settings.clockAlwaysVisible;
       ClockOverlaySettings.opacityPct.value = _settings.clockOpacityPct;
       ClockOverlaySettings.scale.value = _settings.clockScale;
+      _debugLogVisibleNotifier.value = _settings.debugLogVisible ?? logPeekEnabled;
       _runtime = await OfflineRuntime.ensure();
       BootTrace.mark('runtime_open');
       _streamPrefs = await StreamPreferencesService.create(_runtime.api);
@@ -3385,6 +3407,15 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   bool _dimSelectDown = false;
   bool _dimDialogOpen = false;
 
+  /// Turns the on-screen log on or off. Hiding it stops the drawing, never the
+  /// logging: `Log` keeps recording, which is the point of doing this while the
+  /// app is in use.
+  void _toggleDebugLog() {
+    _debugLogVisibleNotifier.value = !_debugLogVisibleNotifier.value;
+    unawaited(_settings.setDebugLogVisible(_debugLogVisibleNotifier.value));
+    _showOsd();
+  }
+
   void _toggleDimmer() {
     Dimmer.active.value = !Dimmer.active.value;
     _showOsd();
@@ -3587,6 +3618,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _osdFocusNotifier.dispose();
     _epgOpenNotifier.dispose();
     _debugOverlayVisibleNotifier.dispose();
+    _debugLogVisibleNotifier.dispose();
     _trackPickerOpenNotifier.dispose();
     _watermarkNotifier.dispose();
     _gapRetryTimer?.cancel();
@@ -3905,7 +3937,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                 ),
               ),
             ),
-            if (logPeekEnabled) const _LogPeek(),
+            if (logPeekEnabled) _LogPeek(visible: _debugLogVisibleNotifier),
             // Loading a channel (boot or switch): a spinner in the middle of the
             // screen until playback starts. Errors keep the plain status card.
             if (!hasContent && !_status.startsWith('ERROR') && !_status.startsWith('HOLD'))
@@ -4009,6 +4041,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                     onOpenAudio: () => _openTrackPicker(TrackSelectorPanel.audio, singlePanel: true),
                     onToggleDimmer: _toggleDimmer,
                     onOpenDimmerLevel: () => unawaited(_openDimmerLevel()),
+                    showDebugLogButton: logPeekEnabled,
+                    debugLogVisible: _debugLogVisibleNotifier,
+                    onToggleDebugLog: _toggleDebugLog,
                     recentChannels: _recentChannelShortcuts(),
                     onSelectChannel: (channelId) {
                       _osdHideTimer?.cancel();

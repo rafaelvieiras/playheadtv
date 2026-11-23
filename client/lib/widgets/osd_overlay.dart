@@ -50,6 +50,9 @@ const _audio = 'audio';
 // The dimmer toggle, and (only while dimmed) its level chip: Select on the
 // chip opens the level dialog, the 6-button way to it from the OSD.
 const _dimmer = 'dimmer';
+// The on-screen log toggle: only drawn by a build that carries the log (the
+// log peek define), so a plain release has no such control.
+const _debugLog = 'debug-log';
 const _dimmerLevel = 'dimmer-level';
 const _channelPrefix = 'channel:';
 
@@ -84,6 +87,12 @@ class ChannelOsd extends StatefulWidget {
   final VoidCallback onOpenAudio;
   final VoidCallback onToggleDimmer;
   final VoidCallback onOpenDimmerLevel;
+  // The on-screen log toggle (log peek builds only): whether to draw it at
+  // all, whether it is currently on, and what a Select does. A null visibility
+  // means "no such build", and the control is skipped.
+  final bool showDebugLogButton;
+  final ValueListenable<bool>? debugLogVisible;
+  final VoidCallback? onToggleDebugLog;
   final List<OsdChannelShortcut> recentChannels;
   final void Function(String channelId) onSelectChannel;
 
@@ -110,6 +119,9 @@ class ChannelOsd extends StatefulWidget {
     required this.onOpenAudio,
     required this.onToggleDimmer,
     required this.onOpenDimmerLevel,
+    this.showDebugLogButton = false,
+    this.debugLogVisible,
+    this.onToggleDebugLog,
     required this.recentChannels,
     required this.onSelectChannel,
     this.now = DateTime.now,
@@ -198,7 +210,13 @@ class ChannelOsdState extends State<ChannelOsd> {
     final hasSubtitles = tracks.subtitle.isNotEmpty;
     final hasAudioChoice = tracks.audio.length > 1;
     return [
-      [if (hasSubtitles) _captions, if (hasAudioChoice) _audio, _dimmer, if (Dimmer.active.value) _dimmerLevel],
+      [
+        if (hasSubtitles) _captions,
+        if (hasAudioChoice) _audio,
+        _dimmer,
+        if (Dimmer.active.value) _dimmerLevel,
+        if (widget.showDebugLogButton && widget.debugLogVisible != null) _debugLog,
+      ],
       [for (final c in widget.recentChannels) '$_channelPrefix${c.id}'],
     ].where((r) => r.isNotEmpty).toList();
   }
@@ -235,6 +253,8 @@ class ChannelOsdState extends State<ChannelOsd> {
       widget.onOpenSubtitles();
     } else if (focused == _audio) {
       widget.onOpenAudio();
+    } else if (focused == _debugLog) {
+      widget.onToggleDebugLog?.call();
     } else if (focused != null && focused.startsWith(_channelPrefix)) {
       widget.onSelectChannel(focused.substring(_channelPrefix.length));
     }
@@ -634,6 +654,14 @@ class ChannelOsdState extends State<ChannelOsd> {
                         label: dimLevelLabel(Dimmer.level.value),
                         focused: _focused == _dimmerLevel,
                         onTap: widget.onOpenDimmerLevel,
+                      ),
+                    if (widget.showDebugLogButton && widget.debugLogVisible != null)
+                      _button(
+                        const Key('osd-btn-debug-log'),
+                        AppIcons.debugLog,
+                        label: widget.debugLogVisible!.value ? 'Logs on' : 'Logs off',
+                        focused: _focused == _debugLog,
+                        onTap: widget.onToggleDebugLog,
                       ),
                     if (nextItemLabel != null) ...[
                       SizedBox(width: _u(_m.upNextGap)),

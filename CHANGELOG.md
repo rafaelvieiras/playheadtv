@@ -9,6 +9,22 @@ The backend and the client are released separately: a backend tag is `vX.Y.Z`
 and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
 0.4.0 (client) are recorded on the [releases page][releases] only.
 
+## [0.8.0] - 2026-11-22 (client)
+
+### Added
+
+- An on-screen log toggle in the OSD, next to the captions, audio and dimmer
+  buttons. A build that carries the log (`--dart-define=PLAYHEADTV_LOG_PEEK=true`)
+  draws its last lines over the picture; until now the only way to turn them off
+  was to rebuild without the define. The new button hides and shows the lines at
+  runtime and the choice is remembered, so the app can be used normally while it
+  keeps logging — hiding the overlay never stops the log.
+- The channel logo feature reaches the guide and the admin UI: the guide's
+  channel column draws `number [logo] name` with a fixed 92x44 logo slot (a
+  square mark and a wide one take the same room, so the names line up), and the
+  channel's Deco tab uploads, replaces and removes the logo. `docs/ARCHITECTURE.md`
+  "Channel logo".
+
 ## [0.7.3] - 2026-11-22 (client)
 
 ### Fixed

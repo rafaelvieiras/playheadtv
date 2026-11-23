@@ -2300,6 +2300,18 @@ until the app restarts: it is never saved, so a forgotten verbose client goes ba
 to the configured level on its own (`Log.setRuntimeLevel`; `Log.configuredLevel`
 is what it returns to).
 
+**On-screen peek.** A build with
+`--dart-define=PLAYHEADTV_LOG_PEEK=true` records every level, mirrors the log to
+the platform console and draws its last lines in a band at the bottom of the
+player (`_LogPeek` in `lib/main.dart`). That build exists for a device whose log
+file cannot be read, so the band would otherwise be stuck on screen; the OSD
+carries a "Logs on/off" button (`osd-btn-debug-log`, drawn only by such a build)
+that hides and shows it at runtime, and the choice is remembered
+(`debug_log_visible`). Hiding the band stops the drawing and its one-second
+tail read, never the log itself — the file and the console keep receiving
+lines. A build without the define never shows the band and never draws the
+button, so a release behaves exactly as before.
+
 **File.** `playheadtv.log` in the install's state directory, next to `update.log`
 and `state.json`: the install root of the tar.gz install (`PLAYHEADTV_ROOT`),
 `${XDG_STATE_HOME:-~/.local/state}/playheadtv` for the AppImage and any other

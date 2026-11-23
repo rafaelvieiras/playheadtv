@@ -47,6 +47,7 @@ class SettingsService implements UpdateNoticeStore {
   static const _clockAlwaysVisibleKey = 'clock_always_visible';
   static const _clockOpacityKey = 'clock_opacity_percent';
   static const _clockScaleKey = 'clock_scale';
+  static const _debugLogKey = 'debug_log_visible';
   static const _connectionPrefix = 'connection_'; // + a connection_settings.dart key
   static const _chosenServerUrlKey = 'chosen_server_url';
 
@@ -150,6 +151,13 @@ class SettingsService implements UpdateNoticeStore {
 
   double? get loudnessPreampDb => _prefs.getDouble(_loudnessPreampKey);
   Future<void> setLoudnessPreampDb(double value) => _prefs.setDouble(_loudnessPreampKey, value);
+
+  /// Whether the on-screen log is drawn, for a build that carries the log at
+  /// all (`--dart-define=PLAYHEADTV_LOG_PEEK=true`). Null until the viewer
+  /// toggles it: the caller decides what an untouched install starts as.
+  bool? get debugLogVisible => _prefs.getBool(_debugLogKey);
+
+  Future<void> setDebugLogVisible(bool value) => _prefs.setBool(_debugLogKey, value);
 
   int? get preloadLeadSeconds {
     final v = _prefs.getInt(_preloadLeadKey);
