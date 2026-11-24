@@ -1,25 +1,36 @@
+import { useState } from 'react'
 import {
   CalendarClock,
   Clapperboard,
   Library,
   Languages,
   LogOut,
-  Tv,
-  Layers,
-  ListOrdered,
+  Menu,
+  Puzzle,
   Radio,
   Scissors,
   Server,
-  Puzzle,
   Smartphone,
+  Tv,
+  Layers,
+  ListOrdered,
 } from 'lucide-react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from '@/components/ui/sheet'
 import { cn } from '@/lib/utils'
 import { api, ApiError } from '@/lib/http'
 import { useAuthStore } from '@/store/auth'
 
+// NAV_ITEMS is the only list of destinations: the `md:` sidebar and the
+// mobile drawer both render it, so the two can never disagree.
 const NAV_ITEMS = [
   { to: '/', label: 'Guide (EPG)', icon: CalendarClock, end: true },
   { to: '/channels', label: 'Channels', icon: Tv, end: false },
@@ -35,12 +46,52 @@ const NAV_ITEMS = [
   { to: '/plugins', label: 'Plugins', icon: Puzzle, end: false },
 ]
 
+function SidebarNav({ onNavigate }: { onNavigate?: () => void }) {
+  return (
+    <nav className="flex flex-1 flex-col gap-1 overflow-y-auto px-2">
+      {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
+        <NavLink
+          key={to}
+          to={to}
+          end={end}
+          onClick={onNavigate}
+          className={({ isActive }) =>
+            cn(
+              'flex min-h-11 items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors outline-none focus-visible:ring-3 focus-visible:ring-ring/50 md:min-h-9',
+              isActive
+                ? 'bg-primary/10 font-medium text-primary'
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
+            )
+          }
+        >
+          <Icon className="size-4" />
+          {label}
+        </NavLink>
+      ))}
+    </nav>
+  )
+}
+
+function SidebarFooter({ onSignOut }: { onSignOut: () => void }) {
+  const user = useAuthStore((s) => s.user)
+  return (
+    <div className="flex flex-col gap-2 border-t border-border px-4 py-3">
+      {user && <span className="truncate text-xs text-muted-foreground">{user.email}</span>}
+      <Button variant="outline" size="sm" onClick={onSignOut}>
+        <LogOut className="size-4" />
+        Sign out
+      </Button>
+    </div>
+  )
+}
+
 export function Layout() {
   const navigate = useNavigate()
   const logout = useAuthStore((s) => s.logout)
-  const user = useAuthStore((s) => s.user)
+  const [navOpen, setNavOpen] = useState(false)
 
   async function handleLogout() {
+    setNavOpen(false)
     try {
       await api.delete('/sessions')
     } catch (err) {
@@ -57,42 +108,42 @@ export function Layout() {
   }
 
   return (
-    <div className="flex min-h-svh bg-background text-foreground">
-      <aside className="flex w-56 shrink-0 flex-col border-r border-border">
+    // h-svh + a scrolling `main`: the shell owns the viewport, so a long page
+    // scrolls its own column and the sidebar never scrolls away with it.
+    <div className="flex h-svh bg-background text-foreground">
+      <aside className="hidden w-56 shrink-0 flex-col border-r border-border md:flex">
         <div className="px-4 py-4 text-sm font-semibold">Playhead TV — Admin</div>
-        <nav className="flex flex-1 flex-col gap-1 px-2">
-          {NAV_ITEMS.map(({ to, label, icon: Icon, end }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              className={({ isActive }) =>
-                cn(
-                  'flex items-center gap-2 rounded-lg px-3 py-2 text-sm transition-colors',
-                  isActive
-                    ? 'bg-primary/10 font-medium text-primary'
-                    : 'text-muted-foreground hover:bg-muted hover:text-foreground',
-                )
-              }
-            >
-              <Icon className="size-4" />
-              {label}
-            </NavLink>
-          ))}
-        </nav>
-        <div className="flex flex-col gap-2 border-t border-border px-4 py-3">
-          {user && <span className="truncate text-xs text-muted-foreground">{user.email}</span>}
-          <Button variant="outline" size="sm" onClick={handleLogout}>
-            <LogOut className="size-4" />
-            Sign out
-          </Button>
-        </div>
+        <SidebarNav />
+        <SidebarFooter onSignOut={handleLogout} />
       </aside>
-      <main className="flex-1 overflow-y-auto px-6 py-8">
-        <div className="mx-auto max-w-5xl">
-          <Outlet />
-        </div>
-      </main>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <header className="flex items-center gap-2 border-b border-border px-2 py-1.5 md:hidden">
+          <Sheet open={navOpen} onOpenChange={setNavOpen}>
+            <SheetTrigger asChild>
+              <Button variant="ghost" size="icon" aria-label="Open navigation">
+                <Menu className="size-4" />
+              </Button>
+            </SheetTrigger>
+            <SheetContent side="left" className="p-0">
+              <SheetHeader className="border-b border-border pr-12">
+                <SheetTitle>Playhead TV — Admin</SheetTitle>
+              </SheetHeader>
+              <div className="flex flex-1 flex-col overflow-y-auto py-2">
+                <SidebarNav onNavigate={() => setNavOpen(false)} />
+              </div>
+              <SidebarFooter onSignOut={handleLogout} />
+            </SheetContent>
+          </Sheet>
+          <span className="truncate text-sm font-semibold">Playhead TV — Admin</span>
+        </header>
+
+        <main className="min-w-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
+          <div className="mx-auto max-w-5xl">
+            <Outlet />
+          </div>
+        </main>
+      </div>
     </div>
   )
 }

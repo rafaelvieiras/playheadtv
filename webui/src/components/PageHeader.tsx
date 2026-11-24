@@ -37,7 +37,7 @@ export function PageHeader({
           <span key={`${crumb.label}-${i}`} className="flex items-center gap-1">
             {i > 0 && <ChevronRight className="size-3.5" />}
             {crumb.to ? (
-              <Link to={crumb.to} className="hover:text-foreground hover:underline">
+              <Link to={crumb.to} className="inline-flex min-h-9 items-center hover:text-foreground hover:underline max-sm:min-h-11">
                 {crumb.label}
               </Link>
             ) : (

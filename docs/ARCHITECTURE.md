@@ -99,6 +99,43 @@ Conventions:
   routes) and fails on a route in neither list, so a new web UI capability
   cannot ship without its tool.
 
+## Admin shell
+
+The admin SPA (`webui/`) is served by the Go binary under `/admin/`, on the
+same origin as the API, and it is a surface an operator has to be able to use
+from a phone as well as from a desktop. Four decisions make that true, and
+each one replaced a defect measured in a Playwright pass:
+
+- **The sidebar is a drawer below `md`.** A fixed 224 px sidebar left `main`
+  166 px wide on a 390 px viewport, which clipped the page title, the primary
+action and every table. `NAV_ITEMS` (`components/Layout.tsx`) is rendered
+twice — by the `md:` sidebar and by the drawer over `components/ui/sheet.tsx`
+— and never as a second literal list.
+- **The shell owns the viewport, `main` owns the scroll.** `h-svh` on the
+container with `overflow-y-auto` and `min-w-0` on `main`; without it the
+sidebar stretched to the document height and scrolled away on a long page,
+leaving an empty column, and the document itself scrolled instead of the
+content column.
+- **One save contract, and it is where the eye is.** `components/SaveBar.tsx`
+is rendered by every editor that has unsaved edits. It is `fixed` over the
+bottom edge — a `sticky bottom-*` bar only pins while its natural position is
+below the fold, and six editors place it mid-page, where it scrolled away
+exactly when it was needed — and it owns the two leave guards:
+`useBlocker` for in-app navigation and `beforeunload` for a reload or a closed
+tab. The route table is therefore a **data router** (`createBrowserRouter` in
+`src/router.tsx`); `useBlocker` does not exist on a plain `BrowserRouter`, so
+reverting that migration would silently drop the in-app guard.
+- **A 4xx is a final answer.** The `QueryClient` retries 5xx only. The default
+of three attempts turned every 404/409 into 7–10 s of "Loading…" before the
+same message (a bogus collection id cost four requests).
+
+Two smaller rules keep the phone usable without per-page work: the primitives
+carry a 44 px touch floor below `sm` (`max-sm:min-h-11` on `button`,
+`max-sm:h-11` on `input`/`select`/`combobox`/`tabs`), and `--ring` is the
+foreground value because every `ring-ring/50` utility halves it — the light
+grey token it replaced was ≈1.5:1 against white, below the 3:1 non-text
+contrast minimum.
+
 ## Password recovery
 
 There is one `app_user` per tenant and no e-mail, so a forgotten password is

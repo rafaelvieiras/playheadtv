@@ -196,6 +196,32 @@ or LLM, and to every artifact in the repo:
   rows — don't duplicate schedule-expansion logic in the API layer, and
   don't reintroduce a "materializer doesn't exist yet" assumption.
 
+## Web admin UI (`webui/`)
+
+The authoring UI is served by the Go binary under `/admin/` and is a first-class surface: an
+operator must be able to run every flow from a phone as well as from a desktop. It used to be
+described as "desktop/mouse tooling by nature"; that is no longer true, and the layout rules below
+are what keeps the claim honest (`docs/ARCHITECTURE.md` "Admin shell").
+
+- **One navigation list, two renderings.** `NAV_ITEMS` in `components/Layout.tsx` is the only
+  list of destinations: the `md:` sidebar renders it and so does the mobile drawer
+  (`components/ui/sheet.tsx`). Never write a second literal navigation.
+- **The shell owns the viewport.** `h-svh` on the shell plus `overflow-y-auto` on `main`; a long
+  page scrolls its own column, so the sidebar never scrolls away and `main` needs `min-w-0` for
+  that to hold. Below `md` the sidebar is gone and a top bar carries the drawer button.
+- **`SaveBar` owns the save contract, and the two leave guards.** A page with unsaved edits renders
+  `components/SaveBar.tsx` with `dirty`; the bar is fixed over the bottom edge (a `sticky` bar
+  scrolls out of reach in the middle of a long form), and it is what blocks in-app navigation
+  (`useBlocker`) and a reload (`beforeunload`). The route table is therefore a **data router**
+  (`createBrowserRouter`, `src/router.tsx`) — `useBlocker` does not exist on `<BrowserRouter>`.
+- **A 4xx is final.** `QueryClient` (`main.tsx`) retries only 5xx: retrying a not-found or a
+  conflict turned every permanent error into seconds of "Loading…" before the same message.
+- **Touch floor below `sm`.** The primitives carry it (`max-sm:min-h-11` on `button`, `max-sm:h-11`
+  on `input`/`select`/`combobox`/`tabs`, `min-h-11` on a nav row), so a new screen inherits 44 px
+  targets instead of re-deriving them. Don't add a per-page `size` just for a phone.
+- **Focus is visible at 3:1.** `--ring` (`index.css`) is the foreground value because every
+  `ring-ring/50` utility halves it; a light grey token fails the non-text contrast minimum.
+
 ## Client app structure (mosaic home, EPG, remappable controls)
 
 - Routing is plain `Navigator.push`/`pushReplacement` with `MaterialPageRoute`
@@ -315,8 +341,9 @@ or LLM, and to every artifact in the repo:
   skipTraversal: true`), else it takes traversal focus past the last row
   (`docs/ARCHITECTURE.md` "Client logging", focus conventions); give the page an
   `autofocus` row instead.
-- **6-button baseline**: every user-facing flow in the client (not the web
-  UI, which is desktop/mouse admin tooling by nature) must be fully
+- **6-button baseline**: every user-facing flow in the client (the web UI
+  is the other surface: it is not D-pad driven, see "Web admin UI" below)
+  must be fully
   operable with exactly six inputs — Up, Down, Left, Right, Select, Back —
   the common baseline of any D-pad remote (Mi Box, Android TV, Fire TV,
   Roku all ship this same minimal set). No action may *require* a key

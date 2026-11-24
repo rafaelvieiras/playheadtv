@@ -48,7 +48,7 @@ export function ChannelLoopForm({ channel }: { channel: Channel }) {
       <label className="flex flex-col gap-1 text-sm">
         <span className="text-muted-foreground">Collection</span>
         <select
-          className="h-9 min-w-56 rounded-md border bg-background px-2"
+          className="h-9 min-w-56 rounded-md border bg-background px-2 max-sm:h-11"
           value={collectionId}
           onChange={(e) => setCollectionId(e.target.value)}
           data-testid="loop-collection"
@@ -64,7 +64,7 @@ export function ChannelLoopForm({ channel }: { channel: Channel }) {
       <label className="flex flex-col gap-1 text-sm">
         <span className="text-muted-foreground">Order</span>
         <select
-          className="h-9 rounded-md border bg-background px-2"
+          className="h-9 rounded-md border bg-background px-2 max-sm:h-11"
           value={order}
           onChange={(e) => setOrder(e.target.value as CriteriaOrder)}
           data-testid="loop-order"

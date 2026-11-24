@@ -1586,3 +1586,24 @@ repo never contains.
       it did not get to, instead of failing each one. The tail trim cap went
       from 60 s to 4 minutes, so the 65-101 s residuals a long-clip pool cannot
       fit are closed too (a 5 minute residual is still reported, not hidden).
+- [x] A web UI that works on a phone and keeps unsaved work (2026-11-24, #110):
+      the admin shell had no breakpoint at all — a fixed 224 px sidebar left
+      `main` 166 px wide on a 390 px viewport, so titles wrapped to three lines
+      and the primary action on most pages sat off-screen — and `SaveBar` used
+      `sticky bottom-4`, which only pins while its natural position is below the
+      fold, so in the six editors that place it mid-page it scrolled away
+      exactly when it was needed. The sidebar is now a drawer below `md`
+      (`components/ui/sheet.tsx`, `NAV_ITEMS` rendered twice and never as a
+      second literal list), the shell is `h-svh` with `main` owning the scroll
+      and `min-w-0`, and `SaveBar` is fixed over the bottom edge while owning
+      both leave guards (`useBlocker` for in-app navigation, `beforeunload` for
+      a reload) — which is why the route table is a data router
+      (`src/router.tsx`, `createBrowserRouter`): `useBlocker` does not exist on
+      `<BrowserRouter>`. Also: the `QueryClient` retries 5xx only (a 4xx
+      retried three times turned every not-found into 7-10 s of "Loading…"),
+      `--ring` became the foreground value so the 50 %-alpha ring clears 3:1
+      instead of ≈1.5:1, and the primitives carry a 44 px touch floor below
+      `sm`. Verified with a Playwright pass at 1440×900 and 390×844 (20/20
+      checks plus a 38-route sweep with no console error and no document
+      overflow). Still open: the mobile table/card treatment, dialog focus
+      return and inline validation (#111), and the per-screen defects (#112).
