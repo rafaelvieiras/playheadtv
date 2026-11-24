@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 
 import { CutPreviewPanel } from '@/components/CutPreviewPanel'
 import { CutStrategyFields } from '@/components/CutStrategyFields'
+import { Loading, QueryError } from '@/components/QueryError'
 import { PageHeader } from '@/components/PageHeader'
 import { SaveBar } from '@/components/SaveBar'
 import { Button } from '@/components/ui/button'
@@ -44,7 +45,7 @@ export function CutRuleSetEditorPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const { data: ruleSet, isLoading, error } = useQuery({
+  const { data: ruleSet, isLoading, error, refetch } = useQuery({
     queryKey: ['cut-rule-sets', id],
     queryFn: () => api.get<CutRuleSet>(`/cut-rule-sets/${id}`),
     enabled: !isNew,
@@ -98,9 +99,9 @@ export function CutRuleSetEditorPage() {
       <div className="flex flex-col gap-6">
         <PageHeader title="Cut rule set" breadcrumb={breadcrumb} />
         {error ? (
-          <p className="text-sm text-destructive">Could not load the cut rule set.</p>
+          <QueryError subject="the cut rule set" error={error} onRetry={() => void refetch()} />
         ) : (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <Loading />
         )}
       </div>
     )

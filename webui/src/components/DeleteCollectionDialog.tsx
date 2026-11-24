@@ -3,16 +3,7 @@ import { toast } from 'sonner'
 
 import { CollectionUsageList } from '@/components/CollectionUsageList'
 import { InlineWarning } from '@/components/InlineWarning'
-import {
-  AlertDialog,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
-import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { useCollectionUsage, useDeleteCollection, usageCount } from '@/lib/collections'
 import { ApiError } from '@/lib/http'
 import type { Collection } from '@/lib/types'
@@ -54,32 +45,32 @@ export function DeleteCollectionDialog({
   }
 
   return (
-    <AlertDialog open={collection !== undefined} onOpenChange={(open) => !open && onClose()}>
-      <AlertDialogContent data-testid="delete-collection-dialog">
-        <AlertDialogHeader>
-          <AlertDialogTitle>Delete collection?</AlertDialogTitle>
-          <AlertDialogDescription>
-            This will permanently delete the collection "{collection?.name}". This action cannot be undone.
-          </AlertDialogDescription>
-        </AlertDialogHeader>
-        {usage.data && inUse && (
-          <InlineWarning title="This collection is in use and cannot be deleted">
-            Point these at another collection first:
-            <CollectionUsageList usage={usage.data} testId="delete-collection-usage" />
-          </InlineWarning>
-        )}
-        {error && (
-          <p className="text-sm text-destructive" data-testid="delete-collection-error">
-            {error}
-          </p>
-        )}
-        <AlertDialogFooter>
-          <AlertDialogCancel>Cancel</AlertDialogCancel>
-          <Button variant="destructive" onClick={confirm} disabled={del.isPending} data-testid="delete-collection-confirm">
-            Delete
-          </Button>
-        </AlertDialogFooter>
-      </AlertDialogContent>
-    </AlertDialog>
+    <ConfirmDialog
+      open={collection !== undefined}
+      onClose={onClose}
+      title={`Delete collection "${collection?.name}"?`}
+      description="This action cannot be undone."
+      confirmLabel="Delete collection"
+      pendingLabel="Deleting…"
+      onConfirm={confirm}
+      isPending={del.isPending}
+      // The button is really disabled while the collection is in use: it used
+      // to look available and only the 409 explained why it was not.
+      confirmDisabled={inUse}
+      error={error}
+      testId="delete-collection-dialog"
+    >
+      {usage.isError && (
+        <InlineWarning title="Could not check who uses this collection">
+          The delete may still be refused by the backend. Retry by opening this dialog again.
+        </InlineWarning>
+      )}
+      {usage.data && inUse && (
+        <InlineWarning title="This collection is in use and cannot be deleted">
+          Point these at another collection first:
+          <CollectionUsageList usage={usage.data} testId="delete-collection-usage" />
+        </InlineWarning>
+      )}
+    </ConfirmDialog>
   )
 }

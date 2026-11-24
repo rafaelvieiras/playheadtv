@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { ChannelFillerRules } from '@/components/ChannelFillerRules'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ChannelLogoSection } from '@/components/ChannelLogoSection'
 import { SaveBar } from '@/components/SaveBar'
 import { WatermarkSection } from '@/components/WatermarkSection'
@@ -120,6 +121,8 @@ export function ChannelDeco({ channel }: { channel: Channel }) {
       channel.id,
       (scheduleItems ?? []).map((i) => i.block_id ?? ''),
     )
+  // Choosing "None" deletes the rule on the server, so it asks first.
+  const [clearingFallback, setClearingFallback] = useState(false)
   const [advancedOverride, setAdvancedOverride] = useState<boolean | null>(null)
   const advancedOpen = advancedOverride ?? advancedRules
 
@@ -185,7 +188,13 @@ export function ChannelDeco({ channel }: { channel: Channel }) {
             <Select
               value={fallback?.rule?.filler_pool_id ?? NONE_VALUE}
               disabled={!fallback || setFallback.isPending}
-              onValueChange={(v) => setFallback.mutate(v === NONE_VALUE ? null : v)}
+              onValueChange={(v) => {
+                if (v === NONE_VALUE && fallback?.rule) {
+                  setClearingFallback(true)
+                  return
+                }
+                setFallback.mutate(v === NONE_VALUE ? null : v)
+              }}
             >
               <SelectTrigger id="deco-fallback-select" className="w-full">
                 <SelectValue placeholder="No fallback filler" />
@@ -204,6 +213,21 @@ export function ChannelDeco({ channel }: { channel: Channel }) {
             What plays when nothing is scheduled. Without one, that time stays empty.
           </FieldDescription>
         </Field>
+
+        <ConfirmDialog
+          open={clearingFallback}
+          onClose={() => setClearingFallback(false)}
+          title="Remove the fallback filler of this channel?"
+          description="The rule is deleted, not just unassigned. Time the schedule does not cover stays empty — the player shows its plain gap slate."
+          confirmLabel="Remove fallback"
+          pendingLabel="Removing…"
+          onConfirm={() =>
+            setFallback.mutate(null, { onSuccess: () => setClearingFallback(false) })
+          }
+          isPending={setFallback.isPending}
+          error={setFallback.error}
+          testId="deco-fallback-confirm"
+        />
       </section>
 
       <p className="text-sm text-muted-foreground" data-testid="deco-block-note">

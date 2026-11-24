@@ -3,25 +3,23 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Link } from 'react-router-dom'
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { Loading, QueryError } from '@/components/QueryError'
 import { KIND_LABELS, SCOPE_LABELS, STRATEGY_LABELS } from '@/lib/filler'
 import { api } from '@/lib/http'
 import type { Block, Channel, FillerPool, FillerRule } from '@/lib/types'
 
 export function FillerRulesPage() {
   const queryClient = useQueryClient()
-  const { data: rules, isLoading, isError } = useQuery({
+  const {
+    data: rules,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ['filler-rules'],
     queryFn: () => api.get<FillerRule[]>('/filler-rules'),
   })
@@ -72,11 +70,18 @@ export function FillerRulesPage() {
         </Button>
       </div>
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Could not load filler rules.</p>}
+      {isLoading && <Loading />}
+      {isError && (
+        <QueryError
+          subject="the filler rules"
+          error={error}
+          onRetry={() => void refetch()}
+          stale={rules !== undefined}
+        />
+      )}
 
       {rules && (
-        <Table>
+        <Table label="Filler rules">
           <TableHeader>
             <TableRow>
               <TableHead>Scope</TableHead>
@@ -106,13 +111,20 @@ export function FillerRulesPage() {
                 <TableCell>{poolNames.get(rule.filler_pool_id) ?? rule.filler_pool_id}</TableCell>
                 <TableCell>{STRATEGY_LABELS[rule.selection_strategy]}</TableCell>
                 <TableCell>{rule.position}</TableCell>
-                <TableCell className="flex justify-end gap-2 text-right">
-                  <Button asChild variant="outline" size="sm">
-                    <Link to={`/filler-rules/${rule.id}`}>Edit</Link>
-                  </Button>
-                  <Button variant="destructive" size="sm" onClick={() => setDeletingRule(rule)}>
-                    Delete
-                  </Button>
+                <TableCell>
+                  <div className="flex justify-end gap-2">
+                    <Button asChild variant="outline" size="sm">
+                      <Link to={`/filler-rules/${rule.id}`}>Edit</Link>
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      aria-label={`Delete the ${KIND_LABELS[rule.kind].toLowerCase()} rule for ${scopeName(rule)}`}
+                      onClick={() => setDeletingRule(rule)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -120,25 +132,21 @@ export function FillerRulesPage() {
         </Table>
       )}
 
-      <AlertDialog open={deletingRule !== undefined} onOpenChange={(open) => !open && setDeletingRule(undefined)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete filler rule?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete this filler rule. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deletingRule && deleteMutation.mutate(deletingRule.id)}
-              disabled={deleteMutation.isPending}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={deletingRule !== undefined}
+        onClose={() => setDeletingRule(undefined)}
+        title={
+          deletingRule
+            ? `Delete the ${KIND_LABELS[deletingRule.kind].toLowerCase()} rule for ${scopeName(deletingRule)}?`
+            : 'Delete filler rule?'
+        }
+        description="The rule stops inserting its filler. The pool and the items it plays are not deleted. This action cannot be undone."
+        confirmLabel="Delete rule"
+        pendingLabel="Deleting…"
+        onConfirm={() => deletingRule && deleteMutation.mutate(deletingRule.id)}
+        isPending={deleteMutation.isPending}
+        error={deleteMutation.error}
+      />
     </div>
   )
 }

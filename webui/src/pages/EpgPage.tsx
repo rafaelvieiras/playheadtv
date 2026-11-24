@@ -5,6 +5,7 @@ import { RefreshCw } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { ChannelLogoImage } from '@/components/ChannelLogoImage'
+import { Loading, QueryError } from '@/components/QueryError'
 import { api } from '@/lib/http'
 import { epgItemClipCount, epgItemTitle } from '@/lib/guide'
 import { allEntriesAsCells, buildGuideCells, type GuideCell } from '@/lib/guideDisplay'
@@ -38,7 +39,13 @@ export function EpgPage() {
   // real span instead of the programs-only guide.
   const [showFiller, setShowFiller] = useState(false)
 
-  const { data: channels, isLoading: channelsLoading, isError: channelsError } = useQuery({
+  const {
+    data: channels,
+    isLoading: channelsLoading,
+    isError: channelsError,
+    error: channelsFailure,
+    refetch: refetchChannels,
+  } = useQuery({
     queryKey: ['channels'],
     queryFn: () => api.get<Channel[]>('/channels'),
   })
@@ -55,6 +62,8 @@ export function EpgPage() {
     data: entries,
     isLoading: entriesLoading,
     isError: entriesError,
+    error: entriesFailure,
+    refetch: refetchEntries,
   } = useQuery({
     queryKey: ['epg', windowStart, windowEnd],
     queryFn: () => api.get<EpgItem[]>(`/epg?start=${windowStart}&end=${windowEnd}&group_tail=1`),
@@ -185,14 +194,32 @@ export function EpgPage() {
         </p>
       )}
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {isLoading && <Loading />}
       {isError && (
-        <p className="text-sm text-destructive">Could not load the programming guide.</p>
+        <QueryError
+          subject="the programming guide"
+          error={entriesError ? entriesFailure : channelsFailure}
+          onRetry={() => {
+            if (channelsError) void refetchChannels()
+            if (entriesError) void refetchEntries()
+          }}
+          stale={entries !== undefined}
+        />
       )}
 
-      {channels && channels.length > 0 && (
+      {/* The grid is only drawn from an answer that actually arrived: it used
+          to render "No programming" on every row while the request had failed,
+          which is the one thing an operator must not confuse with a channel
+          that has nothing scheduled. */}
+      {channels && channels.length > 0 && entries !== undefined && (
         <div className="overflow-hidden rounded-lg border border-border bg-card">
-          <div ref={scrollRef} className="overflow-x-auto">
+          <div
+            ref={scrollRef}
+            className="overflow-x-auto focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+            role="region"
+            aria-label="Programs by channel, scroll left and right for time"
+            tabIndex={0}
+          >
             <div style={{ width: CHANNEL_COLUMN_WIDTH + trackWidth }}>
               {/* Time ruler header */}
               <div

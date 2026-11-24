@@ -7,6 +7,7 @@ import { CollectionUsageList } from '@/components/CollectionUsageList'
 import { DeleteCollectionDialog } from '@/components/DeleteCollectionDialog'
 import { InlineWarning } from '@/components/InlineWarning'
 import { PageHeader } from '@/components/PageHeader'
+import { Loading, QueryError } from '@/components/QueryError'
 import { SaveBar } from '@/components/SaveBar'
 import {
   AlertDialog,
@@ -27,7 +28,7 @@ import type { Collection } from '@/lib/types'
 
 export function CollectionEditorPage() {
   const { id = '' } = useParams()
-  const { data: collection, isLoading, error } = useCollection(id)
+  const { data: collection, isLoading, error, refetch } = useCollection(id)
   const breadcrumb = [{ label: 'Collections', to: '/collections' }, { label: collection?.name ?? 'Collection' }]
 
   if (error instanceof ApiError && error.status === 404) {
@@ -43,9 +44,9 @@ export function CollectionEditorPage() {
       <div className="flex flex-col gap-6">
         <PageHeader title="Collection" breadcrumb={breadcrumb} />
         {error ? (
-          <p className="text-sm text-destructive">Could not load the collection.</p>
+          <QueryError subject="the collection" error={error} onRetry={() => void refetch()} />
         ) : (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <Loading />
         )}
       </div>
     )
@@ -62,6 +63,7 @@ function CollectionEditor({ collection, breadcrumb }: { collection: Collection; 
   const navigate = useNavigate()
   const loaded = toDraft(collection)
   const [draft, setDraft] = useState<CollectionDraft>(loaded)
+  const [nameError, setNameError] = useState<string | undefined>(undefined)
   const [error, setError] = useState<string | null>(null)
   const [confirming, setConfirming] = useState(false)
   const [deleting, setDeleting] = useState(false)
@@ -72,18 +74,14 @@ function CollectionEditor({ collection, breadcrumb }: { collection: Collection; 
   const queryChanged = queryKey(draft.query) !== queryKey(loaded.query)
   const dirty = draft.name !== loaded.name || draft.description !== loaded.description || queryChanged
 
-  function validate(): string | undefined {
-    if (draft.name.trim() === '') return 'Name is required.'
-    return validateQuery(draft.query)
-  }
-
   function save() {
-    const invalid = validate()
-    if (invalid) {
-      setError(invalid)
-      return
-    }
-    setError(null)
+    // Both problems at once, each one reported under its own field: the form
+    // used to answer "Name is required." only, and fixing it revealed the query.
+    const missingName = draft.name.trim() === '' ? 'Name is required.' : undefined
+    const badQuery = validateQuery(draft.query)
+    setNameError(missingName)
+    setError(badQuery ?? null)
+    if (missingName || badQuery) return
     // A changed query applies to everything that uses the collection: show who
     // that is and ask first.
     if (queryChanged && users > 0) {
@@ -116,7 +114,13 @@ function CollectionEditor({ collection, breadcrumb }: { collection: Collection; 
           <span className="flex items-center gap-2">
             {collection.name}
             <Badge variant="secondary" data-testid="collection-users-badge">
-              {users === 0 ? 'Unused' : `${users} ${users === 1 ? 'user' : 'users'}`}
+              {/* A failed usage request must not claim "Unused": that is an
+                  answer, and the app does not have one. */}
+              {usage.isError
+                ? 'Usage unknown'
+                : users === 0
+                  ? 'Unused'
+                  : `${users} ${users === 1 ? 'user' : 'users'}`}
             </Badge>
           </span>
         }
@@ -129,12 +133,33 @@ function CollectionEditor({ collection, breadcrumb }: { collection: Collection; 
       />
 
       <FieldGroup>
-        <CollectionFields value={draft} onChange={(d) => { setDraft(d); setError(null) }} idPrefix="collection" />
+        <CollectionFields
+          value={draft}
+          onChange={(d) => {
+            setDraft(d)
+            setNameError(undefined)
+            setError(null)
+          }}
+          idPrefix="collection"
+          nameError={nameError}
+        />
       </FieldGroup>
 
       <section className="flex flex-col gap-2 rounded-lg border border-border p-4" data-testid="collection-usage-panel">
         <h2 className="text-sm font-medium">Used by</h2>
-        {usage.data ? <CollectionUsageList usage={usage.data} /> : <p className="text-sm text-muted-foreground">Loading…</p>}
+        {usage.isError ? (
+          <QueryError
+            subject="who uses this collection"
+            error={usage.error}
+            onRetry={() => void usage.refetch()}
+            stale={usage.data !== undefined}
+            testId="collection-usage-error"
+          />
+        ) : usage.data ? (
+          <CollectionUsageList usage={usage.data} />
+        ) : (
+          <Loading />
+        )}
         {users > 0 && (
           <p className="text-xs text-muted-foreground">
             A change to the query applies to all of them at once.
@@ -142,7 +167,17 @@ function CollectionEditor({ collection, breadcrumb }: { collection: Collection; 
         )}
       </section>
 
-      <SaveBar dirty={dirty} saving={update.isPending} error={error} onSave={save} onDiscard={() => { setDraft(loaded); setError(null) }} />
+      <SaveBar
+        dirty={dirty}
+        saving={update.isPending}
+        error={error}
+        onSave={save}
+        onDiscard={() => {
+          setDraft(loaded)
+          setNameError(undefined)
+          setError(null)
+        }}
+      />
 
       <AlertDialog open={confirming} onOpenChange={setConfirming}>
         <AlertDialogContent data-testid="collection-save-confirm">

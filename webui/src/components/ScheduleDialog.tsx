@@ -11,7 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { api } from '@/lib/http'
 import type { Schedule, ScheduleInput } from '@/lib/types'
@@ -33,11 +33,13 @@ const emptyForm: ScheduleInput = {
 export function ScheduleDialog({ open, onOpenChange, schedule, onSaved }: ScheduleDialogProps) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<ScheduleInput>(emptyForm)
+  const [nameError, setNameError] = useState<string | undefined>(undefined)
   const isEditing = schedule !== undefined
 
   useEffect(() => {
     if (open) {
       setForm(schedule ? { name: schedule.name, description: schedule.description } : emptyForm)
+      setNameError(undefined)
     }
   }, [open, schedule])
 
@@ -59,13 +61,18 @@ export function ScheduleDialog({ open, onOpenChange, schedule, onSaved }: Schedu
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
+    if (form.name.trim() === '') {
+      setNameError('Name is required.')
+      return
+    }
+    setNameError(undefined)
     mutation.mutate()
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <form onSubmit={handleSubmit}>
+      <DialogContent closeOnOutsideClick={false}>
+        <form onSubmit={handleSubmit} noValidate>
           <DialogHeader>
             <DialogTitle>{isEditing ? 'Edit schedule' : 'New schedule'}</DialogTitle>
             <DialogDescription>
@@ -75,14 +82,21 @@ export function ScheduleDialog({ open, onOpenChange, schedule, onSaved }: Schedu
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
-            <Field>
-              <FieldLabel htmlFor="schedule-name">Name</FieldLabel>
+            <Field data-invalid={!!nameError}>
+              <FieldLabel htmlFor="schedule-name">
+                Name <span className="text-destructive">*</span>
+              </FieldLabel>
               <Input
                 id="schedule-name"
-                required
+                aria-invalid={!!nameError}
+                aria-describedby={nameError ? 'schedule-name-error' : undefined}
                 value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                onChange={(e) => {
+                  setForm((f) => ({ ...f, name: e.target.value }))
+                  setNameError(undefined)
+                }}
               />
+              <FieldError id="schedule-name-error">{nameError}</FieldError>
             </Field>
             <Field>
               <FieldLabel htmlFor="schedule-description">Description (optional)</FieldLabel>

@@ -11,7 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { api } from '@/lib/http'
@@ -52,12 +52,14 @@ function sourceToForm(source: MediaSource): FormState {
 export function MediaSourceDialog({ open, onOpenChange, source }: MediaSourceDialogProps) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<FormState>(emptyForm)
+  const [errors, setErrors] = useState<Partial<Record<'name' | 'base_url', string>>>({})
   const [error, setError] = useState<string | undefined>(undefined)
   const isEditing = source !== undefined
 
   useEffect(() => {
     if (open) {
       setForm(source ? sourceToForm(source) : emptyForm)
+      setErrors({})
       setError(undefined)
     }
   }, [open, source])
@@ -79,17 +81,21 @@ export function MediaSourceDialog({ open, onOpenChange, source }: MediaSourceDia
     },
   })
 
+  function set<K extends keyof FormState>(key: K, value: FormState[K]) {
+    setForm((current) => ({ ...current, [key]: value }))
+    if (key === 'name' || key === 'base_url') setErrors((current) => ({ ...current, [key]: undefined }))
+  }
+
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
-    if (!form.name) {
-      setError('Enter a name.')
-      return
-    }
-    if (form.type !== 'local_folder' && !form.base_url) {
-      setError('Enter the base URL.')
-      return
-    }
+    // Every problem at once, each under its own field: one message at a time
+    // made fixing the name reveal that the URL was missing too.
+    const found: Partial<Record<'name' | 'base_url', string>> = {}
+    if (!form.name.trim()) found.name = 'Enter a name.'
+    if (form.type !== 'local_folder' && !form.base_url.trim()) found.base_url = 'Enter the base URL.'
+    setErrors(found)
     setError(undefined)
+    if (Object.keys(found).length > 0) return
     const payload: MediaSourceInput = {
       type: form.type,
       name: form.name,
@@ -102,8 +108,8 @@ export function MediaSourceDialog({ open, onOpenChange, source }: MediaSourceDia
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <form onSubmit={handleSubmit}>
+      <DialogContent closeOnOutsideClick={false}>
+        <form onSubmit={handleSubmit} noValidate>
           <DialogHeader>
             <DialogTitle>{isEditing ? 'Edit media source' : 'New media source'}</DialogTitle>
             <DialogDescription>
@@ -115,7 +121,7 @@ export function MediaSourceDialog({ open, onOpenChange, source }: MediaSourceDia
           <FieldGroup className="py-4">
             <Field>
               <FieldLabel htmlFor="source-type">Type</FieldLabel>
-              <Select value={form.type} onValueChange={(v) => setForm((f) => ({ ...f, type: v as SourceType }))}>
+              <Select value={form.type} onValueChange={(v) => set('type', v as SourceType)}>
                 <SelectTrigger id="source-type" className="w-full">
                   <SelectValue />
                 </SelectTrigger>
@@ -128,26 +134,34 @@ export function MediaSourceDialog({ open, onOpenChange, source }: MediaSourceDia
                 </SelectContent>
               </Select>
             </Field>
-            <Field>
-              <FieldLabel htmlFor="source-name">Name</FieldLabel>
+            <Field data-invalid={!!errors.name}>
+              <FieldLabel htmlFor="source-name">
+                Name <span className="text-destructive">*</span>
+              </FieldLabel>
               <Input
                 id="source-name"
-                required
+                aria-invalid={!!errors.name}
+                aria-describedby={errors.name ? 'source-name-error' : undefined}
                 value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                onChange={(e) => set('name', e.target.value)}
               />
+              <FieldError id="source-name-error">{errors.name}</FieldError>
             </Field>
             {form.type !== 'local_folder' && (
-              <Field>
-                <FieldLabel htmlFor="source-base-url">Base URL</FieldLabel>
+              <Field data-invalid={!!errors.base_url}>
+                <FieldLabel htmlFor="source-base-url">
+                  Base URL <span className="text-destructive">*</span>
+                </FieldLabel>
                 <Input
                   id="source-base-url"
                   type="url"
                   placeholder="http://jellyfin.example.com:8096"
-                  required
+                  aria-invalid={!!errors.base_url}
+                  aria-describedby={errors.base_url ? 'source-base-url-error' : undefined}
                   value={form.base_url}
-                  onChange={(e) => setForm((f) => ({ ...f, base_url: e.target.value }))}
+                  onChange={(e) => set('base_url', e.target.value)}
                 />
+                <FieldError id="source-base-url-error">{errors.base_url}</FieldError>
               </Field>
             )}
             <Field>
@@ -158,7 +172,7 @@ export function MediaSourceDialog({ open, onOpenChange, source }: MediaSourceDia
                 autoComplete="new-password"
                 placeholder={isEditing ? 'Fill in only to replace the saved credential' : 'API key or password, if required'}
                 value={form.credential}
-                onChange={(e) => setForm((f) => ({ ...f, credential: e.target.value }))}
+                onChange={(e) => set('credential', e.target.value)}
               />
               <FieldDescription>
                 {isEditing
@@ -166,7 +180,11 @@ export function MediaSourceDialog({ open, onOpenChange, source }: MediaSourceDia
                   : 'Never shown again after saving.'}
               </FieldDescription>
             </Field>
-            {error && <p className="text-sm text-destructive">{error}</p>}
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
           </FieldGroup>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

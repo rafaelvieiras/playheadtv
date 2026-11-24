@@ -2,19 +2,11 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { CreateDeviceDialog, PLATFORM_LABELS } from '@/components/CreateDeviceDialog'
+import { Loading, QueryError } from '@/components/QueryError'
 import { api } from '@/lib/http'
 import type { Device } from '@/lib/types'
 
@@ -25,7 +17,13 @@ function formatLastSeen(ms: number | null): string {
 
 export function DevicesPage() {
   const queryClient = useQueryClient()
-  const { data: devices, isLoading, isError } = useQuery({
+  const {
+    data: devices,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ['devices'],
     queryFn: () => api.get<Device[]>('/devices'),
   })
@@ -57,11 +55,18 @@ export function DevicesPage() {
         <code>POST /media-sources/{'{id}'}/catalog-sync</code>) and resolve the programming guide to play channels.
       </p>
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Could not load devices.</p>}
+      {isLoading && <Loading />}
+      {isError && (
+        <QueryError
+          subject="the paired devices"
+          error={error}
+          onRetry={() => void refetch()}
+          stale={devices !== undefined}
+        />
+      )}
 
       {devices && (
-        <Table>
+        <Table label="Paired devices">
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
@@ -85,10 +90,17 @@ export function DevicesPage() {
                 <TableCell>{PLATFORM_LABELS[device.platform]}</TableCell>
                 <TableCell>{new Date(device.created_at).toLocaleString('en-US')}</TableCell>
                 <TableCell>{formatLastSeen(device.last_seen_at)}</TableCell>
-                <TableCell className="flex justify-end gap-2 text-right">
-                  <Button variant="destructive" size="sm" onClick={() => setDeletingDevice(device)}>
-                    Delete
-                  </Button>
+                <TableCell className="text-right">
+                  <div className="flex justify-end">
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      aria-label={`Delete ${device.name}`}
+                      onClick={() => setDeletingDevice(device)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -98,26 +110,17 @@ export function DevicesPage() {
 
       <CreateDeviceDialog open={createOpen} onOpenChange={setCreateOpen} />
 
-      <AlertDialog open={deletingDevice !== undefined} onOpenChange={(open) => !open && setDeletingDevice(undefined)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete device?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently revoke the token of "{deletingDevice?.name}"; the device loses access to the
-              API immediately. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deletingDevice && deleteMutation.mutate(deletingDevice.id)}
-              disabled={deleteMutation.isPending}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={deletingDevice !== undefined}
+        onClose={() => setDeletingDevice(undefined)}
+        title={`Revoke the token of "${deletingDevice?.name}"?`}
+        description="The device loses access to the API immediately. This action cannot be undone."
+        confirmLabel="Delete device"
+        pendingLabel="Deleting…"
+        onConfirm={() => deletingDevice && deleteMutation.mutate(deletingDevice.id)}
+        isPending={deleteMutation.isPending}
+        error={deleteMutation.error}
+      />
     </div>
   )
 }

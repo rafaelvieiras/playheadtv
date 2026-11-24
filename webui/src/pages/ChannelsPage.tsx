@@ -4,26 +4,24 @@ import { toast } from 'sonner'
 import { Link } from 'react-router-dom'
 import { TriangleAlert } from 'lucide-react'
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ChannelDialog } from '@/components/ChannelDialog'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { Loading, QueryError } from '@/components/QueryError'
 import { ResetGridDialog } from '@/components/ResetGridDialog'
 import { api } from '@/lib/http'
 import type { Channel } from '@/lib/types'
 
 export function ChannelsPage() {
   const queryClient = useQueryClient()
-  const { data: channels, isLoading, isError } = useQuery({
+  const {
+    data: channels,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ['channels'],
     queryFn: () => api.get<Channel[]>('/channels'),
   })
@@ -55,11 +53,18 @@ export function ChannelsPage() {
         <Button onClick={openCreateDialog}>New channel</Button>
       </div>
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Could not load channels.</p>}
+      {isLoading && <Loading />}
+      {isError && (
+        <QueryError
+          subject="the channels"
+          error={error}
+          onRetry={() => void refetch()}
+          stale={channels !== undefined}
+        />
+      )}
 
       {channels && (
-        <Table>
+        <Table label="Channels">
           <TableHeader>
             <TableRow>
               <TableHead>Number</TableHead>
@@ -79,37 +84,47 @@ export function ChannelsPage() {
             {channels.map((channel) => (
               <TableRow key={channel.id}>
                 <TableCell>{channel.number}</TableCell>
-                <TableCell>
+                <TableCell className="whitespace-normal">
                   <Link to={`/channels/${channel.id}`} className="hover:underline">
                     {channel.name}
                   </Link>
+                  {/* The loader's warnings used to live in a `title` attribute,
+                      i.e. they were unreachable from a keyboard or a touch
+                      screen. A channel that cannot air anything says so here. */}
                   {channel.notices && channel.notices.length > 0 && (
                     <span
-                      className="ml-2 inline-flex items-center gap-1 text-xs text-destructive"
-                      title={channel.notices.map((n) => n.message).join(' ')}
+                      className="mt-1 flex items-start gap-1 text-xs text-destructive"
                       data-testid={`channel-notice-${channel.number}`}
                     >
-                      <TriangleAlert className="size-3.5" />
-                      cannot air
+                      <TriangleAlert className="mt-0.5 size-3.5 shrink-0" />
+                      <span>{channel.notices.map((n) => n.message).join(' ')}</span>
                     </span>
                   )}
                 </TableCell>
                 <TableCell>{channel.timezone}</TableCell>
-                <TableCell className="flex justify-end gap-2 text-right">
-                  <Button asChild variant="outline" size="sm">
-                    <Link to={`/channels/${channel.id}`}>Open</Link>
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    data-testid={`reset-grid-${channel.number}`}
-                    onClick={() => setResettingChannel(channel)}
-                  >
-                    Reset grid
-                  </Button>
-                  <Button variant="destructive" size="sm" onClick={() => setDeletingChannel(channel)}>
-                    Delete
-                  </Button>
+                <TableCell>
+                  <div className="flex justify-end gap-2">
+                    <Button asChild variant="outline" size="sm">
+                      <Link to={`/channels/${channel.id}`}>Open</Link>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      data-testid={`reset-grid-${channel.number}`}
+                      aria-label={`Reset grid of ${channel.name}`}
+                      onClick={() => setResettingChannel(channel)}
+                    >
+                      Reset grid
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      aria-label={`Delete ${channel.name}`}
+                      onClick={() => setDeletingChannel(channel)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -121,25 +136,22 @@ export function ChannelsPage() {
 
       <ResetGridDialog channel={resettingChannel} onClose={() => setResettingChannel(undefined)} />
 
-      <AlertDialog open={deletingChannel !== undefined} onOpenChange={(open) => !open && setDeletingChannel(undefined)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete channel?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete the channel "{deletingChannel?.name}". This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deletingChannel && deleteMutation.mutate(deletingChannel.id)}
-              disabled={deleteMutation.isPending}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={deletingChannel !== undefined}
+        onClose={() => setDeletingChannel(undefined)}
+        title={`Delete channel "${deletingChannel?.name}"?`}
+        description={
+          <>
+            This deletes channel {deletingChannel?.number} and its programming. The blocks and collections it
+            points at are not deleted. This action cannot be undone.
+          </>
+        }
+        confirmLabel="Delete channel"
+        pendingLabel="Deleting…"
+        onConfirm={() => deletingChannel && deleteMutation.mutate(deletingChannel.id)}
+        isPending={deleteMutation.isPending}
+        error={deleteMutation.error}
+      />
     </div>
   )
 }

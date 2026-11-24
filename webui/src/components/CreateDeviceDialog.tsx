@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { api } from '@/lib/http'
@@ -41,12 +41,17 @@ const emptyForm: DeviceInput = { name: '', platform: 'linux' }
 export function CreateDeviceDialog({ open, onOpenChange }: CreateDeviceDialogProps) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<DeviceInput>(emptyForm)
+  const [nameError, setNameError] = useState<string | undefined>(undefined)
   const [result, setResult] = useState<CreateDeviceResponse | undefined>(undefined)
   const [copied, setCopied] = useState(false)
+  // Radix names the token field "device-token"; the guard below keeps the one
+  // chance to copy it from being closed by a stray Escape.
+  const tokenShown = result !== undefined
 
   useEffect(() => {
     if (open) {
       setForm(emptyForm)
+      setNameError(undefined)
       setResult(undefined)
       setCopied(false)
     }
@@ -66,6 +71,11 @@ export function CreateDeviceDialog({ open, onOpenChange }: CreateDeviceDialogPro
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
+    if (form.name.trim() === '') {
+      setNameError('Name is required.')
+      return
+    }
+    setNameError(undefined)
     mutation.mutate()
   }
 
@@ -82,7 +92,16 @@ export function CreateDeviceDialog({ open, onOpenChange }: CreateDeviceDialogPro
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
+      <DialogContent
+        closeOnOutsideClick={false}
+        onEscapeKeyDown={(event) => {
+          // The token is shown once; Escape while it is on screen would lose it.
+          if (tokenShown) event.preventDefault()
+        }}
+        onPointerDownOutside={(event) => {
+          if (tokenShown) event.preventDefault()
+        }}
+      >
         {result ? (
           <>
             <DialogHeader>
@@ -120,7 +139,7 @@ export function CreateDeviceDialog({ open, onOpenChange }: CreateDeviceDialogPro
             </DialogFooter>
           </>
         ) : (
-          <form onSubmit={handleSubmit}>
+          <form onSubmit={handleSubmit} noValidate>
             <DialogHeader>
               <DialogTitle>Create device</DialogTitle>
               <DialogDescription>
@@ -129,14 +148,21 @@ export function CreateDeviceDialog({ open, onOpenChange }: CreateDeviceDialogPro
               </DialogDescription>
             </DialogHeader>
             <FieldGroup className="py-4">
-              <Field>
-                <FieldLabel htmlFor="device-name">Name</FieldLabel>
+              <Field data-invalid={!!nameError}>
+                <FieldLabel htmlFor="device-name">
+                  Name <span className="text-destructive">*</span>
+                </FieldLabel>
                 <Input
                   id="device-name"
-                  required
+                  aria-invalid={!!nameError}
+                  aria-describedby={nameError ? 'device-name-error' : undefined}
                   value={form.name}
-                  onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                  onChange={(e) => {
+                    setForm((f) => ({ ...f, name: e.target.value }))
+                    setNameError(undefined)
+                  }}
                 />
+                <FieldError id="device-name-error">{nameError}</FieldError>
               </Field>
               <Field>
                 <FieldLabel htmlFor="device-platform">Platform</FieldLabel>

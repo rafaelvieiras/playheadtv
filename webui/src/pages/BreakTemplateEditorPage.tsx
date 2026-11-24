@@ -4,6 +4,7 @@ import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { toast } from 'sonner'
 
+import { Loading, QueryError } from '@/components/QueryError'
 import { PageHeader } from '@/components/PageHeader'
 import { SaveBar } from '@/components/SaveBar'
 import { Button } from '@/components/ui/button'
@@ -49,7 +50,7 @@ export function BreakTemplateEditorPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const { data: template, isLoading, error } = useQuery({
+  const { data: template, isLoading, error, refetch } = useQuery({
     queryKey: ['break-templates', id],
     queryFn: () => api.get<BreakTemplate>(`/break-templates/${id}`),
     enabled: !isNew,
@@ -103,9 +104,9 @@ export function BreakTemplateEditorPage() {
       <div className="flex flex-col gap-6">
         <PageHeader title="Break template" breadcrumb={breadcrumb} />
         {error ? (
-          <p className="text-sm text-destructive">Could not load the break template.</p>
+          <QueryError subject="the break template" error={error} onRetry={() => void refetch()} />
         ) : (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <Loading />
         )}
       </div>
     )

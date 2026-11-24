@@ -3,15 +3,43 @@
 import * as React from "react"
 import { cn } from "cn"
 
-function Table({ className, ...props }: React.ComponentProps<"table">) {
+// Below `md` (the phone layout, docs/ARCHITECTURE.md "Admin shell") a table is
+// wider than the column that holds it, so the operator scrolls right to reach a
+// row's actions and loses which row they belong to: six channels all read
+// "…grid · Delete". The first column therefore stays pinned on a phone, over an
+// opaque card background so the scrolled content cannot show through it. Above
+// `md` nothing changes — the treatment is gated on the breakpoint, not on a
+// per-table flag, so all nine tables degrade the same way.
+const mobileStickyFirstColumn = cn(
+  "max-md:[&_th:first-child]:sticky max-md:[&_th:first-child]:left-0 max-md:[&_th:first-child]:z-20 max-md:[&_th:first-child]:bg-card",
+  "max-md:[&_td:first-child]:sticky max-md:[&_td:first-child]:left-0 max-md:[&_td:first-child]:z-10 max-md:[&_td:first-child]:bg-card",
+  "max-md:[&_th:first-child]:border-r max-md:[&_th:first-child]:border-border",
+  "max-md:[&_td:first-child]:border-r max-md:[&_td:first-child]:border-border",
+)
+
+function Table({
+  className,
+  label,
+  ...props
+}: React.ComponentProps<"table"> & {
+  /**
+   * Accessible name for the scroll container. Required whenever the table can
+   * overflow: a scrollable region that takes focus needs a name to be usable
+   * from a keyboard or a screen reader.
+   */
+  label?: string
+}) {
   return (
     <div
       data-slot="table-container"
-      className="relative w-full overflow-x-auto"
+      className="relative w-full overflow-x-auto focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
+      role="region"
+      aria-label={label}
+      tabIndex={label ? 0 : undefined}
     >
       <table
         data-slot="table"
-        className={cn("w-full caption-bottom text-sm", className)}
+        className={cn("w-full caption-bottom text-sm", mobileStickyFirstColumn, className)}
         {...props}
       />
     </div>

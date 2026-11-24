@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import type { BlockPlaybackDraft } from '@/components/BlockPlaybackFields'
 import { DynamicCollectionFields, validateCollectionChoice, type CollectionChoice } from '@/components/DynamicCollectionFields'
@@ -77,18 +77,26 @@ function itemToForm(item: ScheduleItem): FormState {
 // Mirrors validateScheduleItemRequest in backend/internal/api/schedules.go —
 // keep in sync so the client rejects the same invalid combinations before a
 // round trip to the API.
-function validate(form: FormState, hasOtherContinuous: boolean): string | undefined {
-  if (form.recurrence_type === 'continuous' && hasOtherContinuous) {
-    return 'This schedule already has a continuous item; edit or delete it first.'
+type Errors = Partial<Record<'block' | 'newBlockName' | 'recurrence' | 'days' | 'start_time' | 'start_at', string>>
+
+// Every problem at once, keyed by the field it belongs to. The old version
+// answered one at a time and only in the footer, while the browser's own
+// `required` bubble pointed at a field the operator had not forgotten.
+function validate(form: FormState, hasOtherContinuous: boolean): Errors {
+  const errors: Errors = {}
+  if (form.recurrence_type === 'continuous') {
+    if (hasOtherContinuous) {
+      errors.recurrence = 'This schedule already has a continuous item; edit or delete it first.'
+    }
+    return errors
   }
-  if (form.recurrence_type === 'continuous') return undefined
   if (form.recurrence_type === 'weekly') {
-    if (form.days_of_week.length === 0) return 'Select at least one day of the week.'
-    if (!/^\d{2}:\d{2}$/.test(form.start_time_local)) return 'Enter a time in HH:MM format.'
-  } else {
-    if (!form.start_at_local) return 'Enter a date and time.'
+    if (form.days_of_week.length === 0) errors.days = 'Select at least one day of the week.'
+    if (!/^\d{2}:\d{2}$/.test(form.start_time_local)) errors.start_time = 'Enter a time in HH:MM format.'
+  } else if (!form.start_at_local) {
+    errors.start_at = 'Enter a date and time.'
   }
-  return undefined
+  return errors
 }
 
 function buildPayload(form: FormState): ScheduleItemInput {
@@ -132,6 +140,7 @@ export function ScheduleItemDialog({
   const queryClient = useQueryClient()
   const navigate = useNavigate()
   const [form, setForm] = useState<FormState>(emptyForm)
+  const [errors, setErrors] = useState<Errors>({})
   const [error, setError] = useState<string | undefined>(undefined)
   // Create-and-attach: a brand-new block made together with the item.
   const [newBlock, setNewBlock] = useState(false)
@@ -143,6 +152,7 @@ export function ScheduleItemDialog({
   useEffect(() => {
     if (open) {
       setForm(item ? itemToForm(item) : emptyForm)
+      setErrors({})
       setError(undefined)
       setNewBlock(false)
       setNewBlockName('')
@@ -200,22 +210,29 @@ export function ScheduleItemDialog({
   })
 
   function submit(openEditor: boolean) {
-    let validationError: string | undefined
-    if (newBlock) {
-      if (newBlockName.trim() === '') validationError = 'Enter a name for the new block.'
-      else
-        validationError =
-          validateCollectionChoice(newBlockCollection) ??
-          (newBlockCollection && newBlockPlayback.order === 'interleaved' ? validateInterleave(newBlockPlayback.interleave) : undefined)
-    } else if (!form.block_id) {
-      validationError = 'Select a block.'
+    const found: Errors = validate(form, hasOtherContinuous)
+    // The block is the field this dialog most often loses, and the one the
+    // browser's bubble used to hide.
+    const blockProblem = newBlock
+      ? newBlockName.trim() === ''
+        ? 'Enter a name for the new block.'
+        : undefined
+      : form.block_id
+        ? undefined
+        : 'Select a block.'
+    if (blockProblem) {
+      if (newBlock) found.newBlockName = blockProblem
+      else found.block = blockProblem
     }
-    validationError = validationError ?? validate(form, hasOtherContinuous)
-    if (validationError) {
-      setError(validationError)
-      return
-    }
-    setError(undefined)
+    const collectionProblem = newBlock
+      ? (validateCollectionChoice(newBlockCollection) ??
+        (newBlockCollection && newBlockPlayback.order === 'interleaved'
+          ? validateInterleave(newBlockPlayback.interleave)
+          : undefined))
+      : undefined
+    setErrors(found)
+    setError(collectionProblem)
+    if (collectionProblem || Object.keys(found).length > 0) return
     mutation.mutate({ payload: buildPayload(form), openEditor })
   }
 
@@ -226,8 +243,8 @@ export function ScheduleItemDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md">
-        <form onSubmit={handleSubmit}>
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-md" closeOnOutsideClick={false}>
+        <form onSubmit={handleSubmit} noValidate>
           <DialogHeader>
             <DialogTitle>{isEditing ? 'Edit schedule item' : 'New schedule item'}</DialogTitle>
             <DialogDescription>
@@ -236,10 +253,23 @@ export function ScheduleItemDialog({
           </DialogHeader>
           <FieldGroup className="py-4">
             {!newBlock ? (
-              <Field>
-                <FieldLabel htmlFor="schedule-item-block">Block</FieldLabel>
-                <Select value={form.block_id} onValueChange={(v) => setForm((f) => ({ ...f, block_id: v }))}>
-                  <SelectTrigger id="schedule-item-block" className="w-full">
+              <Field data-invalid={!!errors.block}>
+                <FieldLabel htmlFor="schedule-item-block">
+                  Block <span className="text-destructive">*</span>
+                </FieldLabel>
+                <Select
+                  value={form.block_id}
+                  onValueChange={(v) => {
+                    setForm((f) => ({ ...f, block_id: v }))
+                    setErrors((current) => ({ ...current, block: undefined }))
+                  }}
+                >
+                  <SelectTrigger
+                    id="schedule-item-block"
+                    className="w-full"
+                    aria-invalid={!!errors.block}
+                    aria-describedby={errors.block ? 'schedule-item-block-error' : undefined}
+                  >
                     <SelectValue placeholder="Select a block" />
                   </SelectTrigger>
                   <SelectContent>
@@ -250,6 +280,7 @@ export function ScheduleItemDialog({
                     ))}
                   </SelectContent>
                 </Select>
+                <FieldError id="schedule-item-block-error">{errors.block}</FieldError>
                 {!isEditing && (
                   <Button
                     type="button"
@@ -265,13 +296,21 @@ export function ScheduleItemDialog({
               </Field>
             ) : (
               <div className="flex flex-col gap-3 rounded-md border p-3" data-testid="new-block-fields">
-                <Field>
-                  <FieldLabel htmlFor="schedule-item-new-block-name">New block name</FieldLabel>
+                <Field data-invalid={!!errors.newBlockName}>
+                  <FieldLabel htmlFor="schedule-item-new-block-name">
+                    New block name <span className="text-destructive">*</span>
+                  </FieldLabel>
                   <Input
                     id="schedule-item-new-block-name"
+                    aria-invalid={!!errors.newBlockName}
+                    aria-describedby={errors.newBlockName ? 'schedule-item-new-block-name-error' : undefined}
                     value={newBlockName}
-                    onChange={(e) => setNewBlockName(e.target.value)}
+                    onChange={(e) => {
+                      setNewBlockName(e.target.value)
+                      setErrors((current) => ({ ...current, newBlockName: undefined }))
+                    }}
                   />
+                  <FieldError id="schedule-item-new-block-name-error">{errors.newBlockName}</FieldError>
                 </Field>
                 <DynamicCollectionFields
                   value={newBlockCollection}
@@ -298,6 +337,7 @@ export function ScheduleItemDialog({
                   type="button"
                   variant={form.recurrence_type === 'weekly' ? 'default' : 'outline'}
                   size="sm"
+                  aria-pressed={form.recurrence_type === 'weekly'}
                   className="flex-1"
                   onClick={() => setForm((f) => ({ ...f, recurrence_type: 'weekly' }))}
                 >
@@ -307,6 +347,7 @@ export function ScheduleItemDialog({
                   type="button"
                   variant={form.recurrence_type === 'once' ? 'default' : 'outline'}
                   size="sm"
+                  aria-pressed={form.recurrence_type === 'once'}
                   className="flex-1"
                   onClick={() => setForm((f) => ({ ...f, recurrence_type: 'once' }))}
                 >
@@ -316,12 +357,14 @@ export function ScheduleItemDialog({
                   type="button"
                   variant={form.recurrence_type === 'continuous' ? 'default' : 'outline'}
                   size="sm"
+                  aria-pressed={form.recurrence_type === 'continuous'}
                   className="flex-1"
                   onClick={() => setForm((f) => ({ ...f, recurrence_type: 'continuous' }))}
                 >
                   Continuous
                 </Button>
               </div>
+              <FieldError id="schedule-item-recurrence-error">{errors.recurrence}</FieldError>
               {form.recurrence_type === 'continuous' && (
                 <p className="text-sm text-muted-foreground">
                   No fixed time: airs whenever no timed item does, resuming its rotation where it left off. A schedule
@@ -360,6 +403,7 @@ export function ScheduleItemDialog({
                       )
                     })}
                   </div>
+                  <FieldError id="schedule-item-days-error">{errors.days}</FieldError>
                   <div className="flex gap-2">
                     {(
                       [
@@ -381,27 +425,37 @@ export function ScheduleItemDialog({
                     ))}
                   </div>
                 </Field>
-                <Field>
+                <Field data-invalid={!!errors.start_time}>
                   <FieldLabel htmlFor="schedule-item-time">Time (HH:MM)</FieldLabel>
                   <Input
                     id="schedule-item-time"
                     type="time"
-                    required
+                    aria-invalid={!!errors.start_time}
+                    aria-describedby={errors.start_time ? 'schedule-item-time-error' : undefined}
                     value={form.start_time_local}
-                    onChange={(e) => setForm((f) => ({ ...f, start_time_local: e.target.value }))}
+                    onChange={(e) => {
+                      setForm((f) => ({ ...f, start_time_local: e.target.value }))
+                      setErrors((current) => ({ ...current, start_time: undefined }))
+                    }}
                   />
+                  <FieldError id="schedule-item-time-error">{errors.start_time}</FieldError>
                 </Field>
               </>
             ) : (
-              <Field>
+              <Field data-invalid={!!errors.start_at}>
                 <FieldLabel htmlFor="schedule-item-start-at">Date and time</FieldLabel>
                 <Input
                   id="schedule-item-start-at"
                   type="datetime-local"
-                  required
+                  aria-invalid={!!errors.start_at}
+                  aria-describedby={errors.start_at ? 'schedule-item-start-at-error' : undefined}
                   value={form.start_at_local}
-                  onChange={(e) => setForm((f) => ({ ...f, start_at_local: e.target.value }))}
+                  onChange={(e) => {
+                    setForm((f) => ({ ...f, start_at_local: e.target.value }))
+                    setErrors((current) => ({ ...current, start_at: undefined }))
+                  }}
                 />
+                <FieldError id="schedule-item-start-at-error">{errors.start_at}</FieldError>
               </Field>
             )}
 
@@ -414,7 +468,11 @@ export function ScheduleItemDialog({
               />
             </Field>
 
-            {error && <p className="text-sm text-destructive">{error}</p>}
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
           </FieldGroup>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

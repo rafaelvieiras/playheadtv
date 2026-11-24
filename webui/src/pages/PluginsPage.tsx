@@ -3,21 +3,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Download, Power, Settings2, Trash2 } from 'lucide-react'
 import { toast } from 'sonner'
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { Loading, QueryError } from '@/components/QueryError'
 import { PluginSourceSettingsDialog } from '@/components/PluginSourceSettingsDialog'
 import { api } from '@/lib/http'
 import { describePluginSettings, formatPluginDate, latestPluginVersion, versionsNewestFirst } from '@/lib/plugins'
@@ -34,7 +26,13 @@ import type { InstalledPlugin, PluginList, PluginOffering, PluginSource } from '
  */
 export function PluginsPage() {
   const queryClient = useQueryClient()
-  const { data, isLoading, isError } = useQuery({
+  const {
+    data,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ['plugins'],
     queryFn: () => api.get<PluginList>('/plugins'),
   })
@@ -102,8 +100,15 @@ export function PluginsPage() {
         </p>
       </div>
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Could not load the plugins.</p>}
+      {isLoading && <Loading />}
+      {isError && (
+        <QueryError
+          subject="the plugins"
+          error={error}
+          onRetry={() => void refetch()}
+          stale={data !== undefined}
+        />
+      )}
 
       {data && !data.registry_configured && (
         <Alert>
@@ -117,83 +122,87 @@ export function PluginsPage() {
 
       <section className="flex flex-col gap-3">
         <h2 className="text-base font-medium">Installed</h2>
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Plugin</TableHead>
-              <TableHead>Version</TableHead>
-              <TableHead>Platform</TableHead>
-              <TableHead>State</TableHead>
-              <TableHead>Installed</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {installed.length === 0 && (
+        {data ? (
+          <Table label="Installed plugins">
+            <TableHeader>
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground">
-                  No plugin installed on this backend.
-                </TableCell>
+                <TableHead>Plugin</TableHead>
+                <TableHead>Version</TableHead>
+                <TableHead>Platform</TableHead>
+                <TableHead>State</TableHead>
+                <TableHead>Installed</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
-            )}
-            {installed.map((plugin) => {
-              const offering = offerings.find((entry) => entry.id === plugin.id)
-              const latest = latestPluginVersion((offering?.versions ?? []).map((entry) => entry.version))
-              return (
-                <TableRow key={plugin.id}>
-                  <TableCell>
-                    <div className="font-medium">{offering?.name || plugin.id}</div>
-                    <div className="text-xs text-muted-foreground">{plugin.capabilities}</div>
-                  </TableCell>
-                  <TableCell>
-                    {plugin.version}
-                    {latest !== undefined && latest !== plugin.version && (
-                      <span className="ml-2 text-xs text-muted-foreground">({latest} available)</span>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {plugin.os}/{plugin.arch}
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant={plugin.enabled ? 'default' : 'secondary'}>
-                      {plugin.enabled ? 'on' : 'off'}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {formatPluginDate(plugin.updated_at)}
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
-                      {latest !== undefined && latest !== plugin.version && (
-                        <Button
-                          size="sm"
-                          onClick={() => installMutation.mutate({ id: plugin.id, version: latest })}
-                          disabled={installMutation.isPending}
-                        >
-                          <Download className="size-4" />
-                          Update to {latest}
-                        </Button>
-                      )}
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        onClick={() => toggleMutation.mutate({ id: plugin.id, enabled: !plugin.enabled })}
-                        disabled={toggleMutation.isPending}
-                      >
-                        <Power className="size-4" />
-                        {plugin.enabled ? 'Turn off' : 'Turn on'}
-                      </Button>
-                      <Button variant="outline" size="sm" onClick={() => setRemoving(plugin)}>
-                        <Trash2 className="size-4" />
-                        Remove
-                      </Button>
-                    </div>
+            </TableHeader>
+            <TableBody>
+              {installed.length === 0 && (
+                <TableRow>
+                  <TableCell colSpan={6} className="text-center text-muted-foreground">
+                    No plugin installed on this backend.
                   </TableCell>
                 </TableRow>
-              )
-            })}
-          </TableBody>
-        </Table>
+              )}
+              {installed.map((plugin) => {
+                const offering = offerings.find((entry) => entry.id === plugin.id)
+                const latest = latestPluginVersion((offering?.versions ?? []).map((entry) => entry.version))
+                return (
+                  <TableRow key={plugin.id}>
+                    <TableCell>
+                      <div className="font-medium">{offering?.name || plugin.id}</div>
+                      <div className="text-xs text-muted-foreground">{plugin.capabilities}</div>
+                    </TableCell>
+                    <TableCell>
+                      {plugin.version}
+                      {latest !== undefined && latest !== plugin.version && (
+                        <span className="ml-2 text-xs text-muted-foreground">({latest} available)</span>
+                      )}
+                    </TableCell>
+                    <TableCell>
+                      {plugin.os}/{plugin.arch}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={plugin.enabled ? 'default' : 'secondary'}>
+                        {plugin.enabled ? 'on' : 'off'}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">
+                      {formatPluginDate(plugin.updated_at)}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-2">
+                        {latest !== undefined && latest !== plugin.version && (
+                          <Button
+                            size="sm"
+                            onClick={() => installMutation.mutate({ id: plugin.id, version: latest })}
+                            disabled={installMutation.isPending}
+                          >
+                            <Download className="size-4" />
+                            Update to {latest}
+                          </Button>
+                        )}
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => toggleMutation.mutate({ id: plugin.id, enabled: !plugin.enabled })}
+                          disabled={toggleMutation.isPending}
+                        >
+                          <Power className="size-4" />
+                          {plugin.enabled ? 'Turn off' : 'Turn on'}
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => setRemoving(plugin)}>
+                          <Trash2 className="size-4" />
+                          Remove
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )
+              })}
+            </TableBody>
+          </Table>
+        ) : (
+          <p className="text-sm text-muted-foreground">The installed plugins are unknown until the request succeeds.</p>
+        )}
         <p className="text-xs text-muted-foreground">
           A channel that uses a plugin plays only while it is on. Turning it off or removing it is also
           allowed from a paired device; installing is not.
@@ -289,23 +298,17 @@ export function PluginsPage() {
         />
       )}
 
-      <AlertDialog open={removing !== undefined} onOpenChange={(open) => !open && setRemoving(undefined)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Remove {removing?.id}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              The plugin is deleted from this backend. A channel whose content comes from it stops being
-              offered until it is installed again.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={() => removing && removeMutation.mutate(removing.id)}>
-              Remove
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={removing !== undefined}
+        onClose={() => setRemoving(undefined)}
+        title={`Remove the plugin "${removing?.id}"?`}
+        description="The plugin is deleted from this backend. A channel whose content comes from it stops being offered until it is installed again."
+        confirmLabel="Remove plugin"
+        pendingLabel="Removing…"
+        onConfirm={() => removing && removeMutation.mutate(removing.id)}
+        isPending={removeMutation.isPending}
+        error={removeMutation.error}
+      />
     </div>
   )
 }

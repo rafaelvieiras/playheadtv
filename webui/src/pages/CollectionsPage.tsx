@@ -5,13 +5,14 @@ import { CollectionDialog } from '@/components/CollectionDialog'
 import { DeleteCollectionDialog } from '@/components/DeleteCollectionDialog'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { Loading, QueryError } from '@/components/QueryError'
 import { useCollections } from '@/lib/collections'
 import { summarizeQuery } from '@/lib/query'
 import type { Collection } from '@/lib/types'
 
 export function CollectionsPage() {
   const navigate = useNavigate()
-  const { data: collections, isLoading, isError } = useCollections()
+  const { data: collections, isLoading, isError, error, refetch } = useCollections()
   const [creating, setCreating] = useState(false)
   const [deleting, setDeleting] = useState<Collection | undefined>(undefined)
 
@@ -29,11 +30,18 @@ export function CollectionsPage() {
         </Button>
       </div>
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Could not load collections.</p>}
+      {isLoading && <Loading />}
+      {isError && (
+        <QueryError
+          subject="the collections"
+          error={error}
+          onRetry={() => void refetch()}
+          stale={collections !== undefined}
+        />
+      )}
 
       {collections && (
-        <Table>
+        <Table label="Collections">
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
@@ -62,13 +70,21 @@ export function CollectionsPage() {
                 <TableCell data-testid="collection-usage-count">
                   {c.usage_count === 0 ? '—' : `${c.usage_count} ${c.usage_count === 1 ? 'user' : 'users'}`}
                 </TableCell>
-                <TableCell className="flex justify-end gap-2 text-right">
-                  <Button asChild variant="outline" size="sm">
-                    <Link to={`/collections/${c.id}`}>Edit</Link>
-                  </Button>
-                  <Button variant="destructive" size="sm" data-testid="collection-delete" onClick={() => setDeleting(c)}>
-                    Delete
-                  </Button>
+                <TableCell>
+                  <div className="flex justify-end gap-2">
+                    <Button asChild variant="outline" size="sm">
+                      <Link to={`/collections/${c.id}`}>Edit</Link>
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      data-testid="collection-delete"
+                      aria-label={`Delete ${c.name}`}
+                      onClick={() => setDeleting(c)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}

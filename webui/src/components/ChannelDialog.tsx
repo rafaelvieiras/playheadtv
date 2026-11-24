@@ -12,10 +12,10 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { api } from '@/lib/http'
+import { api, ApiError } from '@/lib/http'
 import type { Channel, ChannelInput, Schedule } from '@/lib/types'
 
 interface ChannelDialogProps {
@@ -36,9 +36,29 @@ const emptyForm: ChannelInput = {
   base_schedule_id: null,
 }
 
+type Errors = Partial<Record<'number' | 'name' | 'timezone', string>>
+
+// Every problem at once, keyed by the field that has it: the form used to
+// report one at a time (fixing the name revealed the timezone), and the
+// browser's own bubble pointed at a field the operator had not forgotten.
+function validate(form: ChannelInput): Errors {
+  const errors: Errors = {}
+  if (!Number.isInteger(form.number) || form.number < 1) {
+    errors.number = 'Enter a whole number, 1 or more.'
+  }
+  if (form.name.trim() === '') {
+    errors.name = 'Name is required.'
+  }
+  if (form.timezone.trim() === '') {
+    errors.timezone = 'Timezone is required.'
+  }
+  return errors
+}
+
 export function ChannelDialog({ open, onOpenChange }: ChannelDialogProps) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<ChannelInput>(emptyForm)
+  const [errors, setErrors] = useState<Errors>({})
   const navigate = useNavigate()
 
   const { data: schedules } = useQuery({
@@ -50,6 +70,7 @@ export function ChannelDialog({ open, onOpenChange }: ChannelDialogProps) {
   useEffect(() => {
     if (open) {
       setForm(emptyForm)
+      setErrors({})
     }
   }, [open])
 
@@ -61,20 +82,32 @@ export function ChannelDialog({ open, onOpenChange }: ChannelDialogProps) {
       onOpenChange(false)
       navigate(`/channels/${created.id}`)
     },
-    onError: () => {
-      toast.error('Could not create the channel.')
-    },
   })
+
+  function set<K extends keyof ChannelInput>(key: K, value: ChannelInput[K]) {
+    setForm((current) => ({ ...current, [key]: value }))
+    // A message stops being true the moment the value behind it changes.
+    if (key in errors) setErrors((current) => ({ ...current, [key]: undefined }))
+  }
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
+    const found = validate(form)
+    setErrors(found)
+    if (Object.values(found).some(Boolean)) return
     mutation.mutate()
   }
 
+  const submitError =
+    mutation.isError &&
+    (mutation.error instanceof ApiError ? mutation.error.message : 'Could not create the channel.')
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <form onSubmit={handleSubmit}>
+      <DialogContent closeOnOutsideClick={false}>
+        {/* noValidate: the app reports the problems, under the field they
+            belong to, instead of the browser's one bubble at a time. */}
+        <form onSubmit={handleSubmit} noValidate>
           <DialogHeader>
             <DialogTitle>New channel</DialogTitle>
             <DialogDescription>
@@ -82,24 +115,34 @@ export function ChannelDialog({ open, onOpenChange }: ChannelDialogProps) {
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
-            <Field>
-              <FieldLabel htmlFor="channel-number">Number</FieldLabel>
+            <Field data-invalid={!!errors.number}>
+              <FieldLabel htmlFor="channel-number">
+                Number <span className="text-destructive">*</span>
+              </FieldLabel>
               <Input
                 id="channel-number"
                 type="number"
-                required
+                inputMode="numeric"
+                min={1}
+                aria-invalid={!!errors.number}
+                aria-describedby={errors.number ? 'channel-number-error' : undefined}
                 value={form.number}
-                onChange={(e) => setForm((f) => ({ ...f, number: Number(e.target.value) }))}
+                onChange={(e) => set('number', Number(e.target.value))}
               />
+              <FieldError id="channel-number-error">{errors.number}</FieldError>
             </Field>
-            <Field>
-              <FieldLabel htmlFor="channel-name">Name</FieldLabel>
+            <Field data-invalid={!!errors.name}>
+              <FieldLabel htmlFor="channel-name">
+                Name <span className="text-destructive">*</span>
+              </FieldLabel>
               <Input
                 id="channel-name"
-                required
+                aria-invalid={!!errors.name}
+                aria-describedby={errors.name ? 'channel-name-error' : undefined}
                 value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                onChange={(e) => set('name', e.target.value)}
               />
+              <FieldError id="channel-name-error">{errors.name}</FieldError>
             </Field>
             <Field>
               <FieldLabel htmlFor="channel-guide-art">Guide art URL (optional)</FieldLabel>
@@ -107,23 +150,27 @@ export function ChannelDialog({ open, onOpenChange }: ChannelDialogProps) {
                 id="channel-guide-art"
                 type="url"
                 value={form.guide_art_url ?? ''}
-                onChange={(e) => setForm((f) => ({ ...f, guide_art_url: e.target.value || null }))}
+                onChange={(e) => set('guide_art_url', e.target.value || null)}
               />
             </Field>
-            <Field>
-              <FieldLabel htmlFor="channel-timezone">Timezone</FieldLabel>
+            <Field data-invalid={!!errors.timezone}>
+              <FieldLabel htmlFor="channel-timezone">
+                Timezone <span className="text-destructive">*</span>
+              </FieldLabel>
               <Input
                 id="channel-timezone"
-                required
+                aria-invalid={!!errors.timezone}
+                aria-describedby={errors.timezone ? 'channel-timezone-error' : undefined}
                 value={form.timezone}
-                onChange={(e) => setForm((f) => ({ ...f, timezone: e.target.value }))}
+                onChange={(e) => set('timezone', e.target.value)}
               />
+              <FieldError id="channel-timezone-error">{errors.timezone}</FieldError>
             </Field>
             <Field>
               <FieldLabel htmlFor="channel-schedule">Schedule (optional)</FieldLabel>
               <Select
                 value={form.schedule_id ?? NONE_VALUE}
-                onValueChange={(v) => setForm((f) => ({ ...f, schedule_id: v === NONE_VALUE ? null : v }))}
+                onValueChange={(v) => set('schedule_id', v === NONE_VALUE ? null : v)}
               >
                 <SelectTrigger id="channel-schedule" className="w-full">
                   <SelectValue placeholder="No schedule" />
@@ -139,6 +186,11 @@ export function ChannelDialog({ open, onOpenChange }: ChannelDialogProps) {
               </Select>
             </Field>
           </FieldGroup>
+          {submitError && (
+            <p role="alert" className="mb-2 text-sm text-destructive">
+              {submitError}
+            </p>
+          )}
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
               Cancel

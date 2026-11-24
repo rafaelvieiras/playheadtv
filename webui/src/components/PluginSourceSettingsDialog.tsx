@@ -121,7 +121,7 @@ export function PluginSourceSettingsDialog({ source, fields, onOpenChange }: Plu
 
   return (
     <Dialog open onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-lg">
+      <DialogContent className="sm:max-w-lg" closeOnOutsideClick={false}>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>

@@ -4,8 +4,7 @@ import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 
 import { ChannelLoopForm } from '@/components/ChannelLoopForm'
-import { InlineWarning } from '@/components/InlineWarning'
-import { ScheduleItemDialog } from '@/components/ScheduleItemDialog'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,8 +15,11 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
+import { InlineWarning } from '@/components/InlineWarning'
+import { ScheduleItemDialog } from '@/components/ScheduleItemDialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Loading, QueryError } from '@/components/QueryError'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { api } from '@/lib/http'
 import {
@@ -46,7 +48,7 @@ export function ChannelProgramming({
     queryFn: () => api.get<Schedule>(`/schedules/${scheduleId}`),
     enabled: !!scheduleId,
   })
-  const { data: items, isLoading, isError } = useQuery({
+  const { data: items, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['schedule-items', scheduleId],
     queryFn: () => api.get<ScheduleItem[]>(`/schedules/${scheduleId}/items`),
     enabled: !!scheduleId,
@@ -202,8 +204,15 @@ export function ChannelProgramming({
         </div>
       )}
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Could not load the schedule items.</p>}
+      {isLoading && <Loading />}
+      {isError && (
+        <QueryError
+          subject="the schedule items"
+          error={error}
+          onRetry={() => void refetch()}
+          stale={items !== undefined}
+        />
+      )}
 
       {items && items.length === 0 && (
         <p className="text-sm text-muted-foreground" data-testid="programming-empty">
@@ -333,27 +342,25 @@ export function ChannelProgramming({
         </AlertDialogContent>
       </AlertDialog>
 
-      <AlertDialog open={deletingItem !== undefined} onOpenChange={(o) => !o && setDeletingItem(undefined)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete schedule item?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete this schedule item
-              {sharedWith.length > 0 ? ' for every channel sharing this schedule' : ''}. This action cannot be
-              undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deletingItem && deleteMutation.mutate(deletingItem.id)}
-              disabled={deleteMutation.isPending}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={deletingItem !== undefined}
+        onClose={() => setDeletingItem(undefined)}
+        title={
+          deletingItem
+            ? `Delete the ${summarizeRecurrence(deletingItem)} item of "${blocksById.get(deletingItem.block_id ?? '')?.name ?? 'this block'}"?`
+            : 'Delete schedule item?'
+        }
+        description={
+          sharedWith.length > 0
+            ? 'Every channel sharing this schedule loses the item. This action cannot be undone.'
+            : 'This action cannot be undone.'
+        }
+        confirmLabel="Delete item"
+        pendingLabel="Deleting…"
+        onConfirm={() => deletingItem && deleteMutation.mutate(deletingItem.id)}
+        isPending={deleteMutation.isPending}
+        error={deleteMutation.error}
+      />
     </div>
   )
 }

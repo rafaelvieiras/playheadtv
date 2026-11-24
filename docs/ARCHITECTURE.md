@@ -136,6 +136,28 @@ foreground value because every `ring-ring/50` utility halves it — the light
 grey token it replaced was ≈1.5:1 against white, below the 3:1 non-text
 contrast minimum.
 
+Three more rules keep a screen honest about what it knows:
+
+- **A failed request is a branch, not a sentence.** `components/QueryError.tsx`
+  shows the status and the server's message, offers the `refetch`, and says when
+  what is on screen is the previous answer. It is a live region (`Alert` sets
+  `role="alert"`), and it replaces the data-dependent body instead of sitting
+  above it: the guide used to draw "No programming" on every row while `/epg`
+  had failed, `/plugins` showed "No plugin installed" beside its own error, and
+  a failed pool-item read rendered as a pool with no items — an invitation to
+  re-add what is already there.
+- **Validation belongs to the field it is about.** Forms are `noValidate` (the
+  native bubble picks a control the operator did not forget: in the schedule
+  dialog it covered "Active" while the missing Block select stayed unmarked),
+  each error renders under its `Field` with `aria-invalid` and
+  `aria-describedby`, and one submit reports every problem. The floating
+  `SaveBar` carries the server's refusal, not field validation.
+- **Confirms are named, red and boring.** `components/ConfirmDialog.tsx` is the
+  only destructive confirm: the title names the target, the action carries the
+  verb and `variant="destructive"`, the pending state replaces the verb, and the
+  backdrop does not dismiss it. It replaced fifteen hand-written dialogs, of
+  which the safe-looking black primary beat the red row button that opened them.
+
 ## Password recovery
 
 There is one `app_user` per tenant and no e-mail, so a forgotten password is

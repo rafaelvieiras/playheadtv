@@ -3,20 +3,12 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { CreateDeviceDialog } from '@/components/CreateDeviceDialog'
 import { MediaSourceDialog } from '@/components/MediaSourceDialog'
+import { Loading, QueryError } from '@/components/QueryError'
 import { api } from '@/lib/http'
 import type { MediaSource, PullSyncResponse, SourceType } from '@/lib/types'
 
@@ -57,7 +49,13 @@ function pairingReason(source: MediaSource): string {
 
 export function MediaSourcesPage() {
   const queryClient = useQueryClient()
-  const { data: sources, isLoading, isError } = useQuery({
+  const {
+    data: sources,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ['media-sources'],
     queryFn: () => api.get<MediaSource[]>('/media-sources'),
   })
@@ -114,11 +112,18 @@ export function MediaSourcesPage() {
         <Button onClick={openCreateDialog}>New source</Button>
       </div>
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Could not load media sources.</p>}
+      {isLoading && <Loading />}
+      {isError && (
+        <QueryError
+          subject="the media sources"
+          error={error}
+          onRetry={() => void refetch()}
+          stale={sources !== undefined}
+        />
+      )}
 
       {sources && (
-        <Table>
+        <Table label="Media sources">
           <TableHeader>
             <TableRow>
               <TableHead>Type</TableHead>
@@ -149,30 +154,46 @@ export function MediaSourcesPage() {
                       <StatusBadge source={source} />
                     </TableCell>
                     <TableCell className="text-muted-foreground">{formatLastSynced(source.last_synced_at)}</TableCell>
-                    <TableCell className="flex justify-end gap-2 text-right">
-                      {source.type === 'jellyfin' && source.sync_mode === 'pull' && (
+                    <TableCell>
+                      <div className="flex flex-wrap justify-end gap-2">
+                        {source.type === 'jellyfin' && source.sync_mode === 'pull' && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={() => pullSyncMutation.mutate(source.id)}
+                            disabled={pullSyncMutation.isPending}
+                          >
+                            <RefreshCw className="size-4" />
+                            Sync now
+                          </Button>
+                        )}
+                        {/* The disclosure stays inside the cell: it used to be
+                            a plain flex child, which made the actions cell the
+                            widest thing on the page and pushed the table to
+                            1929 px on a desktop. */}
+                        {source.sync_mode === 'push' && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            aria-expanded={expanded}
+                            onClick={() => toggleExpanded(source.id)}
+                          >
+                            {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
+                            Pair
+                          </Button>
+                        )}
+                        <Button variant="outline" size="sm" aria-label={`Edit ${source.name}`} onClick={() => openEditDialog(source)}>
+                          Edit
+                        </Button>
                         <Button
-                          variant="outline"
+                          variant="destructive"
                           size="sm"
-                          onClick={() => pullSyncMutation.mutate(source.id)}
-                          disabled={pullSyncMutation.isPending}
+                          aria-label={`Delete ${source.name}`}
+                          onClick={() => setDeletingSource(source)}
                         >
-                          <RefreshCw className="size-4" />
-                          Sync now
+                          Delete
                         </Button>
-                      )}
-                      {source.sync_mode === 'push' && (
-                        <Button variant="ghost" size="sm" onClick={() => toggleExpanded(source.id)}>
-                          {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
-                          Pair
-                        </Button>
-                      )}
-                      <Button variant="outline" size="sm" onClick={() => openEditDialog(source)}>
-                        Edit
-                      </Button>
-                      <Button variant="destructive" size="sm" onClick={() => setDeletingSource(source)}>
-                        Delete
-                      </Button>
+                      </div>
                     </TableCell>
                   </TableRow>
                   {source.sync_mode === 'push' && expanded && (
@@ -203,25 +224,17 @@ export function MediaSourcesPage() {
       <MediaSourceDialog open={dialogOpen} onOpenChange={setDialogOpen} source={editingSource} />
       <CreateDeviceDialog open={deviceDialogOpen} onOpenChange={setDeviceDialogOpen} />
 
-      <AlertDialog open={deletingSource !== undefined} onOpenChange={(open) => !open && setDeletingSource(undefined)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete media source?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete the source "{deletingSource?.name}". This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deletingSource && deleteMutation.mutate(deletingSource.id)}
-              disabled={deleteMutation.isPending}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={deletingSource !== undefined}
+        onClose={() => setDeletingSource(undefined)}
+        title={`Delete media source "${deletingSource?.name}"?`}
+        description="Its catalog items and the channels that play them go with it. This action cannot be undone."
+        confirmLabel="Delete source"
+        pendingLabel="Deleting…"
+        onConfirm={() => deletingSource && deleteMutation.mutate(deletingSource.id)}
+        isPending={deleteMutation.isPending}
+        error={deleteMutation.error}
+      />
     </div>
   )
 }

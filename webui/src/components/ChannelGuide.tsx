@@ -7,6 +7,7 @@ import { Link } from 'react-router-dom'
 import { InlineWarning } from '@/components/InlineWarning'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Loading, QueryError } from '@/components/QueryError'
 import { useChannelEpgPreview, useChannelEpgWarnings } from '@/lib/authoring'
 import { formatDurationMs } from '@/lib/filler'
 import {
@@ -498,11 +499,15 @@ export function ChannelGuide({ channel, active }: { channel: Channel; active: bo
         </div>
       )}
 
-      {current.isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {current.isLoading && <Loading />}
       {current.isError && (
-        <p className="text-sm text-destructive" data-testid="guide-error">
-          Could not load the {mode === 'preview' ? 'preview' : 'grid'}.
-        </p>
+        <QueryError
+          subject={mode === 'preview' ? 'the preview' : 'the grid'}
+          error={current.error}
+          onRetry={() => void current.refetch()}
+          stale={current.data !== undefined}
+          testId="guide-error"
+        />
       )}
       {current.data && entries.length === 0 && (
         <p className="text-sm text-muted-foreground" data-testid="guide-empty">

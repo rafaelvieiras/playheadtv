@@ -3,7 +3,9 @@ import { useEffect, useMemo, useState } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { InlineWarning } from '@/components/InlineWarning'
+import { Loading, QueryError } from '@/components/QueryError'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -18,10 +20,18 @@ import type { CatalogItem, FillerPoolItem } from '@/lib/types'
 // (dynamic pools, the pool shown inside the rule editor).
 export function FillerPoolItems({ poolId, editable }: { poolId: string; editable: boolean }) {
   const queryClient = useQueryClient()
-  const { data: items, isLoading } = useQuery({
+  const {
+    data: items,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: authoringKeys.poolItems(poolId),
     queryFn: () => api.get<FillerPoolItem[]>(`/filler-pools/${poolId}/items`),
   })
+  // Which item is waiting for its removal to be confirmed.
+  const [removing, setRemoving] = useState<{ id: string; title: string } | undefined>(undefined)
 
   const catalogQueries = useQueries({
     queries: (items ?? []).map((item) => ({
@@ -49,7 +59,18 @@ export function FillerPoolItems({ poolId, editable }: { poolId: string; editable
 
   return (
     <div className="flex flex-col gap-4" data-testid="pool-items">
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {isLoading && <Loading />}
+      {/* A failed read used to look like an empty pool (no error, no loading,
+          just the search box), which invites re-adding items already there. */}
+      {isError && (
+        <QueryError
+          subject={editable ? 'the items of this pool' : 'the items of this pool'}
+          error={error}
+          onRetry={() => void refetch()}
+          stale={items !== undefined}
+          testId="pool-items-error"
+        />
+      )}
 
       {items && items.length === 0 && (
         <InlineWarning title="This pool has no items">
@@ -59,7 +80,7 @@ export function FillerPoolItems({ poolId, editable }: { poolId: string; editable
 
       {items && items.length > 0 && (
         <>
-          <Table>
+          <Table label="Items of this pool">
             <TableHeader>
               <TableRow>
                 <TableHead>Title</TableHead>
@@ -88,7 +109,12 @@ export function FillerPoolItems({ poolId, editable }: { poolId: string; editable
                           variant="destructive"
                           size="sm"
                           aria-label={`Remove ${catalogItem ? formatCatalogTitle(catalogItem) : 'item'}`}
-                          onClick={() => removeMutation.mutate(item.id)}
+                          onClick={() =>
+                            setRemoving({
+                              id: item.id,
+                              title: catalogItem ? formatCatalogTitle(catalogItem) : 'this item',
+                            })
+                          }
                           disabled={removeMutation.isPending}
                         >
                           Remove
@@ -107,6 +133,21 @@ export function FillerPoolItems({ poolId, editable }: { poolId: string; editable
       )}
 
       {editable && <CatalogSearchAdd poolId={poolId} existingIds={(items ?? []).map((i) => i.catalog_item_id)} />}
+
+      <ConfirmDialog
+        open={removing !== undefined}
+        onClose={() => setRemoving(undefined)}
+        title={`Remove "${removing?.title}" from this pool?`}
+        description="The item stays in the catalog; only this pool stops playing it."
+        confirmLabel="Remove item"
+        pendingLabel="Removing…"
+        onConfirm={() => {
+          if (!removing) return
+          removeMutation.mutate(removing.id, { onSuccess: () => setRemoving(undefined) })
+        }}
+        isPending={removeMutation.isPending}
+        error={removeMutation.error}
+      />
     </div>
   )
 }

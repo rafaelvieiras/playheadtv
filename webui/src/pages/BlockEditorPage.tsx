@@ -14,13 +14,14 @@ import { CollectionPicker } from '@/components/CollectionPicker'
 import { DynamicCollectionFields, validateCollectionChoice, type CollectionChoice } from '@/components/DynamicCollectionFields'
 import { InterleaveControls } from '@/components/InterleaveControls'
 import { InlineWarning } from '@/components/InlineWarning'
+import { Loading, QueryError } from '@/components/QueryError'
 import { PageHeader } from '@/components/PageHeader'
 import { SaveBar } from '@/components/SaveBar'
 import { WatermarkSection } from '@/components/WatermarkSection'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
-import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
@@ -73,7 +74,7 @@ function errorMessage(err: unknown, fallback: string): string {
 // manual block is edited live, each action being its own request.
 export function BlockEditorPage() {
   const { id = '' } = useParams()
-  const { data: block, isLoading, isError } = useQuery({
+  const { data: block, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['blocks', id],
     queryFn: () => api.get<Block>(`/blocks/${id}`),
     enabled: !!id,
@@ -92,8 +93,8 @@ export function BlockEditorPage() {
           )
         }
       />
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Could not load the block.</p>}
+      {isLoading && <Loading />}
+      {isError && <QueryError subject="the block" error={error} onRetry={() => void refetch()} />}
       {block && (
         <>
           {/* Remounted after a save (updated_at changes) so the draft resets. */}
@@ -130,6 +131,7 @@ function BlockDetailsForm({ block }: { block: Block }) {
   const initialIncludeSpecials = block.include_specials ?? false
   const [includeSpecials, setIncludeSpecials] = useState(initialIncludeSpecials)
   const [error, setError] = useState<string | null>(null)
+  const [nameError, setNameError] = useState<string | undefined>(undefined)
   const isDynamic = block.dynamic
   const unreviewed = draft.keepLegacy && draft.collection === null
 
@@ -162,10 +164,12 @@ function BlockDetailsForm({ block }: { block: Block }) {
   })
 
   function save() {
-    if (draft.name.trim() === '') {
-      setError('Name is required.')
-      return
-    }
+    // The name's problem belongs under the name, not in the floating bar at
+    // the bottom of the page — where it also stayed after a valid name was
+    // typed.
+    const missingName = draft.name.trim() === '' ? 'Name is required.' : undefined
+    setNameError(missingName)
+    if (missingName) return
     if (unreviewed) {
       setError('Review the old query first: apply the proposal or choose a collection.')
       return
@@ -186,19 +190,28 @@ function BlockDetailsForm({ block }: { block: Block }) {
     setPlayback(initialPlayback)
     setListMode(initialListMode)
     setIncludeSpecials(initialIncludeSpecials)
+    setNameError(undefined)
     setError(null)
   }
 
   return (
     <section className="flex flex-col gap-4">
       <FieldGroup>
-        <Field>
-          <FieldLabel htmlFor="block-editor-name">Name</FieldLabel>
+        <Field data-invalid={!!nameError}>
+          <FieldLabel htmlFor="block-editor-name">
+            Name <span className="text-destructive">*</span>
+          </FieldLabel>
           <Input
             id="block-editor-name"
+            aria-invalid={!!nameError}
+            aria-describedby={nameError ? 'block-editor-name-error' : undefined}
             value={draft.name}
-            onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+            onChange={(e) => {
+              setDraft((d) => ({ ...d, name: e.target.value }))
+              setNameError(undefined)
+            }}
           />
+          <FieldError id="block-editor-name-error">{nameError}</FieldError>
         </Field>
         <Field>
           <FieldLabel htmlFor="block-editor-description">Description (optional)</FieldLabel>
@@ -258,7 +271,13 @@ function CriteriaPreviewPanel({ criteria, empty }: { criteria: Query; empty?: st
       <h2 className="text-sm font-medium">Preview</h2>
       {invalid && <p className="text-sm text-muted-foreground">{invalid}</p>}
       {!invalid && preview.isError && (
-        <p className="text-sm text-destructive">{errorMessage(preview.error, 'Could not load the preview.')}</p>
+        <QueryError
+          subject="the preview"
+          error={preview.error}
+          onRetry={() => mutate(JSON.parse(key) as Query)}
+          stale={data !== undefined}
+          testId="criteria-preview-error"
+        />
       )}
       {!invalid && !data && !preview.isError && <p className="text-sm text-muted-foreground">Loading…</p>}
       {data && (

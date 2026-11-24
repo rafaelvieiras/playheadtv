@@ -164,7 +164,7 @@ export function StreamCascadeDialog({ open, onOpenChange, scopeType, scopeId, sc
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-2xl">
+      <DialogContent className="sm:max-w-2xl" closeOnOutsideClick={false}>
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>Stream selection: {scopeLabel}</DialogTitle>

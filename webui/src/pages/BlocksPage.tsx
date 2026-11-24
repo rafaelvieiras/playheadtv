@@ -3,19 +3,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Link } from 'react-router-dom'
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { BlockDialog } from '@/components/BlockDialog'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { Loading, QueryError } from '@/components/QueryError'
 import { api } from '@/lib/http'
 import { useListModeReview } from '@/lib/authoring'
 import { InlineWarning } from '@/components/InlineWarning'
@@ -38,7 +30,13 @@ function DynamicBadge({ dynamic }: { dynamic: boolean }) {
 
 export function BlocksPage() {
   const queryClient = useQueryClient()
-  const { data: blocks, isLoading, isError } = useQuery({
+  const {
+    data: blocks,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ['blocks'],
     queryFn: () => api.get<Block[]>('/blocks'),
   })
@@ -88,11 +86,18 @@ export function BlocksPage() {
         </InlineWarning>
       )}
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Could not load blocks.</p>}
+      {isLoading && <Loading />}
+      {isError && (
+        <QueryError
+          subject="the blocks"
+          error={error}
+          onRetry={() => void refetch()}
+          stale={blocks !== undefined}
+        />
+      )}
 
       {blocks && (
-        <Table>
+        <Table label="Blocks">
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
@@ -126,13 +131,20 @@ export function BlocksPage() {
                 <TableCell className="max-w-96 truncate text-muted-foreground">
                   {block.description ?? '—'}
                 </TableCell>
-                <TableCell className="flex justify-end gap-2 text-right">
-                  <Button asChild variant="outline" size="sm">
-                    <Link to={`/blocks/${block.id}`}>Edit</Link>
-                  </Button>
-                  <Button variant="destructive" size="sm" onClick={() => setDeletingBlock(block)}>
-                    Delete
-                  </Button>
+                <TableCell>
+                  <div className="flex justify-end gap-2">
+                    <Button asChild variant="outline" size="sm">
+                      <Link to={`/blocks/${block.id}`}>Edit</Link>
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      aria-label={`Delete ${block.name}`}
+                      onClick={() => setDeletingBlock(block)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -142,26 +154,17 @@ export function BlocksPage() {
 
       <BlockDialog open={dialogOpen} onOpenChange={setDialogOpen} />
 
-      <AlertDialog open={deletingBlock !== undefined} onOpenChange={(open) => !open && setDeletingBlock(undefined)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete block?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete the block "{deletingBlock?.name}" and its items. This action
-              cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deletingBlock && deleteMutation.mutate(deletingBlock.id)}
-              disabled={deleteMutation.isPending}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={deletingBlock !== undefined}
+        onClose={() => setDeletingBlock(undefined)}
+        title={`Delete block "${deletingBlock?.name}"?`}
+        description="The block and its items are deleted. Removing a block that a schedule still uses is refused by the backend."
+        confirmLabel="Delete block"
+        pendingLabel="Deleting…"
+        onConfirm={() => deletingBlock && deleteMutation.mutate(deletingBlock.id)}
+        isPending={deleteMutation.isPending}
+        error={deleteMutation.error}
+      />
     </div>
   )
 }

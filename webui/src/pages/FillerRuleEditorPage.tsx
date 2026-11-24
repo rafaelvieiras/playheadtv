@@ -5,6 +5,7 @@ import { toast } from 'sonner'
 
 import { FillerPoolDialog } from '@/components/FillerPoolDialog'
 import { FillerPoolItems } from '@/components/FillerPoolItems'
+import { Loading, QueryError } from '@/components/QueryError'
 import { PageHeader } from '@/components/PageHeader'
 import { SaveBar } from '@/components/SaveBar'
 import { Badge } from '@/components/ui/badge'
@@ -76,7 +77,7 @@ export function FillerRuleEditorPage() {
   const navigate = useNavigate()
   const queryClient = useQueryClient()
 
-  const { data: rule, isLoading, error } = useQuery({
+  const { data: rule, isLoading, error, refetch } = useQuery({
     queryKey: ['filler-rules', id],
     queryFn: () => api.get<FillerRule>(`/filler-rules/${id}`),
     enabled: !isNew,
@@ -131,9 +132,9 @@ export function FillerRuleEditorPage() {
       <div className="flex flex-col gap-6">
         <PageHeader title="Filler rule" breadcrumb={breadcrumb} />
         {error ? (
-          <p className="text-sm text-destructive">Could not load the filler rule.</p>
+          <QueryError subject="the filler rule" error={error} onRetry={() => void refetch()} />
         ) : (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <Loading />
         )}
       </div>
     )

@@ -2,6 +2,7 @@ import { formatCatalogTitle } from '@/lib/catalog'
 import { useEffect, useRef } from 'react'
 
 import { InlineWarning } from '@/components/InlineWarning'
+import { QueryError } from '@/components/QueryError'
 import { usePreviewCriteria } from '@/lib/authoring'
 import { formatDurationMs } from '@/lib/filler'
 import type { Query } from '@/lib/query'
@@ -35,7 +36,15 @@ export function CriteriaPreviewPanel({ criteria }: { criteria: Query | null }) {
     <div className="flex flex-col gap-3" data-testid="criteria-preview">
       <h3 className="text-sm font-medium">Preview</h3>
       {preview.isPending && <p className="text-sm text-muted-foreground">Checking the catalog…</p>}
-      {preview.isError && <p className="text-sm text-destructive">Could not preview the criteria.</p>}
+      {preview.isError && (
+        <QueryError
+          subject="the preview of this query"
+          error={preview.error}
+          onRetry={() => mutate.current(JSON.parse(key) as Query)}
+          stale={data !== undefined}
+          testId="criteria-preview-error"
+        />
+      )}
       {data && data.match_count === 0 && (
         <InlineWarning title="No catalog items match this query">
           A dynamic block or pool with no matches stays empty.

@@ -3,20 +3,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 import { toast } from 'sonner'
 
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { SaveBar } from '@/components/SaveBar'
 import { ScheduleDialog } from '@/components/ScheduleDialog'
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
-import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
@@ -27,6 +18,8 @@ import type { Channel, ChannelInput, Schedule } from '@/lib/types'
 // NONE_VALUE stands in for schedule_id: null — Radix Select can't use an
 // empty string as an item value.
 const NONE_VALUE = '__none__'
+
+type FieldErrors = Partial<Record<'number' | 'name' | 'timezone', string>>
 
 // Settings tab: channel fields and schedule assignment saved through the
 // SaveBar, plus the schedule library (create, rename, delete, which channels
@@ -43,6 +36,7 @@ export function ChannelSettings({
 }) {
   const queryClient = useQueryClient()
   const initial = useMemo(() => channelToInput(channel), [channel])
+  const [fieldErrors, setFieldErrors] = useState<FieldErrors>({})
   const [draft, setDraft] = useState<ChannelInput>(initial)
   const [error, setError] = useState<string | null>(null)
   const dirty = JSON.stringify(draft) !== JSON.stringify(initial)
@@ -78,15 +72,21 @@ export function ChannelSettings({
   })
 
   function save() {
-    if (draft.name.trim() === '') return setError('Name is required.')
-    if (!Number.isInteger(draft.number) || draft.number < 1) return setError('Number must be a positive integer.')
-    if (draft.timezone.trim() === '') return setError('Timezone is required.')
+    // All three at once, under their own fields: the single `setError` at the
+    // bottom of the page answered one problem per click.
+    const found: FieldErrors = {}
+    if (draft.name.trim() === '') found.name = 'Name is required.'
+    if (!Number.isInteger(draft.number) || draft.number < 1) found.number = 'Enter a whole number, 1 or more.'
+    if (draft.timezone.trim() === '') found.timezone = 'Timezone is required.'
+    setFieldErrors(found)
+    if (Object.keys(found).length > 0) return
     setError(null)
     saveMutation.mutate()
   }
 
   function discard() {
     setDraft(initial)
+    setFieldErrors({})
     setError(null)
   }
 
@@ -113,30 +113,56 @@ export function ChannelSettings({
     <div className="flex flex-col gap-8">
       <section className="flex flex-col gap-4">
         <FieldGroup>
-          <Field>
-            <FieldLabel htmlFor="channel-settings-number">Number</FieldLabel>
+          <Field data-invalid={!!fieldErrors.number}>
+            <FieldLabel htmlFor="channel-settings-number">
+              Number <span className="text-destructive">*</span>
+            </FieldLabel>
             <Input
               id="channel-settings-number"
               type="number"
+              inputMode="numeric"
+              min={1}
+              aria-invalid={!!fieldErrors.number}
+              aria-describedby={fieldErrors.number ? 'channel-settings-number-error' : undefined}
               value={Number.isNaN(draft.number) ? '' : draft.number}
-              onChange={(e) => setDraft((d) => ({ ...d, number: e.target.value === '' ? NaN : Number(e.target.value) }))}
+              onChange={(e) => {
+                setDraft((d) => ({ ...d, number: e.target.value === '' ? NaN : Number(e.target.value) }))
+                setFieldErrors((current) => ({ ...current, number: undefined }))
+              }}
             />
+            <FieldError id="channel-settings-number-error">{fieldErrors.number}</FieldError>
           </Field>
-          <Field>
-            <FieldLabel htmlFor="channel-settings-name">Name</FieldLabel>
+          <Field data-invalid={!!fieldErrors.name}>
+            <FieldLabel htmlFor="channel-settings-name">
+              Name <span className="text-destructive">*</span>
+            </FieldLabel>
             <Input
               id="channel-settings-name"
+              aria-invalid={!!fieldErrors.name}
+              aria-describedby={fieldErrors.name ? 'channel-settings-name-error' : undefined}
               value={draft.name}
-              onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+              onChange={(e) => {
+                setDraft((d) => ({ ...d, name: e.target.value }))
+                setFieldErrors((current) => ({ ...current, name: undefined }))
+              }}
             />
+            <FieldError id="channel-settings-name-error">{fieldErrors.name}</FieldError>
           </Field>
-          <Field>
-            <FieldLabel htmlFor="channel-settings-timezone">Timezone</FieldLabel>
+          <Field data-invalid={!!fieldErrors.timezone}>
+            <FieldLabel htmlFor="channel-settings-timezone">
+              Timezone <span className="text-destructive">*</span>
+            </FieldLabel>
             <Input
               id="channel-settings-timezone"
+              aria-invalid={!!fieldErrors.timezone}
+              aria-describedby={fieldErrors.timezone ? 'channel-settings-timezone-error' : undefined}
               value={draft.timezone}
-              onChange={(e) => setDraft((d) => ({ ...d, timezone: e.target.value }))}
+              onChange={(e) => {
+                setDraft((d) => ({ ...d, timezone: e.target.value }))
+                setFieldErrors((current) => ({ ...current, timezone: undefined }))
+              }}
             />
+            <FieldError id="channel-settings-timezone-error">{fieldErrors.timezone}</FieldError>
           </Field>
           <Field>
             <FieldLabel htmlFor="channel-settings-art">Guide art URL (optional)</FieldLabel>
@@ -279,29 +305,17 @@ export function ChannelSettings({
         }}
       />
 
-      <AlertDialog open={deletingSchedule !== undefined} onOpenChange={(open) => !open && setDeletingSchedule(undefined)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete schedule?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete the schedule "{deletingSchedule?.name}" and its items. This action cannot
-              be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={(e) => {
-                e.preventDefault()
-                if (deletingSchedule) deleteMutation.mutate(deletingSchedule.id)
-              }}
-              disabled={deleteMutation.isPending}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={deletingSchedule !== undefined}
+        onClose={() => setDeletingSchedule(undefined)}
+        title={`Delete schedule "${deletingSchedule?.name}"?`}
+        description="Every item in it goes too. A schedule a channel still uses is refused by the backend until it is unassigned."
+        confirmLabel="Delete schedule"
+        pendingLabel="Deleting…"
+        onConfirm={() => deletingSchedule && deleteMutation.mutate(deletingSchedule.id)}
+        isPending={deleteMutation.isPending}
+        error={deleteMutation.error}
+      />
     </div>
   )
 }

@@ -7,6 +7,8 @@ import { Dialog as DialogPrimitive } from "radix-ui"
 import { Button } from "@/components/ui/button"
 import { XIcon } from "lucide-react"
 
+import { returnFocusToOpener } from "@/lib/dialog_focus"
+
 function Dialog({
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Root>) {
@@ -51,9 +53,18 @@ function DialogContent({
   className,
   children,
   showCloseButton = true,
+  closeOnOutsideClick = true,
+  onCloseAutoFocus,
+  onInteractOutside,
   ...props
 }: React.ComponentProps<typeof DialogPrimitive.Content> & {
   showCloseButton?: boolean
+  /**
+   * Whether a click on the backdrop dismisses the dialog. A form turns this
+   * off: a stray click must not throw away what was typed, and the X, Cancel
+   * and Escape all still close it.
+   */
+  closeOnOutsideClick?: boolean
 }) {
   return (
     <DialogPortal>
@@ -65,6 +76,14 @@ function DialogContent({
           className
         )}
         {...props}
+        onCloseAutoFocus={(event) => {
+          if (onCloseAutoFocus) onCloseAutoFocus(event)
+          else returnFocusToOpener(event)
+        }}
+        onInteractOutside={(event) => {
+          if (!closeOnOutsideClick) event.preventDefault()
+          onInteractOutside?.(event)
+        }}
       >
         {children}
         {showCloseButton && (

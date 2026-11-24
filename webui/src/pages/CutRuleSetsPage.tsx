@@ -3,18 +3,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Link } from 'react-router-dom'
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { Loading, QueryError } from '@/components/QueryError'
 import { describeRules } from '@/lib/cutRules'
 import { SCOPE_LABELS } from '@/lib/filler'
 import { api } from '@/lib/http'
@@ -22,7 +14,13 @@ import type { Block, Channel, CutRuleSet } from '@/lib/types'
 
 export function CutRuleSetsPage() {
   const queryClient = useQueryClient()
-  const { data: sets, isLoading, isError } = useQuery({
+  const {
+    data: sets,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ['cut-rule-sets'],
     queryFn: () => api.get<CutRuleSet[]>('/cut-rule-sets'),
   })
@@ -64,11 +62,18 @@ export function CutRuleSetsPage() {
         chapters. The first matching rule wins, and the guide cuts items by the rule set of their block or channel.
       </p>
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Could not load cut rule sets.</p>}
+      {isLoading && <Loading />}
+      {isError && (
+        <QueryError
+          subject="the cut rule sets"
+          error={error}
+          onRetry={() => void refetch()}
+          stale={sets !== undefined}
+        />
+      )}
 
       {sets && (
-        <Table>
+        <Table label="Cut rule sets">
           <TableHeader>
             <TableRow>
               <TableHead>Scope</TableHead>
@@ -102,13 +107,20 @@ export function CutRuleSetsPage() {
                   </ol>
                 </TableCell>
                 <TableCell>{s.position}</TableCell>
-                <TableCell className="flex justify-end gap-2 text-right">
-                  <Button asChild variant="outline" size="sm">
-                    <Link to={`/cut-rule-sets/${s.id}`}>Edit</Link>
-                  </Button>
-                  <Button variant="destructive" size="sm" onClick={() => setDeleting(s)}>
-                    Delete
-                  </Button>
+                <TableCell>
+                  <div className="flex justify-end gap-2">
+                    <Button asChild variant="outline" size="sm">
+                      <Link to={`/cut-rule-sets/${s.id}`}>Edit</Link>
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      aria-label={`Delete the cut rule set for ${scopeName(s)}`}
+                      onClick={() => setDeleting(s)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -116,23 +128,17 @@ export function CutRuleSetsPage() {
         </Table>
       )}
 
-      <AlertDialog open={deleting !== undefined} onOpenChange={(open) => !open && setDeleting(undefined)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete cut rule set?</AlertDialogTitle>
-            <AlertDialogDescription>This will permanently delete this cut rule set. This action cannot be undone.</AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deleting && deleteMutation.mutate(deleting.id)}
-              disabled={deleteMutation.isPending}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={deleting !== undefined}
+        onClose={() => setDeleting(undefined)}
+        title={deleting ? `Delete the cut rule set for ${scopeName(deleting)}?` : 'Delete cut rule set?'}
+        description="Programs of that scope play uncut again. This action cannot be undone."
+        confirmLabel="Delete rule set"
+        pendingLabel="Deleting…"
+        onConfirm={() => deleting && deleteMutation.mutate(deleting.id)}
+        isPending={deleteMutation.isPending}
+        error={deleteMutation.error}
+      />
     </div>
   )
 }

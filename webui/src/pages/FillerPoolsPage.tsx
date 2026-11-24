@@ -3,19 +3,11 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Link, useNavigate } from 'react-router-dom'
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { FillerPoolDialog } from '@/components/FillerPoolDialog'
+import { Loading, QueryError } from '@/components/QueryError'
 import { api } from '@/lib/http'
 import type { FillerPool } from '@/lib/types'
 
@@ -36,7 +28,13 @@ function DynamicBadge({ dynamic }: { dynamic: boolean }) {
 
 export function FillerPoolsPage() {
   const queryClient = useQueryClient()
-  const { data: pools, isLoading, isError } = useQuery({
+  const {
+    data: pools,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ['filler-pools'],
     queryFn: () => api.get<FillerPool[]>('/filler-pools'),
   })
@@ -64,11 +62,18 @@ export function FillerPoolsPage() {
         <Button onClick={() => setDialogOpen(true)}>New pool</Button>
       </div>
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Could not load filler pools.</p>}
+      {isLoading && <Loading />}
+      {isError && (
+        <QueryError
+          subject="the filler pools"
+          error={error}
+          onRetry={() => void refetch()}
+          stale={pools !== undefined}
+        />
+      )}
 
       {pools && (
-        <Table>
+        <Table label="Filler pools">
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
@@ -98,13 +103,20 @@ export function FillerPoolsPage() {
                 <TableCell className="max-w-96 truncate text-muted-foreground">
                   {pool.dynamic ? pool.collection_name ?? 'Held for review (old query)' : '—'}
                 </TableCell>
-                <TableCell className="flex justify-end gap-2 text-right">
-                  <Button asChild variant="outline" size="sm">
-                    <Link to={`/filler-pools/${pool.id}`}>Edit</Link>
-                  </Button>
-                  <Button variant="destructive" size="sm" onClick={() => setDeletingPool(pool)}>
-                    Delete
-                  </Button>
+                <TableCell>
+                  <div className="flex justify-end gap-2">
+                    <Button asChild variant="outline" size="sm">
+                      <Link to={`/filler-pools/${pool.id}`}>Edit</Link>
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      aria-label={`Delete ${pool.name}`}
+                      onClick={() => setDeletingPool(pool)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -118,26 +130,17 @@ export function FillerPoolsPage() {
         onCreated={(pool) => navigate(`/filler-pools/${pool.id}`)}
       />
 
-      <AlertDialog open={deletingPool !== undefined} onOpenChange={(open) => !open && setDeletingPool(undefined)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete filler pool?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete the filler pool "{deletingPool?.name}" and its items. This action
-              cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deletingPool && deleteMutation.mutate(deletingPool.id)}
-              disabled={deleteMutation.isPending}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={deletingPool !== undefined}
+        onClose={() => setDeletingPool(undefined)}
+        title={`Delete filler pool "${deletingPool?.name}"?`}
+        description="The pool and its items are deleted. A filler rule that still points at it is refused by the backend."
+        confirmLabel="Delete pool"
+        pendingLabel="Deleting…"
+        onConfirm={() => deletingPool && deleteMutation.mutate(deletingPool.id)}
+        isPending={deleteMutation.isPending}
+        error={deleteMutation.error}
+      />
     </div>
   )
 }

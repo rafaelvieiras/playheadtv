@@ -3,18 +3,10 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Link } from 'react-router-dom'
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { Loading, QueryError } from '@/components/QueryError'
 import { BREAK_KIND_LABELS, describeSteps } from '@/lib/breakTemplate'
 import { SCOPE_LABELS } from '@/lib/filler'
 import { api } from '@/lib/http'
@@ -22,7 +14,13 @@ import type { Block, BreakTemplate, Channel } from '@/lib/types'
 
 export function BreakTemplatesPage() {
   const queryClient = useQueryClient()
-  const { data: templates, isLoading, isError } = useQuery({
+  const {
+    data: templates,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery({
     queryKey: ['break-templates'],
     queryFn: () => api.get<BreakTemplate[]>('/break-templates'),
   })
@@ -64,11 +62,18 @@ export function BreakTemplatesPage() {
         a plain filler rule of the same type at the same level (block over channel).
       </p>
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Could not load break templates.</p>}
+      {isLoading && <Loading />}
+      {isError && (
+        <QueryError
+          subject="the break templates"
+          error={error}
+          onRetry={() => void refetch()}
+          stale={templates !== undefined}
+        />
+      )}
 
       {templates && (
-        <Table>
+        <Table label="Break templates">
           <TableHeader>
             <TableRow>
               <TableHead>Scope</TableHead>
@@ -98,13 +103,20 @@ export function BreakTemplatesPage() {
                 <TableCell>{t.name || '—'}</TableCell>
                 <TableCell>{describeSteps(t)}</TableCell>
                 <TableCell>{t.position}</TableCell>
-                <TableCell className="flex justify-end gap-2 text-right">
-                  <Button asChild variant="outline" size="sm">
-                    <Link to={`/break-templates/${t.id}`}>Edit</Link>
-                  </Button>
-                  <Button variant="destructive" size="sm" onClick={() => setDeleting(t)}>
-                    Delete
-                  </Button>
+                <TableCell>
+                  <div className="flex justify-end gap-2">
+                    <Button asChild variant="outline" size="sm">
+                      <Link to={`/break-templates/${t.id}`}>Edit</Link>
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      aria-label={`Delete the break template for ${scopeName(t)}`}
+                      onClick={() => setDeleting(t)}
+                    >
+                      Delete
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -112,26 +124,21 @@ export function BreakTemplatesPage() {
         </Table>
       )}
 
-      <AlertDialog open={deleting !== undefined} onOpenChange={(open) => !open && setDeleting(undefined)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Delete break template?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This will permanently delete this break template; the plain filler rules of that type (if any) apply
-              again. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => deleting && deleteMutation.mutate(deleting.id)}
-              disabled={deleteMutation.isPending}
-            >
-              Delete
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={deleting !== undefined}
+        onClose={() => setDeleting(undefined)}
+        title={
+          deleting
+            ? `Delete the ${BREAK_KIND_LABELS[deleting.kind].toLowerCase()} break template for ${scopeName(deleting)}?`
+            : 'Delete break template?'
+        }
+        description="The plain filler rules of that boundary and level (if any) apply again. This action cannot be undone."
+        confirmLabel="Delete template"
+        pendingLabel="Deleting…"
+        onConfirm={() => deleting && deleteMutation.mutate(deleting.id)}
+        isPending={deleteMutation.isPending}
+        error={deleteMutation.error}
+      />
     </div>
   )
 }

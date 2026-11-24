@@ -6,10 +6,11 @@ import { toast } from 'sonner'
 import { CriteriaReviewNotice } from '@/components/CriteriaReviewNotice'
 import { DynamicCollectionFields, validateCollectionChoice, type CollectionChoice } from '@/components/DynamicCollectionFields'
 import { FillerPoolItems } from '@/components/FillerPoolItems'
+import { Loading, QueryError } from '@/components/QueryError'
 import { PageHeader } from '@/components/PageHeader'
 import { SaveBar } from '@/components/SaveBar'
 import { Badge } from '@/components/ui/badge'
-import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { api, ApiError } from '@/lib/http'
@@ -26,7 +27,7 @@ interface Draft {
 export function FillerPoolEditorPage() {
   const { id = '' } = useParams()
   const queryClient = useQueryClient()
-  const { data: pool, isLoading, error } = useQuery({
+  const { data: pool, isLoading, error, refetch } = useQuery({
     queryKey: ['filler-pools', id],
     queryFn: () => api.get<FillerPool>(`/filler-pools/${id}`),
   })
@@ -36,6 +37,7 @@ export function FillerPoolEditorPage() {
   })
   const [draft, setDraft] = useState<Draft | null>(null)
   const [saveError, setSaveError] = useState<string | null>(null)
+  const [nameError, setNameError] = useState<string | undefined>(undefined)
 
   const save = useMutation({
     mutationFn: (payload: FillerPoolInput) => api.put<FillerPool>(`/filler-pools/${id}`, payload),
@@ -63,9 +65,9 @@ export function FillerPoolEditorPage() {
       <div className="flex flex-col gap-6">
         <PageHeader title="Filler pool" breadcrumb={breadcrumb} />
         {error ? (
-          <p className="text-sm text-destructive">Could not load the filler pool.</p>
+          <QueryError subject="the filler pool" error={error} onRetry={() => void refetch()} />
         ) : (
-          <p className="text-sm text-muted-foreground">Loading…</p>
+          <Loading />
         )}
       </div>
     )
@@ -95,14 +97,17 @@ export function FillerPoolEditorPage() {
 
   function patch(next: Partial<Draft>) {
     setDraft({ ...current, ...next })
+    setNameError(undefined)
     setSaveError(null)
   }
 
   function handleSave() {
     if (nameMissing) {
-      setSaveError('Name is required.')
+      // Under the name field, so it disappears as soon as the name is typed.
+      setNameError('Name is required.')
       return
     }
+    setNameError(undefined)
     if (unreviewed) {
       setSaveError('Review the old query first: apply the proposal or choose a collection.')
       return
@@ -127,14 +132,19 @@ export function FillerPoolEditorPage() {
       />
 
       <FieldGroup>
-        <Field>
-          <FieldLabel htmlFor="pool-name">Name</FieldLabel>
+        <Field data-invalid={!!nameError}>
+          <FieldLabel htmlFor="pool-name">
+            Name <span className="text-destructive">*</span>
+          </FieldLabel>
           <Input
             id="pool-name"
+            aria-invalid={!!nameError}
+            aria-describedby={nameError ? 'pool-name-error' : undefined}
             value={current.name}
             onChange={(e) => patch({ name: e.target.value })}
             className="max-w-md"
           />
+          <FieldError id="pool-name-error">{nameError}</FieldError>
         </Field>
         {usedBy.length > 0 && (
           <p className="text-sm text-muted-foreground" data-testid="pool-used-by">

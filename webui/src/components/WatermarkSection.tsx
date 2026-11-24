@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { QueryError } from '@/components/QueryError'
 import { Button } from '@/components/ui/button'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -63,7 +65,14 @@ export function WatermarkSection({ ownerType, ownerId }: WatermarkSectionProps) 
   const queryClient = useQueryClient()
   const path = `/${ownerType}s/${ownerId}/watermark`
   const prefix = `${ownerType}-watermark`
-  const { data: stored } = useQuery({ queryKey: ['watermark', ownerType, ownerId], queryFn: () => api.get<Watermark>(path) })
+  const {
+    data: stored,
+    isLoading: storedLoading,
+    isError: storedError,
+    error: storedFailure,
+    refetch: refetchStored,
+  } = useQuery({ queryKey: ['watermark', ownerType, ownerId], queryFn: () => api.get<Watermark>(path) })
+  const [confirmClear, setConfirmClear] = useState(false)
 
   const [mode, setMode] = useState<WatermarkMode>(ownerType === 'block' ? 'inherit' : 'disable')
   const [position, setPosition] = useState<WatermarkPosition>('bottom_right')
@@ -135,6 +144,17 @@ export function WatermarkSection({ ownerType, ownerId }: WatermarkSectionProps) 
   return (
     <section className="flex flex-col gap-4" data-testid={prefix}>
       <h2 className="text-sm font-medium">Watermark</h2>
+      {/* A failed read used to look like "Off" with an enabled Save, which
+          then wrote `disable` over a watermark that was never shown here. */}
+      {storedError && (
+        <QueryError
+          subject="the watermark of this owner"
+          error={storedFailure}
+          onRetry={() => void refetchStored()}
+          stale={stored !== undefined}
+          testId={`${prefix}-read-error`}
+        />
+      )}
       <FieldGroup>
         <Field>
           <FieldLabel htmlFor={`${prefix}-mode`}>
@@ -243,7 +263,12 @@ export function WatermarkSection({ ownerType, ownerId }: WatermarkSectionProps) 
         </p>
       )}
       <div className="flex gap-2">
-        <Button type="button" data-testid={`${prefix}-save`} disabled={save.isPending} onClick={submit}>
+        <Button
+          type="button"
+          data-testid={`${prefix}-save`}
+          disabled={save.isPending || storedLoading || (storedError && stored === undefined)}
+          onClick={submit}
+        >
           {save.isPending ? 'Saving…' : 'Save watermark'}
         </Button>
         {configured && (
@@ -252,12 +277,25 @@ export function WatermarkSection({ ownerType, ownerId }: WatermarkSectionProps) 
             variant="outline"
             data-testid={`${prefix}-clear`}
             disabled={clear.isPending}
-            onClick={() => clear.mutate()}
+            onClick={() => setConfirmClear(true)}
           >
             Remove
           </Button>
         )}
       </div>
+
+      <ConfirmDialog
+        open={confirmClear}
+        onClose={() => setConfirmClear(false)}
+        title="Remove this watermark?"
+        description="The image is deleted and the owner stops drawing one. A block falls back to the channel's watermark."
+        confirmLabel="Remove watermark"
+        pendingLabel="Removing…"
+        onConfirm={() => clear.mutate(undefined, { onSuccess: () => setConfirmClear(false) })}
+        isPending={clear.isPending}
+        error={clear.error}
+        testId={`${prefix}-clear-confirm`}
+      />
     </section>
   )
 }

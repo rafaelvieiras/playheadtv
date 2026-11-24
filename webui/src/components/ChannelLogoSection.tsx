@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Button } from '@/components/ui/button'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { CHANNEL_LOGO_TYPES, channelLogoPath, validateChannelLogoFile } from '@/lib/channelLogo'
@@ -19,6 +20,7 @@ export function ChannelLogoSection({ channel }: { channel: Channel }) {
   const inputRef = useRef<HTMLInputElement>(null)
   const [file, setFile] = useState<File | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [confirmRemove, setConfirmRemove] = useState(false)
 
   // The picked file previews from memory; the object URL is derived from the
   // file and released when it changes, so no state has to be reset on unmount.
@@ -108,7 +110,7 @@ export function ChannelLogoSection({ channel }: { channel: Channel }) {
                 variant="outline"
                 disabled={remove.isPending}
                 data-testid="deco-logo-remove"
-                onClick={() => remove.mutate()}
+                onClick={() => setConfirmRemove(true)}
               >
                 Remove
               </Button>
@@ -125,6 +127,19 @@ export function ChannelLogoSection({ channel }: { channel: Channel }) {
           )}
         </Field>
       </FieldGroup>
+
+      <ConfirmDialog
+        open={confirmRemove}
+        onClose={() => setConfirmRemove(false)}
+        title={`Remove the logo of "${channel.name}"?`}
+        description="The channel keeps working: the client shows its name where the logo was."
+        confirmLabel="Remove logo"
+        pendingLabel="Removing…"
+        onConfirm={() => remove.mutate(undefined, { onSuccess: () => setConfirmRemove(false) })}
+        isPending={remove.isPending}
+        error={remove.error}
+        testId="deco-logo-remove-confirm"
+      />
     </section>
   )
 }

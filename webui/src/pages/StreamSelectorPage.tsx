@@ -2,20 +2,12 @@ import { useMemo, useState } from 'react'
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from '@/components/ui/alert-dialog'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { QueryError } from '@/components/QueryError'
 import { StreamCascadeDialog } from '@/components/StreamCascadeDialog'
 import { api } from '@/lib/http'
 import type { Channel, StreamPreferenceRule } from '@/lib/types'
@@ -34,12 +26,23 @@ function stepsSummary(rule: StreamPreferenceRule | undefined): string {
 export function StreamSelectorPage() {
   const queryClient = useQueryClient()
 
-  const { data: channels } = useQuery({
+  const {
+    data: channels,
+    isError: channelsError,
+    error: channelsFailure,
+    refetch: refetchChannels,
+  } = useQuery({
     queryKey: ['channels'],
     queryFn: () => api.get<Channel[]>('/channels'),
   })
 
-  const { data: globalRule, isLoading: globalLoading } = useQuery({
+  const {
+    data: globalRule,
+    isLoading: globalLoading,
+    isError: globalError,
+    error: globalFailure,
+    refetch: refetchGlobal,
+  } = useQuery({
     queryKey: ['stream-preference-rule', 'global', ''],
     queryFn: () => api.get<StreamPreferenceRule>('/stream-preferences/config?scope_type=global'),
   })
@@ -104,6 +107,15 @@ export function StreamSelectorPage() {
         </p>
       </div>
 
+      {globalError && (
+        <QueryError
+          subject="the global default"
+          error={globalFailure}
+          onRetry={() => void refetchGlobal()}
+          stale={globalRule !== undefined}
+        />
+      )}
+
       <Card>
         <CardHeader>
           <CardTitle>Global default</CardTitle>
@@ -122,7 +134,16 @@ export function StreamSelectorPage() {
           <h2 className="text-base font-medium">Channel overrides</h2>
         </div>
 
-        <Table>
+        {channelsError && (
+          <QueryError
+            subject="the channels"
+            error={channelsFailure}
+            onRetry={() => void refetchChannels()}
+            stale={channels !== undefined}
+          />
+        )}
+
+        <Table label="Channel overrides">
           <TableHeader>
             <TableRow>
               <TableHead>Channel</TableHead>
@@ -142,13 +163,25 @@ export function StreamSelectorPage() {
               <TableRow key={channel.id}>
                 <TableCell>{channelLabel(channel)}</TableCell>
                 <TableCell>{rule?.rules.steps?.length ?? 0}</TableCell>
-                <TableCell className="flex justify-end gap-2 text-right">
-                  <Button variant="outline" size="sm" onClick={() => setEditingChannel(channel)}>
-                    Edit
-                  </Button>
-                  <Button variant="destructive" size="sm" onClick={() => setClearingChannel(channel)}>
-                    Clear
-                  </Button>
+                <TableCell>
+                  <div className="flex justify-end gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      aria-label={`Edit the override of ${channelLabel(channel)}`}
+                      onClick={() => setEditingChannel(channel)}
+                    >
+                      Edit
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      aria-label={`Clear the override of ${channelLabel(channel)}`}
+                      onClick={() => setClearingChannel(channel)}
+                    >
+                      Clear
+                    </Button>
+                  </div>
                 </TableCell>
               </TableRow>
             ))}
@@ -159,7 +192,7 @@ export function StreamSelectorPage() {
           <div className="flex flex-1 flex-col gap-1.5">
             <span className="text-sm font-medium">Add a channel override</span>
             <Select value={addChannelId} onValueChange={setAddChannelId}>
-              <SelectTrigger className="w-full">
+              <SelectTrigger className="w-full" aria-label="Channel to override">
                 <SelectValue placeholder="Select a channel" />
               </SelectTrigger>
               <SelectContent>
@@ -198,26 +231,17 @@ export function StreamSelectorPage() {
         scopeLabel={editingChannel ? channelLabel(editingChannel) : ''}
       />
 
-      <AlertDialog open={clearingChannel !== undefined} onOpenChange={(open) => !open && setClearingChannel(undefined)}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Clear channel override?</AlertDialogTitle>
-            <AlertDialogDescription>
-              This replaces {clearingChannel ? channelLabel(clearingChannel) : 'this channel'}'s override with an
-              empty cascade, falling back to the global default. This action cannot be undone.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => clearingChannel && clearMutation.mutate(clearingChannel.id)}
-              disabled={clearMutation.isPending}
-            >
-              Clear
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ConfirmDialog
+        open={clearingChannel !== undefined}
+        onClose={() => setClearingChannel(undefined)}
+        title={`Clear the override of ${clearingChannel ? channelLabel(clearingChannel) : 'this channel'}?`}
+        description="The channel falls back to the global default. The global cascade is not touched."
+        confirmLabel="Clear override"
+        pendingLabel="Clearing…"
+        onConfirm={() => clearingChannel && clearMutation.mutate(clearingChannel.id)}
+        isPending={clearMutation.isPending}
+        error={clearMutation.error}
+      />
     </div>
   )
 }

@@ -4,6 +4,7 @@ import { Plus } from 'lucide-react'
 
 import { CollectionDialog } from '@/components/CollectionDialog'
 import { Button } from '@/components/ui/button'
+import { QueryError } from '@/components/QueryError'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { useCollections } from '@/lib/collections'
 import { summarizeQuery } from '@/lib/query'
@@ -24,7 +25,7 @@ export function CollectionPicker({
   idPrefix: string
   disabled?: boolean
 }) {
-  const { data: collections, isLoading, isError } = useCollections()
+  const { data: collections, isLoading, isError, error, refetch } = useCollections()
   const [creating, setCreating] = useState(false)
   const selected = collections?.find((c) => c.id === value)
 
@@ -57,7 +58,14 @@ export function CollectionPicker({
           New collection
         </Button>
       </div>
-      {isError && <p className="text-sm text-destructive">Could not load the collections.</p>}
+      {isError && (
+        <QueryError
+          subject="the collections"
+          error={error}
+          onRetry={() => void refetch()}
+          stale={collections !== undefined}
+        />
+      )}
       {!isLoading && !isError && (collections ?? []).length === 0 && (
         <p className="text-sm text-muted-foreground">There are no collections yet. Create one to continue.</p>
       )}

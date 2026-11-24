@@ -1607,3 +1607,35 @@ repo never contains.
       checks plus a 38-route sweep with no console error and no document
       overflow). Still open: the mobile table/card treatment, dialog focus
       return and inline validation (#111), and the per-screen defects (#112).
+- [x] A web UI that says what went wrong and keeps the draft (2026-11-24, #111):
+      three defects repeated across every audited area. A failed request was a
+      bare red sentence with no action (seventeen of them), the page body still
+      drew itself from it — the guide printed its error above six rows claiming
+      "No programming", `/plugins` showed "No plugin installed" beside the same
+      error, and a failed `GET /filler-pools/{id}/items` looked like an empty
+      pool — and none of it was announced. Forms reported one problem per
+      submit, none of it attached to the field, while the browser's `required`
+      bubble landed on whichever control it liked (the "Active" switch, in the
+      schedule dialog, with the missing Block select unmarked). A stray click on
+      a dialog's backdrop discarded a typed draft in nine areas, focus fell to
+      `<body>` on every close, and the destructive confirm was the neutral
+      primary colour. Now: `components/QueryError.tsx` (reason, retry, a
+      "showing the previous answer" marker, `role="alert"`) and no body drawn
+      from a failed query; `noValidate` + `Field`/`FieldError` with
+      `aria-invalid`/`aria-describedby`, every problem in one submit, cleared on
+      change; `components/ConfirmDialog.tsx` for every destructive action
+      (named target, the verb, `variant="destructive"`, pending label, errors in
+      place) plus the confirms that were missing (fallback-filler "None",
+      logo/watermark remove, pool item remove); `closeOnOutsideClick={false}` and
+      focus returned to the opener (`lib/dialog_focus.ts`) on form dialogs, with
+      the one-time device token refusing to close at all; and a table whose first
+      column stays pinned below `md`, inside a named scroll region. Verified with
+      a Playwright pass at 1440×900 and 390×844 (21/21 checks: the retry
+      recovering the list, the guide staying empty of programming while `/epg`
+      fails, per-field errors, focus back on "New channel", the backdrop keeping
+      the draft, a red named confirm, the token surviving Escape) plus the
+      38-route sweep and the 20 shell checks of #110. Still open: per-field
+      errors in the break-template and cut-rule editors (which also need their
+      limits mirrored from `lib/cutRules.ts`), a block delete that says how many
+      schedules use it (needs a usage endpoint), and the per-screen defects of
+      #112.

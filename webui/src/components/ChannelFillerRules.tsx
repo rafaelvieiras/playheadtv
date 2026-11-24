@@ -4,6 +4,7 @@ import { Link } from 'react-router-dom'
 import { InlineWarning } from '@/components/InlineWarning'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Loading, QueryError } from '@/components/QueryError'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { KIND_LABELS, STRATEGY_LABELS } from '@/lib/filler'
 import { api } from '@/lib/http'
@@ -27,7 +28,7 @@ export function ChannelFillerRules({ channelId }: { channelId: string }) {
     queryFn: () => api.get<ScheduleItem[]>(`/schedules/${scheduleId}/items`),
     enabled: !!scheduleId,
   })
-  const { data: rules, isLoading, isError } = useQuery({
+  const { data: rules, isLoading, isError, error, refetch } = useQuery({
     queryKey: ['filler-rules'],
     queryFn: () => api.get<FillerRule[]>('/filler-rules'),
   })
@@ -59,8 +60,15 @@ export function ChannelFillerRules({ channelId }: { channelId: string }) {
         </Button>
       </div>
 
-      {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
-      {isError && <p className="text-sm text-destructive">Could not load filler rules.</p>}
+      {isLoading && <Loading />}
+      {isError && (
+        <QueryError
+          subject="the filler rules of this channel"
+          error={error}
+          onRetry={() => void refetch()}
+          stale={rules !== undefined}
+        />
+      )}
 
       {rules && !hasFallback && (
         <InlineWarning title="No fallback filler for this channel">

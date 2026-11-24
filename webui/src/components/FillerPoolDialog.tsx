@@ -11,7 +11,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { DynamicCollectionFields, validateCollectionChoice, type CollectionChoice } from '@/components/DynamicCollectionFields'
 import { api } from '@/lib/http'
@@ -31,12 +31,14 @@ export function FillerPoolDialog({ open, onOpenChange, onCreated }: FillerPoolDi
   const queryClient = useQueryClient()
   const [name, setName] = useState('')
   const [collection, setCollection] = useState<CollectionChoice>(null)
+  const [nameError, setNameError] = useState<string | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
 
   useEffect(() => {
     if (open) {
       setName('')
       setCollection(null)
+      setNameError(undefined)
       setError(undefined)
     }
   }, [open])
@@ -56,19 +58,18 @@ export function FillerPoolDialog({ open, onOpenChange, onCreated }: FillerPoolDi
     // Nested inside another page's form tree? Never submit the outer one.
     e.preventDefault()
     e.stopPropagation()
+    const missingName = name.trim() === '' ? 'Name is required.' : undefined
     const validationError = validateCollectionChoice(collection)
-    if (validationError) {
-      setError(validationError)
-      return
-    }
-    setError(undefined)
+    setNameError(missingName)
+    setError(validationError)
+    if (missingName || validationError) return
     mutation.mutate({ name: name.trim(), collection_id: collection })
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <form onSubmit={handleSubmit}>
+      <DialogContent closeOnOutsideClick={false}>
+        <form onSubmit={handleSubmit} noValidate>
           <DialogHeader>
             <DialogTitle>New filler pool</DialogTitle>
             <DialogDescription>
@@ -77,14 +78,30 @@ export function FillerPoolDialog({ open, onOpenChange, onCreated }: FillerPoolDi
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
-            <Field>
-              <FieldLabel htmlFor="new-pool-name">Name</FieldLabel>
-              <Input id="new-pool-name" required value={name} onChange={(e) => setName(e.target.value)} />
+            <Field data-invalid={!!nameError}>
+              <FieldLabel htmlFor="new-pool-name">
+                Name <span className="text-destructive">*</span>
+              </FieldLabel>
+              <Input
+                id="new-pool-name"
+                aria-invalid={!!nameError}
+                aria-describedby={nameError ? 'new-pool-name-error' : undefined}
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value)
+                  setNameError(undefined)
+                }}
+              />
+              <FieldError id="new-pool-name-error">{nameError}</FieldError>
             </Field>
 
             <DynamicCollectionFields value={collection} onChange={setCollection} idPrefix="new-pool-collection" />
 
-            {error && <p className="text-sm text-destructive">{error}</p>}
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
           </FieldGroup>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>

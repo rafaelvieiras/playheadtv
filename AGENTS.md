@@ -221,6 +221,32 @@ are what keeps the claim honest (`docs/ARCHITECTURE.md` "Admin shell").
   targets instead of re-deriving them. Don't add a per-page `size` just for a phone.
 - **Focus is visible at 3:1.** `--ring` (`index.css`) is the foreground value because every
   `ring-ring/50` utility halves it; a light grey token fails the non-text contrast minimum.
+- **A failed request has its own branch, and it is the only thing drawn.** `components/QueryError.tsx`
+  is that branch: the reason (status and server message), a `Retry` that calls `refetch`, and
+  `stale` when an earlier answer is still on screen. `Alert` inside it carries `role="alert"`, so
+  the failure is announced. The body of a page is never rendered from a failed query — the guide
+  used to print "Could not load the programming guide." above six rows claiming "No programming",
+  and `/plugins` showed "No plugin installed" next to its own error. A read that fails must not
+  look like an empty collection of things either: `FillerPoolItems` gets an `isError` branch for
+  exactly that reason.
+- **Validation belongs to the field.** `<form noValidate>` (never the native `required` bubble,
+  which points at whichever control the browser picks), a `Field`/`FieldError` per input with
+  `aria-invalid` and `aria-describedby`, every problem reported in one submit, a `*` on the
+  required labels, and the message cleared the moment the value changes. The message goes under
+  its field, not in the floating `SaveBar` — that bar carries the server's refusal.
+- **Dialogs are forms, confirms, or nothing.** A form dialog passes
+  `closeOnOutsideClick={false}` (a click on the backdrop must not throw away a typed draft; the X,
+  Cancel and Escape still close it) and never closes silently while it holds something
+  unrecoverable — the one-time device token blocks Escape until it is acknowledged. Every
+  destructive action goes through `components/ConfirmDialog.tsx`: the title names the target, the
+  action carries the verb and uses `variant="destructive"` (a neutral primary next to Save is
+  indistinguishable from it), the pending label replaces the verb, and the server's refusal is
+  shown in place. Focus returns to whatever opened the dialog (`lib/dialog_focus.ts`); Radix only
+  knows the `DialogTrigger`, and most of these dialogs have none.
+- **A table stays readable at phone width.** `ui/table.tsx` pins the first column below `md`
+  (opaque, with a right border) so scrolling right for a row's actions never hides which row it is,
+  and a `Table` with a `label` becomes a focusable, named scroll region. Pass `label` to every
+  table — the alternative was six rows reading "…grid · Delete".
 
 ## Client app structure (mosaic home, EPG, remappable controls)
 

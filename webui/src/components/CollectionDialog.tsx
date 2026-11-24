@@ -31,12 +31,14 @@ export function CollectionDialog({
   onCreated: (collection: Collection) => void
 }) {
   const [draft, setDraft] = useState<CollectionDraft>(emptyDraft)
+  const [nameError, setNameError] = useState<string | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
   const create = useCreateCollection()
 
   useEffect(() => {
     if (open) {
       setDraft(emptyDraft())
+      setNameError(undefined)
       setError(undefined)
     }
   }, [open])
@@ -46,12 +48,11 @@ export function CollectionDialog({
     // submit the outer one.
     e.preventDefault()
     e.stopPropagation()
-    const invalid = (draft.name.trim() === '' ? 'Name is required.' : undefined) ?? validateQuery(draft.query)
-    if (invalid) {
-      setError(invalid)
-      return
-    }
-    setError(undefined)
+    const missingName = draft.name.trim() === '' ? 'Name is required.' : undefined
+    const badQuery = validateQuery(draft.query)
+    setNameError(missingName)
+    setError(badQuery)
+    if (missingName || badQuery) return
     create.mutate(
       { name: draft.name.trim(), description: draft.description.trim() || null, query: draft.query },
       {
@@ -67,8 +68,8 @@ export function CollectionDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
-        <form onSubmit={handleSubmit} data-testid="collection-dialog">
+      <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl" closeOnOutsideClick={false}>
+        <form onSubmit={handleSubmit} data-testid="collection-dialog" noValidate>
           <DialogHeader>
             <DialogTitle>New collection</DialogTitle>
             <DialogDescription>
@@ -76,9 +77,17 @@ export function CollectionDialog({
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
-            <CollectionFields value={draft} onChange={setDraft} idPrefix="new-collection" />
+            <CollectionFields
+              value={draft}
+              onChange={(d) => {
+                setDraft(d)
+                setNameError(undefined)
+              }}
+              idPrefix="new-collection"
+              nameError={nameError}
+            />
             {error && (
-              <p className="text-sm text-destructive" data-testid="collection-dialog-error">
+              <p role="alert" className="text-sm text-destructive" data-testid="collection-dialog-error">
                 {error}
               </p>
             )}

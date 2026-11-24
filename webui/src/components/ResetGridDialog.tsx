@@ -40,7 +40,7 @@ export function ResetGridDialog({
     <AlertDialog open={channel !== undefined} onOpenChange={(open) => !open && onClose()}>
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogTitle>Reset the grid of this channel?</AlertDialogTitle>
+          <AlertDialogTitle>Reset the grid of "{channel?.name}"?</AlertDialogTitle>
           <AlertDialogDescription>
             This discards the upcoming programs of "{channel?.name}" and the one on air right now, restarts its
             rotation from the beginning and regenerates immediately. Viewers switch program right away.
@@ -49,13 +49,14 @@ export function ResetGridDialog({
         <AlertDialogFooter>
           <AlertDialogCancel>Cancel</AlertDialogCancel>
           <AlertDialogAction
+            variant="destructive"
             onClick={(e) => {
               e.preventDefault()
               if (channel) resetMutation.mutate(channel.id)
             }}
             disabled={resetMutation.isPending}
           >
-            Reset grid
+            {resetMutation.isPending ? 'Resetting…' : 'Reset grid'}
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

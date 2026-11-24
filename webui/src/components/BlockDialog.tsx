@@ -12,7 +12,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { DynamicCollectionFields, validateCollectionChoice } from '@/components/DynamicCollectionFields'
 import type { BlockPlaybackDraft } from '@/components/BlockPlaybackFields'
@@ -44,6 +44,7 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
   const [playback, setPlayback] = useState<BlockPlaybackDraft>(emptyPlayback)
   const [listMode, setListMode] = useState<ListMode>('repeat')
   const [includeSpecials, setIncludeSpecials] = useState(false)
+  const [nameError, setNameError] = useState<string | undefined>(undefined)
   const [error, setError] = useState<string | undefined>(undefined)
 
   useEffect(() => {
@@ -52,6 +53,7 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
       setIncludeSpecials(false)
       setForm(emptyForm)
       setPlayback(emptyPlayback)
+      setNameError(undefined)
       setError(undefined)
     }
   }, [open])
@@ -75,20 +77,19 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
 
   function handleSubmit(e: FormEvent) {
     e.preventDefault()
+    const missingName = form.name.trim() === '' ? 'Name is required.' : undefined
+    setNameError(missingName)
     const validationError =
       validateCollectionChoice(form.collection_id) ?? (form.collection_id && playback.order === 'interleaved' ? validateInterleave(playback.interleave) : undefined)
-    if (validationError) {
-      setError(validationError)
-      return
-    }
-    setError(undefined)
+    setError(validationError)
+    if (missingName || validationError) return
     mutation.mutate()
   }
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent>
-        <form onSubmit={handleSubmit}>
+      <DialogContent closeOnOutsideClick={false}>
+        <form onSubmit={handleSubmit} noValidate>
           <DialogHeader>
             <DialogTitle>New block</DialogTitle>
             <DialogDescription>
@@ -96,14 +97,21 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
-            <Field>
-              <FieldLabel htmlFor="block-name">Name</FieldLabel>
+            <Field data-invalid={!!nameError}>
+              <FieldLabel htmlFor="block-name">
+                Name <span className="text-destructive">*</span>
+              </FieldLabel>
               <Input
                 id="block-name"
-                required
+                aria-invalid={!!nameError}
+                aria-describedby={nameError ? 'block-name-error' : undefined}
                 value={form.name}
-                onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+                onChange={(e) => {
+                  setForm((f) => ({ ...f, name: e.target.value }))
+                  setNameError(undefined)
+                }}
               />
+              <FieldError id="block-name-error">{nameError}</FieldError>
             </Field>
             <Field>
               <FieldLabel htmlFor="block-description">Description (optional)</FieldLabel>
@@ -125,7 +133,11 @@ export function BlockDialog({ open, onOpenChange }: BlockDialogProps) {
 
             <BlockIncludeSpecialsField value={includeSpecials} onChange={setIncludeSpecials} idPrefix="block" />
 
-            {error && <p className="text-sm text-destructive">{error}</p>}
+            {error && (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            )}
           </FieldGroup>
           <DialogFooter>
             <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
