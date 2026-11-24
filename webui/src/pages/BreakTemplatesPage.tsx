@@ -95,7 +95,10 @@ export function BreakTemplatesPage() {
             {templates.map((t) => (
               <TableRow key={t.id} data-testid="break-template-row">
                 <TableCell>
-                  <Link to={`/break-templates/${t.id}`} className="hover:underline">
+                  <Link
+                    to={`/break-templates/${t.id}`}
+                    className="inline-flex min-h-9 items-center hover:underline max-sm:min-h-11"
+                  >
                     {SCOPE_LABELS[t.scope_type]}: {scopeName(t)}
                   </Link>
                 </TableCell>

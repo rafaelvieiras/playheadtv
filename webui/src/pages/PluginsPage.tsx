@@ -7,12 +7,22 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { PageHeader } from '@/components/PageHeader'
 import { Loading, QueryError } from '@/components/QueryError'
 import { PluginSourceSettingsDialog } from '@/components/PluginSourceSettingsDialog'
+import { formatDateTime, tzLabel } from '@/lib/format'
 import { api } from '@/lib/http'
-import { describePluginSettings, formatPluginDate, latestPluginVersion, versionsNewestFirst } from '@/lib/plugins'
+import { describePluginSettings, latestPluginVersion, versionsNewestFirst } from '@/lib/plugins'
 import type { InstalledPlugin, PluginList, PluginOffering, PluginSource } from '@/lib/types'
 
 /**
@@ -36,7 +46,12 @@ export function PluginsPage() {
     queryKey: ['plugins'],
     queryFn: () => api.get<PluginList>('/plugins'),
   })
-  const { data: sources } = useQuery({
+  const {
+    data: sources,
+    isError: sourcesError,
+    error: sourcesFailure,
+    refetch: refetchSources,
+  } = useQuery({
     queryKey: ['plugin-sources'],
     queryFn: () => api.get<PluginSource[]>('/plugin-sources'),
   })
@@ -92,13 +107,12 @@ export function PluginsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-semibold">Plugins</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          A plugin runs on this backend: it lists a content source and resolves the URL a playback device
-          plays. The core only hosts it — install, verify, run (<code>docs/PLUGINS.md</code>).
-        </p>
-      </div>
+      <PageHeader title="Plugins" />
+
+      <p className="text-sm text-muted-foreground">
+        A plugin runs on this backend: it lists a content source and resolves the URL a playback device
+        plays. The core only hosts it — install, verify, run (<code>docs/PLUGINS.md</code>).
+      </p>
 
       {isLoading && <Loading />}
       {isError && (
@@ -114,15 +128,16 @@ export function PluginsPage() {
         <Alert>
           <AlertTitle>No plugin registry configured</AlertTitle>
           <AlertDescription>
-            This backend has no <code>PLAYHEADTV_PLUGIN_REGISTRY_URL</code>, so nothing can be installed
-            here. A channel whose content comes from a plugin stays hidden until one is.
+            This backend has no <code className="break-all">PLAYHEADTV_PLUGIN_REGISTRY_URL</code>, so
+            nothing can be installed here. A channel whose content comes from a plugin stays hidden until
+            one is.
           </AlertDescription>
         </Alert>
       )}
 
       <section className="flex flex-col gap-3">
         <h2 className="text-base font-medium">Installed</h2>
-        {data ? (
+        {data && (
           <Table label="Installed plugins">
             <TableHeader>
               <TableRow>
@@ -166,7 +181,7 @@ export function PluginsPage() {
                       </Badge>
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
-                      {formatPluginDate(plugin.updated_at)}
+                      {formatDateTime(plugin.updated_at)}
                     </TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
@@ -199,9 +214,8 @@ export function PluginsPage() {
                 )
               })}
             </TableBody>
+            <TableCaption>{tzLabel(undefined)}</TableCaption>
           </Table>
-        ) : (
-          <p className="text-sm text-muted-foreground">The installed plugins are unknown until the request succeeds.</p>
         )}
         <p className="text-xs text-muted-foreground">
           A channel that uses a plugin plays only while it is on. Turning it off or removing it is also
@@ -209,84 +223,94 @@ export function PluginsPage() {
         </p>
       </section>
 
-      <section className="flex flex-col gap-3">
-        <h2 className="text-base font-medium">Available from the registry</h2>
-        {notInstalled.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            {data?.registry_configured
-              ? 'Nothing else is offered by the configured registry.'
-              : 'No registry is configured, so there is nothing to offer.'}
-          </p>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Plugin</TableHead>
-                <TableHead>Version</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {notInstalled.map((offering) => (
-                <OfferingRow
-                  key={offering.id}
-                  offering={offering}
-                  choice={versionChoice[offering.id]}
-                  onChoice={(version) => setVersionChoice((prev) => ({ ...prev, [offering.id]: version }))}
-                  install={(version) => installMutation.mutate({ id: offering.id, version })}
-                  busy={installMutation.isPending}
-                />
-              ))}
-            </TableBody>
-          </Table>
-        )}
-        <p className="text-xs text-muted-foreground">
-          Installing downloads the archive, checks its SHA-256 against the registry, unpacks it and starts
-          the plugin. A plugin source then lists its catalog on the next sync.
-        </p>
-      </section>
-
-      <section className="flex flex-col gap-3">
-        <h2 className="text-base font-medium">Source settings</h2>
-        {configurableSources.length === 0 ? (
-          <p className="text-sm text-muted-foreground">
-            No installed plugin declares settings for its sources.
-          </p>
-        ) : (
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Source</TableHead>
-                <TableHead>Plugin</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {configurableSources.map((source) => (
-                <TableRow key={source.id}>
-                  <TableCell>
-                    <div className="font-medium">{source.name || source.id}</div>
-                    <div className="text-xs text-muted-foreground">
-                      {describePluginSettings(
-                        installedById.get(source.plugin_id)?.config_fields ?? [],
-                        source.settings,
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell>{source.plugin_id}</TableCell>
-                  <TableCell className="text-right">
-                    <Button variant="outline" size="sm" onClick={() => setEditing(source)}>
-                      <Settings2 className="size-4" />
-                      Edit settings
-                    </Button>
-                  </TableCell>
+      {data && (
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-medium">Available from the registry</h2>
+          {notInstalled.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              {data?.registry_configured
+                ? 'Nothing else is offered by the configured registry.'
+                : 'No registry is configured, so there is nothing to offer.'}
+            </p>
+          ) : (
+            <Table label="Available plugins">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Plugin</TableHead>
+                  <TableHead>Version</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
-      </section>
+              </TableHeader>
+              <TableBody>
+                {notInstalled.map((offering) => (
+                  <OfferingRow
+                    key={offering.id}
+                    offering={offering}
+                    choice={versionChoice[offering.id]}
+                    onChoice={(version) => setVersionChoice((prev) => ({ ...prev, [offering.id]: version }))}
+                    install={(version) => installMutation.mutate({ id: offering.id, version })}
+                    busy={installMutation.isPending}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          )}
+          <p className="text-xs text-muted-foreground">
+            Installing downloads the archive, checks its SHA-256 against the registry, unpacks it and starts
+            the plugin. A plugin source then lists its catalog on the next sync.
+          </p>
+        </section>
+      )}
 
+      {data && (
+        <section className="flex flex-col gap-3">
+          <h2 className="text-base font-medium">Source settings</h2>
+          {sourcesError ? (
+            <QueryError
+              subject="the plugin sources"
+              error={sourcesFailure}
+              onRetry={() => void refetchSources()}
+              stale={sources !== undefined}
+            />
+          ) : configurableSources.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No installed plugin declares settings for its sources.
+            </p>
+          ) : (
+            <Table label="Plugin source settings">
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Source</TableHead>
+                  <TableHead>Plugin</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {configurableSources.map((source) => (
+                  <TableRow key={source.id}>
+                    <TableCell>
+                      <div className="font-medium">{source.name || source.id}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {describePluginSettings(
+                          installedById.get(source.plugin_id)?.config_fields ?? [],
+                          source.settings,
+                        )}
+                      </div>
+                    </TableCell>
+                    <TableCell>{source.plugin_id}</TableCell>
+                    <TableCell className="text-right">
+                      <Button variant="outline" size="sm" onClick={() => setEditing(source)}>
+                        <Settings2 className="size-4" />
+                        Edit settings
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+        </section>
+      )}
       {editing && (
         <PluginSourceSettingsDialog
           key={editing.id}

@@ -1,13 +1,15 @@
-import { formatCatalogTitle } from '@/lib/catalog'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
+import { Link } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { ChannelLogoImage } from '@/components/ChannelLogoImage'
+import { GuideGrid, type GuideRow } from '@/components/GuideGrid'
 import { Loading, QueryError } from '@/components/QueryError'
+import { formatTime } from '@/lib/format'
 import { api } from '@/lib/http'
-import { epgItemClipCount, epgItemTitle } from '@/lib/guide'
+import { epgItemTitle } from '@/lib/guide'
 import { allEntriesAsCells, buildGuideCells, type GuideCell } from '@/lib/guideDisplay'
 import { isTailGroup } from '@/lib/types'
 import type { CatalogItem, Channel, EpgEntry, EpgItem } from '@/lib/types'
@@ -17,24 +19,9 @@ const LOOKBACK_MS = 30 * 60 * 1000
 const LOOKAHEAD_MS = 8 * 60 * 60 * 1000
 const HALF_HOUR_MS = 30 * 60 * 1000
 
-// Time scale: each minute of programming occupies this many pixels.
-const PIXELS_PER_MINUTE = 4
-const CHANNEL_COLUMN_WIDTH = 180
-const ROW_HEIGHT = 64
-const RULER_HEIGHT = 36
-
-function formatTime(ms: number): string {
-  return new Date(ms).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })
-}
-
-function minutesToPixels(minutes: number): number {
-  return minutes * PIXELS_PER_MINUTE
-}
-
 export function EpgPage() {
   const queryClient = useQueryClient()
   const [now, setNow] = useState(() => Date.now())
-  const scrollRef = useRef<HTMLDivElement>(null)
   // Debugging aid, UI state only: draw every entry (fillers included) at its
   // real span instead of the programs-only guide.
   const [showFiller, setShowFiller] = useState(false)
@@ -130,34 +117,45 @@ export function EpgPage() {
     [channels],
   )
 
-  const totalMinutes = (windowEnd - windowStart) / 60000
-  const trackWidth = minutesToPixels(totalMinutes)
+  const rows = useMemo<GuideRow[]>(
+    () =>
+      sortedChannels.map((channel) => ({
+        id: channel.id,
+        cells: cellsByChannel.get(channel.id) ?? [],
+        entries: entriesByChannel.get(channel.id) ?? [],
+        channel: { id: channel.id, number: channel.number, name: channel.name },
+        emptyLabel: 'No programming',
+        header: (
+          // The whole channel cell is the target, so it stays at least a row
+          // tall on a phone instead of a 20 px name.
+          <Link
+            to={`/channels/${channel.id}`}
+            aria-label={`Open channel ${channel.number}, ${channel.name}`}
+            className="flex h-full w-full min-w-0 items-center gap-2 px-3 hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          >
+            {/* Fixed slot: a square logo and a wide one take the same room,
+                so the number and the name start at the same x on every row.
+                The logo is contained, never stretched. */}
+            <ChannelLogoImage
+              imageId={channel.logo_image_id}
+              name={channel.name}
+              className="h-8 w-16 shrink-0 object-contain"
+            />
+            <span className="flex min-w-0 flex-col gap-0.5">
+              <span className="text-xs text-muted-foreground">{channel.number}</span>
+              <span className="truncate text-sm font-medium">{channel.name}</span>
+            </span>
+          </Link>
+        ),
+      })),
+    [sortedChannels, cellsByChannel, entriesByChannel],
+  )
 
-  const timeMarks = useMemo(() => {
-    const marks: number[] = []
-    for (let t = windowStart; t < windowEnd; t += HALF_HOUR_MS) {
-      marks.push(t)
-    }
-    return marks
-  }, [windowStart, windowEnd])
-
-  const nowOffsetPx = minutesToPixels((now - windowStart) / 60000)
-
-  // On first load (and whenever the window is refreshed), scroll so "now"
-  // sits near the left edge of the visible area, with a bit of recent-past
-  // context still showing. The grid itself only mounts once channels have
-  // loaded, so this must re-run once that happens too — depending on
-  // `windowStart` alone would fire before `scrollRef.current` exists and
-  // never again, leaving the view stuck at the start of the window.
-  const gridReady = channels !== undefined && channels.length > 0
-  useEffect(() => {
-    if (!scrollRef.current) return
-    const target = Math.max(0, nowOffsetPx - minutesToPixels(20))
-    scrollRef.current.scrollLeft = target
-    // Only re-run when the window changes (refresh) or the grid mounts, not
-    // on every render (e.g. catalog titles resolving).
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [windowStart, gridReady])
+  const cellCount = useMemo(
+    () => [...cellsByChannel.values()].reduce((total, cells) => total + cells.length, 0),
+    [cellsByChannel],
+  )
+  const hiddenFillerCount = showFiller ? 0 : (entries?.length ?? 0) - cellCount
 
   function refresh() {
     setNow(Date.now())
@@ -166,12 +164,13 @@ export function EpgPage() {
 
   const isLoading = channelsLoading || entriesLoading
   const isError = channelsError || entriesError
+  const hasChannels = channels !== undefined && channels.length > 0
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-semibold">Programming guide</h1>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             variant={showFiller ? 'default' : 'outline'}
             size="sm"
@@ -211,127 +210,24 @@ export function EpgPage() {
           to render "No programming" on every row while the request had failed,
           which is the one thing an operator must not confuse with a channel
           that has nothing scheduled. */}
-      {channels && channels.length > 0 && entries !== undefined && (
-        <div className="overflow-hidden rounded-lg border border-border bg-card">
-          <div
-            ref={scrollRef}
-            className="overflow-x-auto focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none"
-            role="region"
-            aria-label="Programs by channel, scroll left and right for time"
-            tabIndex={0}
-          >
-            <div style={{ width: CHANNEL_COLUMN_WIDTH + trackWidth }}>
-              {/* Time ruler header */}
-              <div
-                className="sticky top-0 z-20 flex bg-card"
-                style={{ height: RULER_HEIGHT }}
-              >
-                <div
-                  className="sticky left-0 z-30 shrink-0 border-b border-r border-border bg-card"
-                  style={{ width: CHANNEL_COLUMN_WIDTH }}
-                />
-                <div className="relative shrink-0 border-b border-border" style={{ width: trackWidth }}>
-                  {timeMarks.map((mark) => (
-                    <div
-                      key={mark}
-                      className="absolute top-0 flex h-full items-center border-l border-border pl-1.5 text-xs text-muted-foreground"
-                      style={{ left: minutesToPixels((mark - windowStart) / 60000) }}
-                    >
-                      {formatTime(mark)}
-                    </div>
-                  ))}
-                </div>
-              </div>
-
-              {/* Channel rows */}
-              <div className="relative">
-                {sortedChannels.map((channel) => {
-                  const channelCells = cellsByChannel.get(channel.id) ?? []
-                  return (
-                    <div key={channel.id} className="flex border-b border-border last:border-b-0">
-                      <div
-                        className="sticky left-0 z-10 flex shrink-0 items-center gap-2 border-r border-border bg-card px-3"
-                        style={{ width: CHANNEL_COLUMN_WIDTH, height: ROW_HEIGHT }}
-                      >
-                        {/* Fixed slot: a square logo and a wide one take the same
-                            room, so the number and the name start at the same x
-                            on every row. The logo is contained, never stretched. */}
-                        <ChannelLogoImage
-                          imageId={channel.logo_image_id}
-                          name={channel.name}
-                          className="h-8 w-16 shrink-0 object-contain"
-                        />
-                        <div className="flex min-w-0 flex-col gap-0.5">
-                          <span className="text-xs text-muted-foreground">{channel.number}</span>
-                          <span className="truncate text-sm font-medium">{channel.name}</span>
-                        </div>
-                      </div>
-                      <div
-                        className="relative shrink-0"
-                        style={{ width: trackWidth, height: ROW_HEIGHT }}
-                      >
-                        {channelCells.length === 0 && (
-                          <div
-                            className="sticky inline-flex h-full items-center"
-                            style={{ left: CHANNEL_COLUMN_WIDTH + 8 }}
-                          >
-                            <span className="whitespace-nowrap text-xs text-muted-foreground">
-                              No programming
-                            </span>
-                          </div>
-                        )}
-                        {channelCells.map((cell) => {
-                          const entry = cell.entry
-                          const isLive = cell.displayStart <= now && now < cell.displayEnd
-                          const clips = epgItemClipCount(entry)
-                          const item = isTailGroup(entry) ? undefined : catalogItemsById.get(entry.catalog_item_id)
-                          const title = epgItemTitle(entry) ?? (item ? formatCatalogTitle(item) : '…')
-                          const startOffset = Math.max(0, (cell.displayStart - windowStart) / 60000)
-                          const clampedStart = Math.max(cell.displayStart, windowStart)
-                          const clampedEnd = Math.min(cell.displayEnd, windowEnd)
-                          const widthMinutes = Math.max(0, (clampedEnd - clampedStart) / 60000)
-
-                          return (
-                            <div
-                              key={entry.id}
-                              data-testid="epg-entry"
-                              data-kind={entry.kind}
-                              title={`${title} (${formatTime(cell.displayStart)} – ${formatTime(cell.displayEnd)})`}
-                              className={`absolute top-1 flex h-[calc(100%-0.5rem)] flex-col justify-center overflow-hidden rounded-md border px-2 ${
-                                isLive
-                                  ? 'border-primary bg-primary/10'
-                                  : 'border-border bg-muted/40'
-                              }`}
-                              style={{
-                                left: minutesToPixels(startOffset),
-                                width: Math.max(minutesToPixels(widthMinutes) - 4, 0),
-                              }}
-                            >
-                              <span className="truncate text-sm">{title}</span>
-                              <span className="truncate text-xs tabular-nums text-muted-foreground">
-                                {formatTime(cell.displayStart)} – {formatTime(cell.displayEnd)}
-                                {clips > 0 && ` · ${clips} ${clips === 1 ? 'clip' : 'clips'}`}
-                              </span>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    </div>
-                  )
-                })}
-
-                {/* "Now" indicator line, spanning the full height of the rows. */}
-                <div
-                  className="pointer-events-none absolute top-0 z-20 w-0.5 bg-destructive"
-                  style={{
-                    left: CHANNEL_COLUMN_WIDTH + nowOffsetPx,
-                    height: sortedChannels.length * ROW_HEIGHT,
-                  }}
-                />
-              </div>
-            </div>
-          </div>
-        </div>
+      {hasChannels && entries !== undefined && entries.length === 0 && (
+        <p className="text-sm text-muted-foreground" role="status" data-testid="epg-empty">
+          No programming is stored between {formatTime(windowStart)} and {formatTime(windowEnd)}. The materializer may
+          not have run yet, or no channel has a schedule.
+        </p>
+      )}
+      {hasChannels && entries !== undefined && entries.length > 0 && (
+        <GuideGrid
+          rows={rows}
+          windowStart={windowStart}
+          windowEnd={windowEnd}
+          timeZone={undefined}
+          titles={catalogItemsById}
+          channelColumn
+          defaultView="fit"
+          hiddenFillerCount={hiddenFillerCount}
+          scrollLabel="Programs by channel, scroll left and right for time"
+        />
       )}
     </div>
   )

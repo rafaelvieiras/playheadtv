@@ -19,7 +19,15 @@ import { DynamicCollectionFields, validateCollectionChoice, type CollectionChoic
 import { blockPlaybackPayload, DEFAULT_INTERLEAVE, validateInterleave } from '@/lib/interleave'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
-import { DAY_LABELS, DAY_SHORT_LABELS, WEEK_ORDER, WEEKDAY_SHORTCUTS } from '@/lib/schedule'
+import { tzLabel } from '@/lib/format'
+import {
+  DAY_LABELS,
+  DAY_SHORT_LABELS,
+  fromZonedInputValue,
+  toZonedInputValue,
+  WEEK_ORDER,
+  WEEKDAY_SHORTCUTS,
+} from '@/lib/schedule'
 import { api, ApiError } from '@/lib/http'
 import type { Block, RecurrenceType, ScheduleItem, ScheduleItemInput } from '@/lib/types'
 
@@ -33,6 +41,10 @@ interface ScheduleItemDialogProps {
   // the form then rejects a second one before the round trip (the backend
   // enforces the same rule with a 409).
   hasOtherContinuous?: boolean
+  // The channel's IANA zone. A one-off item's date and time are read and
+  // written in it, so the dialog shows the same clock time as the row behind
+  // it (and the same one the grid draws), whatever the browser's own zone is.
+  timeZone?: string
 }
 
 // Internal form shape: always keeps both recurrence branches' fields around
@@ -57,19 +69,13 @@ const emptyForm: FormState = {
   active: true,
 }
 
-function epochToDatetimeLocalInput(ms: number): string {
-  const d = new Date(ms)
-  const pad = (n: number) => String(n).padStart(2, '0')
-  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`
-}
-
-function itemToForm(item: ScheduleItem): FormState {
+function itemToForm(item: ScheduleItem, timeZone?: string): FormState {
   return {
     block_id: item.block_id ?? '',
     recurrence_type: item.recurrence_type,
     days_of_week: item.days_of_week,
     start_time_local: item.start_time_local ?? '',
-    start_at_local: item.start_at !== null ? epochToDatetimeLocalInput(item.start_at) : '',
+    start_at_local: item.start_at !== null ? toZonedInputValue(item.start_at, timeZone) : '',
     active: item.active,
   }
 }
@@ -99,7 +105,7 @@ function validate(form: FormState, hasOtherContinuous: boolean): Errors {
   return errors
 }
 
-function buildPayload(form: FormState): ScheduleItemInput {
+function buildPayload(form: FormState, timeZone?: string): ScheduleItemInput {
   if (form.recurrence_type === 'continuous') {
     return {
       block_id: form.block_id,
@@ -125,7 +131,7 @@ function buildPayload(form: FormState): ScheduleItemInput {
     recurrence_type: 'once',
     days_of_week: [],
     start_time_local: null,
-    start_at: new Date(form.start_at_local).getTime(),
+    start_at: fromZonedInputValue(form.start_at_local, timeZone),
     active: form.active,
   }
 }
@@ -136,6 +142,7 @@ export function ScheduleItemDialog({
   scheduleId,
   item,
   hasOtherContinuous = false,
+  timeZone,
 }: ScheduleItemDialogProps) {
   const queryClient = useQueryClient()
   const navigate = useNavigate()
@@ -151,7 +158,7 @@ export function ScheduleItemDialog({
 
   useEffect(() => {
     if (open) {
-      setForm(item ? itemToForm(item) : emptyForm)
+      setForm(item ? itemToForm(item, timeZone) : emptyForm)
       setErrors({})
       setError(undefined)
       setNewBlock(false)
@@ -159,7 +166,7 @@ export function ScheduleItemDialog({
       setNewBlockCollection(null)
       setNewBlockPlayback({ order: 'title', interleave: DEFAULT_INTERLEAVE })
     }
-  }, [open, item])
+  }, [open, item, timeZone])
 
   const { data: blocks } = useQuery({
     queryKey: ['blocks'],
@@ -233,7 +240,7 @@ export function ScheduleItemDialog({
     setErrors(found)
     setError(collectionProblem)
     if (collectionProblem || Object.keys(found).length > 0) return
-    mutation.mutate({ payload: buildPayload(form), openEditor })
+    mutation.mutate({ payload: buildPayload(form, timeZone), openEditor })
   }
 
   function handleSubmit(e: FormEvent) {
@@ -248,7 +255,8 @@ export function ScheduleItemDialog({
           <DialogHeader>
             <DialogTitle>{isEditing ? 'Edit schedule item' : 'New schedule item'}</DialogTitle>
             <DialogDescription>
-              {isEditing ? 'Update this recurrence rule.' : 'Add a block airing at a given time to this schedule.'}
+              {isEditing ? 'Update this recurrence rule. ' : 'Add a block airing at a given time to this schedule. '}
+              {tzLabel(timeZone)}
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">

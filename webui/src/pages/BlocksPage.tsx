@@ -1,17 +1,44 @@
 import { useState } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { toast } from 'sonner'
+import { useQuery } from '@tanstack/react-query'
 import { Link } from 'react-router-dom'
 
 import { Button } from '@/components/ui/button'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { BlockDialog } from '@/components/BlockDialog'
-import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { DeleteBlockDialog, type BlockUsage } from '@/components/DeleteBlockDialog'
 import { Loading, QueryError } from '@/components/QueryError'
 import { api } from '@/lib/http'
 import { useListModeReview } from '@/lib/authoring'
 import { InlineWarning } from '@/components/InlineWarning'
 import { LIST_MODE_LABELS, type Block } from '@/lib/types'
+
+// A block as the list reads it: the row plus the two usage counts the backend
+// adds to every block (see DeleteBlockDialog).
+type BlockRow = Block & BlockUsage
+
+// How a block is scheduled, in the list: the delete is refused while a
+// schedule airs it, so the answer has to be visible before the button.
+function UsageCell({ block }: { block: BlockRow }) {
+  const items = block.usage_items ?? 0
+  const schedules = block.usage_schedules ?? 0
+  return (
+    // Two short lines, not one long one: the table already scrolls sideways.
+    <span className="flex flex-col leading-tight" data-testid={`block-usage-${block.id}`}>
+      {items === 0 ? (
+        <span>Not scheduled</span>
+      ) : (
+        <>
+          <span>
+            {items} schedule {items === 1 ? 'item' : 'items'}
+          </span>
+          <span className="text-xs">
+            in {schedules} {schedules === 1 ? 'schedule' : 'schedules'}
+          </span>
+        </>
+      )}
+    </span>
+  )
+}
 
 function DynamicBadge({ dynamic }: { dynamic: boolean }) {
   if (dynamic) {
@@ -29,7 +56,6 @@ function DynamicBadge({ dynamic }: { dynamic: boolean }) {
 }
 
 export function BlocksPage() {
-  const queryClient = useQueryClient()
   const {
     data: blocks,
     isLoading,
@@ -38,24 +64,12 @@ export function BlocksPage() {
     refetch,
   } = useQuery({
     queryKey: ['blocks'],
-    queryFn: () => api.get<Block[]>('/blocks'),
+    queryFn: () => api.get<BlockRow[]>('/blocks'),
   })
 
   const { data: review } = useListModeReview()
   const [dialogOpen, setDialogOpen] = useState(false)
-  const [deletingBlock, setDeletingBlock] = useState<Block | undefined>(undefined)
-
-  const deleteMutation = useMutation({
-    mutationFn: (id: string) => api.delete(`/blocks/${id}`),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['blocks'] })
-      toast.success('Block deleted.')
-      setDeletingBlock(undefined)
-    },
-    onError: () => {
-      toast.error('Could not delete the block.')
-    },
-  })
+  const [deletingBlock, setDeletingBlock] = useState<BlockRow | undefined>(undefined)
 
   function openCreateDialog() {
     setDialogOpen(true)
@@ -103,6 +117,7 @@ export function BlocksPage() {
               <TableHead>Name</TableHead>
               <TableHead>Type</TableHead>
               <TableHead>List</TableHead>
+              <TableHead>Used by</TableHead>
               <TableHead>Description</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>
@@ -110,7 +125,7 @@ export function BlocksPage() {
           <TableBody>
             {blocks.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="text-center text-muted-foreground">
+                <TableCell colSpan={6} className="text-center text-muted-foreground">
                   No blocks yet.
                 </TableCell>
               </TableRow>
@@ -128,7 +143,11 @@ export function BlocksPage() {
                 <TableCell className="text-muted-foreground" data-testid={`block-list-mode-${block.id}`}>
                   {block.list_mode ? LIST_MODE_LABELS[block.list_mode] : '—'}
                 </TableCell>
-                <TableCell className="max-w-96 truncate text-muted-foreground">
+                <TableCell className="text-muted-foreground">
+                  <UsageCell block={block} />
+                </TableCell>
+                {/* Narrower than the old max-w-96: the usage column needs the room. */}
+                <TableCell className="max-w-64 truncate text-muted-foreground">
                   {block.description ?? '—'}
                 </TableCell>
                 <TableCell>
@@ -154,17 +173,7 @@ export function BlocksPage() {
 
       <BlockDialog open={dialogOpen} onOpenChange={setDialogOpen} />
 
-      <ConfirmDialog
-        open={deletingBlock !== undefined}
-        onClose={() => setDeletingBlock(undefined)}
-        title={`Delete block "${deletingBlock?.name}"?`}
-        description="The block and its items are deleted. Removing a block that a schedule still uses is refused by the backend."
-        confirmLabel="Delete block"
-        pendingLabel="Deleting…"
-        onConfirm={() => deletingBlock && deleteMutation.mutate(deletingBlock.id)}
-        isPending={deleteMutation.isPending}
-        error={deleteMutation.error}
-      />
+      <DeleteBlockDialog block={deletingBlock} onClose={() => setDeletingBlock(undefined)} />
     </div>
   )
 }

@@ -16,12 +16,15 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
 import { InlineWarning } from '@/components/InlineWarning'
+import { ScheduleDialog } from '@/components/ScheduleDialog'
 import { ScheduleItemDialog } from '@/components/ScheduleItemDialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Loading, QueryError } from '@/components/QueryError'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
-import { api } from '@/lib/http'
+import { channelToInput } from '@/lib/deco'
+import { tzLabel } from '@/lib/format'
+import { api, ApiError } from '@/lib/http'
 import {
   groupItemsByKind,
   legacyDailyDynamicBlock,
@@ -131,13 +134,25 @@ export function ChannelProgramming({
   if (!scheduleId) {
     return (
       <div className="flex flex-col items-start gap-4" data-testid="programming-no-schedule">
-        <p className="text-sm text-muted-foreground">
-          This channel has no schedule yet. Loop one collection below, or assign or create a schedule in Settings.
-        </p>
+        <div className="flex flex-col gap-1">
+          <p className="text-sm" data-testid="programming-no-schedule-text">
+            This channel has no schedule, so nothing is programmed on it.
+          </p>
+          <p className="text-sm text-muted-foreground">
+            A schedule is the list of blocks this channel airs, by time. Create one here and it is assigned to this
+            channel, or loop one collection below to give the channel a 24/7 rotation in a single step.
+          </p>
+          <p className="text-xs text-muted-foreground" data-testid="programming-timezone">
+            {tzLabel(channel.timezone)}
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <CreateScheduleButton channel={channel} />
+          <Button variant="outline" size="sm" onClick={onGoToSettings} data-testid="programming-go-settings">
+            Assign an existing schedule in Settings
+          </Button>
+        </div>
         <ChannelLoopForm channel={channel} />
-        <Button variant="outline" size="sm" onClick={onGoToSettings}>
-          Go to Settings
-        </Button>
       </div>
     )
   }
@@ -163,10 +178,17 @@ export function ChannelProgramming({
 
   return (
     <div className="flex flex-col gap-4">
-      <div className="flex items-center justify-between gap-3">
-        <p className="text-sm text-muted-foreground" data-testid="programming-schedule-name">
-          Schedule: <span className="font-medium text-foreground">{schedule?.name ?? '…'}</span>
-        </p>
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        {/* The zone is part of the reading: the same instant rendered here and
+            in the item dialog behind it must not differ. */}
+        <div className="flex flex-col gap-0.5">
+          <p className="text-sm text-muted-foreground" data-testid="programming-schedule-name">
+            Schedule: <span className="font-medium text-foreground">{schedule?.name ?? '…'}</span>
+          </p>
+          <p className="text-xs text-muted-foreground" data-testid="programming-timezone">
+            {tzLabel(channel.timezone)}
+          </p>
+        </div>
         <Button size="sm" onClick={openCreate} data-testid="new-schedule-item">
           New item
         </Button>
@@ -226,7 +248,7 @@ export function ChannelProgramming({
           .map((section) => (
             <section key={section.key} className="flex flex-col gap-2" data-testid={`items-${section.key}`}>
               <h2 className="text-sm font-medium">{section.title}</h2>
-              <Table>
+              <Table label={`${section.title} schedule items`}>
                 <TableHeader>
                   <TableRow>
                     <TableHead>When</TableHead>
@@ -242,24 +264,34 @@ export function ChannelProgramming({
                     const count = countByBlock.get(item.block_id ?? '')
                     return (
                       <TableRow key={item.id} data-testid="schedule-item-row">
-                        <TableCell>{summarizeRecurrence(item)}</TableCell>
-                        <TableCell>
-                          {block ? (
-                            <Link to={`/blocks/${block.id}`} className="hover:underline" data-testid="item-block-link">
-                              {block.name}
-                            </Link>
-                          ) : item.collection_id ? (
-                            <span data-testid="item-collection">
-                              <Badge variant="default">Collection</Badge>{' '}
-                              <span className="text-muted-foreground">
-                                {item.collection_name ?? item.collection_id} ({item.playback_order})
+                        <TableCell>{summarizeRecurrence(item, channel.timezone)}</TableCell>
+                        {/* A long block name used to be one nowrap cell: it
+                            widened the table past the card and cut the Status
+                            column and every row action off the screen. */}
+                        <TableCell className="whitespace-normal">
+                          <div className="max-w-80 wrap-anywhere">
+                            {block ? (
+                              <Link
+                                to={`/blocks/${block.id}`}
+                                className="hover:underline"
+                                title={block.name}
+                                data-testid="item-block-link"
+                              >
+                                {block.name}
+                              </Link>
+                            ) : item.collection_id ? (
+                              <span data-testid="item-collection">
+                                <Badge variant="default">Collection</Badge>{' '}
+                                <span className="text-muted-foreground">
+                                  {item.collection_name ?? item.collection_id} ({item.playback_order})
+                                </span>
                               </span>
-                            </span>
-                          ) : (
-                            <span className="text-muted-foreground">{item.block_id}</span>
-                          )}
+                            ) : (
+                              <span className="text-muted-foreground">{item.block_id}</span>
+                            )}
+                          </div>
                         </TableCell>
-                        <TableCell data-testid="item-fill">
+                        <TableCell className="whitespace-normal" data-testid="item-fill">
                           {!block ? (
                             item.collection_id ? 'Rule' : '—'
                           ) : block.dynamic ? (
@@ -289,7 +321,7 @@ export function ChannelProgramming({
                             <span className="text-sm text-muted-foreground">Inactive</span>
                           )}
                         </TableCell>
-                        <TableCell className="flex justify-end gap-2 text-right">
+                        <TableCell className="flex flex-wrap justify-end gap-2 text-right">
                           {block && (
                             <Button asChild variant="outline" size="sm">
                               <Link to={`/blocks/${block.id}`}>Edit block</Link>
@@ -316,6 +348,7 @@ export function ChannelProgramming({
         scheduleId={scheduleId}
         item={editingItem}
         hasOtherContinuous={hasOtherContinuous}
+        timeZone={channel.timezone}
       />
 
       <AlertDialog open={convertOpen} onOpenChange={setConvertOpen}>
@@ -347,7 +380,7 @@ export function ChannelProgramming({
         onClose={() => setDeletingItem(undefined)}
         title={
           deletingItem
-            ? `Delete the ${summarizeRecurrence(deletingItem)} item of "${blocksById.get(deletingItem.block_id ?? '')?.name ?? 'this block'}"?`
+            ? `Delete the ${summarizeRecurrence(deletingItem, channel.timezone)} item of "${blocksById.get(deletingItem.block_id ?? '')?.name ?? 'this block'}"?`
             : 'Delete schedule item?'
         }
         description={
@@ -362,5 +395,52 @@ export function ChannelProgramming({
         error={deleteMutation.error}
       />
     </div>
+  )
+}
+
+// The one action a channel with no schedule needs: create a schedule and attach
+// it to the channel in the same step, so the operator never has to find the
+// Settings select afterwards. Also mounted on the channel page's Guide tab,
+// which has nothing to draw without a schedule.
+export function CreateScheduleButton({
+  channel,
+  label = 'Create a schedule',
+  testId = 'create-schedule',
+}: {
+  channel: Channel
+  label?: string
+  // Two tabs can mount this at once (the page keeps the inactive one alive), so
+  // the id has to say which one it is.
+  testId?: string
+}) {
+  const queryClient = useQueryClient()
+  const [open, setOpen] = useState(false)
+  const attach = useMutation({
+    mutationFn: (schedule: Schedule) =>
+      api.put<Channel>(`/channels/${channel.id}`, { ...channelToInput(channel), schedule_id: schedule.id }),
+    onSuccess: (saved) => {
+      queryClient.setQueryData(['channels', channel.id], saved)
+      queryClient.invalidateQueries({ queryKey: ['channels'] })
+      toast.success('Schedule created and assigned to this channel.')
+    },
+    onError: (err) => {
+      // The schedule exists either way, so the list has to be refreshed; only
+      // the assignment failed.
+      queryClient.invalidateQueries({ queryKey: ['schedules'] })
+      toast.error(
+        err instanceof ApiError
+          ? `The schedule was created but could not be assigned (${err.message}). Assign it in Settings.`
+          : 'The schedule was created but could not be assigned. Assign it in Settings.',
+      )
+    },
+  })
+
+  return (
+    <>
+      <Button size="sm" data-testid={testId} onClick={() => setOpen(true)}>
+        {label}
+      </Button>
+      <ScheduleDialog open={open} onOpenChange={setOpen} onSaved={(schedule) => attach.mutate(schedule)} />
+    </>
   )
 }

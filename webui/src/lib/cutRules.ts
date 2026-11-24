@@ -20,9 +20,26 @@ import type {
   FillerScope,
 } from '@/lib/types'
 
+// Limits of a cut rule set, mirrored from backend/internal/domain/cut_rule.go
+// and the checks in backend/internal/cutplan/validate.go. The editor reports a
+// problem before the request is sent, so the preview never asks the planner
+// about a value it is going to refuse.
 export const MAX_CUT_RULES = 20
 export const MAX_CUT_PHASES = 5
 export const MAX_CUT_NAME = 100
+export const MAX_CUT_RULE_NAME = 100
+export const MAX_CUT_PERCENTAGES = 10
+export const MAX_CUT_OFFSETS = 20
+export const MAX_CUT_BREAKS = 50
+// domain.MinCutIntervalMs/MaxCutIntervalMs (60000 to 86400000 ms), in minutes.
+export const MIN_CUT_INTERVAL_MINUTES = 1
+export const MAX_CUT_INTERVAL_MINUTES = 1440
+// domain.MaxCutSnapToleranceMs, in minutes.
+export const MAX_CUT_SNAP_MINUTES = 30
+// A guard rail's day-long bound (86400000 ms), in minutes.
+export const MAX_CUT_GUARD_MINUTES = 1440
+// The longest sample an item preview accepts (cutruleset.Preview: 7 days).
+export const MAX_SAMPLE_MINUTES = 7 * 24 * 60
 
 export const CUT_KIND_LABELS: Record<CutItemKind, string> = {
   movie: 'Movies',
@@ -295,102 +312,272 @@ function canonical(d: RuleSetDraft) {
   }
 }
 
-type Parsed<T> = { ok: true; value: T } | { ok: false; error: string }
+export type Parsed<T> = { ok: true; value: T } | { ok: false; error: string }
 
 function fail<T>(error: string): Parsed<T> {
   return { ok: false, error }
 }
 
-function positiveMs(text: string, label: string): Parsed<number> {
-  const n = parseNumber(text)
-  if (n === null || Number.isNaN(n) || n <= 0) return fail(`${label} must be a number of minutes above 0.`)
-  return { ok: true, value: msFromMinutes(n) }
+// CutProblem is one thing the author has to fix. id is the id of the control
+// the message belongs under ('' for the form itself), so one submit can mark
+// every field at once instead of reporting the first problem at the bottom of
+// the page.
+export interface CutProblem {
+  id: string
+  message: string
 }
 
-// strategyToInput converts a strategy draft; label prefixes the error ("Rule 2").
-export function strategyToInput(d: StrategyDraft, label: string): Parsed<CutStrategy> {
+function push(problems: CutProblem[], id: string, message: string) {
+  problems.push({ id, message })
+}
+
+// collectMinutes reads a decimal number of minutes inside [min, max]; the
+// message names minutes, never the milliseconds the API takes.
+function collectMinutes(
+  text: string,
+  id: string,
+  problems: CutProblem[],
+  what: string,
+  min: number,
+  max: number,
+): number | null {
+  const n = parseNumber(text)
+  if (n === null) {
+    push(problems, id, `${what} is required.`)
+    return null
+  }
+  if (Number.isNaN(n) || n < min || n > max) {
+    push(problems, id, `${what} must be a number of minutes from ${min} to ${max}.`)
+    return null
+  }
+  return msFromMinutes(n)
+}
+
+// collectPositiveMinutes reads a decimal number of minutes above 0 (a phase
+// bound has no upper limit in the API).
+function collectPositiveMinutes(text: string, id: string, problems: CutProblem[], what: string): number | null {
+  const n = parseNumber(text)
+  if (n === null) {
+    push(problems, id, `${what} is required.`)
+    return null
+  }
+  if (Number.isNaN(n) || n <= 0) {
+    push(problems, id, `${what} must be a number of minutes above 0.`)
+    return null
+  }
+  return msFromMinutes(n)
+}
+
+function collectPercentages(text: string, id: string, problems: CutProblem[]): number[] | undefined {
+  const list = parseList(text)
+  if (list === null || list.length === 0) {
+    push(problems, id, 'Enter the percentages as numbers, e.g. 50 or 33, 66.')
+    return undefined
+  }
+  let bad = false
+  if (list.length > MAX_CUT_PERCENTAGES) {
+    push(problems, id, `At most ${MAX_CUT_PERCENTAGES} percentages.`)
+    bad = true
+  }
+  for (const p of list) {
+    if (!(p > 0 && p < 100)) {
+      push(problems, id, 'Each percentage must be above 0 and below 100.')
+      bad = true
+      break
+    }
+  }
+  for (let i = 1; i < list.length; i++) {
+    if (list[i] <= list[i - 1]) {
+      push(problems, id, 'The percentages must ascend and never repeat, e.g. 33, 66.')
+      bad = true
+      break
+    }
+  }
+  return bad ? undefined : list
+}
+
+function collectOffsets(text: string, id: string, problems: CutProblem[]): number[] | undefined {
+  const list = parseList(text)
+  if (list === null || list.length === 0) {
+    push(problems, id, 'Enter the cut times in minutes, e.g. 20, 50.')
+    return undefined
+  }
+  let bad = false
+  if (list.length > MAX_CUT_OFFSETS) {
+    push(problems, id, `At most ${MAX_CUT_OFFSETS} cut times.`)
+    bad = true
+  }
+  for (const o of list) {
+    if (o <= 0) {
+      push(problems, id, 'Each cut time must be a number of minutes above 0.')
+      bad = true
+      break
+    }
+  }
+  for (let i = 1; i < list.length; i++) {
+    if (list[i] <= list[i - 1]) {
+      push(problems, id, 'The cut times must ascend and never repeat, e.g. 20, 50.')
+      bad = true
+      break
+    }
+  }
+  return bad ? undefined : list
+}
+
+function collectPhases(d: StrategyDraft, id: string, problems: CutProblem[]): CutPhase[] {
+  if (d.phases.length === 0 || d.phases.length > MAX_CUT_PHASES) {
+    push(problems, `${id}-phases`, `A phased cadence holds 1 to ${MAX_CUT_PHASES} phases.`)
+    return []
+  }
+  const phases: CutPhase[] = []
+  let prev: number | null = null
+  for (let i = 0; i < d.phases.length; i++) {
+    const p = d.phases[i]
+    const n = i + 1
+    const every = collectMinutes(
+      p.every_minutes,
+      `${id}-phase-${i}-every`,
+      problems,
+      `Phase ${n} cadence`,
+      MIN_CUT_INTERVAL_MINUTES,
+      MAX_CUT_INTERVAL_MINUTES,
+    )
+    const phase: CutPhase = { every_ms: every ?? 0 }
+    if (i < d.phases.length - 1) {
+      const untilId = `${id}-phase-${i}-until`
+      const until = collectPositiveMinutes(p.until_minutes, untilId, problems, `Phase ${n} end`)
+      if (until !== null) {
+        if (prev !== null) {
+          const ordered = d.phase_bound === 'from_start' ? until > prev : until < prev
+          if (!ordered) {
+            push(
+              problems,
+              untilId,
+              d.phase_bound === 'from_start'
+                ? 'Each phase must end after the one before it.'
+                : 'Each phase must end earlier than the one before it, counted from the end.',
+            )
+          }
+        }
+        prev = until
+        if (d.phase_bound === 'from_start') phase.until_ms = until
+        else phase.until_before_end_ms = until
+      }
+    }
+    phases.push(phase)
+  }
+  return phases
+}
+
+// collectStrategy converts one strategy draft and records every problem it
+// finds under the id of the control that has to change.
+function collectStrategy(d: StrategyDraft, id: string, problems: CutProblem[]): CutStrategy {
   switch (d.type) {
     case 'none':
-      return { ok: true, value: { type: 'none' } }
+      return { type: 'none' }
     case 'interval': {
-      const every = positiveMs(d.every_minutes, `${label}: the interval`)
-      return every.ok ? { ok: true, value: { type: 'interval', every_ms: every.value } } : every
+      const every = collectMinutes(
+        d.every_minutes,
+        `${id}-every`,
+        problems,
+        'The interval',
+        MIN_CUT_INTERVAL_MINUTES,
+        MAX_CUT_INTERVAL_MINUTES,
+      )
+      return { type: 'interval', every_ms: every ?? 0 }
     }
     case 'percentage': {
-      const list = parseList(d.percentages)
-      if (list === null || list.length === 0) return fail(`${label}: enter the percentages as numbers, e.g. 50 or 33, 66.`)
-      return { ok: true, value: { type: 'percentage', percentages: list } }
+      const list = collectPercentages(d.percentages, `${id}-percentages`, problems)
+      return { type: 'percentage', percentages: list ?? [] }
     }
     case 'offsets': {
-      const list = parseList(d.offsets_minutes)
-      if (list === null || list.length === 0) return fail(`${label}: enter the cut times in minutes, e.g. 20, 50.`)
-      return { ok: true, value: { type: 'offsets', offsets_ms: list.map(msFromMinutes) } }
+      const list = collectOffsets(d.offsets_minutes, `${id}-offsets`, problems)
+      return { type: 'offsets', offsets_ms: (list ?? []).map(msFromMinutes) }
     }
     case 'phased': {
-      const phases: CutPhase[] = []
-      for (let i = 0; i < d.phases.length; i++) {
-        const p = d.phases[i]
-        const n = i + 1
-        const every = positiveMs(p.every_minutes, `${label}: phase ${n} cadence`)
-        if (!every.ok) return every
-        const phase: CutPhase = { every_ms: every.value }
-        if (i < d.phases.length - 1) {
-          const until = positiveMs(p.until_minutes, `${label}: phase ${n} end`)
-          if (!until.ok) return until
-          if (d.phase_bound === 'from_start') phase.until_ms = until.value
-          else phase.until_before_end_ms = until.value
-        }
-        phases.push(phase)
-      }
-      return { ok: true, value: { type: 'phased', phases } }
+      const phases = collectPhases(d, id, problems)
+      return { type: 'phased', phases }
     }
     case 'chapter': {
-      if (d.roles.length === 0) return fail(`${label}: pick at least one chapter position.`)
+      if (d.roles.length === 0) push(problems, `${id}-roles`, 'Pick at least one chapter position.')
       const value: CutStrategy = { type: 'chapter', roles: d.roles }
       if (d.fallback_enabled && d.fallback) {
-        const fb = strategyToInput(d.fallback, `${label} fallback`)
-        if (!fb.ok) return fb
-        value.fallback = fb.value as CutFallback
+        value.fallback = collectStrategy(d.fallback, `${id}-fallback`, problems) as CutFallback
       }
-      return { ok: true, value }
+      return value
     }
   }
 }
 
-function selectorToInput(r: RuleDraft, label: string): Parsed<CutSelector> {
-  const sel: CutSelector = {}
-  if (r.kinds.length > 0) sel.kinds = r.kinds
-  for (const [text, field, what] of [
-    [r.min_minutes, 'min_duration_ms', 'the minimum duration'],
-    [r.max_minutes, 'max_duration_ms', 'the maximum duration'],
-  ] as const) {
-    const n = parseNumber(text)
-    if (n === null) continue
-    if (Number.isNaN(n) || n <= 0) return fail(`${label}: ${what} must be a number of minutes above 0, or empty.`)
-    sel[field] = msFromMinutes(n)
-  }
-  if (r.has_chapters !== 'any') sel.has_chapters = r.has_chapters === 'yes'
-  return { ok: true, value: sel }
+// strategyToInput converts a strategy draft; label prefixes the first problem
+// ("Rule 2"). The editor uses draftProblems instead, which marks the field.
+export function strategyToInput(d: StrategyDraft, label: string): Parsed<CutStrategy> {
+  const problems: CutProblem[] = []
+  const value = collectStrategy(d, '', problems)
+  return problems.length > 0 ? fail(`${label}: ${problems[0].message}`) : { ok: true, value }
 }
 
-function guardsToInput(g: GuardsDraft): Parsed<CutGuards> {
+function collectSelector(r: RuleDraft, id: string, problems: CutProblem[]): CutSelector {
+  const sel: CutSelector = {}
+  if (r.kinds.length > 0) sel.kinds = r.kinds
+  const min = parseNumber(r.min_minutes)
+  const max = parseNumber(r.max_minutes)
+  const minMs = min === null ? 0 : msFromMinutes(min)
+  const maxMs = max === null ? 0 : msFromMinutes(max)
+  if (min !== null && (Number.isNaN(min) || min <= 0)) {
+    push(problems, `${id}-min`, 'The minimum duration must be a number of minutes above 0, or empty.')
+  } else if (minMs > 0) sel.min_duration_ms = minMs
+  if (max !== null && (Number.isNaN(max) || max <= 0)) {
+    push(problems, `${id}-max`, 'The maximum duration must be a number of minutes above 0, or empty.')
+  } else if (maxMs > 0) sel.max_duration_ms = maxMs
+  if (minMs > 0 && maxMs > 0 && minMs >= maxMs) {
+    push(problems, `${id}-min`, 'The minimum duration must be below the maximum.')
+  }
+  if (r.has_chapters !== 'any') sel.has_chapters = r.has_chapters === 'yes'
+  return sel
+}
+
+// selectorCovers mirrors cutplan's covers: every item matching b also matches
+// a, so a rule with selector b listed after a can never be reached.
+function selectorCovers(a: CutSelector, b: CutSelector): boolean {
+  if (a.kinds && a.kinds.length > 0) {
+    if (!b.kinds || b.kinds.length === 0) return false
+    for (const k of b.kinds) if (!a.kinds.includes(k)) return false
+  }
+  const aMin = a.min_duration_ms ?? 0
+  const bMin = b.min_duration_ms ?? 0
+  if (aMin > bMin) return false
+  const aMax = a.max_duration_ms ?? 0
+  const bMax = b.max_duration_ms ?? 0
+  if (aMax > 0 && (bMax === 0 || bMax > aMax)) return false
+  if (a.has_chapters !== undefined && (b.has_chapters === undefined || a.has_chapters !== b.has_chapters)) return false
+  return true
+}
+
+function collectGuards(g: GuardsDraft, problems: CutProblem[]): CutGuards {
   const out: CutGuards = {}
-  for (const [text, field, what] of [
-    [g.min_segment_minutes, 'min_segment_ms', 'the minimum segment'],
-    [g.min_from_start_minutes, 'min_from_start_ms', 'the minimum distance from the start'],
-    [g.min_from_end_minutes, 'min_from_end_ms', 'the minimum distance from the end'],
+  for (const [text, field, id, what] of [
+    [g.min_segment_minutes, 'min_segment_ms', 'cr-guard-segment', 'The shortest segment'],
+    [g.min_from_start_minutes, 'min_from_start_ms', 'cr-guard-start', 'The distance from the start'],
+    [g.min_from_end_minutes, 'min_from_end_ms', 'cr-guard-end', 'The distance from the end'],
   ] as const) {
     const n = parseNumber(text)
     if (n === null) continue
-    if (Number.isNaN(n) || n < 0) return fail(`Guard rails: ${what} must be a number of minutes, or empty for the default.`)
+    if (Number.isNaN(n) || n < 0 || n > MAX_CUT_GUARD_MINUTES) {
+      push(problems, id, `${what} must be a number of minutes from 0 to ${MAX_CUT_GUARD_MINUTES}, or empty for the default.`)
+      continue
+    }
     if (n > 0) out[field] = msFromMinutes(n)
   }
   const mb = parseNumber(g.max_breaks)
   if (mb !== null) {
-    if (Number.isNaN(mb) || !Number.isInteger(mb) || mb < 0) return fail('Guard rails: the maximum number of breaks must be a whole number, or empty for the default.')
-    if (mb > 0) out.max_breaks = mb
+    if (Number.isNaN(mb) || !Number.isInteger(mb) || mb < 0 || mb > MAX_CUT_BREAKS) {
+      push(problems, 'cr-guard-max', `The maximum number of breaks must be a whole number from 0 to ${MAX_CUT_BREAKS}.`)
+    } else if (mb > 0) {
+      out.max_breaks = mb
+    }
   }
-  return { ok: true, value: out }
+  return out
 }
 
 export interface CutConfigInput {
@@ -399,47 +586,86 @@ export interface CutConfigInput {
   guards: CutGuards
 }
 
-// draftToConfig converts the rules, default and guards (everything but the
-// scope), or reports the first thing the author has to fix.
-export function draftToConfig(d: RuleSetDraft): Parsed<CutConfigInput> {
+interface CollectedConfig {
+  config: CutConfigInput
+  problems: CutProblem[]
+}
+
+const RULE_ID = (index: number) => `cr-rule-${index}`
+
+function collectConfig(d: RuleSetDraft): CollectedConfig {
+  const problems: CutProblem[] = []
   const rules: CutRule[] = []
   for (let i = 0; i < d.rules.length; i++) {
     const r = d.rules[i]
-    const label = `Rule ${i + 1}`
-    const match = selectorToInput(r, label)
-    if (!match.ok) return match
-    const strategy = strategyToInput(r.strategy, label)
-    if (!strategy.ok) return strategy
-    const rule: CutRule = { match: match.value, strategy: strategy.value }
+    const id = RULE_ID(i)
+    if (r.name.trim().length > MAX_CUT_RULE_NAME) {
+      push(problems, `${id}-name`, `The rule name must be at most ${MAX_CUT_RULE_NAME} characters.`)
+    }
+    const rule: CutRule = { match: collectSelector(r, id, problems), strategy: collectStrategy(r.strategy, id, problems) }
     if (r.name.trim()) rule.name = r.name.trim()
     const snap = parseNumber(r.snap_minutes)
     if (snap !== null) {
-      if (Number.isNaN(snap) || snap < 0) return fail(`${label}: the chapter snap distance must be a number of minutes, or empty.`)
-      if (snap > 0) rule.snap_tolerance_ms = msFromMinutes(snap)
+      if (Number.isNaN(snap) || snap < 0 || snap > MAX_CUT_SNAP_MINUTES) {
+        push(problems, `${id}-snap`, `The snap distance must be from 0 to ${MAX_CUT_SNAP_MINUTES} minutes, or empty.`)
+      } else if (snap > 0) {
+        rule.snap_tolerance_ms = msFromMinutes(snap)
+      }
     }
     if (r.guards) rule.guards = r.guards
     rules.push(rule)
   }
-  const guards = guardsToInput(d.guards)
-  if (!guards.ok) return guards
-  const config: CutConfigInput = { rules, guards: guards.value }
-  if (d.default_enabled) {
-    const def = strategyToInput(d.default, 'Default')
-    if (!def.ok) return def
-    config.default = def.value
+  for (let i = 0; i < rules.length; i++) {
+    for (let j = 0; j < i; j++) {
+      if (selectorCovers(rules[j].match ?? {}, rules[i].match ?? {})) {
+        push(problems, `${RULE_ID(i)}-card`, `Can never match: rule ${j + 1} already matches every item this one would.`)
+      }
+    }
   }
-  return { ok: true, value: config }
+  const config: CutConfigInput = { rules, guards: collectGuards(d.guards, problems) }
+  if (d.default_enabled) {
+    config.default = collectStrategy(d.default, 'cr-default', problems)
+  } else if (rules.length === 0) {
+    push(problems, 'cr-default-enabled', 'Add at least one rule, or enable the default strategy.')
+  }
+  if (rules.length > MAX_CUT_RULES) push(problems, '', `A rule set holds at most ${MAX_CUT_RULES} rules.`)
+  return { config, problems }
+}
+
+// draftProblems reports every problem in the draft, each bound to the control
+// that has to change. An empty list means the request can be sent.
+export function draftProblems(d: RuleSetDraft): CutProblem[] {
+  const problems: CutProblem[] = []
+  if (!d.scope_id) {
+    push(problems, 'cr-scope-target', d.scope_type === 'channel' ? 'Select a channel.' : 'Select a block.')
+  }
+  if (!Number.isInteger(d.position)) push(problems, 'cr-position', 'Position must be a whole number.')
+  if (d.name.length > MAX_CUT_NAME) push(problems, 'cr-name', `The name must be at most ${MAX_CUT_NAME} characters.`)
+  problems.push(...collectConfig(d).problems)
+  return problems
+}
+
+// draftToConfig converts the rules, default and guards (everything but the
+// scope), or reports the first thing the author has to fix.
+export function draftToConfig(d: RuleSetDraft): Parsed<CutConfigInput> {
+  const { config, problems } = collectConfig(d)
+  return problems.length > 0 ? fail(problems[0].message) : { ok: true, value: config }
+}
+
+// problemsById indexes the problems by control id (the first message per
+// control wins), the shape the fields read.
+export function problemsById(problems: CutProblem[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const p of problems) {
+    if (p.id && !(p.id in out)) out[p.id] = p.message
+  }
+  return out
 }
 
 // validateDraft returns the first problem found before the request is sent.
 export function validateDraft(d: RuleSetDraft): string | null {
-  if (!d.scope_id) return d.scope_type === 'channel' ? 'Select a channel.' : 'Select a block.'
-  if (!Number.isInteger(d.position)) return 'Position must be a whole number.'
-  if (d.name.length > MAX_CUT_NAME) return `The name must be at most ${MAX_CUT_NAME} characters.`
-  if (d.rules.length === 0 && !d.default_enabled) return 'Add at least one rule or enable the default strategy.'
-  if (d.rules.length > MAX_CUT_RULES) return `A rule set holds at most ${MAX_CUT_RULES} rules.`
-  const config = draftToConfig(d)
-  return config.ok ? null : config.error
+  const problems = draftProblems(d)
+  return problems.length > 0 ? problems[0].message : null
 }
 
 export function draftToInput(d: RuleSetDraft): CutRuleSetInput {
@@ -452,6 +678,109 @@ export function draftToInput(d: RuleSetDraft): CutRuleSetInput {
     position: d.position,
     ...config.value,
   }
+}
+
+// mapPlannerMessage binds a refusal from the server ("rule 1: every_ms must
+// be between 60000 and 86400000") back to the control that has to change, in
+// the units the author types. The server reports the first problem of a rule
+// set; null when the message is about the rule set as a whole or unknown.
+export function mapPlannerMessage(message: string): CutProblem | null {
+  const text = message.trim()
+  const shadow = /^rule (\d+) can never match: (.*)$/.exec(text)
+  if (shadow) {
+    return { id: `${RULE_ID(Number(shadow[1]) - 1)}-card`, message: `Can never match: ${shadow[2]}.` }
+  }
+  const rule = /^rule (\d+): (.*)$/.exec(text)
+  if (rule) return mapPlannerBody(rule[2], RULE_ID(Number(rule[1]) - 1))
+  if (text === 'add at least one rule or a default strategy') {
+    return { id: 'cr-default-enabled', message: 'Add at least one rule, or enable the default strategy.' }
+  }
+  const guards = /^guards: (.*)$/.exec(text)
+  if (guards) return mapGuardMessage(guards[1])
+  const def = /^default: (.*)$/.exec(text)
+  if (def) return mapPlannerBody(def[1], 'cr-default')
+  if (text.includes('rules must hold at most')) {
+    return { id: '', message: `A rule set holds at most ${MAX_CUT_RULES} rules.` }
+  }
+  return null
+}
+
+function mapPlannerBody(body: string, base: string): CutProblem {
+  const phase = /^phase (\d+): (.*)$/.exec(body)
+  if (phase) {
+    const n = Number(phase[1])
+    const every = phase[2].startsWith('every_ms')
+    return {
+      id: `${base}-phase-${n - 1}-${every ? 'every' : 'until'}`,
+      message: every
+        ? `Phase ${n} cadence must be a number of minutes from ${MIN_CUT_INTERVAL_MINUTES} to ${MAX_CUT_INTERVAL_MINUTES}.`
+        : `Phase ${n} needs its own end, ordered against the phases before it.`,
+    }
+  }
+  if (body.startsWith('every_ms')) {
+    return {
+      id: `${base}-every`,
+      message: `The interval must be a number of minutes from ${MIN_CUT_INTERVAL_MINUTES} to ${MAX_CUT_INTERVAL_MINUTES}.`,
+    }
+  }
+  if (body.startsWith('percentages')) {
+    return {
+      id: `${base}-percentages`,
+      message: `Enter percentages above 0 and below 100, in ascending order, at most ${MAX_CUT_PERCENTAGES} of them.`,
+    }
+  }
+  if (body.startsWith('offsets_ms')) {
+    return {
+      id: `${base}-offsets`,
+      message: `Enter ascending cut times above 0 minutes, at most ${MAX_CUT_OFFSETS} of them.`,
+    }
+  }
+  if (body.startsWith('roles')) return { id: `${base}-roles`, message: 'Pick at least one chapter position.' }
+  if (body.startsWith('kinds')) return { id: `${base}-type`, message: 'Pick the item kinds this rule applies to.' }
+  if (body.startsWith('min_duration_ms') || body.startsWith('max_duration_ms') || body.startsWith('duration bounds')) {
+    return {
+      id: `${base}-min`,
+      message: 'The minimum duration must be a positive number of minutes below the maximum, or empty.',
+    }
+  }
+  if (body.startsWith('snap_tolerance_ms')) {
+    return { id: `${base}-snap`, message: `The snap distance must be from 0 to ${MAX_CUT_SNAP_MINUTES} minutes, or empty.` }
+  }
+  if (body.startsWith('name')) return { id: `${base}-name`, message: `The rule name must be at most ${MAX_CUT_RULE_NAME} characters.` }
+  if (body.startsWith('guards:')) return mapGuardMessage(body.slice('guards:'.length).trim())
+  if (body.startsWith('fallback:')) return mapPlannerBody(body.slice('fallback:'.length).trim(), `${base}-fallback`)
+  if (body.includes('does not apply to') || body.startsWith('strategy type')) {
+    return { id: `${base}-type`, message: 'Choose the cut type and fill in only its own fields.' }
+  }
+  return { id: `${base}-type`, message: 'This rule cannot be saved as entered; check its cut settings.' }
+}
+
+function mapGuardMessage(body: string): CutProblem {
+  if (body.startsWith('max_breaks')) {
+    return {
+      id: 'cr-guard-max',
+      message: `The maximum number of breaks must be a whole number from 0 to ${MAX_CUT_BREAKS}.`,
+    }
+  }
+  if (body.startsWith('min_segment_ms')) {
+    return {
+      id: 'cr-guard-segment',
+      message: `The shortest segment must be a number of minutes from 0 to ${MAX_CUT_GUARD_MINUTES}, or empty.`,
+    }
+  }
+  if (body.startsWith('min_from_start_ms')) {
+    return {
+      id: 'cr-guard-start',
+      message: `The distance from the start must be a number of minutes from 0 to ${MAX_CUT_GUARD_MINUTES}, or empty.`,
+    }
+  }
+  if (body.startsWith('min_from_end_ms')) {
+    return {
+      id: 'cr-guard-end',
+      message: `The distance from the end must be a number of minutes from 0 to ${MAX_CUT_GUARD_MINUTES}, or empty.`,
+    }
+  }
+  return { id: '', message: 'The guard rails cannot be saved as entered.' }
 }
 
 export function moveItem<T>(items: T[], index: number, delta: number): T[] {
@@ -486,6 +815,9 @@ export function defaultSamples(): SampleDraft[] {
 export function sampleToPreview(config: CutConfigInput, s: SampleDraft): Parsed<CutPreviewInput> {
   const minutes = parseNumber(s.duration_minutes)
   if (minutes === null || Number.isNaN(minutes) || minutes <= 0) return fail('Enter the sample duration in minutes.')
+  if (minutes > MAX_SAMPLE_MINUTES) {
+    return fail(`The sample duration must be at most ${MAX_SAMPLE_MINUTES} minutes (7 days).`)
+  }
   const body: CutPreviewInput = { ...config, kind: s.kind, duration_ms: msFromMinutes(minutes) }
   if (s.chapter_minutes.trim() !== '') {
     const list = parseList(s.chapter_minutes)

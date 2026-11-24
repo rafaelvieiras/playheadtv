@@ -11,14 +11,16 @@ import { SaveBar } from '@/components/SaveBar'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
-import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
+  KIND_HINTS,
   KIND_LABELS,
   MAX_FIT_ATTEMPTS_MAX,
   MAX_FIT_ATTEMPTS_MIN,
   SCOPE_LABELS,
+  STRATEGY_HINTS,
   STRATEGY_LABELS,
   validMaxFitAttempts,
 } from '@/lib/filler'
@@ -57,6 +59,8 @@ function ruleToInput(rule: FillerRule): FillerRuleInput {
     max_fit_attempts: rule.max_fit_attempts ?? 1,
   }
 }
+
+type FieldErrors = Partial<Record<'scope' | 'pool' | 'position' | 'fit_attempts', string>>
 
 function sameInput(a: FillerRuleInput, b: FillerRuleInput): boolean {
   return (
@@ -101,6 +105,9 @@ export function FillerRuleEditorPage() {
 
   const [draft, setDraft] = useState<FillerRuleInput | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
+  // One entry per field the operator has to fix, so a save reports all of them
+  // and each message sits under its own control.
+  const [errors, setErrors] = useState<FieldErrors>({})
   const [poolDialogOpen, setPoolDialogOpen] = useState(false)
 
   const save = useMutation({
@@ -148,25 +155,30 @@ export function FillerRuleEditorPage() {
   function patch(next: Partial<FillerRuleInput>) {
     setDraft({ ...current, ...next })
     setFormError(null)
+    // The message follows the value: it goes away as soon as the operator acts
+    // on the field it was about.
+    setErrors((prev) => {
+      if (Object.keys(prev).length === 0) return prev
+      const next_ = { ...prev }
+      if ('scope_id' in next) delete next_.scope
+      if ('filler_pool_id' in next) delete next_.pool
+      if ('position' in next) delete next_.position
+      if ('max_fit_attempts' in next) delete next_.fit_attempts
+      return next_
+    })
   }
 
   function handleSave() {
-    if (!current.scope_id) {
-      setFormError(current.scope_type === 'channel' ? 'Select a channel.' : 'Select a block.')
-      return
-    }
-    if (!current.filler_pool_id) {
-      setFormError('Select a filler pool.')
-      return
-    }
-    if (!Number.isInteger(current.position)) {
-      setFormError('Position must be a whole number.')
-      return
-    }
+    const next: FieldErrors = {}
+    if (!current.scope_id) next.scope = current.scope_type === 'channel' ? 'Select a channel.' : 'Select a block.'
+    if (!current.filler_pool_id) next.pool = 'Select a filler pool.'
+    if (!Number.isInteger(current.position)) next.position = 'Enter a whole number.'
     if (!validMaxFitAttempts(current.max_fit_attempts)) {
-      setFormError(`Fit attempts must be a whole number from ${MAX_FIT_ATTEMPTS_MIN} to ${MAX_FIT_ATTEMPTS_MAX}.`)
-      return
+      next.fit_attempts = `Enter a whole number from ${MAX_FIT_ATTEMPTS_MIN} to ${MAX_FIT_ATTEMPTS_MAX}.`
     }
+    setErrors(next)
+    setFormError(null)
+    if (Object.keys(next).length > 0) return
     save.mutate(current)
   }
 
@@ -179,7 +191,7 @@ export function FillerRuleEditorPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title={isNew ? 'New filler rule' : `${KIND_LABELS[loaded.kind]} filler rule`}
+        title={isNew ? 'New filler rule' : `${KIND_LABELS[current.kind]} filler rule`}
         breadcrumb={breadcrumb}
       />
 
@@ -212,7 +224,12 @@ export function FillerRuleEditorPage() {
             onValueChange={(v) => patch({ scope_id: v })}
             placeholder={current.scope_type === 'channel' ? 'Select a channel' : 'Select a block'}
             searchPlaceholder="Search…"
+            aria-invalid={errors.scope ? true : undefined}
+            aria-describedby={errors.scope ? 'rule-scope-target-error' : undefined}
           />
+          <FieldError id="rule-scope-target-error" data-slot="field-error">
+            {errors.scope}
+          </FieldError>
         </Field>
 
         <Field>
@@ -229,6 +246,7 @@ export function FillerRuleEditorPage() {
               ))}
             </SelectContent>
           </Select>
+          <FieldDescription data-testid="rule-kind-hint">{KIND_HINTS[current.kind]}</FieldDescription>
         </Field>
 
         <Field>
@@ -242,11 +260,16 @@ export function FillerRuleEditorPage() {
               onValueChange={(v) => patch({ filler_pool_id: v })}
               placeholder="Select a filler pool"
               searchPlaceholder="Search pools…"
+              aria-invalid={errors.pool ? true : undefined}
+              aria-describedby={errors.pool ? 'rule-pool-error' : undefined}
             />
             <Button type="button" variant="outline" onClick={() => setPoolDialogOpen(true)}>
               New pool
             </Button>
           </div>
+          <FieldError id="rule-pool-error" data-slot="field-error">
+            {errors.pool}
+          </FieldError>
         </Field>
 
         <Field>
@@ -266,6 +289,7 @@ export function FillerRuleEditorPage() {
               ))}
             </SelectContent>
           </Select>
+          <FieldDescription data-testid="rule-strategy-hint">{STRATEGY_HINTS[current.selection_strategy]}</FieldDescription>
         </Field>
 
         <Field>
@@ -276,8 +300,13 @@ export function FillerRuleEditorPage() {
             step={1}
             value={Number.isNaN(current.position) ? '' : current.position}
             onChange={(e) => patch({ position: e.target.value === '' ? NaN : Number(e.target.value) })}
+            aria-invalid={errors.position ? true : undefined}
+            aria-describedby={errors.position ? 'rule-position-error' : undefined}
           />
           <FieldDescription>Order among rules of the same scope and type.</FieldDescription>
+          <FieldError id="rule-position-error" data-slot="field-error">
+            {errors.position}
+          </FieldError>
         </Field>
 
         {(current.kind === 'tail' || current.kind === 'fallback') && (
@@ -292,12 +321,17 @@ export function FillerRuleEditorPage() {
               max={MAX_FIT_ATTEMPTS_MAX}
               value={Number.isNaN(current.max_fit_attempts) ? '' : current.max_fit_attempts}
               onChange={(e) => patch({ max_fit_attempts: e.target.value === '' ? NaN : Number(e.target.value) })}
+              aria-invalid={errors.fit_attempts ? true : undefined}
+              aria-describedby={errors.fit_attempts ? 'rule-fit-attempts-error' : undefined}
             />
             <FieldDescription>
               When an item does not fit the time left, try other items of the pool, up to this many misses in a row
               (1 to {MAX_FIT_ATTEMPTS_MAX}). 1 stops at the first miss. The fill keeps going with whatever fits while
               time is left; skipped items do not lose their turn in a sequential rotation.
             </FieldDescription>
+            <FieldError id="rule-fit-attempts-error" data-slot="field-error">
+              {errors.fit_attempts}
+            </FieldError>
           </Field>
         )}
       </FieldGroup>

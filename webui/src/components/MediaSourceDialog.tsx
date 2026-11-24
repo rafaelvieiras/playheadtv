@@ -49,6 +49,24 @@ function sourceToForm(source: MediaSource): FormState {
   return { type: source.type, name: source.name, base_url: source.base_url ?? '', credential: '' }
 }
 
+// Each type reaches the backend differently, so one Jellyfin-only sentence
+// cannot describe all three: a local folder has no address and no credential
+// here (its path lives on the paired client that scans it), and Plex has no
+// direct connection in v1.
+function dialogDescription(isEditing: boolean, type: SourceType): string {
+  if (type === 'local_folder') {
+    return 'A local folder is cataloged by a paired Playhead TV client, not by this backend.'
+  }
+  if (type === 'plex') {
+    return isEditing
+      ? 'Plex is not supported for a direct connection in v1. A paired client pushes its catalog.'
+      : 'Plex is not supported for a direct connection in v1: the source is created in app-side sync mode, and a paired client pushes its catalog.'
+  }
+  return isEditing
+    ? 'Update the source details. Changing the URL of a Jellyfin source repeats the connection test.'
+    : 'On save, a Jellyfin source is tested automatically to decide between a direct connection and app-side sync.'
+}
+
 export function MediaSourceDialog({ open, onOpenChange, source }: MediaSourceDialogProps) {
   const queryClient = useQueryClient()
   const [form, setForm] = useState<FormState>(emptyForm)
@@ -112,11 +130,7 @@ export function MediaSourceDialog({ open, onOpenChange, source }: MediaSourceDia
         <form onSubmit={handleSubmit} noValidate>
           <DialogHeader>
             <DialogTitle>{isEditing ? 'Edit media source' : 'New media source'}</DialogTitle>
-            <DialogDescription>
-              {isEditing
-                ? 'Update the source details. Changing the URL of a Jellyfin source repeats the connection test.'
-                : 'On save, a Jellyfin source is tested automatically to decide between a direct connection and app-side sync.'}
-            </DialogDescription>
+            <DialogDescription>{dialogDescription(isEditing, form.type)}</DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
             <Field>
@@ -133,6 +147,10 @@ export function MediaSourceDialog({ open, onOpenChange, source }: MediaSourceDia
                   ))}
                 </SelectContent>
               </Select>
+              <FieldDescription>
+                Only Jellyfin connects directly in v1. Plex and local folder sources rely on a paired client
+                to push their catalog.
+              </FieldDescription>
             </Field>
             <Field data-invalid={!!errors.name}>
               <FieldLabel htmlFor="source-name">
@@ -146,6 +164,12 @@ export function MediaSourceDialog({ open, onOpenChange, source }: MediaSourceDia
                 onChange={(e) => set('name', e.target.value)}
               />
               <FieldError id="source-name-error">{errors.name}</FieldError>
+              {form.type === 'local_folder' && (
+                <FieldDescription>
+                  Set the folder path on the client that scans it; the backend stores only this source's
+                  name. No address or credential is needed here.
+                </FieldDescription>
+              )}
             </Field>
             {form.type !== 'local_folder' && (
               <Field data-invalid={!!errors.base_url}>
@@ -164,22 +188,24 @@ export function MediaSourceDialog({ open, onOpenChange, source }: MediaSourceDia
                 <FieldError id="source-base-url-error">{errors.base_url}</FieldError>
               </Field>
             )}
-            <Field>
-              <FieldLabel htmlFor="source-credential">Credential (optional)</FieldLabel>
-              <Input
-                id="source-credential"
-                type="password"
-                autoComplete="new-password"
-                placeholder={isEditing ? 'Fill in only to replace the saved credential' : 'API key or password, if required'}
-                value={form.credential}
-                onChange={(e) => set('credential', e.target.value)}
-              />
-              <FieldDescription>
-                {isEditing
-                  ? 'Never shown again after saving. Leave blank to keep the current credential.'
-                  : 'Never shown again after saving.'}
-              </FieldDescription>
-            </Field>
+            {form.type !== 'local_folder' && (
+              <Field>
+                <FieldLabel htmlFor="source-credential">Credential (optional)</FieldLabel>
+                <Input
+                  id="source-credential"
+                  type="password"
+                  autoComplete="new-password"
+                  placeholder={isEditing ? 'Fill in only to replace the saved credential' : 'API key or password, if required'}
+                  value={form.credential}
+                  onChange={(e) => set('credential', e.target.value)}
+                />
+                <FieldDescription>
+                  {isEditing
+                    ? 'Never shown again after saving. Leave blank to keep the current credential.'
+                    : 'Never shown again after saving.'}
+                </FieldDescription>
+              </Field>
+            )}
             {error && (
               <p role="alert" className="text-sm text-destructive">
                 {error}

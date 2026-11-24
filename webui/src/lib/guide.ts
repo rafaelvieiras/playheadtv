@@ -61,6 +61,21 @@ export const ENTRY_KIND_LABELS: Record<EpgEntryKind, string> = {
   fallback: 'Fallback',
 }
 
+// Catalog item kinds (`GET /epg` calls it `item_kind`), distinct from an
+// entry's own `kind`: a program can be a movie or an episode. One label per
+// kind, so a cell's name and its detail read the same.
+const ITEM_KIND_LABELS: Record<string, string> = {
+  movie: 'Movie',
+  episode: 'Episode',
+  other: 'Other',
+}
+
+// "Movie", or undefined when the kind is missing (an older backend) or not one
+// the catalog knows.
+export function catalogKindLabel(kind: string | undefined): string | undefined {
+  return kind ? (ITEM_KIND_LABELS[kind] ?? kind) : undefined
+}
+
 // Tailwind classes per entry kind; program stays neutral so fillers stand out.
 export const ENTRY_KIND_CLASSES: Record<EpgEntryKind, string> = {
   program: 'border-border bg-muted/40',

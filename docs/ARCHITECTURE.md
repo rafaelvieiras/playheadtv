@@ -152,6 +152,30 @@ Three more rules keep a screen honest about what it knows:
   each error renders under its `Field` with `aria-invalid` and
   `aria-describedby`, and one submit reports every problem. The floating
   `SaveBar` carries the server's refusal, not field validation.
+- **One guide grid.** There were two: `pages/EpgPage.tsx` drew a bare one and
+  `components/ChannelGuide.tsx` drew the good one (kind tints, legend, hidden
+  filler count, day labels, timezone line). Both now render
+  `components/GuideGrid.tsx`; the page gained what only the channel had, and the
+  channel kept the corner thumbnail it draws while the player runs. Cells are
+  buttons with a spoken name ("The Last Projectionist, Movie, 10:30 PM to 12:24
+  AM, Retro Movies"), so the detail panel and the keyboard reach the same
+  airing. Zoom is a real control because fitting an 8.5 h window into a 1216 px
+  card is 1.6 px per minute — a useful overview and a useless default, so the
+  automatic fit only holds while it stays at 3 px per minute or more.
+- **The query field list is the server's list.** `lib/query.ts`'s `FIELDS`
+  mirrors `queryFields` in `internal/catalogsync/query.go`. It was missing
+  `media_source_id`, and the builder substituted `FIELDS[0]` for a field it did
+  not know, so opening a collection built from a whole plugin-backed source
+  showed "Kind / is / (blank)" and any edit saved `kind=movie` over it. An
+  unknown field now keeps its own name and is never rewritten.
+- **Two answers the backend learned to give the admin UI.** `blocks` are read
+  with `usage_items`/`usage_schedules` (a subquery over `schedule_item`) and
+  `DELETE /blocks/{id}` refuses with `409` naming the schedules, instead of
+  failing on the foreign key as a `500` the operator could not act on. And a
+  channel write is validated in the handler, not only in the form: `number >= 1`
+  and a timezone that `time.LoadLocation` resolves (never `Local`), because a
+  REST or MCP caller does not go through a form and a timezone typo shifts every
+  future EPG time of that channel.
 - **Confirms are named, red and boring.** `components/ConfirmDialog.tsx` is the
   only destructive confirm: the title names the target, the action carries the
   verb and `variant="destructive"`, the pending state replaces the verb, and the

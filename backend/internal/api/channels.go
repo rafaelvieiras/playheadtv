@@ -164,6 +164,28 @@ func ValidateChannelSchedules(ctx context.Context, db storage.DB, scheduleID, ba
 	return nil
 }
 
+
+// validateChannelFields rejects a channel write whose fields cannot mean
+// anything. The admin form checks the same two rules, but a REST/MCP caller
+// does not go through a form: a number of 0 collides with the "no channel"
+// sentinel the client uses and a timezone typo silently shifts every future
+// EPG time for that channel, so both are refused here too.
+func validateChannelFields(req channelRequest) error {
+	if req.Number < 1 {
+		return errors.New("number must be at least 1")
+	}
+	if req.Timezone == "" {
+		return nil // callers default it to UTC before this runs
+	}
+	if req.Timezone == "Local" {
+		return errors.New("timezone must be an IANA name such as Europe/Sao_Paulo, not Local")
+	}
+	if _, err := time.LoadLocation(req.Timezone); err != nil {
+		return errors.New("timezone is not a known IANA name (for example Europe/Sao_Paulo)")
+	}
+	return nil
+}
+
 func fetchChannel(db storage.DB, r *http.Request, id string) (domain.Channel, error) {
 	var ch domain.Channel
 	err := db.Query(r.Context(), &ch,
@@ -186,6 +208,10 @@ func createChannel(db storage.DB, mat *materializer.Materializer) http.HandlerFu
 		}
 		if req.Timezone == "" {
 			req.Timezone = "UTC"
+		}
+		if err := validateChannelFields(req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		if err := ValidateChannelSchedules(r.Context(), db, req.ScheduleID, req.BaseScheduleID); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -314,6 +340,10 @@ func updateChannel(db storage.DB, mat *materializer.Materializer) http.HandlerFu
 		}
 		if req.Timezone == "" {
 			req.Timezone = "UTC"
+		}
+		if err := validateChannelFields(req); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
 		}
 		if err := ValidateChannelSchedules(r.Context(), db, req.ScheduleID, req.BaseScheduleID); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())

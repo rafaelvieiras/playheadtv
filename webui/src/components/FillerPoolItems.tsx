@@ -10,7 +10,7 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { authoringKeys, useUpdateFillerPoolItem } from '@/lib/authoring'
-import { formatDurationMs } from '@/lib/filler'
+import { formatDurationMs, WEIGHT_HINT } from '@/lib/filler'
 import { api } from '@/lib/http'
 import type { CatalogItem, FillerPoolItem } from '@/lib/types'
 
@@ -85,7 +85,9 @@ export function FillerPoolItems({ poolId, editable }: { poolId: string; editable
               <TableRow>
                 <TableHead>Title</TableHead>
                 <TableHead>Duration</TableHead>
-                <TableHead>Weight</TableHead>
+                <TableHead title={WEIGHT_HINT} aria-label="Weight, how strongly a weighted rule prefers the item">
+                  Weight
+                </TableHead>
                 {editable && <TableHead className="text-right">Actions</TableHead>}
               </TableRow>
             </TableHeader>

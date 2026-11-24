@@ -1639,3 +1639,32 @@ repo never contains.
       limits mirrored from `lib/cutRules.ts`), a block delete that says how many
       schedules use it (needs a usage endpoint), and the per-screen defects of
       #112.
+- [x] The audit's remaining defects, one per screen (2026-11-24, #112): a
+      collection built from `media_source_id` could not be opened at all (the
+      field was missing from `lib/query.ts` and the builder substituted
+      `kind=movie`), a schedule row with a long block name pushed the Status
+      column and every row action off the card at 1440, "None" in the Fallback
+      filler select deleted the rule with no confirm, a failed watermark read
+      rendered "Off" with Save enabled over a watermark nobody had seen, a
+      network failure at login was reported as a wrong password, a channel
+      accepted number 0 and a free-text timezone, nothing said whether a channel
+      had a schedule, the guide had no detail, no timezone, no day labels and a
+      frozen "now" line, a block delete never said it was in use, cut rules
+      printed planner units and taught the wrong bounds, break templates
+      reported one problem per save, a failed media-source probe was invisible
+      and its "Pair" disclosure widened the table to 1929 px, the stream
+      selector's combobox had no accessible name, and the plugin registry
+      warning laid itself out outside its own box at 390. Now: `GuideGrid` is
+      the one guide (kind tints, legend, hidden-filler count, day labels,
+      timezone line, a ticking labelled "now", focusable cells with a detail
+      panel, zoom/fit, channel names as links); channels list a Schedule column
+      plus an expandable notice and edit a searchable IANA timezone; the backend
+      refuses `number < 1` and an unknown zone and answers block usage in
+      `GET /blocks` and a named `409` from `DELETE`; `lib/format.ts` is the one
+      timestamp formatter; the four hand-rolled headers use `PageHeader`; and
+      `lib/cutRules.ts` mirrors the planner's limits so a refusal marks its own
+      field in minutes. Verified in Playwright at 1440x900 and 390x844 (33
+      checks) plus the 38-route sweep, the 20 shell checks of #110 and the 23 of
+      #111. Still open: schedule *names* in the block delete dialog (the counts
+      are what the read carries; the 409 names them), and the per-field limits
+      of the media-source probe options.

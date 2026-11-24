@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Field, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
-import { api } from '@/lib/http'
+import { api, requestFailureReason } from '@/lib/http'
 import { extractResetToken, validateNewPassword } from '@/lib/passwordReset'
 import { useAuthStore } from '@/store/auth'
 
@@ -58,7 +58,9 @@ export function ResetPasswordPage() {
   }
 
   const done = mutation.isSuccess
-  const failure = formError ?? (mutation.isError ? mutation.error.message : null)
+  // "Failed to fetch" is what the browser says; this page is where someone
+  // lands from "Forgot password?", so it says what to do instead.
+  const failure = formError ?? (mutation.isError ? requestFailureReason(mutation.error) : null)
 
   return (
     <div className="flex min-h-svh items-center justify-center bg-background px-4">
@@ -124,7 +126,10 @@ export function ResetPasswordPage() {
                 <Button type="submit" disabled={mutation.isPending}>
                   {mutation.isPending ? 'Saving…' : 'Change password'}
                 </Button>
-                <Link to="/login" className="text-center text-sm text-muted-foreground underline">
+                <Link
+                  to="/login"
+                  className="inline-flex min-h-11 items-center justify-center text-sm text-muted-foreground underline"
+                >
                   Back to sign in
                 </Link>
               </FieldGroup>

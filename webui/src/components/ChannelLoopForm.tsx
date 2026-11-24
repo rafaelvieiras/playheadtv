@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
+import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { Button } from '@/components/ui/button'
 import { api } from '@/lib/http'
 import { CRITERIA_ORDER_LABELS, type Channel, type Collection, type CriteriaOrder } from '@/lib/types'
@@ -15,10 +16,15 @@ const LOOP_ORDERS: CriteriaOrder[] = ['shuffle', 'random', 'title', 'release_dat
 // schedule item by hand. It writes the same PUT /channels/{id} the Settings
 // tab uses, carrying the loop object, and says where the objects it created can
 // be edited afterwards.
+//
+// The button used to write on the first press, so the same click that picked a
+// collection also created a schedule, an item and a channel assignment nobody
+// asked to see. The confirmation says what those objects are before they exist.
 export function ChannelLoopForm({ channel }: { channel: Channel }) {
   const queryClient = useQueryClient()
   const [collectionId, setCollectionId] = useState('')
   const [order, setOrder] = useState<CriteriaOrder>('shuffle')
+  const [confirming, setConfirming] = useState(false)
   const { data: collections } = useQuery({
     queryKey: ['collections'],
     queryFn: () => api.get<Collection[]>('/collections'),
@@ -38,10 +44,14 @@ export function ChannelLoopForm({ channel }: { channel: Channel }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['channels'] })
       queryClient.invalidateQueries({ queryKey: ['channels', channel.id] })
+      setConfirming(false)
       toast.success('Collection looped. The schedule it created can be edited in Settings.')
     },
-    onError: () => toast.error('Could not loop the collection.'),
+    // No toast on failure: the confirm dialog keeps the refusal where the click
+    // was (a 409 means this channel already has a schedule).
   })
+
+  const collectionName = collections?.find((c) => c.id === collectionId)?.name ?? 'The chosen collection'
 
   return (
     <div className="flex flex-wrap items-end gap-3 rounded-md border p-3" data-testid="channel-loop-form">
@@ -79,11 +89,31 @@ export function ChannelLoopForm({ channel }: { channel: Channel }) {
       <Button
         size="sm"
         disabled={!collectionId || loopMutation.isPending}
-        onClick={() => loopMutation.mutate()}
+        onClick={() => setConfirming(true)}
         data-testid="loop-submit"
       >
         Loop 24/7
       </Button>
+
+      <ConfirmDialog
+        open={confirming}
+        onClose={() => setConfirming(false)}
+        title={`Loop "${collectionName}" 24/7 on channel ${channel.number} "${channel.name}"?`}
+        description={
+          <>
+            This creates a new schedule holding one continuous item that airs {collectionName} around the
+            clock, in {CRITERIA_ORDER_LABELS[order].toLowerCase()} order, and assigns that schedule to this
+            channel. The collection and its blocks are not changed. The schedule and its item can be edited
+            in Settings afterwards.
+          </>
+        }
+        confirmLabel="Create the loop"
+        pendingLabel="Creating the loop…"
+        onConfirm={() => loopMutation.mutate()}
+        isPending={loopMutation.isPending}
+        error={loopMutation.error}
+        testId="loop-confirm"
+      />
     </div>
   )
 }

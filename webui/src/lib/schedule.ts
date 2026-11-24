@@ -1,3 +1,4 @@
+import { formatDateTime } from './format.ts'
 import type { Block, ScheduleItem } from '@/lib/types'
 
 export const DAY_LABELS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
@@ -30,17 +31,70 @@ export function formatWeekdays(days: number[]): string {
     .join(', ')
 }
 
-export function summarizeRecurrence(item: ScheduleItem): string {
+// One timestamp, one reading. A row used to be formatted here in the browser's
+// zone ("11/23/2026 08:52 PM") while its own dialog showed another, and the
+// pane never said which zone any of it was in. Every schedule timestamp is
+// read in the channel's zone and rendered by lib/format.ts, and the pane names
+// that zone (lib/format.ts's tzLabel).
+function partsInZone(ms: number, timeZone?: string) {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    ...(timeZone ? { timeZone } : {}),
+    hour12: false,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(new Date(ms))
+  const pick = (type: string) => Number(parts.find((p) => p.type === type)?.value)
+  const hour = pick('hour')
+  // Some ICU builds report midnight as hour 24.
+  return {
+    year: pick('year'),
+    month: pick('month'),
+    day: pick('day'),
+    hour: hour % 24,
+    minute: pick('minute'),
+    second: pick('second'),
+  }
+}
+
+/** How far `timeZone` is ahead of UTC at `ms`, in milliseconds. */
+function zoneOffset(ms: number, timeZone: string): number {
+  const p = partsInZone(ms, timeZone)
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute, p.second) - ms
+}
+
+/** The value a `datetime-local` input shows for `ms`, read in `timeZone`. */
+export function toZonedInputValue(ms: number, timeZone?: string): string {
+  const p = partsInZone(ms, timeZone)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${p.year}-${pad(p.month)}-${pad(p.day)}T${pad(p.hour)}:${pad(p.minute)}`
+}
+
+/** The instant a `datetime-local` value means in `timeZone`. */
+export function fromZonedInputValue(value: string, timeZone?: string): number {
+  const [date = '', time = ''] = value.split('T')
+  const [year, month, day] = date.split('-').map(Number)
+  const [hour, minute] = time.split(':').map(Number)
+  if ([year, month, day, hour, minute].some((n) => !Number.isFinite(n))) return NaN
+  if (!timeZone) return new Date(year, month - 1, day, hour, minute).getTime()
+  const asIfUtc = Date.UTC(year, month - 1, day, hour, minute)
+  // The offset at the guessed instant is the one that applies, unless the guess
+  // lands on the other side of a daylight-saving change; the second pass settles
+  // that.
+  const guess = asIfUtc - zoneOffset(asIfUtc, timeZone)
+  return asIfUtc - zoneOffset(guess, timeZone)
+}
+
+export function summarizeRecurrence(item: ScheduleItem, timeZone?: string): string {
   if (item.recurrence_type === 'continuous') return 'Continuous (whenever no timed item airs)'
   if (item.recurrence_type === 'weekly') {
     return `${formatWeekdays(item.days_of_week)} at ${item.start_time_local ?? '?'}`
   }
   if (item.start_at === null) return 'Once (no date set)'
-  const date = new Date(item.start_at)
-  return `Once on ${date.toLocaleDateString('en-US')} ${date.toLocaleTimeString('en-US', {
-    hour: '2-digit',
-    minute: '2-digit',
-  })}`
+  return `Once on ${formatDateTime(item.start_at, timeZone)}`
 }
 
 // Items grouped by kind, each group ordered by time: continuous first (the

@@ -247,6 +247,19 @@ are what keeps the claim honest (`docs/ARCHITECTURE.md` "Admin shell").
   (opaque, with a right border) so scrolling right for a row's actions never hides which row it is,
   and a `Table` with a `label` becomes a focusable, named scroll region. Pass `label` to every
   table — the alternative was six rows reading "…grid · Delete".
+- **One formatter, one grid, one field list.** A timestamp goes through `lib/format.ts` (three
+  screens used to render the same instant three ways, one of them with seconds and no zone); the
+  guide is `components/GuideGrid.tsx` for both the guide page and a channel's own grid, so a
+  daylight tint, the legend, the hidden-filler count and the ruler day labels cannot exist on one
+  surface and not the other; and `lib/query.ts`'s `FIELDS` lists every field the server accepts
+  (`internal/catalogsync/query.go`'s `queryFields`). A field the UI does not know is never
+  substituted by `FIELDS[0]`: the row keeps its own name and saves unchanged, because the
+  alternative silently rewrote a collection from `media_source_id` to `kind=movie`.
+- **A page says how much trouble an action will be before it offers the action.** The block list
+  and read carry `usage_items`/`usage_schedules` (the counts the schedule foreign key already
+  knows), the delete dialog disables its action while they are above zero, and the backend answers
+  `409` naming the schedules rather than a foreign-key `500`. `PageHeader`'s `breadcrumb` is
+  optional so a top-level page never prints its own name twice.
 
 ## Client app structure (mosaic home, EPG, remappable controls)
 

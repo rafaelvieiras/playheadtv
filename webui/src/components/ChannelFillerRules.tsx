@@ -79,7 +79,7 @@ export function ChannelFillerRules({ channelId }: { channelId: string }) {
       )}
 
       {rules && (
-        <Table>
+        <Table label="Filler rules that apply to this channel">
           <TableHeader>
             <TableRow>
               <TableHead>Type</TableHead>

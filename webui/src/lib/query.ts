@@ -56,6 +56,11 @@ export const FIELDS: FieldDef[] = [
   { name: 'episode_number', label: 'Episode number', type: 'number', integer: true },
   { name: 'premiere_date', label: 'Premiere date', type: 'date' },
   { name: 'date_added', label: 'Date added', type: 'date' },
+  // The server has always accepted this one (queryFields); leaving it out here
+  // made a collection built from a whole plugin-backed source impossible to
+  // open: the row rendered as "Kind / is / (blank)" and any edit rewrote it to
+  // kind=movie.
+  { name: 'media_source_id', label: 'Media source', type: 'enum', hint: 'A media source id, from the Sources page. Matches every item synced from it.' },
 ]
 
 const FIELD_BY_NAME = new Map(FIELDS.map((f) => [f.name, f]))
@@ -95,8 +100,11 @@ export function defaultValue(def: FieldDef, op: QueryOp): unknown {
   return ''
 }
 
+// A row an operator just added: no field and no value yet, so the editor can
+// ask for a field instead of reporting a value nobody typed. The backend
+// rejects an unfinished row, which is why validateQuery names it.
 export function emptyCondition(): QueryNode {
-  return { field: 'genre', op: 'equals', value: '' }
+  return {}
 }
 
 // The query a new dynamic block or pool starts from.
@@ -114,7 +122,13 @@ function isBlank(v: unknown): boolean {
 
 function validateCondition(n: QueryNode, path: string): string | undefined {
   const def = fieldDef(n.field)
-  if (!def) return `${path}: choose a field.`
+  // A field this build does not know is named as it is: it must not read as a
+  // substitution for one it does know.
+  if (!def) {
+    return n.field
+      ? `${path}: "${n.field}" is not a field this build knows; choose a field.`
+      : `${path}: choose a field.`
+  }
   if (!n.op || !opsFor(def.type).includes(n.op)) return `${path}: choose an operator for ${def.label}.`
   const label = `${path} (${def.label})`
   if (n.op === 'in') {
@@ -167,8 +181,11 @@ function formatValue(def: FieldDef | undefined, v: unknown): string {
 }
 
 function describeCondition(n: QueryNode): string {
+  // A row that has no field yet (or names one this build does not know) is
+  // described as it is; it must never read as a field it is not.
+  if (!n.field) return 'a field still to choose'
   const def = fieldDef(n.field)
-  const name = def?.label.toLowerCase() ?? n.field ?? '?'
+  const name = def ? def.label.toLowerCase() : n.field
   const unit = def?.unit ? ` ${def.unit}` : ''
   const v = formatValue(def, n.value)
   switch (n.op) {

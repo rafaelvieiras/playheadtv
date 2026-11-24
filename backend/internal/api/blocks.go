@@ -169,11 +169,49 @@ func listBlocks(db storage.DB) http.HandlerFunc {
 			handleDBError(w, err)
 			return
 		}
+		usage, err := blockUsageCounts(r.Context(), db)
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
 		for i := range blocks {
 			blocks[i].FillInterleave()
+			if u, ok := usage[blocks[i].ID]; ok {
+				blocks[i].UsageItems, blocks[i].UsageSchedules = u.items, u.schedules
+			}
 		}
 		writeJSON(w, http.StatusOK, blocks)
 	}
+}
+
+// blockUsage is how many schedule items air one block, and across how many
+// schedules. One query for the whole list: the alternative is a query per row.
+type blockUsage struct {
+	items     int
+	schedules int
+}
+
+// blockUsageCounts reads the usage of every block of the tenant, keyed by block
+// id. Blocks nobody schedules are absent (zero usage).
+func blockUsageCounts(ctx context.Context, db storage.DB) (map[string]blockUsage, error) {
+	type row struct {
+		BlockID   string
+		Items     int
+		Schedules int
+	}
+	var rows []row
+	if err := db.Query(ctx, &rows,
+		`SELECT block_id, COUNT(*) AS items, COUNT(DISTINCT schedule_id) AS schedules
+		   FROM schedule_item
+		  WHERE tenant_id = ? AND block_id IS NOT NULL
+		  GROUP BY block_id`, DefaultTenantID); err != nil {
+		return nil, err
+	}
+	usage := make(map[string]blockUsage, len(rows))
+	for _, r := range rows {
+		usage[r.BlockID] = blockUsage{items: r.Items, schedules: r.Schedules}
+	}
+	return usage, nil
 }
 
 func getBlock(db storage.DB) http.HandlerFunc {
@@ -182,6 +220,14 @@ func getBlock(db storage.DB) http.HandlerFunc {
 		if err != nil {
 			handleDBError(w, err)
 			return
+		}
+		usage, err := blockUsageCounts(r.Context(), db)
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		if u, ok := usage[b.ID]; ok {
+			b.UsageItems, b.UsageSchedules = u.items, u.schedules
 		}
 		writeJSON(w, http.StatusOK, b)
 	}
@@ -292,6 +338,40 @@ func deleteBlock(db storage.DB) http.HandlerFunc {
 		id := r.PathValue("id")
 		if _, err := fetchBlock(db, r, id); err != nil {
 			handleDBError(w, err)
+			return
+		}
+		// A block still scheduled cannot go: schedule_item.block_id has a
+		// foreign key, so the delete used to fail as a 500 with no way to tell
+		// an operator which schedule to edit. Refuse with a sentence instead.
+		var usage []struct {
+			ScheduleID   string
+			ScheduleName string
+			ChannelName  string
+		}
+		if err := db.Query(r.Context(), &usage,
+			`SELECT s.id AS schedule_id, s.name AS schedule_name,
+			        COALESCE((SELECT c.name FROM channel c
+			                   WHERE c.tenant_id = s.tenant_id
+			                     AND (c.schedule_id = s.id OR c.base_schedule_id = s.id)
+			                   ORDER BY c.number LIMIT 1), '') AS channel_name
+			   FROM schedule_item si
+			   JOIN schedule s ON s.id = si.schedule_id
+			  WHERE si.tenant_id = ? AND si.block_id = ?
+			  GROUP BY s.id
+			  ORDER BY s.name`, DefaultTenantID, id); err != nil {
+			handleDBError(w, err)
+			return
+		}
+		if len(usage) > 0 {
+			names := make([]string, 0, len(usage))
+			for _, u := range usage {
+				if u.ChannelName != "" {
+					names = append(names, u.ScheduleName+" on "+u.ChannelName)
+					continue
+				}
+				names = append(names, u.ScheduleName)
+			}
+			writeError(w, http.StatusConflict, "this block airs in "+strings.Join(names, ", ")+"; remove it from there first")
 			return
 		}
 		if err := db.Exec(r.Context(), "DELETE FROM block WHERE tenant_id = ? AND id = ?", DefaultTenantID, id); err != nil {

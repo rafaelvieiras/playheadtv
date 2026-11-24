@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useMemo, useState } from 'react'
+import { useQueries } from '@tanstack/react-query'
 import { Plus, Trash2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
@@ -10,17 +10,19 @@ import {
   defaultSamples,
   emptySample,
   formatDuration,
+  mapPlannerMessage,
   sampleToPreview,
   type CutConfigInput,
+  type Parsed,
   type SampleDraft,
 } from '@/lib/cutRules'
 import { api, ApiError } from '@/lib/http'
-import type { CutItemKind, CutPreviewResult } from '@/lib/types'
+import type { CutItemKind, CutPreviewInput, CutPreviewResult } from '@/lib/types'
 
 const MAX_SAMPLES = 5
 
 const SOURCE_LABELS: Record<CutPreviewResult['source'], string> = {
-  rule: 'rule',
+  rule: 'the matching rule',
   default: 'the default strategy',
   segment: 'the intro segment',
   chapter: 'the chapters',
@@ -43,15 +45,41 @@ function useDebounced<T>(value: T, delay: number): T {
 // CutPreviewPanel shows where the cuts fall for sample items the author types
 // (kind, duration, optional chapter starts), asking the backend so the preview
 // is the real planner and not a copy of it. config is null while the draft has
-// a problem the author must fix first; error says which.
+// a problem the author must fix first; configProblem says which.
 export function CutPreviewPanel({
   config,
-  configError,
+  configProblem,
 }: {
   config: CutConfigInput | null
-  configError: string | null
+  configProblem: string | null
 }) {
   const [samples, setSamples] = useState<SampleDraft[]>(defaultSamples)
+  const bodies = samples.map((s) => (config ? sampleToPreview(config, s) : null))
+  // The debounced value is the whole list of requests: typing anywhere holds
+  // every sample back until it stops, instead of one timer per sample.
+  const keys = bodies.map((b) => (b && b.ok ? JSON.stringify(b.value) : ''))
+  const debouncedKeys = useDebounced(JSON.stringify(keys), 300)
+  const payloads = useMemo(() => JSON.parse(debouncedKeys) as string[], [debouncedKeys])
+  const results = useQueries({
+    queries: payloads.map((payload) => ({
+      queryKey: ['cut-preview', payload],
+      queryFn: () => api.post<CutPreviewResult>('/cut-rule-sets/preview', JSON.parse(payload) as CutPreviewInput),
+      enabled: payload !== '',
+      retry: false,
+      placeholderData: (previous: CutPreviewResult | undefined) => previous,
+    })),
+  })
+
+  // A refusal about the rules themselves (HTTP 400) is the same for every
+  // sample: show it once, in the units the fields take, instead of once per
+  // sample with the backend's milliseconds.
+  const refusals: string[] = []
+  for (const r of results) {
+    const e = r.error
+    if (!(e instanceof ApiError) || e.status !== 400) continue
+    const text = mapPlannerMessage(e.message)?.message ?? e.message
+    if (!refusals.includes(text)) refusals.push(text)
+  }
 
   function patch(key: string, next: Partial<SampleDraft>) {
     setSamples((cur) => cur.map((s) => (s.key === key ? { ...s, ...next } : s)))
@@ -65,9 +93,14 @@ export function CutPreviewPanel({
         intro segment ends to try the chapter strategies: the intro segment decides "after the intro" before the
         chapters do.
       </p>
-      {configError && (
+      {configProblem && (
         <p className="text-sm text-destructive" data-testid="cut-preview-config-error">
-          {configError}
+          {configProblem}
+        </p>
+      )}
+      {refusals.length > 0 && (
+        <p className="text-sm text-destructive" role="alert" data-testid="cut-preview-error">
+          The server refused these rules: {refusals.join(' ')}
         </p>
       )}
       {samples.map((s, i) => (
@@ -127,7 +160,7 @@ export function CutPreviewPanel({
               <Trash2 />
             </Button>
           </div>
-          <SamplePreview index={i} sample={s} config={config} />
+          <SamplePreview index={i} body={bodies[i]} result={results[i]} />
         </div>
       ))}
       <div>
@@ -146,32 +179,48 @@ export function CutPreviewPanel({
   )
 }
 
-function SamplePreview({ index, sample, config }: { index: number; sample: SampleDraft; config: CutConfigInput | null }) {
-  const body = config ? sampleToPreview(config, sample) : null
-  const payload = body && body.ok ? body.value : null
-  const key = useDebounced(payload ? JSON.stringify(payload) : '', 300)
-  const { data, error, isFetching } = useQuery({
-    queryKey: ['cut-preview', key],
-    queryFn: () => api.post<CutPreviewResult>('/cut-rule-sets/preview', JSON.parse(key)),
-    enabled: key !== '',
-    retry: false,
-    placeholderData: (previous) => previous,
-  })
+interface SampleResult {
+  data?: CutPreviewResult
+  error: Error | null
+  isFetching: boolean
+}
 
-  if (!config) return null
-  if (body && !body.ok) return <p className="text-sm text-destructive">{body.error}</p>
+const NO_RESULT: SampleResult = { data: undefined, error: null, isFetching: false }
+
+function SamplePreview({
+  index,
+  body,
+  result,
+}: {
+  index: number
+  body: Parsed<CutPreviewInput> | null
+  // Undefined while the debounced list has not caught up with a new sample.
+  result: SampleResult | undefined
+}) {
+  if (!body) return null
+  if (!body.ok) return <p className="text-sm text-destructive">{body.error}</p>
+  const { data, error, isFetching } = result ?? NO_RESULT
   if (error) {
+    // A refusal of the rules is reported once, above the samples.
+    if (error instanceof ApiError && error.status === 400) return null
     return (
       <p className="text-sm text-destructive" data-testid={`cut-sample-${index}-error`}>
         {error instanceof ApiError ? error.message : 'Could not compute the preview.'}
       </p>
     )
   }
-  if (!data || payload === null) return <p className="text-sm text-muted-foreground">Loading…</p>
+  if (!data) return <p className="text-sm text-muted-foreground">Loading…</p>
 
+  const payload = body.value
   const duration = payload.duration_ms
-  const rule = data.rule_index >= 0 ? `rule ${data.rule_index + 1}` : SOURCE_LABELS[data.source]
-  const via = data.source === 'rule' ? rule : data.source === 'none' ? SOURCE_LABELS.none : `${rule}, via ${SOURCE_LABELS[data.source]}`
+  // The rule decides; the source says what inside it resolved the cuts. A
+  // 'default' source names the default once (never "the default, via the
+  // default").
+  const base = data.rule_index >= 0 ? `rule ${data.rule_index + 1}` : SOURCE_LABELS.default
+  const via =
+    data.source === 'rule' || data.source === 'default' || data.source === 'none'
+      ? base
+      : `${base}, via ${SOURCE_LABELS[data.source]}`
   const introEnd = (payload.segments ?? []).find((x) => x.type === 'intro')?.end_ms
   return (
     <div className={isFetching ? 'flex flex-col gap-1 opacity-70' : 'flex flex-col gap-1'} data-testid={`cut-sample-${index}-result`}>

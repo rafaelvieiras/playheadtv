@@ -39,11 +39,6 @@ export function versionsNewestFirst(versions: string[]): string[] {
   return [...versions].sort((a, b) => comparePluginVersions(b, a))
 }
 
-/** `2026.10.26` → `2026.10.26`; anything unparseable is shown as it arrived. */
-export function formatPluginDate(ms: number): string {
-  return new Date(ms).toLocaleString('en-US')
-}
-
 /** One setting as the row summary shows it: a choice by its label, a bool as On/Off. */
 export function formatPluginSetting(field: PluginConfigField, value: unknown): string {
   if (value === undefined || value === null) return 'not set'

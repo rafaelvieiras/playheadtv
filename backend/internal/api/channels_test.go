@@ -3,6 +3,7 @@ package api
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/rafaelvieiras/playheadtv/backend/internal/domain"
@@ -74,6 +75,29 @@ func TestChannelMissingName(t *testing.T) {
 	rec := doRequest(t, mux, "POST", "/channels", `{"number":1}`)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestChannelRejectsUnusableFields(t *testing.T) {
+	_, mux := newTestDB(t)
+	cases := []struct{ name, body, want string }{
+		{"number 0", `{"number":0,"name":"Zero"}`, "number must be at least 1"},
+		{"negative number", `{"number":-3,"name":"Negative"}`, "number must be at least 1"},
+		{"timezone typo", `{"number":7,"name":"Typo","timezone":"Europe/Sao_Paolo"}`, "timezone is not a known IANA name"},
+	}
+	for _, tc := range cases {
+		rec := doRequest(t, mux, "POST", "/channels", tc.body)
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d, want 400, body = %s", tc.name, rec.Code, rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), tc.want) {
+			t.Fatalf("%s: body = %s, want it to mention %q", tc.name, rec.Body.String(), tc.want)
+		}
+	}
+	// A real zone still goes through.
+	rec := doRequest(t, mux, "POST", "/channels", `{"number":8,"name":"Fine","timezone":"America/Sao_Paulo"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("valid channel: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -15,17 +15,22 @@ export interface BreadcrumbItem {
 // slot on the right.
 export function PageHeader({
   title,
-  breadcrumb,
+  breadcrumb = [],
   actions,
 }: {
   title: ReactNode
-  breadcrumb: BreadcrumbItem[]
+  // A top-level page has no trail: an empty breadcrumb is not rendered, so the
+  // page's own name never appears twice.
+  breadcrumb?: BreadcrumbItem[]
   actions?: ReactNode
 }) {
   const back = breadcrumb.find((c) => c.to)
   return (
     <div className="flex flex-col gap-2" data-testid="page-header">
-      <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-sm text-muted-foreground">
+      <nav
+        aria-label="Breadcrumb"
+        className={`flex items-center gap-1 text-sm text-muted-foreground ${breadcrumb.length === 0 ? 'hidden' : ''}`}
+      >
         {back?.to && (
           <Button asChild variant="ghost" size="icon-xs" aria-label={`Back to ${back.label}`}>
             <Link to={back.to}>

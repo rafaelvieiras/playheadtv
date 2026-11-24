@@ -3,7 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
 import { ConfirmDialog } from '@/components/ConfirmDialog'
-import { QueryError } from '@/components/QueryError'
+import { Loading, QueryError } from '@/components/QueryError'
 import { Button } from '@/components/ui/button'
 import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
@@ -55,6 +55,20 @@ function useStoredImage(imageId: string | undefined) {
     }
   }, [imageId, token])
   return url
+}
+
+// The header every state of this section carries. The watermark is the one part
+// of a channel or block screen with its own Save, so it says so where the
+// control is, instead of leaving the operator to guess which Save covers it.
+function SectionNote({ prefix, ownerType }: { prefix: string; ownerType: 'channel' | 'block' }) {
+  return (
+    <div className="flex flex-col gap-1">
+      <h2 className="text-sm font-medium">Watermark</h2>
+      <p className="text-sm text-muted-foreground" data-testid={`${prefix}-save-model`}>
+        Saves on its own: the button below writes the watermark only, not the rest of the {ownerType}.
+      </p>
+    </div>
+  )
 }
 
 // A small, self-contained section (its own requests, like the schedule
@@ -140,12 +154,37 @@ export function WatermarkSection({ ownerType, ownerId }: WatermarkSectionProps) 
 
   const own = mode === 'override'
   const configured = !!stored && (stored.image_id || stored.mode !== (ownerType === 'block' ? 'inherit' : 'disable'))
+  // A read that has not answered yet, or that failed with nothing stored to
+  // fall back on, cannot become "Off": that is an answer the server never gave,
+  // and saving it wrote `disable` over a watermark this screen never showed.
+  const readFailed = storedError && stored === undefined
+
+  // Neither of these states knows what is stored, so the section says only
+  // that much and offers nothing derived from it.
+  if (storedLoading || readFailed) {
+    return (
+      <section className="flex flex-col gap-4" data-testid={prefix}>
+        <SectionNote prefix={prefix} ownerType={ownerType} />
+        {storedLoading && <Loading />}
+        {storedError && (
+          <QueryError
+            subject="the watermark of this owner"
+            error={storedFailure}
+            onRetry={() => void refetchStored()}
+            stale={false}
+            testId={`${prefix}-read-error`}
+          />
+        )}
+      </section>
+    )
+  }
 
   return (
     <section className="flex flex-col gap-4" data-testid={prefix}>
-      <h2 className="text-sm font-medium">Watermark</h2>
+      <SectionNote prefix={prefix} ownerType={ownerType} />
       {/* A failed read used to look like "Off" with an enabled Save, which
-          then wrote `disable` over a watermark that was never shown here. */}
+          then wrote `disable` over a watermark that was never shown here. A
+          stale read keeps its controls, and says so. */}
       {storedError && (
         <QueryError
           subject="the watermark of this owner"
@@ -161,7 +200,7 @@ export function WatermarkSection({ ownerType, ownerId }: WatermarkSectionProps) 
             {ownerType === 'block' ? 'Watermark while this block is on air' : 'Show a watermark'}
           </FieldLabel>
           <Select value={mode} onValueChange={(v) => setMode(v as WatermarkMode)}>
-            <SelectTrigger id={`${prefix}-mode`} className="w-56" data-testid={`${prefix}-mode`}>
+            <SelectTrigger id={`${prefix}-mode`} className="max-w-56" data-testid={`${prefix}-mode`}>
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -186,6 +225,10 @@ export function WatermarkSection({ ownerType, ownerId }: WatermarkSectionProps) 
           </FieldDescription>
         </Field>
 
+        {/* `Field` in its default vertical orientation forces every direct
+            child to `w-full`, so a control that must stay narrow takes a
+            `max-w-*` cap: a plain `w-28` loses to the parent and a 3-digit
+            number field ends up as wide as the page. */}
         {own && (
           <>
             <Field>
@@ -216,7 +259,7 @@ export function WatermarkSection({ ownerType, ownerId }: WatermarkSectionProps) 
             <Field>
               <FieldLabel htmlFor={`${prefix}-position`}>Corner</FieldLabel>
               <Select value={position} onValueChange={(v) => setPosition(v as WatermarkPosition)}>
-                <SelectTrigger id={`${prefix}-position`} className="w-56" data-testid={`${prefix}-position`}>
+                <SelectTrigger id={`${prefix}-position`} className="max-w-56" data-testid={`${prefix}-position`}>
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -236,7 +279,7 @@ export function WatermarkSection({ ownerType, ownerId }: WatermarkSectionProps) 
                 type="number"
                 min={0}
                 max={100}
-                className="w-28"
+                className="max-w-28"
                 value={Number.isNaN(opacity) ? '' : opacity}
                 onChange={(e) => setOpacity(e.target.value === '' ? NaN : Number(e.target.value))}
               />
@@ -249,7 +292,7 @@ export function WatermarkSection({ ownerType, ownerId }: WatermarkSectionProps) 
                 type="number"
                 min={WATERMARK_MIN_SIZE}
                 max={WATERMARK_MAX_SIZE}
-                className="w-28"
+                className="max-w-28"
                 value={Number.isNaN(size) ? '' : size}
                 onChange={(e) => setSize(e.target.value === '' ? NaN : Number(e.target.value))}
               />
@@ -258,7 +301,7 @@ export function WatermarkSection({ ownerType, ownerId }: WatermarkSectionProps) 
         )}
       </FieldGroup>
       {error && (
-        <p className="text-sm text-destructive" data-testid={`${prefix}-error`}>
+        <p role="alert" className="text-sm text-destructive" data-testid={`${prefix}-error`}>
           {error}
         </p>
       )}

@@ -86,6 +86,13 @@ type Block struct {
 	// Interleave is the decoded InterleaveSpec, filled by FillInterleave; nil
 	// unless the block is interleaved.
 	Interleave *Interleave `json:"interleave"`
+	// UsageItems and UsageSchedules are how many schedule items air this block
+	// and how many distinct schedules they belong to (read with
+	// blockUsageCounts, never stored). A block still in use cannot be deleted:
+	// the question "can I remove this?" has to be answerable before the button
+	// is pressed, so both list and read carry the counts.
+	UsageItems     int `json:"usage_items"`
+	UsageSchedules int `json:"usage_schedules"`
 	CreatedAt  int64       `json:"created_at"`
 	UpdatedAt  int64       `json:"updated_at"`
 }

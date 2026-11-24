@@ -21,7 +21,7 @@ import { WatermarkSection } from '@/components/WatermarkSection'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
-import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { Textarea } from '@/components/ui/textarea'
@@ -578,12 +578,20 @@ function BlockItemsSection({ block }: { block: Block }) {
 
   return (
     <section className="flex flex-col gap-4" data-testid="block-items">
-      <div className="flex items-center justify-between">
-        <h2 className="text-base font-medium">Items</h2>
-        <span className="text-sm text-muted-foreground">
-          Total duration{seriesCount > 0 ? ' (single items)' : ''}:{' '}
-          <span data-testid="items-total">{allLoaded ? formatDuration(totalMs) : '…'}</span>
-        </span>
+      <div className="flex flex-col gap-1">
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="text-base font-medium">Items</h2>
+          <span className="text-sm text-muted-foreground">
+            Total duration{seriesCount > 0 ? ' (single items)' : ''}:{' '}
+            <span data-testid="items-total">{allLoaded ? formatDuration(totalMs) : '…'}</span>
+          </span>
+        </div>
+        {/* Said once, here: the two save models on this page were only
+            discoverable by losing an edit. */}
+        <p className="text-sm text-muted-foreground">
+          A row is saved as soon as you change it (add, remove, move, trim, order, amount); the name and description
+          above are saved with Save.
+        </p>
       </div>
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
@@ -600,7 +608,7 @@ function BlockItemsSection({ block }: { block: Block }) {
       )}
 
       {sorted.length > 0 && (
-        <Table>
+        <Table label="Block items">
           <TableHeader>
             <TableRow>
               <TableHead className="w-12">#</TableHead>
@@ -817,37 +825,34 @@ function BlockItemsSection({ block }: { block: Block }) {
         </div>
       )}
 
-      <Field>
-        <FieldLabel htmlFor="block-add-item">Add an item</FieldLabel>
-        <Combobox
-          id="block-add-item"
-          options={options}
-          value={null}
-          onValueChange={(v) => addMutation.mutate({ catalog_item_id: v, trim_duration_ms: null })}
-          placeholder="Search the catalog by title…"
-          searchPlaceholder="Type a title…"
-          emptyMessage={debouncedSearch ? 'No items found.' : 'Type to search the catalog.'}
-          onSearchChange={setSearch}
-          disabled={addMutation.isPending}
-        />
-      </Field>
+      {/* The three add forms used to sit at the very bottom of the page, under
+          the watermark, while the empty-block warning pointed at an input far
+          above them; they belong next to the list they append to. */}
+      <div className="flex flex-col gap-5 rounded-lg border border-border p-4" data-testid="block-add-items">
+        <div className="flex flex-col gap-1">
+          <h3 className="text-sm font-medium">Add to the end of the list</h3>
+          <p className="text-sm text-muted-foreground">
+            A new item goes last; use the arrows in its row to move it up.
+          </p>
+        </div>
 
-      <Field>
-        <FieldLabel htmlFor="block-add-series">Add a series</FieldLabel>
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <Select value={newSeriesOrder} onValueChange={(v) => setNewSeriesOrder(v as PlaybackOrder)}>
-            <SelectTrigger className="w-full sm:w-52" aria-label="Order for the new series" data-testid="new-series-order">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {(Object.keys(PLAYBACK_ORDER_LABELS) as PlaybackOrder[]).map((o) => (
-                <SelectItem key={o} value={o}>
-                  {PLAYBACK_ORDER_LABELS[o]}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <SeriesAmountControl value={newSeriesAmount} onChange={setNewSeriesAmount} testIdPrefix="new-series" />
+        <Field>
+          <FieldLabel htmlFor="block-add-item">Add a catalog item</FieldLabel>
+          <Combobox
+            id="block-add-item"
+            options={options}
+            value={null}
+            onValueChange={(v) => addMutation.mutate({ catalog_item_id: v, trim_duration_ms: null })}
+            placeholder="Search the catalog by title…"
+            searchPlaceholder="Type a title…"
+            emptyMessage={debouncedSearch ? 'No items found.' : 'Type to search the catalog.'}
+            onSearchChange={setSearch}
+            disabled={addMutation.isPending}
+          />
+        </Field>
+
+        <Field>
+          <FieldLabel htmlFor="block-add-series">Add a series</FieldLabel>
           <Combobox
             id="block-add-series"
             options={seriesOptions}
@@ -859,48 +864,66 @@ function BlockItemsSection({ block }: { block: Block }) {
             onSearchChange={setSeriesSearch}
             disabled={addMutation.isPending}
           />
-        </div>
-      </Field>
+          <FieldDescription>
+            The series is added as soon as you pick it, with the order and the episodes per visit below.
+          </FieldDescription>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Select value={newSeriesOrder} onValueChange={(v) => setNewSeriesOrder(v as PlaybackOrder)}>
+              <SelectTrigger className="w-full sm:w-52" aria-label="Order for the new series" data-testid="new-series-order">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {(Object.keys(PLAYBACK_ORDER_LABELS) as PlaybackOrder[]).map((o) => (
+                  <SelectItem key={o} value={o}>
+                    {PLAYBACK_ORDER_LABELS[o]}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <SeriesAmountControl value={newSeriesAmount} onChange={setNewSeriesAmount} testIdPrefix="new-series" />
+          </div>
+        </Field>
 
-      <div className="flex flex-col gap-3 rounded-lg border border-border p-4" data-testid="add-criteria">
-        <div>
-          <h3 className="text-sm font-medium">Add a collection item</h3>
-          <p className="text-sm text-muted-foreground">
-            Plays the number of matches you choose from a collection (a live query of the catalog), then moves on to the next item.
-          </p>
-        </div>
-        <CollectionPicker value={newCollection} onChange={setNewCollection} idPrefix="new-criteria" />
-        {newQuery && <CriteriaPreviewPanel criteria={newQuery} empty="This query matches nothing right now, so the item would be skipped." />}
-        <div className="flex flex-col gap-2 sm:flex-row">
-          <CriteriaOrderSelect value={newCriteriaOrder} onChange={setNewCriteriaOrder} testId="new-criteria-order" />
-          <CriteriaAmountControl
-            key={newCriteriaKey}
-            value={newCriteriaAmount}
-            onChange={setNewCriteriaAmount}
-            eager
-            testIdPrefix="new-criteria"
-          />
-        </div>
-        {newCriteriaOrder === 'interleaved' && (
-          <InterleaveControls value={newInterleave} onChange={setNewInterleave} eager testIdPrefix="new-criteria" />
-        )}
-        {newInterleaveError && (
-          <p className="text-sm text-destructive" data-testid="new-criteria-error">{newInterleaveError}</p>
-        )}
-        {!newCriteriaAmount && (
-          <p className="text-xs text-muted-foreground">
-            Enter how many matches to play per visit, or choose all of them.
-          </p>
-        )}
-        <div>
-          <Button
-            size="sm"
-            data-testid="add-criteria-button"
-            disabled={addMutation.isPending || !!newQueryError || !!newInterleaveError || !newCriteriaAmount}
-            onClick={addCriteria}
-          >
-            Add collection item
-          </Button>
+        <div className="flex flex-col gap-3 border-t border-border pt-4" data-testid="add-criteria">
+          <div>
+            <h3 className="text-sm font-medium">Add a collection item</h3>
+            <p className="text-sm text-muted-foreground">
+              Plays the number of matches you choose from a collection (a live query of the catalog), then moves on to the next item.
+            </p>
+          </div>
+          <CollectionPicker value={newCollection} onChange={setNewCollection} idPrefix="new-criteria" />
+          {newQuery && <CriteriaPreviewPanel criteria={newQuery} empty="This query matches nothing right now, so the item would be skipped." />}
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <CriteriaOrderSelect value={newCriteriaOrder} onChange={setNewCriteriaOrder} testId="new-criteria-order" />
+            <CriteriaAmountControl
+              key={newCriteriaKey}
+              value={newCriteriaAmount}
+              onChange={setNewCriteriaAmount}
+              eager
+              testIdPrefix="new-criteria"
+            />
+          </div>
+          {newCriteriaOrder === 'interleaved' && (
+            <InterleaveControls value={newInterleave} onChange={setNewInterleave} eager testIdPrefix="new-criteria" />
+          )}
+          {newInterleaveError && (
+            <p className="text-sm text-destructive" data-testid="new-criteria-error">{newInterleaveError}</p>
+          )}
+          {!newCriteriaAmount && (
+            <p className="text-xs text-muted-foreground">
+              Enter how many matches to play per visit, or choose all of them.
+            </p>
+          )}
+          <div>
+            <Button
+              size="sm"
+              data-testid="add-criteria-button"
+              disabled={addMutation.isPending || !!newQueryError || !!newInterleaveError || !newCriteriaAmount}
+              onClick={addCriteria}
+            >
+              Add collection item
+            </Button>
+          </div>
         </div>
       </div>
     </section>

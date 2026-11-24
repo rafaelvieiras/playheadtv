@@ -28,24 +28,44 @@ export function CollectionPicker({
   const { data: collections, isLoading, isError, error, refetch } = useCollections()
   const [creating, setCreating] = useState(false)
   const selected = collections?.find((c) => c.id === value)
+  // A list that never arrived leaves nothing to choose from: an empty select
+  // would claim there are no collections, which is an answer the app does not
+  // have. Only a failed refresh with an earlier answer on screen keeps it.
+  const listMissing = isError && collections === undefined
 
   return (
     <div className="flex flex-col gap-2" data-testid={`${idPrefix}-picker`}>
-      <div className="flex flex-col gap-2 sm:flex-row">
-        {/* Radix reports '' when the selected id has no option yet (a collection
-            created a moment ago, before the list refetches): ignore it. */}
-        <Select value={value} onValueChange={(v) => v && onChange(v)} disabled={disabled || isLoading}>
-          <SelectTrigger className="w-full sm:w-80" aria-label="Collection" data-testid={`${idPrefix}-select`}>
-            <SelectValue placeholder={isLoading ? 'Loading…' : 'Choose a collection'} />
-          </SelectTrigger>
-          <SelectContent>
-            {(collections ?? []).map((c) => (
-              <SelectItem key={c.id} value={c.id} data-testid={`${idPrefix}-option`}>
-                {c.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-start">
+        {listMissing ? (
+          <div className="sm:flex-1">
+            <QueryError
+              subject="the collections"
+              error={error}
+              onRetry={() => void refetch()}
+              testId={`${idPrefix}-collections-error`}
+            />
+          </div>
+        ) : (
+          <Select
+            value={value}
+            // Radix reports '' when the selected id has no option yet (a
+            // collection created a moment ago, before the list refetches):
+            // ignore it rather than clearing the choice.
+            onValueChange={(v) => v && onChange(v)}
+            disabled={disabled || isLoading}
+          >
+            <SelectTrigger className="w-full sm:w-80" aria-label="Collection" data-testid={`${idPrefix}-select`}>
+              <SelectValue placeholder={isLoading ? 'Loading…' : 'Choose a collection'} />
+            </SelectTrigger>
+            <SelectContent>
+              {(collections ?? []).map((c) => (
+                <SelectItem key={c.id} value={c.id} data-testid={`${idPrefix}-option`}>
+                  {c.name}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        )}
         <Button
           type="button"
           variant="outline"
@@ -58,12 +78,13 @@ export function CollectionPicker({
           New collection
         </Button>
       </div>
-      {isError && (
+      {isError && !listMissing && (
         <QueryError
           subject="the collections"
           error={error}
           onRetry={() => void refetch()}
-          stale={collections !== undefined}
+          stale
+          testId={`${idPrefix}-collections-error`}
         />
       )}
       {!isLoading && !isError && (collections ?? []).length === 0 && (

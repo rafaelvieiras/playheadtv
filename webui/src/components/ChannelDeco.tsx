@@ -6,6 +6,7 @@ import { toast } from 'sonner'
 import { ChannelFillerRules } from '@/components/ChannelFillerRules'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { ChannelLogoSection } from '@/components/ChannelLogoSection'
+import { Loading, QueryError } from '@/components/QueryError'
 import { SaveBar } from '@/components/SaveBar'
 import { WatermarkSection } from '@/components/WatermarkSection'
 import { Button } from '@/components/ui/button'
@@ -26,7 +27,13 @@ const NONE_VALUE = '__none__'
 export function ChannelDeco({ channel }: { channel: Channel }) {
   const queryClient = useQueryClient()
 
-  const { data: rules } = useQuery({
+  const {
+    data: rules,
+    isLoading: rulesLoading,
+    isError: rulesFailed,
+    error: rulesError,
+    refetch: refetchRules,
+  } = useQuery({
     queryKey: ['filler-rules'],
     queryFn: () => api.get<FillerRule[]>('/filler-rules'),
   })
@@ -69,16 +76,17 @@ export function ChannelDeco({ channel }: { channel: Channel }) {
   })
 
   // Fallback filler: one channel-scoped `fallback` rule, created, repointed or
-  // deleted as the pool choice changes.
+  // deleted as the pool choice changes. Picking "None" deletes the rule on the
+  // server, so the delete is its own confirmed action naming that rule: the
+  // select itself only ever repoints a pool.
   const fallback = rules ? simpleFallbackState(rules, channel.id) : undefined
+  const [removingFallback, setRemovingFallback] = useState<FillerRule | undefined>(undefined)
+  const poolName = (poolId: string | undefined) =>
+    (poolId ? pools?.find((p) => p.id === poolId)?.name : undefined) ?? 'this pool'
   const invalidateRules = () => queryClient.invalidateQueries({ queryKey: ['filler-rules'] })
   const setFallback = useMutation({
-    mutationFn: async (poolId: string | null) => {
+    mutationFn: async (poolId: string) => {
       if (!fallback) return
-      if (poolId === null) {
-        if (fallback.state === 'single' && fallback.rule) await api.delete(`/filler-rules/${fallback.rule.id}`)
-        return
-      }
       if (fallback.state === 'single' && fallback.rule) {
         const r = fallback.rule
         const body: FillerRuleInput = {
@@ -113,6 +121,20 @@ export function ChannelDeco({ channel }: { channel: Channel }) {
         err instanceof ApiError ? `Could not save the fallback filler (${err.message})` : 'Could not save the fallback filler.',
       ),
   })
+  const removeFallback = useMutation({
+    mutationFn: (rule: FillerRule) => api.delete(`/filler-rules/${rule.id}`),
+    onSuccess: () => {
+      invalidateRules()
+      toast.success('Fallback filler removed.')
+      setRemovingFallback(undefined)
+    },
+    onError: (err) =>
+      toast.error(
+        err instanceof ApiError
+          ? `Could not remove the fallback filler (${err.message})`
+          : 'Could not remove the fallback filler.',
+      ),
+  })
 
   const advancedRules =
     rules !== undefined &&
@@ -121,17 +143,23 @@ export function ChannelDeco({ channel }: { channel: Channel }) {
       channel.id,
       (scheduleItems ?? []).map((i) => i.block_id ?? ''),
     )
-  // Choosing "None" deletes the rule on the server, so it asks first.
-  const [clearingFallback, setClearingFallback] = useState(false)
   const [advancedOverride, setAdvancedOverride] = useState<boolean | null>(null)
   const advancedOpen = advancedOverride ?? advancedRules
 
   return (
     <div className="flex flex-col gap-8" data-testid="channel-deco">
-      <p className="text-sm text-muted-foreground" data-testid="deco-defaults">
-        Nothing here is required. By default a channel has no watermark, no base schedule and no fallback filler: when
-        nothing is scheduled the player shows its plain gap slate.
-      </p>
+      <div className="flex flex-col gap-2" data-testid="deco-defaults">
+        <p className="text-sm text-muted-foreground">
+          Nothing here is required. By default a channel has no watermark, no base schedule and no fallback filler: when
+          nothing is scheduled the player shows its plain gap slate.
+        </p>
+        {/* Three save models share this tab, so they are stated once, here,
+            instead of being discovered one surprise at a time. */}
+        <p className="text-sm text-muted-foreground" data-testid="deco-save-models">
+          How this tab saves: the base schedule waits for the Save bar at the bottom of the window; the fallback filler
+          saves the moment you pick a pool; the logo and the watermark each have their own Save button.
+        </p>
+      </div>
 
       <section className="flex flex-col gap-3" data-testid="deco-base-schedule">
         <Field>
@@ -180,20 +208,34 @@ export function ChannelDeco({ channel }: { channel: Channel }) {
       <section className="flex flex-col gap-3" data-testid="deco-fallback">
         <Field>
           <FieldLabel htmlFor="deco-fallback-select">Fallback filler</FieldLabel>
+          {rulesLoading && <Loading>Loading the filler rules…</Loading>}
+          {/* A failed read is not "no fallback": it says nothing about the
+              channel's rules. */}
+          {rulesFailed && !rules && (
+            <QueryError
+              subject="the filler rules of this channel"
+              error={rulesError}
+              onRetry={() => void refetchRules()}
+              stale={false}
+              testId="deco-fallback-read-error"
+            />
+          )}
           {fallback?.state === 'complex' ? (
             <p className="text-sm" data-testid="deco-fallback-complex">
               This channel has several fallback rules or custom options. Edit them under Advanced.
             </p>
-          ) : (
+          ) : fallback ? (
             <Select
-              value={fallback?.rule?.filler_pool_id ?? NONE_VALUE}
-              disabled={!fallback || setFallback.isPending}
+              value={fallback.rule?.filler_pool_id ?? NONE_VALUE}
+              disabled={setFallback.isPending || removeFallback.isPending}
               onValueChange={(v) => {
-                if (v === NONE_VALUE && fallback?.rule) {
-                  setClearingFallback(true)
+                if (v === NONE_VALUE) {
+                  // Deleting the rule is destructive, so it is asked here and
+                  // carried out by a mutation that names the rule it removes.
+                  if (fallback.rule) setRemovingFallback(fallback.rule)
                   return
                 }
-                setFallback.mutate(v === NONE_VALUE ? null : v)
+                setFallback.mutate(v)
               }}
             >
               <SelectTrigger id="deco-fallback-select" className="w-full">
@@ -208,24 +250,22 @@ export function ChannelDeco({ channel }: { channel: Channel }) {
                 ))}
               </SelectContent>
             </Select>
-          )}
+          ) : null}
           <FieldDescription data-testid="deco-fallback-help">
             What plays when nothing is scheduled. Without one, that time stays empty.
           </FieldDescription>
         </Field>
 
         <ConfirmDialog
-          open={clearingFallback}
-          onClose={() => setClearingFallback(false)}
-          title="Remove the fallback filler of this channel?"
-          description="The rule is deleted, not just unassigned. Time the schedule does not cover stays empty — the player shows its plain gap slate."
+          open={removingFallback !== undefined}
+          onClose={() => setRemovingFallback(undefined)}
+          title={`Remove the fallback filler "${poolName(removingFallback?.filler_pool_id)}"?`}
+          description="The rule on this channel is deleted, not just unassigned. Time the schedule does not cover stays empty — the player shows its plain gap slate."
           confirmLabel="Remove fallback"
           pendingLabel="Removing…"
-          onConfirm={() =>
-            setFallback.mutate(null, { onSuccess: () => setClearingFallback(false) })
-          }
-          isPending={setFallback.isPending}
-          error={setFallback.error}
+          onConfirm={() => removingFallback && removeFallback.mutate(removingFallback)}
+          isPending={removeFallback.isPending}
+          error={removeFallback.error}
           testId="deco-fallback-confirm"
         />
       </section>

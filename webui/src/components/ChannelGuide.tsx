@@ -1,27 +1,25 @@
-import { formatCatalogTitle } from '@/lib/catalog'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQueries, useQuery, useQueryClient } from '@tanstack/react-query'
 import { RefreshCw } from 'lucide-react'
 import { Link } from 'react-router-dom'
 
+import { GuideGrid } from '@/components/GuideGrid'
 import { InlineWarning } from '@/components/InlineWarning'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Loading, QueryError } from '@/components/QueryError'
 import { useChannelEpgPreview, useChannelEpgWarnings } from '@/lib/authoring'
 import { formatDurationMs } from '@/lib/filler'
+import { formatTime, formatWeekday } from '@/lib/format'
 import {
   airsUntilSlotEnd,
   computeSlots,
-  ENTRY_KIND_CLASSES,
-  ENTRY_KIND_LABELS,
-  epgItemClipCount,
   epgItemTitle,
   findGaps,
   tooLongWarnings,
   type BlockWarning,
 } from '@/lib/guide'
-import { allEntriesAsCells, buildGuideCells, type GuideCell } from '@/lib/guideDisplay'
+import { allEntriesAsCells, buildGuideCells } from '@/lib/guideDisplay'
 import { api } from '@/lib/http'
 import { isTailGroup } from '@/lib/types'
 import type {
@@ -31,7 +29,6 @@ import type {
   Channel,
   CriteriaPreview,
   EpgEntry,
-  EpgEntryKind,
   EpgItem,
   ScheduleItem,
 } from '@/lib/types'
@@ -39,15 +36,10 @@ import type {
 const HALF_HOUR_MS = 30 * 60 * 1000
 const LOOKBACK_MS = 30 * 60 * 1000
 const WINDOW_MS = 24 * 60 * 60 * 1000
-const PIXELS_PER_MINUTE = 4
-const ROW_HEIGHT = 72
-const RULER_HEIGHT = 44
 // Title lookups are one GET per distinct catalog item: cap how many a grid
 // triggers and run them a few at a time instead of all at once.
 const MAX_LOOKUPS = 150
 const LOOKUP_CONCURRENCY = 6
-
-const px = (minutes: number) => minutes * PIXELS_PER_MINUTE
 
 function validTimeZone(tz: string): string | undefined {
   try {
@@ -206,124 +198,6 @@ function useBlockWarnings(channel: Channel, timeZone: string | undefined): Block
   }, [manual, dynamic, blockItems, slots, blocksById, catalog, truncated, serverWarnings, criteriaQueries.map((q) => q.dataUpdatedAt).join(',')])
 }
 
-function GuideGrid({
-  entries,
-  cells,
-  windowStart,
-  windowEnd,
-  now,
-  timeZone,
-  titles,
-  mode,
-}: {
-  entries: EpgItem[]
-  cells: GuideCell<EpgItem>[]
-  windowStart: number
-  windowEnd: number
-  now: number
-  timeZone: string | undefined
-  titles: Map<string, CatalogItem>
-  mode: 'stored' | 'preview'
-}) {
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const fmtTime = (ms: number) => new Date(ms).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone })
-  const fmtDay = (ms: number) => new Date(ms).toLocaleDateString('en-US', { weekday: 'short', timeZone })
-
-  const gaps = useMemo(() => findGaps(entries), [entries])
-  const trackWidth = px((windowEnd - windowStart) / 60000)
-  const marks = useMemo(() => {
-    const out: number[] = []
-    for (let t = windowStart; t < windowEnd; t += HALF_HOUR_MS) out.push(t)
-    return out
-  }, [windowStart, windowEnd])
-
-  useEffect(() => {
-    if (scrollRef.current) scrollRef.current.scrollLeft = Math.max(0, px((now - windowStart) / 60000) - px(20))
-    // Re-run only when the window moves, not on every title that resolves.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [windowStart, mode])
-
-  const place = (start: number, end: number) => {
-    const s = Math.max(start, windowStart)
-    const e = Math.min(end, windowEnd)
-    return { left: px((s - windowStart) / 60000), width: Math.max(px((e - s) / 60000) - 4, 0) }
-  }
-
-  return (
-    <div
-      className={`overflow-hidden rounded-lg border bg-card ${mode === 'preview' ? 'border-dashed border-primary' : 'border-border'}`}
-      data-testid="guide-grid"
-      data-mode={mode}
-    >
-      <div ref={scrollRef} className="overflow-x-auto">
-        <div style={{ width: trackWidth }} className="relative">
-          <div className="relative border-b border-border" style={{ height: RULER_HEIGHT }}>
-            {marks.map((mark, i) => {
-              const dayChanged = i === 0 || fmtDay(mark) !== fmtDay(mark - HALF_HOUR_MS)
-              return (
-                <div
-                  key={mark}
-                  className="absolute top-0 flex h-full flex-col justify-center border-l border-border pl-1.5 text-xs text-muted-foreground"
-                  style={{ left: px((mark - windowStart) / 60000) }}
-                >
-                  {dayChanged && <span className="font-medium text-foreground">{fmtDay(mark)}</span>}
-                  <span>{fmtTime(mark)}</span>
-                </div>
-              )
-            })}
-          </div>
-          <div className="relative" style={{ height: ROW_HEIGHT }}>
-            {gaps.map((gap) => (
-              <div
-                key={`gap-${gap.start}`}
-                data-testid="guide-gap"
-                title={`Gap ${fmtTime(gap.start)} – ${fmtTime(gap.end)}`}
-                className="absolute top-1 flex h-[calc(100%-0.5rem)] items-center justify-center overflow-hidden rounded-md border border-dashed border-destructive/60 bg-destructive/10 px-1 text-xs text-destructive"
-                style={place(gap.start, gap.end)}
-              >
-                <span className="truncate">Gap · {formatDurationMs(gap.end - gap.start)}</span>
-              </div>
-            ))}
-            {cells.map((cell) => {
-              const entry = cell.entry
-              const live = cell.displayStart <= now && now < cell.displayEnd
-              const clips = epgItemClipCount(entry)
-              const known = epgItemTitle(entry)
-              const item = isTailGroup(entry) ? undefined : titles.get(entry.catalog_item_id)
-              const title = known ?? (item ? formatCatalogTitle(item) : '…')
-              return (
-                <div
-                  key={entry.id}
-                  data-testid="guide-entry"
-                  data-kind={entry.kind}
-                  data-clips={clips || undefined}
-                  data-absorbed={cell.absorbed.length || undefined}
-                  title={`${ENTRY_KIND_LABELS[entry.kind]}: ${title} (${fmtTime(cell.displayStart)} – ${fmtTime(cell.displayEnd)})`}
-                  className={`absolute top-1 flex h-[calc(100%-0.5rem)] flex-col justify-center overflow-hidden rounded-md border px-2 ${ENTRY_KIND_CLASSES[entry.kind]} ${live ? 'ring-2 ring-primary' : ''}`}
-                  style={place(cell.displayStart, cell.displayEnd)}
-                >
-                  {entry.kind !== 'program' && (
-                    <span className="truncate text-[10px] font-semibold uppercase tracking-wide">{ENTRY_KIND_LABELS[entry.kind]}</span>
-                  )}
-                  <span className="truncate text-sm">{title}</span>
-                  <span className="truncate text-xs tabular-nums text-muted-foreground">
-                    {fmtTime(cell.displayStart)} – {fmtTime(cell.displayEnd)}
-                    {clips > 0 && ` · ${clips} ${clips === 1 ? 'clip' : 'clips'}`}
-                  </span>
-                </div>
-              )
-            })}
-            <div
-              className="pointer-events-none absolute top-0 z-10 w-0.5 bg-destructive"
-              style={{ left: px((now - windowStart) / 60000), height: ROW_HEIGHT }}
-            />
-          </div>
-        </div>
-      </div>
-    </div>
-  )
-}
-
 // Guide tab: this channel's grid, either as stored (GET /epg) or as the
 // dry-run of a reset (GET /channels/{id}/epg-preview), with warnings next to
 // the problems they describe. `active` is whether the tab is showing; the data
@@ -396,13 +270,8 @@ export function ChannelGuide({ channel, active }: { channel: Channel; active: bo
     queryClient.invalidateQueries({ queryKey: ['channels', channel.id, 'epg-preview'] })
   }
 
-  const fmtRange = (start: number, end: number) => {
-    const day = (ms: number) => new Date(ms).toLocaleDateString('en-US', { weekday: 'short', timeZone })
-    const time = (ms: number) => new Date(ms).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone })
-    return `${day(start)} ${time(start)} – ${time(end)} (${formatDurationMs(end - start)})`
-  }
-
-  const kindsPresent = new Set<EpgEntryKind>(cells.map((c) => c.entry.kind))
+  const fmtRange = (start: number, end: number) =>
+    `${formatWeekday(start, timeZone)} ${formatTime(start, timeZone)} to ${formatTime(end, timeZone)} (${formatDurationMs(end - start)})`
 
   return (
     <div className="flex flex-col gap-4" data-testid="guide">
@@ -515,35 +384,28 @@ export function ChannelGuide({ channel, active }: { channel: Channel; active: bo
         </p>
       )}
       {entries.length > 0 && (
-        <>
-          <GuideGrid
-            entries={entries}
-            cells={cells}
-            windowStart={windowStart}
-            windowEnd={windowEnd}
-            now={now}
-            timeZone={timeZone}
-            titles={titles.byId}
-            mode={mode}
-          />
-          <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground" data-testid="guide-legend">
-            <span>Times in {channel.timezone}.</span>
-            {(Object.keys(ENTRY_KIND_LABELS) as EpgEntryKind[])
-              .filter((k) => kindsPresent.has(k))
-              .map((k) => (
-                <span key={k} className="flex items-center gap-1">
-                  <span className={`inline-block size-3 rounded-sm border ${ENTRY_KIND_CLASSES[k]}`} />
-                  {ENTRY_KIND_LABELS[k]}
-                </span>
-              ))}
-            {!showFiller && hiddenCount > 0 && (
-              <span data-testid="guide-hidden-count">
-                {hiddenCount} filler {hiddenCount === 1 ? 'entry' : 'entries'} hidden (their time belongs to the neighbouring program).
-              </span>
-            )}
-            {titles.truncated && <span>Titles are looked up for the first {MAX_LOOKUPS} distinct items only.</span>}
-          </div>
-        </>
+        <GuideGrid
+          rows={[
+            {
+              id: channel.id,
+              cells,
+              entries,
+              channel: { id: channel.id, number: channel.number, name: channel.name },
+            },
+          ]}
+          windowStart={windowStart}
+          windowEnd={windowEnd}
+          timeZone={timeZone}
+          titles={titles.byId}
+          preview={mode === 'preview'}
+          hiddenFillerCount={showFiller ? 0 : hiddenCount}
+          scrollLabel={`Programs on ${channel.name}, scroll left and right for time`}
+          footer={
+            titles.truncated ? (
+              <span>Titles are looked up for the first {MAX_LOOKUPS} distinct items only.</span>
+            ) : undefined
+          }
+        />
       )}
     </div>
   )

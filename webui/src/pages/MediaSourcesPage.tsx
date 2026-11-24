@@ -1,14 +1,25 @@
 import { Fragment, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { ChevronDown, ChevronRight, RefreshCw } from 'lucide-react'
+import { ChevronDown, ChevronRight, CircleAlert, CircleCheck, RefreshCw } from 'lucide-react'
 import { toast } from 'sonner'
 
+import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { CreateDeviceDialog } from '@/components/CreateDeviceDialog'
 import { MediaSourceDialog } from '@/components/MediaSourceDialog'
+import { PageHeader } from '@/components/PageHeader'
 import { Loading, QueryError } from '@/components/QueryError'
+import { formatDateTime, formatMaybeDateTime, tzLabel } from '@/lib/format'
 import { api } from '@/lib/http'
 import type { MediaSource, PullSyncResponse, SourceType } from '@/lib/types'
 
@@ -16,6 +27,59 @@ const TYPE_LABELS: Record<SourceType, string> = {
   jellyfin: 'Jellyfin',
   plex: 'Plex',
   local_folder: 'Local folder',
+}
+
+const RELATIVE_TIME = new Intl.RelativeTimeFormat('en-US', { numeric: 'auto' })
+const RELATIVE_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ['year', 365 * 24 * 60 * 60 * 1000],
+  ['month', 30 * 24 * 60 * 60 * 1000],
+  ['week', 7 * 24 * 60 * 60 * 1000],
+  ['day', 24 * 60 * 60 * 1000],
+  ['hour', 60 * 60 * 1000],
+  ['minute', 60 * 1000],
+]
+
+// "3 minutes ago" — the column answers "is this stale?" before the operator
+// has to compare a raw timestamp with the clock in their head. The exact time
+// stays available in the cell's title.
+function relativeAge(ms: number): string {
+  const delta = ms - Date.now()
+  const magnitude = Math.abs(delta)
+  if (magnitude < 60 * 1000) return 'just now'
+  for (const [unit, size] of RELATIVE_UNITS) {
+    if (magnitude >= size) return RELATIVE_TIME.format(Math.round(delta / size), unit)
+  }
+  return 'just now'
+}
+
+function probeAge(source: MediaSource): string {
+  if (source.last_probe_at === null) return 'Not probed yet'
+  return relativeAge(source.last_probe_at)
+}
+
+// The probe result used to live only inside the collapsed "Pair" panel, so a
+// Jellyfin server that could not be reached looked exactly like a healthy one.
+// A failed probe is the one state that changes what the operator can do next,
+// so it gets the destructive color; a source type that never probes says so
+// instead of borrowing the healthy neutral pill.
+function HealthBadge({ source }: { source: MediaSource }) {
+  if (source.last_probe_ok === false) {
+    return (
+      <Badge variant="destructive">
+        <CircleAlert />
+        Probe failed
+      </Badge>
+    )
+  }
+  if (source.last_probe_ok === true) {
+    return (
+      <Badge variant="default">
+        <CircleCheck />
+        Reachable
+      </Badge>
+    )
+  }
+  return <Badge variant="secondary">Not probed</Badge>
 }
 
 function StatusBadge({ source }: { source: MediaSource }) {
@@ -35,11 +99,6 @@ function StatusBadge({ source }: { source: MediaSource }) {
 
 // Explains *why* this source is in push mode: a failed Jellyfin probe reads
 // differently from a type that never attempts a direct connection at all.
-function formatLastSynced(ms: number | null): string {
-  if (ms === null) return '—'
-  return new Date(ms).toLocaleString('en-US')
-}
-
 function pairingReason(source: MediaSource): string {
   if (source.type === 'jellyfin' && source.last_probe_ok === false) {
     return 'Could not connect directly to the given Jellyfin server: the connection failed or timed out.'
@@ -107,10 +166,10 @@ export function MediaSourcesPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Media sources</h1>
-        <Button onClick={openCreateDialog}>New source</Button>
-      </div>
+      <PageHeader
+        title="Media sources"
+        actions={<Button onClick={openCreateDialog}>New source</Button>}
+      />
 
       {isLoading && <Loading />}
       {isError && (
@@ -128,6 +187,7 @@ export function MediaSourcesPage() {
             <TableRow>
               <TableHead>Type</TableHead>
               <TableHead>Name</TableHead>
+              <TableHead>Health</TableHead>
               <TableHead>Address</TableHead>
               <TableHead>Status</TableHead>
               <TableHead>Last synced</TableHead>
@@ -137,23 +197,41 @@ export function MediaSourcesPage() {
           <TableBody>
             {sources.length === 0 && (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground">
+                <TableCell colSpan={7} className="text-center text-muted-foreground">
                   No media sources yet.
                 </TableCell>
               </TableRow>
             )}
             {sources.map((source) => {
               const expanded = expandedId === source.id
+              const pairPanelId = `source-pair-${source.id}`
               return (
                 <Fragment key={source.id}>
                   <TableRow>
                     <TableCell>{TYPE_LABELS[source.type]}</TableCell>
                     <TableCell>{source.name}</TableCell>
+                    <TableCell>
+                      <div className="flex flex-col items-start gap-1">
+                        <HealthBadge source={source} />
+                        <span
+                          className="text-xs text-muted-foreground"
+                          title={
+                            source.last_probe_at === null
+                              ? undefined
+                              : formatDateTime(source.last_probe_at)
+                          }
+                        >
+                          {probeAge(source)}
+                        </span>
+                      </div>
+                    </TableCell>
                     <TableCell className="text-muted-foreground">{source.base_url ?? '—'}</TableCell>
                     <TableCell>
                       <StatusBadge source={source} />
                     </TableCell>
-                    <TableCell className="text-muted-foreground">{formatLastSynced(source.last_synced_at)}</TableCell>
+                    <TableCell className="text-muted-foreground">
+                      {formatMaybeDateTime(source.last_synced_at)}
+                    </TableCell>
                     <TableCell>
                       <div className="flex flex-wrap justify-end gap-2">
                         {source.type === 'jellyfin' && source.sync_mode === 'pull' && (
@@ -176,6 +254,7 @@ export function MediaSourcesPage() {
                             variant="ghost"
                             size="sm"
                             aria-expanded={expanded}
+                            aria-controls={expanded ? pairPanelId : undefined}
                             onClick={() => toggleExpanded(source.id)}
                           >
                             {expanded ? <ChevronDown className="size-4" /> : <ChevronRight className="size-4" />}
@@ -198,8 +277,11 @@ export function MediaSourcesPage() {
                   </TableRow>
                   {source.sync_mode === 'push' && expanded && (
                     <TableRow>
-                      <TableCell colSpan={6} className="bg-muted/30">
-                        <div className="flex flex-col gap-3 p-2 text-sm">
+                      {/* whitespace-normal: TableCell is nowrap, and one
+                          unbroken 1897 px line is what widened the table and
+                          pushed every action off screen. */}
+                      <TableCell colSpan={7} className="bg-muted/30 whitespace-normal">
+                        <div id={pairPanelId} className="flex max-w-prose flex-col gap-3 p-2 text-sm">
                           <p className="text-muted-foreground">
                             {pairingReason(source)} To sync this source's catalog, open a Playhead TV client on a device
                             that is on the same network as the source and pair a device below. The catalog is then
@@ -218,6 +300,7 @@ export function MediaSourcesPage() {
               )
             })}
           </TableBody>
+          <TableCaption>{tzLabel(undefined)}</TableCaption>
         </Table>
       )}
 

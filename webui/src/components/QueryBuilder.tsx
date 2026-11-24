@@ -176,29 +176,47 @@ function ConditionRow({
   onChange: (next: QueryNode) => void
   onRemove?: () => void
 }) {
-  const def = fieldDef(node.field) ?? FIELDS[0]
-  const ops = opsFor(def.type)
-  const op: QueryOp = node.op && ops.includes(node.op) ? node.op : ops[0]
+  // Never substitute a known field for the one the saved query names: an
+  // unknown field used to render as Kind, and any edit then rewrote the
+  // condition to kind=movie, silently changing what a collection plays.
+  const def = fieldDef(node.field)
+  // A field definition with a closed option list still renders a control, so
+  // an operator can pick one; an operator that is not in the list is kept as
+  // saved rather than replaced.
+  const supportedOps = def ? opsFor(def.type) : []
+  const ops: QueryOp[] = node.op && !supportedOps.includes(node.op) ? [node.op, ...supportedOps] : supportedOps
+  const op: QueryOp | undefined = node.op ?? supportedOps[0]
 
   function changeField(name: string) {
-    const nextDef = fieldDef(name) ?? FIELDS[0]
+    const nextDef = fieldDef(name)
+    // Only picking a field rewrites the row; a select that reports something
+    // else (the unknown field it is already showing) is not an edit.
+    if (!nextDef) return
     const nextOps = opsFor(nextDef.type)
     const nextOp = node.op && nextOps.includes(node.op) ? node.op : nextOps[0]
     onChange({ field: name, op: nextOp, value: defaultValue(nextDef, nextOp) })
   }
 
   function changeOp(next: QueryOp) {
+    if (!def || !op) return
     onChange({ ...node, op: next, value: convertValue(def, op, next, node.value) })
   }
 
   return (
     <div className="flex flex-col gap-1" data-testid={`${path}-condition`}>
       <div className="flex flex-wrap items-start gap-2">
-        <Select value={def.name} onValueChange={changeField}>
+        <Select value={node.field ?? ''} onValueChange={changeField}>
           <SelectTrigger className="w-52" size="sm" aria-label="Field" data-testid={`${path}-field`}>
-            <SelectValue />
+            <SelectValue placeholder="Choose a field" />
           </SelectTrigger>
           <SelectContent>
+            {/* Listed so the row reads what the query actually says, and
+                disabled so it cannot be picked as if it were supported. */}
+            {!def && node.field && (
+              <SelectItem value={node.field} disabled>
+                {node.field} (not editable here)
+              </SelectItem>
+            )}
             {FIELDS.map((f) => (
               <SelectItem key={f.name} value={f.name}>
                 {f.label}
@@ -206,7 +224,7 @@ function ConditionRow({
             ))}
           </SelectContent>
         </Select>
-        {ops.length > 1 ? (
+        {def && op && ops.length > 1 && (
           <Select value={op} onValueChange={(v) => changeOp(v as QueryOp)}>
             <SelectTrigger className="w-44" size="sm" aria-label="Operator" data-testid={`${path}-op`}>
               <SelectValue />
@@ -219,10 +237,18 @@ function ConditionRow({
               ))}
             </SelectContent>
           </Select>
-        ) : (
+        )}
+        {def && op && ops.length <= 1 && (
           <span className="flex h-7 items-center px-1 text-sm text-muted-foreground">{opLabel(def, op)}</span>
         )}
-        <ValueInput def={def} op={op} value={node.value} path={path} onChange={(value) => onChange({ ...node, op, value })} />
+        {!def && node.field && (
+          <span className="flex h-7 items-center px-1 text-sm text-muted-foreground" data-testid={`${path}-saved`}>
+            {node.op ? (OP_LABELS[node.op] ?? node.op) : 'is'} {rawValueText(node.value)}
+          </span>
+        )}
+        {def && op && (
+          <ValueInput def={def} op={op} value={node.value} path={path} onChange={(value) => onChange({ ...node, op, value })} />
+        )}
         <Button type="button" variant="outline" size="sm" data-testid={`${path}-wrap-not`} onClick={() => onChange({ not: node })}>
           Not
         </Button>
@@ -232,9 +258,25 @@ function ConditionRow({
           </Button>
         )}
       </div>
-      {def.hint && <span className="pl-1 text-xs text-muted-foreground">{def.hint}</span>}
+      {def?.hint && <span className="pl-1 text-xs text-muted-foreground">{def.hint}</span>}
+      {!node.field && (
+        <span className="pl-1 text-xs text-muted-foreground">Pick a field to finish this condition.</span>
+      )}
+      {!def && node.field && (
+        <span className="pl-1 text-xs text-muted-foreground">
+          This field is not one the editor knows, so it is shown as saved. Choose a field to replace it.
+        </span>
+      )}
     </div>
   )
+}
+
+// What an unknown field's value reads as, without pretending to know its type.
+function rawValueText(value: unknown): string {
+  if (value === undefined || value === null) return ''
+  if (Array.isArray(value)) return value.map((v) => rawValueText(v)).join(', ')
+  if (typeof value === 'object') return JSON.stringify(value)
+  return String(value)
 }
 
 function opLabel(def: FieldDef, op: QueryOp): string {

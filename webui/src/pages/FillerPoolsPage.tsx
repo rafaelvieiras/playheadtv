@@ -77,7 +77,7 @@ export function FillerPoolsPage() {
           <TableHeader>
             <TableRow>
               <TableHead>Name</TableHead>
-              <TableHead>Type</TableHead>
+              <TableHead>Pool type</TableHead>
               <TableHead>Collection</TableHead>
               <TableHead className="text-right">Actions</TableHead>
             </TableRow>

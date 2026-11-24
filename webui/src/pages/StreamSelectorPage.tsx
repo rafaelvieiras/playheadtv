@@ -4,9 +4,11 @@ import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
+import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
+import { PageHeader } from '@/components/PageHeader'
 import { QueryError } from '@/components/QueryError'
 import { StreamCascadeDialog } from '@/components/StreamCascadeDialog'
 import { api } from '@/lib/http'
@@ -99,13 +101,12 @@ export function StreamSelectorPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-xl font-semibold">Stream selector</h1>
-        <p className="text-sm text-muted-foreground">
-          Configure the audio/subtitle selection cascade used when a channel has no user-level preference: a
-          tenant-wide default, and optional per-channel overrides.
-        </p>
-      </div>
+      <PageHeader title="Stream selector" />
+
+      <p className="text-sm text-muted-foreground">
+        Configure the audio/subtitle selection cascade used when a channel has no user-level preference: a
+        tenant-wide default, and optional per-channel overrides.
+      </p>
 
       {globalError && (
         <QueryError
@@ -121,7 +122,7 @@ export function StreamSelectorPage() {
           <CardTitle>Global default</CardTitle>
           <CardDescription>Applies to every channel that has no override of its own.</CardDescription>
         </CardHeader>
-        <CardContent className="flex items-center justify-between">
+        <CardContent className="flex flex-wrap items-center justify-between gap-2">
           <span className="text-sm text-muted-foreground">{stepsSummary(globalRule)}</span>
           <Button variant="outline" size="sm" onClick={() => setGlobalDialogOpen(true)} disabled={globalLoading}>
             Edit
@@ -188,11 +189,15 @@ export function StreamSelectorPage() {
           </TableBody>
         </Table>
 
-        <div className="flex items-end gap-2 border-t border-border pt-4">
-          <div className="flex flex-1 flex-col gap-1.5">
-            <span className="text-sm font-medium">Add a channel override</span>
+        <div className="flex flex-col gap-2 border-t border-border pt-4 sm:flex-row sm:items-end">
+          <div className="flex w-full flex-col gap-1.5 sm:flex-1">
+            <Label htmlFor="add-override-channel">Add a channel override</Label>
             <Select value={addChannelId} onValueChange={setAddChannelId}>
-              <SelectTrigger className="w-full" aria-label="Channel to override">
+              <SelectTrigger
+                id="add-override-channel"
+                className="w-full"
+                aria-label="Channel to override"
+              >
                 <SelectValue placeholder="Select a channel" />
               </SelectTrigger>
               <SelectContent>

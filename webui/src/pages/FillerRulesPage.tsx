@@ -103,7 +103,10 @@ export function FillerRulesPage() {
             {rules.map((rule) => (
               <TableRow key={rule.id}>
                 <TableCell>
-                  <Link to={`/filler-rules/${rule.id}`} className="hover:underline">
+                  <Link
+                    to={`/filler-rules/${rule.id}`}
+                    className="inline-flex min-h-9 items-center hover:underline max-sm:min-h-11"
+                  >
                     {SCOPE_LABELS[rule.scope_type]}: {scopeName(rule)}
                   </Link>
                 </TableCell>

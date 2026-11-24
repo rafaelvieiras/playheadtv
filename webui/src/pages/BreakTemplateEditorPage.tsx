@@ -9,7 +9,7 @@ import { PageHeader } from '@/components/PageHeader'
 import { SaveBar } from '@/components/SaveBar'
 import { Button } from '@/components/ui/button'
 import { Combobox } from '@/components/ui/combobox'
-import { Field, FieldDescription, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import {
@@ -18,15 +18,19 @@ import {
   MAX_BREAK_STEPS,
   MAX_BREAK_TARGET_MINUTES,
   STEP_TYPE_LABELS,
+  draftProblems,
+  mapTemplateMessage,
   draftToInput,
   emptyDraft,
   emptyStep,
   moveStep,
+  problemsById,
   sameDraft,
+  summarizeDraft,
   templateToDraft,
-  validateDraft,
   type StepDraft,
   type TemplateDraft,
+  type TemplateProblem,
 } from '@/lib/breakTemplate'
 import { MAX_FIT_ATTEMPTS_MAX, MAX_FIT_ATTEMPTS_MIN, SCOPE_LABELS, STRATEGY_LABELS } from '@/lib/filler'
 import { api, ApiError } from '@/lib/http'
@@ -72,6 +76,11 @@ export function BreakTemplateEditorPage() {
 
   const [draft, setDraft] = useState<TemplateDraft | null>(null)
   const [formError, setFormError] = useState<string | null>(null)
+  // Field problems are reported from the first save attempt on, and recomputed
+  // on every edit, so a message disappears as soon as its value changes.
+  const [submitted, setSubmitted] = useState(false)
+  // A refusal from the server, bound to the field it names.
+  const [serverProblems, setServerProblems] = useState<TemplateProblem[]>([])
 
   const save = useMutation({
     mutationFn: (payload: ReturnType<typeof draftToInput>) =>
@@ -82,11 +91,19 @@ export function BreakTemplateEditorPage() {
       queryClient.invalidateQueries({ queryKey: ['break-templates'] })
       setDraft(null)
       setFormError(null)
+      setSubmitted(false)
+      setServerProblems([])
       toast.success(isNew ? 'Break template created.' : 'Break template saved.')
       queryClient.setQueryData(['break-templates', saved.id], saved)
       if (isNew) navigate(`/break-templates/${saved.id}`, { replace: true })
     },
-    onError: (e) => setFormError(e instanceof ApiError ? e.message : 'Could not save the break template.'),
+    onError: (e) => {
+      // The server names the step and the field in milliseconds: put the
+      // message under that field in minutes instead of only in the save bar.
+      const problem = e instanceof ApiError && e.status === 400 ? mapTemplateMessage(e.message) : null
+      setServerProblems(problem ? [problem] : [])
+      setFormError(problem ? null : e instanceof ApiError ? e.message : 'Could not save the break template.')
+    },
   })
 
   const breadcrumb = [{ label: 'Break templates', to: '/break-templates' }, { label: isNew ? 'New template' : 'Break template' }]
@@ -115,21 +132,41 @@ export function BreakTemplateEditorPage() {
   const loaded = template ? templateToDraft(template) : initial
   const current = draft ?? loaded
   const dirty = !isNew && draft !== null && !sameDraft(current, loaded)
+  // Recomputed on every edit (the lists are short), so a message disappears
+  // the moment its value changes.
+  const found = submitted ? draftProblems(current) : []
+  const foundIds = new Set(found.map((p) => p.id))
+  const problems = [...found, ...serverProblems.filter((p) => !foundIds.has(p.id))]
+  const errors = problemsById(problems)
+
+  // field carries the aria wiring of one control and the id of its message.
+  function field(id: string) {
+    const message = errors[id]
+    return {
+      invalid: !!message,
+      errorId: `${id}-error`,
+      props: {
+        'aria-invalid': !!message,
+        'aria-describedby': message ? `${id}-error` : undefined,
+      },
+    }
+  }
 
   function patch(next: Partial<TemplateDraft>) {
     setDraft({ ...current, ...next })
     setFormError(null)
+    setServerProblems([])
   }
   function patchStep(index: number, next: Partial<StepDraft>) {
     patch({ steps: current.steps.map((s, i) => (i === index ? { ...s, ...next } : s)) })
   }
 
   function handleSave() {
-    const problem = validateDraft(current)
-    if (problem) {
-      setFormError(problem)
-      return
-    }
+    // Every problem in one submit, each under its own field.
+    setSubmitted(true)
+    setServerProblems([])
+    setFormError(null)
+    if (draftProblems(current).length > 0) return
     save.mutate(draftToInput(current))
   }
 
@@ -160,7 +197,7 @@ export function BreakTemplateEditorPage() {
           </Select>
         </Field>
 
-        <Field>
+        <Field data-invalid={field('bt-scope-target').invalid}>
           <FieldLabel htmlFor="bt-scope-target">{SCOPE_LABELS[current.scope_type]}</FieldLabel>
           <Combobox
             id="bt-scope-target"
@@ -170,6 +207,7 @@ export function BreakTemplateEditorPage() {
             placeholder={current.scope_type === 'channel' ? 'Select a channel' : 'Select a block'}
             searchPlaceholder="Search…"
           />
+          <FieldError id={field('bt-scope-target').errorId}>{errors['bt-scope-target']}</FieldError>
         </Field>
 
         <Field>
@@ -192,7 +230,7 @@ export function BreakTemplateEditorPage() {
           </FieldDescription>
         </Field>
 
-        <Field>
+        <Field data-invalid={field('bt-name').invalid}>
           <FieldLabel htmlFor="bt-name">Name</FieldLabel>
           <Input
             id="bt-name"
@@ -200,10 +238,12 @@ export function BreakTemplateEditorPage() {
             maxLength={MAX_BREAK_NAME}
             onChange={(e) => patch({ name: e.target.value })}
             placeholder="Optional"
+            {...field('bt-name').props}
           />
+          <FieldError id={field('bt-name').errorId}>{errors['bt-name']}</FieldError>
         </Field>
 
-        <Field>
+        <Field data-invalid={field('bt-position').invalid}>
           <FieldLabel htmlFor="bt-position">Position</FieldLabel>
           <Input
             id="bt-position"
@@ -211,13 +251,25 @@ export function BreakTemplateEditorPage() {
             step={1}
             value={Number.isNaN(current.position) ? '' : current.position}
             onChange={(e) => patch({ position: e.target.value === '' ? NaN : Number(e.target.value) })}
+            {...field('bt-position').props}
           />
+          <FieldError id={field('bt-position').errorId}>{errors['bt-position']}</FieldError>
           <FieldDescription>Order among templates of the same scope and type; the lowest wins.</FieldDescription>
         </Field>
       </FieldGroup>
 
       <section className="flex max-w-xl flex-col gap-3" data-testid="bt-steps">
         <h2 className="text-base font-medium">Steps</h2>
+        <div className="rounded-lg border bg-muted/40 p-3" data-testid="bt-summary">
+          <p className="text-sm" data-testid="bt-summary-text">
+            {summarizeDraft(current)}
+          </p>
+          <p className="text-xs text-muted-foreground">
+            The fill lengths are exact; each item's own length is whatever its pool hands over, so the total is at
+            least that much.
+          </p>
+        </div>
+        <FieldError id="bt-steps-error">{errors['bt-steps']}</FieldError>
         <p className="text-sm text-muted-foreground">
           Played in this order at every boundary. A fill step airs whole items of its pool until its length is filled
           (it can end a little short); the block's tail still lands the slot on the next scheduled item.
@@ -279,7 +331,7 @@ export function BreakTemplateEditorPage() {
               </Select>
             </Field>
 
-            <Field>
+            <Field data-invalid={field(`bt-step-${i}-pool`).invalid}>
               <FieldLabel htmlFor={`bt-step-${i}-pool`}>Filler pool</FieldLabel>
               <Combobox
                 id={`bt-step-${i}-pool`}
@@ -289,6 +341,7 @@ export function BreakTemplateEditorPage() {
                 placeholder="Select a filler pool"
                 searchPlaceholder="Search pools…"
               />
+              <FieldError id={field(`bt-step-${i}-pool`).errorId}>{errors[`bt-step-${i}-pool`]}</FieldError>
             </Field>
 
             <Field>
@@ -312,21 +365,25 @@ export function BreakTemplateEditorPage() {
 
             {step.step_type === 'fill' && (
               <>
-                <Field>
+                <Field data-invalid={field(`bt-step-${i}-target`).invalid}>
                   <FieldLabel htmlFor={`bt-step-${i}-target`}>Length to fill (minutes)</FieldLabel>
                   <Input
                     id={`bt-step-${i}-target`}
                     data-testid={`bt-step-${i}-target`}
                     type="number"
                     step={0.5}
-                    min={0}
+                    min={0.5}
                     max={MAX_BREAK_TARGET_MINUTES}
                     value={Number.isNaN(step.target_minutes) ? '' : step.target_minutes}
                     onChange={(e) => patchStep(i, { target_minutes: e.target.value === '' ? NaN : Number(e.target.value) })}
+                    {...field(`bt-step-${i}-target`).props}
                   />
-                  <FieldDescription>Up to {MAX_BREAK_TARGET_MINUTES} minutes. Whole items only, never cut short.</FieldDescription>
+                  <FieldError id={field(`bt-step-${i}-target`).errorId}>{errors[`bt-step-${i}-target`]}</FieldError>
+                  <FieldDescription>
+                    More than 0 and up to {MAX_BREAK_TARGET_MINUTES} minutes. Whole items only, never cut short.
+                  </FieldDescription>
                 </Field>
-                <Field>
+                <Field data-invalid={field(`bt-step-${i}-attempts`).invalid}>
                   <FieldLabel htmlFor={`bt-step-${i}-attempts`}>Fit attempts</FieldLabel>
                   <Input
                     id={`bt-step-${i}-attempts`}
@@ -337,9 +394,12 @@ export function BreakTemplateEditorPage() {
                     max={MAX_FIT_ATTEMPTS_MAX}
                     value={Number.isNaN(step.max_fit_attempts) ? '' : step.max_fit_attempts}
                     onChange={(e) => patchStep(i, { max_fit_attempts: e.target.value === '' ? NaN : Number(e.target.value) })}
+                    {...field(`bt-step-${i}-attempts`).props}
                   />
+                  <FieldError id={field(`bt-step-${i}-attempts`).errorId}>{errors[`bt-step-${i}-attempts`]}</FieldError>
                   <FieldDescription>
-                    Other items to try when one does not fit the time left, misses in a row (1 to {MAX_FIT_ATTEMPTS_MAX}).
+                    How many candidates in a row the fill may reject for not being the right length before it gives up
+                    ({MAX_FIT_ATTEMPTS_MIN} to {MAX_FIT_ATTEMPTS_MAX}).
                   </FieldDescription>
                 </Field>
               </>
@@ -363,7 +423,12 @@ export function BreakTemplateEditorPage() {
         </div>
       </section>
 
-      {formError && isNew && <p className="text-sm text-destructive">{formError}</p>}
+      {/* The save bar carries the server's refusal on an existing template. */}
+      {formError && isNew && (
+        <p className="text-sm text-destructive" role="alert" data-testid="bt-form-error">
+          {formError}
+        </p>
+      )}
       {isNew ? (
         <div>
           <Button onClick={handleSave} disabled={save.isPending} data-testid="bt-create">
@@ -379,6 +444,8 @@ export function BreakTemplateEditorPage() {
           onDiscard={() => {
             setDraft(null)
             setFormError(null)
+            setSubmitted(false)
+            setServerProblems([])
           }}
         />
       )}

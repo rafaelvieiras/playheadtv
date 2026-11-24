@@ -2,17 +2,28 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
+  MAX_CUT_BREAKS,
+  MAX_CUT_GUARD_MINUTES,
+  MAX_CUT_INTERVAL_MINUTES,
+  MAX_CUT_OFFSETS,
+  MAX_CUT_RULES,
+  MAX_CUT_PERCENTAGES,
+  MAX_CUT_SNAP_MINUTES,
+  MIN_CUT_INTERVAL_MINUTES,
   defaultSamples,
   describeRules,
+  draftProblems,
   draftToConfig,
   draftToInput,
   emptyDraft,
   emptyRule,
   emptyStrategy,
   formatDuration,
+  mapPlannerMessage,
   minutesText,
   moveItem,
   parseList,
+  problemsById,
   sameDraft,
   sampleToPreview,
   setToDraft,
@@ -80,7 +91,7 @@ test('validateDraft names what to fix', () => {
   assert.equal(validateDraft(d), null)
   d.rules[0].strategy = emptyStrategy('interval')
   d.rules[0].strategy.every_minutes = 'abc'
-  assert.match(validateDraft(d) ?? '', /Rule 1: the interval/)
+  assert.match(validateDraft(d) ?? '', /The interval/)
   d.rules[0].strategy = emptyStrategy('percentage')
   d.rules[0].strategy.percentages = '50, x'
   assert.match(validateDraft(d) ?? '', /percentages/)
@@ -102,7 +113,7 @@ test('phased phases: the last phase takes no end, the others need one', () => {
   d.scope_id = 'ch'
   d.rules[0].strategy = emptyStrategy('phased')
   d.rules[0].strategy.phases[0].until_minutes = ''
-  assert.match(validateDraft(d) ?? '', /phase 1 end/)
+  assert.match(validateDraft(d) ?? '', /Phase 1 end/)
   d.rules[0].strategy.phases[0].until_minutes = '20'
   assert.equal(validateDraft(d), null)
   const cfg = draftToConfig(d)
@@ -166,4 +177,117 @@ test('small helpers', () => {
   assert.deepEqual(parseList(''), [])
   assert.deepEqual(moveItem([1, 2, 3], 0, 1), [2, 1, 3])
   assert.deepEqual(moveItem([1, 2, 3], 0, -1), [1, 2, 3])
+})
+
+test('the constants are the server limits in the units the editor uses', () => {
+  // domain.MinCutIntervalMs / MaxCutIntervalMs and cutplan's day-long guard.
+  assert.equal(MIN_CUT_INTERVAL_MINUTES * MIN, 60000)
+  assert.equal(MAX_CUT_INTERVAL_MINUTES * MIN, 86400000)
+  assert.equal(MAX_CUT_GUARD_MINUTES * MIN, 86400000)
+  // domain.MaxCutSnapToleranceMs.
+  assert.equal(MAX_CUT_SNAP_MINUTES * MIN, 1800000)
+  // domain.MaxCutRules, MaxCutPercentages, MaxCutOffsets, MaxCutBreaksLimit.
+  assert.equal(MAX_CUT_RULES, 20)
+  assert.equal(MAX_CUT_BREAKS, 50)
+})
+
+test('the limits the server enforces are mirrored, in minutes and per field', () => {
+  const d = emptyDraft()
+  d.scope_id = 'ch'
+  d.rules[0].strategy = emptyStrategy('interval')
+  for (const bad of ['0', '0.5', '1441', '-3', 'x']) {
+    d.rules[0].strategy.every_minutes = bad
+    const problems = draftProblems(d)
+    assert.deepEqual(problems.map((p) => p.id), ['cr-rule-0-every'], bad)
+    assert.doesNotMatch(problems[0].message, /86400000|60000/, bad)
+    assert.match(problems[0].message, new RegExp(`${MIN_CUT_INTERVAL_MINUTES} to ${MAX_CUT_INTERVAL_MINUTES}`))
+  }
+  d.rules[0].strategy.every_minutes = '60'
+  assert.deepEqual(draftProblems(d), [])
+
+  d.rules[0].strategy = emptyStrategy('percentage')
+  for (const bad of ['0', '100', '50, 50', '66, 33', '1,2,3,4,5,6,7,8,9,10,11']) {
+    d.rules[0].strategy.percentages = bad
+    assert.deepEqual(draftProblems(d).map((p) => p.id), ['cr-rule-0-percentages'], bad)
+  }
+  d.rules[0].strategy.percentages = '33, 66'
+  assert.deepEqual(draftProblems(d), [])
+  assert.equal(MAX_CUT_PERCENTAGES, 10)
+
+  d.rules[0].strategy = emptyStrategy('offsets')
+  for (const bad of ['0', '50, 20', '20, 20']) {
+    d.rules[0].strategy.offsets_minutes = bad
+    assert.deepEqual(draftProblems(d).map((p) => p.id), ['cr-rule-0-offsets'], bad)
+  }
+  d.rules[0].strategy.offsets_minutes = Array.from({ length: MAX_CUT_OFFSETS + 1 }, (_, i) => String(i + 1)).join(', ')
+  assert.deepEqual(draftProblems(d).map((p) => p.id), ['cr-rule-0-offsets'])
+  d.rules[0].strategy.offsets_minutes = '20, 50'
+  assert.deepEqual(draftProblems(d), [])
+
+  d.rules[0].strategy = emptyStrategy('percentage')
+  d.rules[0].snap_minutes = String(MAX_CUT_SNAP_MINUTES + 1)
+  assert.deepEqual(draftProblems(d).map((p) => p.id), ['cr-rule-0-snap'])
+  d.rules[0].snap_minutes = String(MAX_CUT_SNAP_MINUTES)
+  assert.deepEqual(draftProblems(d), [])
+
+  d.guards.min_segment_minutes = '1441'
+  d.guards.max_breaks = '51'
+  assert.deepEqual(draftProblems(d).map((p) => p.id), ['cr-guard-segment', 'cr-guard-max'])
+})
+
+test('one submit reports every problem, each under its own field', () => {
+  const d = emptyDraft()
+  d.rules[0].strategy = emptyStrategy('interval')
+  d.rules[0].strategy.every_minutes = '0'
+  d.rules[0].min_minutes = '90'
+  d.rules[0].max_minutes = '30'
+  d.rules[1] = { ...emptyRule(), strategy: emptyStrategy('offsets') }
+  d.rules[1].strategy.offsets_minutes = ''
+  const errors = problemsById(draftProblems(d))
+  assert.equal(errors['cr-scope-target'], 'Select a channel.')
+  assert.match(errors['cr-rule-0-every'], /1 to 1440/)
+  assert.match(errors['cr-rule-0-min'], /below the maximum/)
+  assert.match(errors['cr-rule-1-offsets'], /cut times in minutes/)
+  assert.equal(validateDraft(d), 'Select a channel.')
+})
+
+test('a rule shadowed by an earlier one is marked on the rule itself', () => {
+  const d = emptyDraft()
+  d.scope_id = 'ch'
+  d.rules[0].strategy = emptyStrategy('percentage')
+  d.rules[1] = emptyRule()
+  assert.deepEqual(draftProblems(d).map((p) => p.id), ['cr-rule-1-card'])
+  assert.match(draftProblems(d)[0].message, /rule 1 already matches/)
+  d.rules[0].kinds = ['episode']
+  d.rules[1].kinds = ['movie']
+  assert.deepEqual(draftProblems(d), [])
+})
+
+test('a planner message goes back to its field in minutes', () => {
+  const every = mapPlannerMessage('rule 1: every_ms must be between 60000 and 86400000')
+  assert.equal(every?.id, 'cr-rule-0-every')
+  assert.doesNotMatch(every?.message ?? '', /60000|86400000/)
+  assert.match(every?.message ?? '', /1 to 1440/)
+  assert.equal(mapPlannerMessage('rule 2: percentages must be strictly ascending')?.id, 'cr-rule-1-percentages')
+  assert.equal(mapPlannerMessage('rule 3: phase 2: every_ms must be between 60000 and 86400000')?.id, 'cr-rule-2-phase-1-every')
+  assert.equal(mapPlannerMessage('guards: max_breaks must be between 0 and 50')?.id, 'cr-guard-max')
+  assert.equal(mapPlannerMessage('default: every_ms must be between 60000 and 86400000')?.id, 'cr-default-every')
+  assert.equal(mapPlannerMessage('rule 2 can never match: rule 1 already matches every item it would')?.id, 'cr-rule-1-card')
+  assert.equal(mapPlannerMessage('add at least one rule or a default strategy')?.id, 'cr-default-enabled')
+  assert.equal(mapPlannerMessage('something else entirely'), null)
+  for (const message of [
+    'rule 1: every_ms must be between 60000 and 86400000',
+    'guards: min_segment_ms must be between 0 and 86400000',
+  ]) {
+    assert.doesNotMatch(mapPlannerMessage(message)?.message ?? '', /\d{5,}/, message)
+  }
+})
+
+test('a sample longer than a week is refused before the request', () => {
+  const cfg = draftToConfig({ ...emptyDraft(), scope_id: 'c' })
+  assert.ok(cfg.ok)
+  if (!cfg.ok) return
+  const [movie] = defaultSamples()
+  assert.equal(sampleToPreview(cfg.value, { ...movie, duration_minutes: '10081' }).ok, false)
+  assert.equal(sampleToPreview(cfg.value, { ...movie, duration_minutes: '10080' }).ok, true)
 })

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -303,5 +304,44 @@ func TestBlockUpdatePutRevertsToManual(t *testing.T) {
 	rec = doRequest(t, mux, "POST", "/blocks/"+block.ID+"/items", fmt.Sprintf(`{"catalog_item_id":%q}`, item))
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("add item after revert to manual: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+// A block that a schedule airs must say so before anyone presses Delete: the
+// foreign key used to answer with a 500 and no way to find the schedule.
+func TestBlockUsageAndDeleteGuard(t *testing.T) {
+	_, mux := newTestDB(t)
+
+	var block domain.Block
+	rec := doRequest(t, mux, "POST", "/blocks", `{"name":"Sitcom Night"}`)
+	json.Unmarshal(rec.Body.Bytes(), &block)
+
+	rec = doRequest(t, mux, "GET", "/blocks/"+block.ID, "")
+	json.Unmarshal(rec.Body.Bytes(), &block)
+	if block.UsageItems != 0 || block.UsageSchedules != 0 {
+		t.Fatalf("unused block: usage = %d/%d, want 0/0", block.UsageItems, block.UsageSchedules)
+	}
+
+	var schedule domain.Schedule
+	rec = doRequest(t, mux, "POST", "/schedules", `{"name":"Weekday grid"}`)
+	json.Unmarshal(rec.Body.Bytes(), &schedule)
+	if rec = doRequest(t, mux, "POST", "/schedules/"+schedule.ID+"/items",
+		`{"block_id":"`+block.ID+`","recurrence_type":"continuous"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create item: status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doRequest(t, mux, "GET", "/blocks", "")
+	var list []domain.Block
+	json.Unmarshal(rec.Body.Bytes(), &list)
+	if len(list) != 1 || list[0].UsageItems != 1 || list[0].UsageSchedules != 1 {
+		t.Fatalf("list usage = %+v, want 1 item in 1 schedule", list)
+	}
+
+	rec = doRequest(t, mux, "DELETE", "/blocks/"+block.ID, "")
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("delete in-use block: status = %d, want 409, body = %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Weekday grid") {
+		t.Fatalf("delete refusal must name the schedule: %s", rec.Body.String())
 	}
 }

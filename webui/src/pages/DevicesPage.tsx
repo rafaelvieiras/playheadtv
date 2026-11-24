@@ -3,17 +3,22 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 
 import { Button } from '@/components/ui/button'
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
+import {
+  Table,
+  TableBody,
+  TableCaption,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table'
 import { ConfirmDialog } from '@/components/ConfirmDialog'
 import { CreateDeviceDialog, PLATFORM_LABELS } from '@/components/CreateDeviceDialog'
+import { PageHeader } from '@/components/PageHeader'
 import { Loading, QueryError } from '@/components/QueryError'
+import { formatDateTime, formatMaybeDateTime, tzLabel } from '@/lib/format'
 import { api } from '@/lib/http'
 import type { Device } from '@/lib/types'
-
-function formatLastSeen(ms: number | null): string {
-  if (ms === null) return 'never'
-  return new Date(ms).toLocaleString('en-US')
-}
 
 export function DevicesPage() {
   const queryClient = useQueryClient()
@@ -33,7 +38,13 @@ export function DevicesPage() {
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => api.delete(`/devices/${id}`),
-    onSuccess: () => {
+    // Drop the row from the cache as soon as the server confirms it: a slow
+    // refetch used to keep the device that issued the one-time token on screen
+    // after it had already been revoked.
+    onSuccess: (_response, id) => {
+      queryClient.setQueryData<Device[]>(['devices'], (current) =>
+        current?.filter((device) => device.id !== id),
+      )
       queryClient.invalidateQueries({ queryKey: ['devices'] })
       toast.success('Device deleted.')
       setDeletingDevice(undefined)
@@ -45,10 +56,10 @@ export function DevicesPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
-        <h1 className="text-xl font-semibold">Devices</h1>
-        <Button onClick={() => setCreateOpen(true)}>Create device</Button>
-      </div>
+      <PageHeader
+        title="Devices"
+        actions={<Button onClick={() => setCreateOpen(true)}>Create device</Button>}
+      />
 
       <p className="text-sm text-muted-foreground">
         Paired devices can sync the catalog of push-mode media sources (
@@ -88,8 +99,8 @@ export function DevicesPage() {
               <TableRow key={device.id}>
                 <TableCell>{device.name}</TableCell>
                 <TableCell>{PLATFORM_LABELS[device.platform]}</TableCell>
-                <TableCell>{new Date(device.created_at).toLocaleString('en-US')}</TableCell>
-                <TableCell>{formatLastSeen(device.last_seen_at)}</TableCell>
+                <TableCell>{formatDateTime(device.created_at)}</TableCell>
+                <TableCell>{formatMaybeDateTime(device.last_seen_at)}</TableCell>
                 <TableCell className="text-right">
                   <div className="flex justify-end">
                     <Button
@@ -105,6 +116,7 @@ export function DevicesPage() {
               </TableRow>
             ))}
           </TableBody>
+          <TableCaption>{tzLabel(undefined)}</TableCaption>
         </Table>
       )}
 

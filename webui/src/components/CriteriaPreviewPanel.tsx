@@ -11,8 +11,17 @@ const DEBOUNCE_MS = 400
 
 // Live match preview for a draft criteria object: debounced POST to
 // /catalog-items/preview-criteria. `criteria` must already be valid (the
-// caller passes null while its own validation fails); null shows nothing.
-export function CriteriaPreviewPanel({ criteria }: { criteria: Query | null }) {
+// caller passes the last valid one while its own validation fails); null shows
+// nothing.
+export function CriteriaPreviewPanel({
+  criteria,
+  headingLevel = 3,
+}: {
+  criteria: Query | null
+  // The page it sits on decides: a preview inside a page's own sections is a
+  // section (h2), one nested in a dialog keeps the builder's level.
+  headingLevel?: 2 | 3
+}) {
   const preview = usePreviewCriteria()
   const mutate = useRef(preview.mutate)
   mutate.current = preview.mutate
@@ -31,10 +40,11 @@ export function CriteriaPreviewPanel({ criteria }: { criteria: Query | null }) {
 
   if (!criteria) return null
   const data = preview.data
+  const Heading = headingLevel === 2 ? 'h2' : 'h3'
 
   return (
     <div className="flex flex-col gap-3" data-testid="criteria-preview">
-      <h3 className="text-sm font-medium">Preview</h3>
+      <Heading className="text-sm font-medium">Preview</Heading>
       {preview.isPending && <p className="text-sm text-muted-foreground">Checking the catalog…</p>}
       {preview.isError && (
         <QueryError

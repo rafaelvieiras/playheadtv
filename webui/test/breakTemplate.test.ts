@@ -2,12 +2,18 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import {
-  describeSteps,
+  MAX_BREAK_NAME,
+  MAX_BREAK_STEPS,
+  MAX_BREAK_TARGET_MINUTES,
+  draftProblems,
   draftToInput,
+  mapTemplateMessage,
+  describeSteps,
   emptyDraft,
   emptyStep,
   moveStep,
   sameDraft,
+  summarizeDraft,
   templateToDraft,
   validateDraft,
 } from '../src/lib/breakTemplate.ts'
@@ -39,12 +45,12 @@ test('validation mirrors the backend limits', () => {
     ['no scope', (d) => (d.scope_id = ''), /Select a channel/],
     ['no steps', (d) => (d.steps = []), /at least one step/],
     ['too many steps', (d) => (d.steps = Array.from({ length: 11 }, () => ({ ...emptyStep(), filler_pool_id: 'a' }))), /at most 10/],
-    ['missing pool', (d) => (d.steps[0].filler_pool_id = ''), /Step 1: select a filler pool/],
-    ['zero length', (d) => (d.steps[1].target_minutes = 0), /Step 2: the length/],
-    ['over an hour', (d) => (d.steps[1].target_minutes = 61), /Step 2: the length/],
-    ['NaN length', (d) => (d.steps[1].target_minutes = NaN), /Step 2: the length/],
-    ['attempts 0', (d) => (d.steps[1].max_fit_attempts = 0), /fit attempts/],
-    ['attempts 21', (d) => (d.steps[1].max_fit_attempts = 21), /fit attempts/],
+    ['missing pool', (d) => (d.steps[0].filler_pool_id = ''), /Select a filler pool/],
+    ['zero length', (d) => (d.steps[1].target_minutes = 0), /more than 0 and at most 60/],
+    ['over an hour', (d) => (d.steps[1].target_minutes = 61), /more than 0 and at most 60/],
+    ['NaN length', (d) => (d.steps[1].target_minutes = NaN), /more than 0 and at most 60/],
+    ['attempts 0', (d) => (d.steps[1].max_fit_attempts = 0), /Fit attempts/],
+    ['attempts 21', (d) => (d.steps[1].max_fit_attempts = 21), /Fit attempts/],
     ['long name', (d) => (d.name = 'x'.repeat(101)), /at most 100/],
   ]
   for (const [name, mutate, want] of cases) {
@@ -86,4 +92,57 @@ test('a loaded template round-trips and is not dirty until edited', () => {
   noise.steps[0].target_minutes = 9
   assert.ok(sameDraft(loaded, noise))
   assert.equal(describeSteps(t), '1 item → 1.5 min fill')
+})
+
+test('one submit reports every problem, each under its own field', () => {
+  const d = valid()
+  d.scope_id = ''
+  d.position = NaN
+  d.name = 'x'.repeat(101)
+  d.steps[1].filler_pool_id = ''
+  d.steps[1].target_minutes = 0
+  d.steps[1].max_fit_attempts = 0
+  const errors = Object.fromEntries(draftProblems(d).map((p) => [p.id, p.message]))
+  assert.equal(errors['bt-scope-target'], 'Select a channel.')
+  assert.equal(errors['bt-position'], 'Position must be a whole number.')
+  assert.match(errors['bt-name'], /at most 100/)
+  assert.equal(errors['bt-step-1-pool'], 'Select a filler pool.')
+  assert.match(errors['bt-step-1-target'], /more than 0 and at most 60/)
+  assert.match(errors['bt-step-1-attempts'], /1 to 20/)
+  assert.equal(draftProblems(valid()).length, 0)
+  const empty = emptyDraft()
+  empty.scope_id = 'c'
+  empty.steps = []
+  assert.deepEqual(draftProblems(empty).map((p) => p.id), ['bt-steps'])
+})
+
+test('the summary counts items and adds only the fill lengths it knows', () => {
+  const d = emptyDraft()
+  d.steps = [{ ...emptyStep('single'), filler_pool_id: 'a' }]
+  assert.equal(summarizeDraft(d), '1 step: 1 item.')
+  d.steps = Array.from({ length: 9 }, () => ({ ...emptyStep('fill'), filler_pool_id: 'a', target_minutes: 2 / 9 }))
+  d.steps.push({ ...emptyStep('single'), filler_pool_id: 'b' })
+  assert.equal(summarizeDraft(d), '10 steps: ~2 min of fills + 1 item.')
+  d.steps = []
+  assert.equal(summarizeDraft(d), 'No steps yet.')
+})
+
+test('the template bounds are the server limits in minutes', () => {
+  // domain.MaxBreakSteps, MaxBreakTargetMs (one hour), MaxBreakTemplateName.
+  assert.equal(MAX_BREAK_STEPS, 10)
+  assert.equal(MAX_BREAK_TARGET_MINUTES * 60000, 3600000)
+  assert.equal(MAX_BREAK_NAME, 100)
+})
+
+test('a refusal from the server goes back to its step and its field, in minutes', () => {
+  const target = mapTemplateMessage('step 2: target_ms must be between 1 and 3600000')
+  assert.equal(target?.id, 'bt-step-1-target')
+  assert.doesNotMatch(target?.message ?? '', /3600000|target_ms/)
+  assert.match(target?.message ?? '', /more than 0 and at most 60/)
+  assert.equal(mapTemplateMessage('step 1: max_fit_attempts must be between 1 and 20')?.id, 'bt-step-0-attempts')
+  assert.equal(mapTemplateMessage('step 1: filler pool 9f3 does not exist')?.id, 'bt-step-0-pool')
+  assert.equal(mapTemplateMessage('step 3: filler_pool_id is required')?.id, 'bt-step-2-pool')
+  assert.equal(mapTemplateMessage('steps must hold at least one step')?.id, 'bt-steps')
+  assert.equal(mapTemplateMessage('scope_id is required')?.id, 'bt-scope-target')
+  assert.equal(mapTemplateMessage('something else entirely'), null)
 })

@@ -1,9 +1,11 @@
+import { useState } from 'react'
+
 import { CriteriaPreviewPanel } from '@/components/CriteriaPreviewPanel'
 import { QueryBuilder } from '@/components/QueryBuilder'
 import { Field, FieldDescription, FieldError, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
-import { validateQuery, type Query } from '@/lib/query'
+import { summarizeQuery, validateQuery, type Query } from '@/lib/query'
 
 export interface CollectionDraft {
   name: string
@@ -26,6 +28,14 @@ export function CollectionFields({
   nameError?: string
 }) {
   const queryError = validateQuery(value.query)
+  // The preview follows the last query that was complete. Handing it the
+  // current one meant that clearing a value to retype it (which is an invalid
+  // query for a keystroke) hid the count, the sample and the zero-match
+  // warning, so the panel blinked out of existence while being edited.
+  const [lastValid, setLastValid] = useState<Query | undefined>(queryError ? undefined : value.query)
+  if (!queryError && lastValid !== value.query) setLastValid(value.query)
+  const previewQuery = queryError ? (lastValid ?? null) : value.query
+
   return (
     <>
       <Field data-invalid={!!nameError}>
@@ -52,6 +62,11 @@ export function CollectionFields({
       <Field data-invalid={!!queryError}>
         <FieldLabel>Query</FieldLabel>
         <QueryBuilder value={value.query} onChange={(query) => onChange({ ...value, query })} idPrefix={`${idPrefix}-query`} />
+        {/* The same sentence the collection list shows for this query, so the
+            editor and the list never describe one query in two ways. */}
+        <p className="text-sm text-muted-foreground" data-testid={`${idPrefix}-query-summary`}>
+          {summarizeQuery(value.query)}
+        </p>
         {/* The query's problem belongs to the query, not to a red line at the
             bottom of the form the operator has to trace back. */}
         <FieldError data-testid={`${idPrefix}-query-error`}>{queryError}</FieldError>
@@ -60,7 +75,12 @@ export function CollectionFields({
           settings are chosen where the collection is used.
         </FieldDescription>
       </Field>
-      <CriteriaPreviewPanel criteria={queryError ? null : value.query} />
+      {previewQuery && queryError && (
+        <p className="text-xs text-muted-foreground" data-testid={`${idPrefix}-preview-stale`}>
+          The preview below shows the last query that was complete.
+        </p>
+      )}
+      <CriteriaPreviewPanel criteria={previewQuery} headingLevel={2} />
     </>
   )
 }
