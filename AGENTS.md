@@ -727,7 +727,11 @@ Design: `docs/ARCHITECTURE.md` "Releases and updates"; steps: `docs/RELEASING.md
   after the app: it is what protects a start from a version that cannot come
   up. A swap finishing mid-session is simply what the next start runs.
 - Pin third-party GitHub Actions by commit SHA (with the version in a comment).
-  The backend image has no `latest` tag.
+  The backend release workflow moves `latest` along with the version tag and the
+  commit sha, so a deployment *can* pull it by name, but what a container runs is
+  a decision: pin the release tag (`vX.Y.Z`) in the deployment and change it on
+  purpose. A container that follows `latest` changes version without anyone
+  choosing to, which is how a fix and a regression arrive together.
 
 ## Operational practices
 
