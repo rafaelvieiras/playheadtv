@@ -9,6 +9,23 @@ The backend and the client are released separately: a backend tag is `vX.Y.Z`
 and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
 0.4.0 (client) are recorded on the [releases page][releases] only.
 
+## [0.8.2] - 2026-11-24 (client)
+
+### Fixed
+
+- Leveling no longer throws on a platform that has no pre-amp and no
+  measurement. The platform end of the loudness feature (the `LoudnessEnhancer`
+  on the output mix, and the probe) exists only on Android, and every other
+  platform answers the `playheadtv/loudness` channel with a
+  `MissingPluginException`, which no `on PlatformException` arm catches. The
+  pre-amp is applied at boot and the probe runs for every item, so a desktop
+  build raised an uncaught async error on its first frame and then once per
+  item. Nothing audible changed - the gain stays unavailable where there is no
+  pre-amp - and the log line it wrote claimed the platform had *refused* the
+  pre-amp, which sends anyone reading it to the wrong problem. That warning now
+  fires only when a platform answers while holding no control over the output
+  mix; a desktop is silent.
+
 ## [0.8.1] - 2026-11-23 (client)
 
 ### Fixed
