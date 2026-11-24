@@ -55,6 +55,14 @@ class AudioPreamp {
 
   /// Sets the global gain to [db] and reports what the platform did. Never
   /// throws: [PreampState.control] false means the boost is not available.
+  ///
+  /// The effect is an Android one (`AudioPreamp.kt`, LoudnessEnhancer on the
+  /// output mix), so on every other platform the method channel has no handler
+  /// at all and answers with [MissingPluginException] — not a
+  /// [PlatformException], which is why that case is caught on its own. It used
+  /// to escape as an uncaught async error, and because the pre-amp is applied
+  /// at boot it took the whole desktop GUI suite down with it
+  /// ("MissingPluginException ... after the test had completed").
   Future<PreampState?> set(double db) async {
     try {
       final answer = await _channel
@@ -69,6 +77,10 @@ class AudioPreamp {
       );
       Log.info('loudness', 'pre-amp $state');
       return state;
+    } on MissingPluginException {
+      // No platform end here: leveling degrades to attenuation only.
+      Log.debug('loudness', 'the pre-amp is not available on this platform');
+      return null;
     } on PlatformException catch (e) {
       Log.warn('loudness', 'pre-amp refused by the platform', error: e);
       return null;

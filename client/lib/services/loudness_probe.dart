@@ -100,6 +100,14 @@ class LoudnessProbe {
         '${DateTime.now().difference(started).inMilliseconds}ms: $result',
       );
       return result;
+    } on MissingPluginException {
+      // No platform measurement on this platform (the Android end is
+      // AudioPreamp.kt/LoudnessProbe.kt behind this channel): leveling has
+      // nothing to go on, which is what a null verdict already means. Caught
+      // on its own because it is not a PlatformException, and uncaught it
+      // escaped as an async error and failed the desktop GUI suite.
+      Log.debug('loudness', 'measurement is not available on this platform');
+      return null;
     } on PlatformException catch (e) {
       Log.warn('loudness', 'measure failed for $url', error: e);
       return null;

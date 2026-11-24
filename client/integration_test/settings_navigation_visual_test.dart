@@ -52,6 +52,12 @@ const _settingsRows = [
   // only appear once the clock is on, and this suite clears the preferences.
   'settings-clock-tile',
   'settings-epg-thumbnail-tile',
+  // Leveling is on by default and this suite clears the preferences, so its
+  // three rows are on the page: the toggle, and the target and pre-amp rows it
+  // reveals.
+  'settings-loudness-tile',
+  'settings-loudness-target-tile',
+  'settings-loudness-preamp-tile',
   'settings-log-level-tile',
   'settings-diagnostics-tile',
 ];

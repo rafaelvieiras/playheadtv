@@ -1130,6 +1130,20 @@ device, driven by scripts that end in a file an agent or a human can read.
   MP4 reader seeks back through, so a single streamed MP4 body never opened).
   Symptom when any of this breaks is the one below: a picture that stops seconds
   in, with data already buffered.
+- A platform channel with no implementation throws `MissingPluginException`, which
+  is **not** a `PlatformException`, so `on PlatformException catch` does not see
+  it and it escapes as an uncaught async error. It took the whole desktop GUI
+  suite down rather than one test: `AudioPreamp.set` and `LoudnessProbe.measure`
+  are the `playheadtv/loudness` end implemented only on Android
+  (`AudioPreamp.kt`), the pre-amp is applied at boot, and the framework failed
+  each test with "MissingPluginException ... after the test had completed". Both
+  now catch it separately and degrade (`control` false, a null measurement),
+  which is what the app does on a phone whose platform refuses the effect.
+  Expect the same trap from any new channel: `playheadtv/device` and
+  `playheadtv/window` already guard it, `playheadtv/paired` never materializes
+  off Android. The settings navigation suite keeps its list of expected rows by
+  hand (`_settingsRows`), so a new Settings row that is on by default has to be
+  added there or the walk reports "is not one of the page rows".
 - A frozen picture has three possible witnesses and they are not interchangeable.
   The engine may fail loudly (`VideoPlayerValue.hasError`, logged by
   `ControllerPlayback`), it may say nothing while the position stops (the player

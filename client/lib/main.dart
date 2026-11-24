@@ -2556,7 +2556,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     final wanted = _loudnessOn ? _loudnessPreamp : 0.0;
     _preampState = await _preamp.set(wanted);
     final state = _preampState;
-    if (wanted > 0 && (state == null || !state.control)) {
+    // `set` never throws and already warns about a platform that refused the
+    // call; what is worth a warning here is a platform that answered while
+    // holding no control over the output mix. On a desktop there is no
+    // pre-amp at all, so silence is the honest report.
+    if (wanted > 0 && state != null && !state.control) {
       // Leveling degrades to attenuation only; the channels still play.
       Log.warn('loudness', 'the platform refused the pre-amp; leveling is attenuation only');
     }
