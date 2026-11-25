@@ -137,6 +137,13 @@ object Media3Probe {
                 if (startSeconds > 0) {
                     exo.seekTo((startSeconds * 1000.0).toLong())
                 }
+                // Faster than real time on purpose: the meter counts the PCM that
+                // leaves the decoder, before the sink's own speed processor gets
+                // it, so pulling the audio through faster measures the same
+                // content in a fraction of the wall time. A 5 s window measured
+                // 3.5 s of wall clock at 1x; this is what makes measuring every
+                // bumper affordable.
+                exo.setPlaybackSpeed(PROBE_SPEED)
                 exo.play()
                 main.postDelayed({ finish(null) }, timeoutMs)
             } catch (e: Exception) {
@@ -182,6 +189,15 @@ object Media3Probe {
     private fun fmt(v: Double): String = String.format(java.util.Locale.US, "%.2f", v)
 
     private const val TIMEOUT_MS = 45_000L
+
+    /**
+     * How much faster than real time the probe decodes.
+     *
+     * Only the wall clock changes: the metering sink sees the decoded buffers
+     * before the sink applies the speed, and the block count in the log line
+     * (47 blocks for a 5 s window) is what proves it on a device.
+     */
+    private const val PROBE_SPEED = 4.0f
 
     /**
      * Wraps the real sink and reads every decoded buffer on its way through.

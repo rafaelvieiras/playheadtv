@@ -28,6 +28,7 @@ import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import 'video/playback_capability.dart';
 import 'video/video_engine.dart';
 
 import 'cache/offline_runtime.dart';
@@ -40,6 +41,7 @@ import 'log/log.dart';
 import 'log/log_setup.dart';
 import 'update/app_update.dart';
 import 'update/compat.dart';
+import 'widgets/unplayable_notice.dart';
 import 'widgets/update_overlay.dart';
 import 'mosaic_layout.dart' show defaultMosaicSafeMargin;
 import 'ui/form_factor.dart';
@@ -263,10 +265,11 @@ class AppConfig {
 
   static double get loudnessTargetLufs => readLoudnessTarget(_file);
 
-  // How much the global pre-amp lifts everything, in dB. This is the only gain
-  // above unity the app has (the player's volume stops at 1), so it is what
-  // makes the quiet end of the library reachable at all.
-  static double get loudnessPreampDb => readLoudnessPreamp(_file);
+  // The most the app lifts any item, in dB (the boost itself follows the item:
+  // loudness_service.dart). This is the only gain above unity the app has — the
+  // player's volume stops at 1 — so it is what makes the quiet end of the
+  // library reachable at all.
+  static double get loudnessMaxBoostDb => readLoudnessMaxBoost(_file);
 
   // Base of the preload retry back-off, shrunk by tests.
   static Duration get preloadRetryBase => _preloadRetryBase ?? defaultPreloadRetryBase;
@@ -372,13 +375,25 @@ class ChannelEntry {
   final DateTime startAt;
   final int programOrdinal;
   final EpgEntry? program;
+  /// The unit's video file, when the guide said what it is: the player asks the
+  /// device whether it can decode it before it builds a player for it (see
+  /// lib/video/playback_capability.dart). Null means "nobody knows", which is
+  /// played, never refused.
+  final String? videoCodec;
+  final int? width;
+  final int? height;
   // Where in the media item this unit starts playing (epg_entry
   // item_offset_ms: nonzero only for the later segments of a split item).
   // The unit plays from here for `clipDuration`, so every seek into it (a
   // preload, a tune-in in the middle, a resync) is relative to this offset.
   final Duration itemOffset;
   const ChannelEntry(this.id, this.label, this.clipDuration, this.startAt,
-      {this.programOrdinal = 0, this.program, this.itemOffset = Duration.zero});
+      {this.programOrdinal = 0,
+      this.program,
+      this.videoCodec,
+      this.width,
+      this.height,
+      this.itemOffset = Duration.zero});
 
   // What the OSD shows: the guide program this unit belongs to (a tail's
   // generic title and whole span, not its clip's).
@@ -399,7 +414,12 @@ List<ChannelEntry> unitsOfProgram(EpgEntry program, int ordinal, {DateTime? notB
     if (notBefore != null && !program.endAt.isAfter(notBefore)) return const [];
     return [
       ChannelEntry(ext, program.displayTitle, program.endAt.difference(program.startAt), program.startAt,
-          programOrdinal: ordinal, program: program, itemOffset: Duration(milliseconds: program.itemOffsetMs)),
+          programOrdinal: ordinal,
+          program: program,
+          videoCodec: program.videoCodec,
+          width: program.width,
+          height: program.height,
+          itemOffset: Duration(milliseconds: program.itemOffsetMs)),
     ];
   }
   return [
@@ -408,7 +428,11 @@ List<ChannelEntry> unitsOfProgram(EpgEntry program, int ordinal, {DateTime? notB
           clip.endAt.isAfter(clip.startAt) &&
           (notBefore == null || clip.endAt.isAfter(notBefore)))
         ChannelEntry(clip.externalId!, clip.title ?? program.displayTitle, clip.endAt.difference(clip.startAt), clip.startAt,
-            programOrdinal: ordinal, program: program),
+            programOrdinal: ordinal,
+            program: program,
+            videoCodec: clip.videoCodec,
+            width: clip.width,
+            height: clip.height),
   ];
 }
 
@@ -522,7 +546,7 @@ const crossfadeDuration = Duration(milliseconds: 800);
 // Leveling. Five seconds of audio is what the measurement decodes: on the box
 // that costs about 2.8 s of wall clock, and a shorter window stops being about
 // the content and starts being about one sound effect.
-const gainMeasureWindow = Duration(seconds: 5);
+const gainMeasureWindow = loudnessMeasureStandardWindow;
 
 // How far apart the two windows of one item may be before the item is left
 // unleveled. Within one item the head and a mid-programme window differ by 2.6
@@ -982,8 +1006,15 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // overrides them at boot (there is no config file to edit on Android).
   bool _loudnessOn = AppConfig.loudnessEnabled;
   double _loudnessTarget = AppConfig.loudnessTargetLufs;
-  double _loudnessPreamp = AppConfig.loudnessPreampDb;
+  double _loudnessMaxBoost = AppConfig.loudnessMaxBoostDb;
+  // The volume the item on air is played at, and the level it was measured at:
+  // the boost can move (a quieter item arriving), and the volume has to move
+  // with it or the level jumps.
   double _itemGain = 1.0;
+  LoudnessLevel? _itemLevel;
+  // The volume the gap slate was faded in at (see _holdForGap): the slate has no
+  // measurement of its own, so it holds whatever level the channel was at.
+  double _slateGain = 1.0;
   Timer? _gainRampTimer;
   final FocusNode _focusNode = FocusNode();
 
@@ -1115,6 +1146,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // and only to skip what it knows is broken; cleared on a channel switch, a new
   // channel being a fresh set of sources.
   final Set<String> _unplayable = <String>{};
+
+  /// Why each of them failed, so the card can say it in the words the decoder
+  /// used (`no decoder for mpeg4 at 320x240`) instead of a generic line.
+  final Map<String, String> _unplayableReason = <String, String>{};
   // Set while the channel plays the degraded fallback of an exhausted cache
   // (see _Degraded): any later cache change that brings real programming
   // reloads the channel out of it.
@@ -1240,7 +1275,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _settings = await SettingsService.create();
       _loudnessOn = _settings.loudnessEnabled ?? _loudnessOn;
       _loudnessTarget = _settings.loudnessTargetLufs ?? _loudnessTarget;
-      _loudnessPreamp = _settings.loudnessPreampDb ?? _loudnessPreamp;
+      _loudnessMaxBoost = _settings.loudnessMaxBoostDb ?? _loudnessMaxBoost;
       _keyBindings = KeyBindingsService(_settings);
       _loudness = await LoudnessService.create();
       unawaited(_applyPreamp());
@@ -1370,7 +1405,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _stallTimer?.cancel();
     _stallTimer = null;
     _stall.reset();
+    _clearUnplayableNotice();
     _unplayable.clear();
+    _unplayableReason.clear();
     _osdHideTimer?.cancel();
     _osdHideTimer = null;
     _gapRetryTimer?.cancel();
@@ -1395,6 +1432,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // transitions keep inheriting on purpose: there the level in force is what
     // the viewer is hearing.
     _itemGain = 1.0;
+    _itemLevel = null;
+    _slateGain = 1.0;
     _channelInputCommitTimer?.cancel();
     _channelInputCommitTimer = null;
     // Fire-and-forget, but routed through serializeGlOp (see its doc
@@ -1687,11 +1726,38 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     return retryOpen<({VideoPlayback playback, Duration startOffset})>(
       attempt: (_) => _createControllerOnce(entry, seekTo: seekTo),
       onRetry: (n, e) => Log.warn('player', 'item ${entry.id} failed to open (attempt $n), retrying', error: e),
+      // A decoder that does not exist, or refuses to start, will not answer
+      // differently 600ms later: retrying only builds and tears down another
+      // player (and another MediaCodec) for the same refusal.
+      shouldRetry: (e) => e is! UnsupportedMediaException,
     );
   }
 
   Future<({VideoPlayback playback, Duration startOffset})> _createControllerOnce(ChannelEntry entry,
       {Duration? seekTo}) async {
+    if (_unplayable.contains(entry.id)) {
+      throw UnsupportedMediaException('this unit already failed on this device', codec: entry.videoCodec);
+    }
+    // Before anything is built: can this device decode it at all? A program
+    // whose format this box has no decoder for is never opened, so the channel
+    // shows the reason instead of spending minutes failing to start it
+    // (main.dart `_enterUnplayableWait`). An unknown answer plays as before.
+    final support = await playbackCapability.check(
+      codec: entry.videoCodec,
+      width: entry.width,
+      height: entry.height,
+    );
+    if (support == CodecSupport.unsupported) {
+      // Remembered on the way out: the transition, the preload and the hard cut
+      // all read this set to know a player must not be built for it, and to show
+      // the "waiting for the next program" card instead of skipping silently.
+      _unplayable.add(entry.id);
+      _unplayableReason[entry.id] = 'no decoder for ${entry.videoCodec} at ${entry.width ?? 0}x${entry.height ?? 0}';
+      throw UnsupportedMediaException(
+        'no decoder for ${entry.videoCodec} at ${entry.width ?? 0}x${entry.height ?? 0}',
+        codec: entry.videoCodec,
+      );
+    }
     // Where this unit plays from, and whether that source already starts at the
     // requested position (a plugin asked for a start offset produces a stream
     // that begins there, so seeking again would skip twice).
@@ -1705,6 +1771,17 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       Log.debug('player', 'item ${entry.id} opened in ${clock.elapsedMilliseconds}ms');
       return (playback: prepared, startOffset: source.startOffset);
     } catch (e) {
+      if (isUnsupportedMediaError(e)) {
+        // The decoder exists on paper but refused this file (Media3 reports a
+        // MediaCodecVideoRenderer error, e.g. OMX error -12 when the box has no
+        // free instance). Same outcome for the viewer as a missing decoder, so
+        // it takes the same path - and it is remembered, so the retry budget and
+        // the preload do not keep asking.
+        _unplayable.add(entry.id);
+        _unplayableReason[entry.id] = 'the decoder refused this file';
+        unawaited(disposeController(controller));
+        throw UnsupportedMediaException('the decoder refused this file', codec: entry.videoCodec);
+      }
       Log.debug('player', 'item ${entry.id} failed to open after ${clock.elapsedMilliseconds}ms', error: e);
       // Whatever url was used may be the reason: never reuse it for the retry.
       final item = entry.program?.catalogItemId;
@@ -1867,7 +1944,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // it was asked to; a pair or a single file starts at its own zero), so it is
     // read back from the open, not assumed from `_needsPlugin`.
     _playbackOffset = Duration.zero;
-    final opened = await _createController(entry, seekTo: initialSeek);
+    final ({VideoPlayback playback, Duration startOffset}) opened;
+    try {
+      opened = await _createController(entry, seekTo: initialSeek);
+    } on UnsupportedMediaException catch (e) {
+      // The program on air right now cannot be played here. Nothing is left
+      // half-open and nothing plays: the card says why, and the channel returns
+      // by itself when the next program starts.
+      await _enterUnplayableWait(entry, e.reason, generation);
+      return;
+    }
     final controller = opened.playback;
     _playbackOffset = opened.startOffset;
     if (generation != _loadGeneration || !mounted) {
@@ -1882,7 +1968,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // level this channel was last at (or this item's own, if it was leveled
     // before): a known number keeps the jump small, and the measurement that
     // follows corrects it slowly, once there is real audio on the wire.
-    _itemGain = _knownGain(entry);
+    final knownLevel = _knownLevel(entry);
+    final boost = await _applyBoost([?knownLevel]);
+    _itemLevel = knownLevel;
+    _itemGain = knownLevel != null ? _volumeFor(knownLevel, boostDb: boost) : _enteringVolume(boostDb: boost);
     try {
       await controller.setVolume(_itemGain);
       await controller.play();
@@ -1896,6 +1985,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       unawaited(discardController(controller));
       return;
     }
+    _clearUnplayableNotice();
     _screenAwake.playing = true;
     BootTrace.mark('channel_on_air');
     BootTrace.flush();
@@ -1948,7 +2038,20 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
           _currentIndex < channel.length &&
           identical(head, active) &&
           head.state.isInitialized;
-      if (healthy) _pictureLostReopens = 0;
+      // The reopen budget is cleared by *playback*, not by a controller that
+      // merely opened: an item whose engine dies three seconds after it starts
+      // reported healthy here, zeroed the budget and looped forever (measured:
+      // seven reopenings in eight minutes, each one a full player). Only a run
+      // of advancing position counts.
+      if (healthy && head.state.isPlaying && !head.state.isBuffering) {
+        _healthySince ??= DateTime.now();
+        if (DateTime.now().difference(_healthySince!) >= playbackHealthyBeforeReset) {
+          _pictureLostReopens = 0;
+          _stallResyncs = 0;
+        }
+      } else {
+        _healthySince = null;
+      }
       // A channel that says it is on air with nothing to show is a transition
       // that never completed: the incoming controller was built and took a
       // video surface, the outgoing one was disposed, and nothing ever played.
@@ -2027,6 +2130,87 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     });
   }
 
+  // A program this device cannot play: no picture, an honest card, and the
+  // channel back on air by itself when the next program starts.
+  //
+  // Everything that could hold a decoder is torn down first (the slot
+  // controllers and a parked preload), because the reason a decoder refused is
+  // often that the box had no instance left - leaving them alive would keep the
+  // next program from starting too. Nothing is retried: this program is over for
+  // this device, whatever the schedule says.
+  Future<void> _enterUnplayableWait(ChannelEntry entry, String reason, int generation) async {
+    if (!mounted || generation != _loadGeneration) return;
+    if (_unplayableNotice.value?.programLabel == entry.programLabel) return; // already waiting
+    Log.warn('player', 'cannot play unit ${entry.id} on this device ($reason); '
+        'waiting for the next program after ${entry.label}');
+    _unplayable.add(entry.id);
+    _advanceTimer?.cancel();
+    _advanceTimer = null;
+    _resetPreload();
+    _stallTimer?.cancel();
+    _stallTimer = null;
+    _stall.reset();
+    _gapRetryTimer?.cancel();
+    _gapRetryTimer = null;
+    _gapHoldTimer?.cancel();
+    _gapHoldTimer = null;
+    _volumeRampTimer?.cancel();
+    _gainRampTimer?.cancel();
+    final pending = _gapHoldPending;
+    _gapHoldPending = null;
+    if (pending != null) unawaited(disposeController(pending));
+    final staleA = _controllerA;
+    final staleB = _controllerB;
+    if (staleA != null) unawaited(disposeController(staleA));
+    if (staleB != null) unawaited(disposeController(staleB));
+    final index = channel.indexOf(entry);
+    final resumeAt = entry.startAt.add(entry.clipDuration);
+    if (!mounted || generation != _loadGeneration) return;
+    setState(() {
+      _controllerA = null;
+      _controllerB = null;
+      _headController = null;
+      _aIsActive = true;
+      _opacityA = 0;
+      _opacityB = 0;
+      _onAir = false;
+      if (index >= 0) _currentIndex = index;
+      _pictureLost.reset();
+      _pictureLostReopens = 0;
+      _status = 'UNPLAYABLE: ${entry.programLabel} cannot be played on this device; '
+          'waiting for the next program';
+    });
+    _watermarkNotifier.value = null;
+    if (_channels.isEmpty) return;
+    final channelInfo = _channels[_channelIndex];
+    _unplayableNotice.value = UnplayableNotice(
+      channelNumber: channelInfo.number,
+      channelName: channelInfo.name,
+      programLabel: entry.programLabel,
+      reason: reason,
+      resumeAt: resumeAt,
+    );
+    _screenAwake.playing = false;
+    // Back on air at the end of the program being waited out. A reload rather
+    // than a crossfade: nothing is playing to fade from, and the guide by then
+    // points at the next program anyway.
+    var wait = resumeAt.difference(DateTime.now().toUtc());
+    if (wait < minTransitionInterval) wait = minTransitionInterval;
+    _unplayableTimer?.cancel();
+    _unplayableTimer = Timer(wait, () {
+      if (!mounted || generation != _loadGeneration) return;
+      Log.info('player', 'the program after ${entry.label} is due; resuming channel');
+      unawaited(_switchToChannelIndex(_channelIndex));
+    });
+  }
+
+  /// Drops the waiting state: there is a picture again (or the channel moved).
+  void _clearUnplayableNotice() {
+    _unplayableTimer?.cancel();
+    _unplayableTimer = null;
+    if (_unplayableNotice.value != null) _unplayableNotice.value = null;
+  }
+
   // Schedules the preload of the next item BEFORE the end of the current clip
   // (the heart of the design: the next one can be ready/buffered without
   // interrupting what is already playing) and the crossfade trigger at the end
@@ -2041,6 +2225,15 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   bool _onAir = false;
   final PictureLostWatcher _pictureLost = PictureLostWatcher();
   int _pictureLostReopens = 0;
+  /// Since when the picture has been really playing, cleared by anything that
+  /// interrupts it (see the reopen budget in [_armStallWatch]).
+  DateTime? _healthySince;
+
+  /// Non-null while the channel is waiting out a program this device cannot
+  /// play. Drawn by [PlayerUnplayableNotice] (a layer, never a rebuild of this
+  /// page), cleared as soon as there is a picture again.
+  final ValueNotifier<UnplayableNotice?> _unplayableNotice = ValueNotifier<UnplayableNotice?>(null);
+  Timer? _unplayableTimer;
 
   void _scheduleTransitions(int index, {Duration? remaining, required int generation}) {
     final entry = channel[index];
@@ -2110,9 +2303,24 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         _preloadTracker.record(clock.elapsed);
         final broken = controller;
         if (broken != null) unawaited(disposeController(broken));
+        if (e is UnsupportedMediaException) {
+          // Retrying cannot change the answer, and each attempt builds another
+          // player on a box that just told us it has no decoder to spare. Stop
+          // here: the transition brings the channel into the waiting state.
+          Log.warn('preload', 'item $nextIndex cannot be played on this device (${e.reason}); not retrying');
+          return;
+        }
         failures++;
         Log.warn('preload', 'attempt $failures for item $nextIndex failed after ${clock.elapsedMilliseconds}ms', error: e);
         if (!mounted || generation != _loadGeneration) return;
+        if (failures >= preloadMaxAttempts) {
+          // Out of attempts for this item: the channel keeps playing what is on
+          // air and simply skips this one at its turn (the transition's own
+          // "cannot start" path). Bounded on purpose - an unbounded retry loop
+          // built 49 players in fifteen minutes and ran a TV box out of heap.
+          Log.error('preload', 'item $nextIndex failed $failures times; skipping it at its turn', error: e);
+          return;
+        }
         if (failures >= preloadAttemptsBeforeError) {
           if (failures == preloadAttemptsBeforeError) Log.error('preload', 'item $nextIndex failed $failures times; still retrying', error: e);
           setState(() => _status = 'ERROR: preload of ${nextEntry.label} failed, retrying… ($e)');
@@ -2164,6 +2372,13 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       final inFlight = _preloadGeneration == generation && _preloadTargetIndex == nextIndex ? _preloadFuture : null;
       if (inFlight != null) {
         await inFlight;
+        if (!mounted || generation != _loadGeneration) return false;
+        if (_preloadReadyIndex == nextIndex) return true;
+        // The run finished without a controller: the retry budget ran out, so
+        // this item is not coming and waiting on the same future again would
+        // spin. (It used to retry forever, which is why this could only ever
+        // mean "still running".)
+        if (identical(_preloadFuture, inFlight)) return false;
       } else {
         await _preloadNext(nextIndex, generation);
         // Nothing started (the unit vanished): do not spin.
@@ -2252,12 +2467,38 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       return;
     }
     final nextEntry = channel[nextIndex];
+    // A unit this device already refused to play: do not build another player
+    // for it. The channel goes to the waiting state instead, and comes back at
+    // the program after it.
+    if (_unplayable.contains(nextEntry.id)) {
+      await _enterUnplayableWait(nextEntry, _unplayableReason[nextEntry.id] ?? 'the video cannot be decoded here', generation);
+      return;
+    }
     // Not ready yet (a slow source, a failed first attempt): keep what is on
-    // air and wait for it; the retry loop in _runPreload does not give up.
+    // air and wait for it; the preload retries a bounded number of times.
     if (_preloadGeneration != generation || _preloadReadyIndex != nextIndex) {
       final waiting = Stopwatch()..start();
       Log.warn('crossfade', 'preload for item $nextIndex not ready at the transition; waiting');
-      if (!await _awaitPreload(nextIndex, generation)) return;
+      if (!await _awaitPreload(nextIndex, generation)) {
+        // Out of attempts: this unit is not coming. Freezing on the finished
+        // item is the worst answer, so it is skipped and the next one starts
+        // (a hard cut, since there is nothing prepared to fade from).
+        Log.warn('crossfade', 'item $nextIndex could not be prepared; skipping it');
+        if (nextIndex + 1 < channel.length) {
+          try {
+            await _resumeAt(nextIndex + 1, generation);
+          } catch (e) {
+            Log.error('crossfade', 'the item after $nextIndex also failed to start', error: e);
+            if (mounted && generation == _loadGeneration) {
+              setState(() => _status = 'ERROR: the channel could not start the next program. '
+                  'Press Back and pick the channel again.');
+            }
+          }
+        } else if (mounted && generation == _loadGeneration) {
+          setState(() => _status = 'ERROR: nothing more scheduled right now — retrying…');
+        }
+        return;
+      }
       Log.warn('crossfade', 'preload for item $nextIndex became ready after ${waiting.elapsedMilliseconds}ms');
     }
     var incoming = _aIsActive ? _controllerB : _controllerA;
@@ -2305,9 +2546,18 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
     setState(() => _status = 'CROSSFADE -> ${nextEntry.label}');
     Log.debug('crossfade', 'ramp to item $nextIndex starting');
-    // The item that was measured during its preload arrives already leveled.
-    final outgoingGain = _itemGain;
-    final incomingGain = _knownGain(nextEntry);
+    // The item that was measured during its preload arrives already leveled. The
+    // boost is one number for the mix, so it is decided for both items at once and
+    // each side's volume (the outgoing one included) is recomputed under it: the
+    // lift and the volume move by the same amount, so nothing heard in the middle
+    // of the fade jumps.
+    final incomingLevel = _knownLevel(nextEntry);
+    final outgoingLevel = _itemLevel;
+    final boost = await _applyBoost([?outgoingLevel, ?incomingLevel]);
+    if (generation != _loadGeneration) return;
+    final outgoingGain = outgoingLevel != null ? _volumeFor(outgoingLevel, boostDb: boost) : _itemGain;
+    final incomingGain = incomingLevel != null ? _volumeFor(incomingLevel, boostDb: boost) : _enteringVolume(boostDb: boost);
+    _itemLevel = incomingLevel;
     _itemGain = incomingGain;
     final onAir = await _rampCrossfade(
       outgoing: outgoing,
@@ -2541,52 +2791,89 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   String? get _currentChannelId =>
       (_channelIndex >= 0 && _channelIndex < _channels.length) ? _channels[_channelIndex].id : null;
 
-  // The pre-amp actually in force, in dB. What the effect reports, not what was
+  // The boost actually in force, in dB. What the effect reports, not what was
   // asked for: a platform that refused it means nothing is lifting the output,
   // and the gain math must not assume it is.
-  double get _activePreampDb {
+  double get _activeBoostDb {
     final state = _preampState;
     if (state == null || !state.active) return 0;
     return state.targetMb / 100.0;
   }
 
-  // Lifts the whole output (or stops lifting it). Called at boot; the knob only
-  // moves in Settings, which restarts the app.
+  // Asks the platform whether it will lift the output at all, and starts with no
+  // lift. Called at boot: the boost is not a setting any more, it is what the
+  // item on air needs, and _applyBoost moves it from here.
   Future<void> _applyPreamp() async {
-    final wanted = _loudnessOn ? _loudnessPreamp : 0.0;
-    _preampState = await _preamp.set(wanted);
+    _preampState = await _preamp.set(0);
     final state = _preampState;
     // `set` never throws and already warns about a platform that refused the
     // call; what is worth a warning here is a platform that answered while
     // holding no control over the output mix. On a desktop there is no
     // pre-amp at all, so silence is the honest report.
-    if (wanted > 0 && state != null && !state.control) {
+    if (_loudnessOn && state != null && !state.control) {
       // Leveling degrades to attenuation only; the channels still play.
       Log.warn('loudness', 'the platform refused the pre-amp; leveling is attenuation only');
     }
   }
 
-  // The level an item enters at, before anything is measured for it.
+  // Raises (or lowers) the mix lift to what [levels] need, all of them at once,
+  // and answers the boost that is really in force afterwards.
   //
-  // Order matters: an item leveled before is exact; with a channel already on
-  // air, the level being heard right now is the best guess for what the viewer
-  // expects next (and it is what keeps a channel change from jumping); a channel
-  // that was watched in an earlier session is the fallback at boot, when nothing
-  // is playing yet.
-  double _knownGain(ChannelEntry entry) {
+  // One number for the whole mix is the constraint (the platform effect is on the
+  // output, not on one player), so overlapping items share it: the quietest of
+  // the set decides, and each player's volume keeps its own item on the target.
+  // Nothing is called when the number would not change, which is every item of a
+  // channel that sits at one level.
+  Future<double> _applyBoost(Iterable<LoudnessLevel> levels) async {
+    final inForce = _activeBoostDb;
+    if (!_loudnessOn) return inForce;
+    final wanted = loudnessBoostDb(
+      levels.map((level) => loudnessNeedDb(lufs: level.lufs, targetLufs: _loudnessTarget)),
+      maxBoostDb: _loudnessMaxBoost,
+    );
+    if ((wanted - inForce).abs() < 0.05) return inForce;
+    _preampState = await _preamp.set(wanted);
+    final actual = _activeBoostDb;
+    Log.info('loudness', 'boost ${inForce.toStringAsFixed(1)} -> ${actual.toStringAsFixed(1)}dB');
+    return actual;
+  }
+
+  // The volume an item at [level] plays at, under the boost in force (or under
+  // [boostDb], for a transition that is about to change it).
+  double _volumeFor(LoudnessLevel level, {double? boostDb}) => clampLoudnessGain(loudnessGain(
+        lufs: level.lufs,
+        peakDb: level.peakDb,
+        targetLufs: _loudnessTarget,
+        boostDb: boostDb ?? _activeBoostDb,
+      ));
+
+  // The level measured for [entry] before, if any.
+  //
+  // An item measured before is exact. A channel that was watched in an earlier
+  // session is the fallback at boot, when nothing is playing yet: it is what the
+  // viewer left that channel at. With something already on air the item is not
+  // inherited from anything (see _enteringVolume): the incoming item's own level
+  // is what its volume has to be computed from, and a guess made from another
+  // item's loudness is what used to make channel changes jump.
+  LoudnessLevel? _knownLevel(ChannelEntry entry) {
     final service = _loudness;
-    if (service == null || !_loudnessOn) return 1.0;
-    final own = service.itemGain(entry.id);
+    if (service == null || !_loudnessOn) return null;
+    final own = service.itemLevel(entry.id);
     if (own != null) return own;
-    // A level already in force is what the viewer is hearing: entering the new
-    // channel at anything else is the jump this is here to avoid.
-    if (_itemGain != 1.0) return _itemGain;
+    if (_headController != null) return null;
     final channelId = _currentChannelId;
-    final prior = channelId == null ? null : service.channelGain(channelId);
-    if (prior != null) return prior;
-    // Nothing is known about this channel at all: enter at the level of the
-    // loudest material the library holds, so the measurement can only raise it.
-    return loudnessConservativeGain(targetLufs: _loudnessTarget, preampDb: _activePreampDb);
+    return channelId == null ? null : service.channelLevel(channelId);
+  }
+
+  // The volume an item nobody measured enters at.
+  //
+  // With something already playing, the level being heard right now is the best
+  // guess for what the viewer expects next, and it is what keeps a channel change
+  // from jumping. With nothing playing, it is the level of the loudest material
+  // the library holds: the first correction after it can only go up.
+  double _enteringVolume({required double boostDb}) {
+    if (_headController != null && _itemGain.isFinite && _itemGain > 0) return _itemGain;
+    return loudnessConservativeGain(targetLufs: _loudnessTarget, boostDb: boostDb);
   }
 
   // Measures [entry] at [startAt]. Null when there was nothing usable to
@@ -2595,7 +2882,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     final measurement = await _loudnessProbe.measure(
       url: streamUrl(entry.id),
       startAt: startAt,
-      window: gainMeasureWindow,
+      window: loudnessMeasureWindow(clipDuration: entry.clipDuration, startAt: startAt),
     );
     Log.debug('loudness', '${entry.label} at ${startAt.inSeconds}s: $measurement');
     if (measurement == null) return null;
@@ -2606,18 +2893,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     return measurement;
   }
 
-  // The player volume a measurement calls for, given the pre-amp in force.
-  double _gainFor(LoudnessMeasurement measurement) => clampLoudnessGain(loudnessGain(
-        lufs: measurement.lufs,
-        peakDb: measurement.peakDb,
-        targetLufs: _loudnessTarget,
-        preampDb: _activePreampDb,
-      ));
-
-  // Measures [entry] at [startAt] and turns the result into a player volume.
-  Future<double?> _measureGain(ChannelEntry entry, Duration startAt) async {
+  // Measures [entry] at [startAt] and turns the result into a level.
+  Future<LoudnessLevel?> _measureLevel(ChannelEntry entry, Duration startAt) async {
     final measurement = await _measureAudio(entry, startAt);
-    return measurement == null ? null : _gainFor(measurement);
+    if (measurement == null) return null;
+    return LoudnessLevel(lufs: measurement.lufs, peakDb: measurement.peakDb);
   }
 
   // Levels an item that is already on air, ramping from the level it entered at.
@@ -2651,19 +2931,19 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // sampled mid-programme is only what that stretch sounds like, so it levels
     // this playback and is not remembered as the item's own level.
     final representative = startAt < const Duration(seconds: 30);
-    var target = service.itemGain(entry.id);
-    if (target != null) {
+    var level = service.itemLevel(entry.id);
+    if (level != null) {
       // Known before it aired (the preload measures every item that follows):
       // nothing to decode, and no chance of a noisy window overriding it.
-      Log.debug('loudness', '${entry.label}: gain $target from the cache');
+      Log.debug('loudness', '${entry.label}: $level from the cache');
     } else {
-      target = await _measureGain(entry, startAt);
-      if (target == null) {
+      level = await _measureLevel(entry, startAt);
+      if (level == null) {
         Log.debug('loudness', '${entry.label}: nothing usable to measure, keeping $from');
         return;
       }
       if (representative) {
-        await service.remember(entry.id, _currentChannelId, target);
+        await service.remember(entry.id, _currentChannelId, level);
       }
     }
     // The channel may have moved on while the measurement was decoding.
@@ -2675,8 +2955,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       );
       return;
     }
-    _itemGain = target;
-    await _rampGainTo(controller, from: from, to: target, generation: generation);
+    // The boost may have to move for this item, and the volume moves the other
+    // way with it: that pair is what puts the item on the target (a quiet item
+    // gets lift instead of the volume being stuck at 1.0).
+    final boost = await _applyBoost([level]);
+    if (generation != _loadGeneration || !mounted) return;
+    final volume = _volumeFor(level, boostDb: boost);
+    _itemLevel = level;
+    _itemGain = volume;
+    Log.info('loudness', '${entry.label}: $level, boost ${boost.toStringAsFixed(1)}dB, volume ${volumeGainDb(volume).toStringAsFixed(1)}dB');
+    await _rampGainTo(controller, from: from, to: volume, generation: generation);
   }
 
   // Levels an item before it airs (called from the preload): the fade into it
@@ -2684,10 +2972,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   Future<void> _measureIntoCache(ChannelEntry entry) async {
     final service = _loudness;
     if (service == null || !_loudnessOn) return;
-    if (service.itemGain(entry.id) != null) return;
+    if (service.itemLevel(entry.id) != null) return;
     final head = await _measureAudio(entry, entry.itemOffset);
     if (head == null) return;
-    var gain = _gainFor(head);
+    var level = LoudnessLevel(lufs: head.lufs, peakDb: head.peakDb);
     // A second window guards the cache. One stretch is not the item, and a gain
     // remembered from a window that happened to land on quiet dialogue is worse
     // than no gain: it would be trusted forever, without measuring again.
@@ -2703,12 +2991,13 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         );
         return;
       }
-      // They agree on the level, so the louder stretch decides the volume: that
-      // is the one that has to stay inside the peak ceiling.
-      gain = math.min(gain, _gainFor(mid));
+      // They agree on the level, so the louder stretch decides: the louder
+      // average and the higher peak are the two halves that need less help, and
+      // a level remembered once is trusted forever.
+      level = level.louderOf(LoudnessLevel(lufs: mid.lufs, peakDb: mid.peakDb));
     }
-    await service.remember(entry.id, _currentChannelId, gain);
-    Log.debug('loudness', '${entry.label} leveled before airing: volume $gain');
+    await service.remember(entry.id, _currentChannelId, level);
+    Log.debug('loudness', '${entry.label} leveled before airing: $level');
   }
 
   // Walks the player's volume from [from] to [to], interpolating in dB so the
@@ -2830,15 +3119,19 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     });
     // The slate carries no watermark.
     _watermarkNotifier.value = null;
-    // Our own asset has a known level; the gain of the item that left is kept
-    // for the fade out, and the item waiting keeps its own.
+    // Our own asset has no measurement, so it is played at the level the channel
+    // was already at instead of at full volume: a slate that arrives 12 dB louder
+    // than the program it replaced is the same jump the leveling exists to
+    // prevent, and the boost in force is still the departed item's.
     final leftGain = _itemGain;
-    _itemGain = 1.0;
+    _itemLevel = null;
+    _slateGain = leftGain;
     await _rampCrossfade(
       outgoing: outgoing,
       incoming: slate,
       generation: generation,
       outgoingGain: leftGain,
+      incomingGain: leftGain,
     );
     if (generation != _loadGeneration) {
       unawaited(disposeController(pending));
@@ -2870,13 +3163,20 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         }
         _status = 'CROSSFADE -> ${nextEntry.label}';
       });
-      final pendingGain = _knownGain(nextEntry);
+      final pendingLevel = _knownLevel(nextEntry);
+      final pendingBoost = await _applyBoost([?pendingLevel]);
+      if (generation != _loadGeneration) return;
+      final pendingGain = pendingLevel != null ? _volumeFor(pendingLevel, boostDb: pendingBoost) : _enteringVolume(boostDb: pendingBoost);
+      _itemLevel = pendingLevel;
       _itemGain = pendingGain;
       final onAir = await _rampCrossfade(
         outgoing: slateOutgoing,
         incoming: ready,
         generation: generation,
         incomingGain: pendingGain,
+        // The slate is where the level was left, not at 1.0: fading from the
+        // wrong number would step the level at the start of the fade.
+        outgoingGain: _slateGain,
       );
       unawaited(_levelItem(nextEntry, ready, generation, startAt: Duration.zero, from: pendingGain));
       if (generation != _loadGeneration) return;
@@ -2905,7 +3205,15 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     final entry = channel[index];
     Log.info('player', 'resuming at item $index with a hard cut (no preload to fade from)');
     _resetPreload();
-    final controller = (await _createController(entry)).playback;
+    final VideoPlayback controller;
+    try {
+      controller = (await _createController(entry)).playback;
+    } on UnsupportedMediaException catch (e) {
+      // The hard cut is the last resort for an item that failed to fade in. If
+      // the reason is the media itself, there is nothing to cut to.
+      await _enterUnplayableWait(entry, e.reason, generation);
+      return;
+    }
     if (generation != _loadGeneration || !mounted) {
       unawaited(disposeController(controller));
       return;
@@ -3616,6 +3924,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // being attached to a page that no longer exists.
     _loadGeneration++;
     Log.debug('player', 'player page disposed (generation $_loadGeneration)');
+    _unplayableTimer?.cancel();
+    _unplayableNotice.dispose();
     _pendingChannelSwitchTarget = null;
     _volumeRampTimer?.cancel();
     WidgetsBinding.instance.removeObserver(this);
@@ -3928,6 +4238,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                 ],
               ),
             ),
+            // A program this device cannot play: a card where the picture would
+            // be, never a frozen frame and never a spinner. Above the video and
+            // below the OSD, so the guide, the channel banner and the remote all
+            // keep working while the channel waits for the next program.
+            PlayerUnplayableNotice(source: _unplayableNotice),
             // The channel watermark: above the video, below the OSD, the EPG and
             // the dimmer (children after this one); pointer-transparent and
             // never focusable.

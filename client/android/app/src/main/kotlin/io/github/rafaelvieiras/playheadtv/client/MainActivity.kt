@@ -37,6 +37,9 @@ class MainActivity : FlutterActivity() {
         // A plugin's `pair` answer is two addresses; the `video_player` plugin
         // opens one per player, so the app builds that player here.
         PairedVideos(applicationContext, flutterEngine.renderer, flutterEngine.dartExecutor.binaryMessenger)
+        // Whether this device can decode a format at all, asked before a player
+        // is built for it (see CodecProbe.kt and lib/video/playback_capability.dart).
+        CodecProbe(flutterEngine.dartExecutor.binaryMessenger)
     }
 
     override fun onCreate(savedInstanceState: android.os.Bundle?) {

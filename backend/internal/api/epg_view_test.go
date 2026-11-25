@@ -33,8 +33,9 @@ func newEPGSeed(t *testing.T, db *storage.SQLite) *epgSeed {
 	must(db.Exec(ctx, `INSERT INTO media_source (id, tenant_id, type, name, sync_mode, created_at, updated_at)
 		VALUES ('ms', ?, 'jellyfin', 'ms', 'pull', ?, ?)`, DefaultTenantID, now, now))
 	must(db.Exec(ctx, `INSERT INTO catalog_item (id, tenant_id, media_source_id, external_id, kind, title, series_title, series_external_id,
-		season_number, episode_number, duration_ms, synced_at, image_primary_tag, image_backdrop_tag, image_thumb_tag, series_image_primary_tag)
-		VALUES ('ep', ?, 'ms', 'jf-ep', 'episode', 'Pilot', 'Show', 'jf-show', 1, 2, 1800000, ?, 'pt', 'bt', 'tt', 'spt')`, DefaultTenantID, now))
+		season_number, episode_number, duration_ms, synced_at, image_primary_tag, image_backdrop_tag, image_thumb_tag, series_image_primary_tag,
+		width, height, video_codec, container)
+		VALUES ('ep', ?, 'ms', 'jf-ep', 'episode', 'Pilot', 'Show', 'jf-show', 1, 2, 1800000, ?, 'pt', 'bt', 'tt', 'spt', 320, 240, 'mpeg4', 'avi')`, DefaultTenantID, now))
 	must(db.Exec(ctx, `INSERT INTO catalog_item (id, tenant_id, media_source_id, external_id, kind, title, duration_ms, synced_at)
 		VALUES ('mov', ?, 'ms', 'jf-mov', 'movie', 'A Movie', 5400000, ?)`, DefaultTenantID, now))
 	for i := 0; i < 3; i++ {
@@ -104,8 +105,18 @@ func TestEPGEnrichedIsAdditive(t *testing.T) {
 			t.Errorf("%s = %v, want %v", k, e[k], want)
 		}
 	}
+	// The shape of the media file, which is what a player decides "can I decode
+	// this?" from.
+	for k, want := range map[string]any{
+		"width": 320.0, "height": 240.0, "video_codec": "mpeg4", "container": "avi",
+	} {
+		if e[k] != want {
+			t.Errorf("%s = %v, want %v", k, e[k], want)
+		}
+	}
 	// A movie has no series/art fields at all (omitted, not null).
-	for _, k := range []string{"series_title", "season_number", "image_primary_tag", "series_image_primary_tag"} {
+	for _, k := range []string{"series_title", "season_number", "image_primary_tag", "series_image_primary_tag",
+		"width", "height", "video_codec", "container"} {
 		if _, ok := got[1][k]; ok {
 			t.Errorf("movie entry unexpectedly has %s", k)
 		}
@@ -142,6 +153,11 @@ func TestEPGTailGrouping(t *testing.T) {
 	s.entry(t, "x0", "c2", "tail", "clip0", 1910000, 1920000)
 	s.entry(t, "f", "c2", "fallback", "mov", 1920000, 1930000)
 
+	if err := db.Exec(context.Background(),
+		`UPDATE catalog_item SET video_codec = 'mpeg4', container = 'avi', width = 320, height = 240 WHERE id = 'clip1'`); err != nil {
+		t.Fatal(err)
+	}
+
 	got := getEPGJSON(t, mux, "/epg?group_tail=1")
 	var kinds []string
 	for _, e := range got {
@@ -170,6 +186,17 @@ func TestEPGTailGrouping(t *testing.T) {
 			c["duration_ms"] != 10000.0 || c["start_at"] != float64(i*10000) || c["end_at"] != float64((i+1)*10000) {
 			t.Errorf("clip %d = %v", i, c)
 		}
+	}
+	// A clip is played on its own, so it carries the shape of its own file (a
+	// player decides "can I decode this?" before it opens one). These seed
+	// movies were never probed, so the fields are absent - what matters is that
+	// the field is there when the catalog has a value.
+	if _, has := clips[0].(map[string]any)["video_codec"]; has {
+		t.Errorf("unprobed clip should not claim a codec: %v", clips[0])
+	}
+	if c1 := clips[1].(map[string]any); c1["video_codec"] != "mpeg4" || c1["container"] != "avi" ||
+		c1["width"] != 320.0 || c1["height"] != 240.0 {
+		t.Errorf("probed clip lost its shape: %v", c1)
 	}
 	if n := len(got[2]["clips"].([]any)); n != 2 {
 		t.Errorf("second group clips = %d, want 2", n)

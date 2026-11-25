@@ -90,6 +90,12 @@ class EpgClip {
   final DateTime endAt;
   final int? durationMs;
 
+  /// The clip's video file, when the backend sent it (see [EpgEntry.videoCodec]):
+  /// what a player decides "can I decode this?" from before it opens anything.
+  final String? videoCodec;
+  final int? width;
+  final int? height;
+
   const EpgClip({
     required this.id,
     required this.catalogItemId,
@@ -98,6 +104,9 @@ class EpgClip {
     this.externalId,
     this.title,
     this.durationMs,
+    this.videoCodec,
+    this.width,
+    this.height,
   });
 
   factory EpgClip.fromJson(Map<String, dynamic> json) => EpgClip(
@@ -108,6 +117,9 @@ class EpgClip {
         startAt: DateTime.fromMillisecondsSinceEpoch(json['start_at'] as int, isUtc: true),
         endAt: DateTime.fromMillisecondsSinceEpoch(json['end_at'] as int, isUtc: true),
         durationMs: json['duration_ms'] as int?,
+        videoCodec: json['video_codec'] as String?,
+        width: json['width'] as int?,
+        height: json['height'] as int?,
       );
 
   Map<String, dynamic> toJson() => {
@@ -118,6 +130,9 @@ class EpgClip {
         'external_id': externalId,
         'title': title,
         'duration_ms': durationMs,
+        if (videoCodec != null) 'video_codec': videoCodec,
+        if (width != null) 'width': width,
+        if (height != null) 'height': height,
       };
 
   EpgClip withCatalog(CatalogItemInfo info) => EpgClip(
@@ -128,6 +143,9 @@ class EpgClip {
         externalId: info.externalId,
         title: info.title,
         durationMs: durationMs,
+        videoCodec: videoCodec,
+        width: width,
+        height: height,
       );
 }
 
@@ -226,6 +244,15 @@ class EpgEntry {
   final String? imageThumbTag;
   final String? seriesImagePrimaryTag;
 
+  /// The primary video file's shape (`videoCodec` is ffprobe's name: `h264`,
+  /// `hevc`, `mpeg4`, ...). Optional, like every other enriched field: the
+  /// client asks the device whether it can decode it before it builds a player,
+  /// and without an answer it plays the item as it always did.
+  final String? videoCodec;
+  final String? container;
+  final int? width;
+  final int? height;
+
   /// Where in the media item this entry starts playing, in milliseconds (0 for
   /// every entry but the later segments of a split item); it plays for
   /// [endAt] - [startAt] from there. See [splitGroup].
@@ -269,6 +296,10 @@ class EpgEntry {
     this.imageBackdropTag,
     this.imageThumbTag,
     this.seriesImagePrimaryTag,
+    this.videoCodec,
+    this.container,
+    this.width,
+    this.height,
     this.itemOffsetMs = 0,
     this.splitGroup,
     this.watermark,
@@ -299,6 +330,10 @@ class EpgEntry {
       imageBackdropTag: json['image_backdrop_tag'] as String?,
       imageThumbTag: json['image_thumb_tag'] as String?,
       seriesImagePrimaryTag: json['series_image_primary_tag'] as String?,
+      videoCodec: json['video_codec'] as String?,
+      container: json['container'] as String?,
+      width: json['width'] as int?,
+      height: json['height'] as int?,
       itemOffsetMs: (json['item_offset_ms'] as int?) ?? 0,
       splitGroup: json['split_group'] as String?,
       watermark: EpgWatermark.tryParse(json['watermark']),
@@ -328,6 +363,10 @@ class EpgEntry {
         'image_backdrop_tag': imageBackdropTag,
         'image_thumb_tag': imageThumbTag,
         'series_image_primary_tag': seriesImagePrimaryTag,
+        if (videoCodec != null) 'video_codec': videoCodec,
+        if (container != null) 'container': container,
+        if (width != null) 'width': width,
+        if (height != null) 'height': height,
         if (itemOffsetMs != 0) 'item_offset_ms': itemOffsetMs,
         if (splitGroup != null) 'split_group': splitGroup,
         if (watermark != null) 'watermark': watermark!.toJson(),

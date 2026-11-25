@@ -9,6 +9,39 @@ The backend and the client are released separately: a backend tag is `vX.Y.Z`
 and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
 0.4.0 (client) are recorded on the [releases page][releases] only.
 
+## [Unreleased]
+
+### Added
+
+- `GET /epg` carries `video_codec`, `container`, `width` and `height` for every
+  entry and every tail clip. All four are optional: an older backend sends none,
+  and "no answer" means "try to play it" (backend).
+
+### Fixed
+
+- A program this device cannot decode is no longer played, and no longer
+  retried. The client asks the device before a player is built
+  (`CodecProbe.kt`, a `MediaCodecList` lookup, so no decoder instance is
+  created), and a decoder that refuses on open counts as the same answer. The
+  channel then says so - what cannot play, why, and when it is back - and waits
+  for the next program instead of playing anything, because retrying was what
+  turned one 320x240 MPEG-4 AVI into 49 players in fifteen minutes, a full Java
+  heap and a process aborted by the runtime. The preload stops after a bounded
+  number of attempts, and the picture watchdog's reopen budget is cleared only
+  by playback that is really advancing, not by a controller that merely opened
+  (client).
+- Leveling lifts quiet material instead of only cutting loud material. The lift
+  was a fixed pre-amp and a player volume stops at 1, so nothing quieter than
+  `target - pre-amp` could ever reach the target: measured over 13 consecutive
+  transitions, 7 reported 0.0 dB of gain and the quietest item played 11.6 dB
+  under the target, which is why the app needed a higher television volume than
+  everything else. The lift now follows the quietest item on air (capped at +15
+  dB), each player keeps the attenuation that is left over, and the device
+  remembers the measurement (`LUFS|peak`) rather than a volume. The default
+  target moves to -14 LUFS, where the streaming services sit. Measuring a short
+  item got cheaper too: the window is half of what is left of the item, and the
+  probe decodes at 4x real time (client).
+
 ## [0.8.2] - 2026-11-24 (client)
 
 ### Fixed
@@ -70,8 +103,6 @@ and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
   again, and after that resumes it with a hard cut. The fade never starts on an
   item that has not shown a picture, the item on screen keeps the screen while
   this happens, and no unit is ever skipped.
-
-## [Unreleased]
 
 ## [0.7.2] - 2026-11-22 (client)
 

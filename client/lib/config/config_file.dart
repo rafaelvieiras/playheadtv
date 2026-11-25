@@ -15,8 +15,8 @@
 //     "mosaic_safe_margin_percent": 2,
 //     "auto_update": true,
 //     "loudness_enabled": true,
-//     "loudness_target_lufs": -18,
-//     "loudness_preamp_db": 12,
+//     "loudness_target_lufs": -14,
+//     "loudness_max_boost_db": 15,
 //     "update_channel": "stable"
 //   }
 //

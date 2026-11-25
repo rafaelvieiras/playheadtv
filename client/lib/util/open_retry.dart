@@ -11,6 +11,7 @@ Future<T> retryOpen<T>({
   int maxAttempts = 2,
   Duration delay = const Duration(milliseconds: 600),
   void Function(int failedAttempt, Object error)? onRetry,
+  bool Function(Object error)? shouldRetry,
   Future<void> Function(Duration) sleep = _sleep,
 }) async {
   assert(maxAttempts >= 1);
@@ -18,7 +19,9 @@ Future<T> retryOpen<T>({
     try {
       return await attempt(n);
     } catch (e) {
-      if (n >= maxAttempts) rethrow;
+      // A failure that cannot answer differently on the next try (a decoder that
+      // does not exist, a format the device refuses) is not retried at all.
+      if (n >= maxAttempts || (shouldRetry != null && !shouldRetry(e))) rethrow;
       onRetry?.call(n, e);
       await sleep(delay);
     }

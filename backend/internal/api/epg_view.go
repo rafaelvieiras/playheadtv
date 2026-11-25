@@ -48,6 +48,15 @@ type epgItem struct {
 	ImageBackdropTag      *string `json:"image_backdrop_tag,omitempty"`
 	ImageThumbTag         *string `json:"image_thumb_tag,omitempty"`
 	SeriesImagePrimaryTag *string `json:"series_image_primary_tag,omitempty"`
+	// The primary video file's shape, so a player can decide whether it can
+	// decode this at all before it builds a player for it (a set-top box with
+	// no MPEG-4 Part 2 decoder can say so instead of failing to open). Every
+	// field is optional: an older backend, or an item nobody probed, sends
+	// none and the client falls back to trying.
+	Width      *int64  `json:"width,omitempty"`
+	Height     *int64  `json:"height,omitempty"`
+	VideoCodec *string `json:"video_codec,omitempty"` // ffprobe's name: h264, hevc, mpeg4, ...
+	Container  *string `json:"container,omitempty"`
 	// Watermark is the resolved watermark of the entry (see
 	// watermark_resolve.go); omitted when none applies, which is also all an
 	// older backend sends.
@@ -68,6 +77,12 @@ type epgTailClip struct {
 	StartAt       int64   `json:"start_at"`
 	EndAt         int64   `json:"end_at"`
 	DurationMs    *int64  `json:"duration_ms,omitempty"`
+	// Same meaning as on epgItem: what the clip's video file is, so a client
+	// can tell it cannot decode it before it opens it.
+	Width      *int64  `json:"width,omitempty"`
+	Height     *int64  `json:"height,omitempty"`
+	VideoCodec *string `json:"video_codec,omitempty"`
+	Container  *string `json:"container,omitempty"`
 	// Requires lists the plugins this clip needs, same meaning as on epgItem.
 	Requires []pluginRequirement `json:"requires,omitempty"`
 }
@@ -147,6 +162,7 @@ func loadCatalogBriefs(ctx context.Context, db storage.DB, ids []string) (map[st
 			"SELECT ci.id, ci.media_source_id, ci.external_id, ci.kind AS item_kind, ci.title, ci.series_title,"+
 				" ci.duration_ms, ci.season_number, ci.episode_number, ci.episode_number_end, ci.series_external_id,"+
 				" ci.image_primary_tag, ci.image_backdrop_tag, ci.image_thumb_tag, ci.series_image_primary_tag,"+
+				" ci.width, ci.height, ci.video_codec, ci.container,"+
 				" ms.plugin_id, ms.plugin_min_version, ms.plugin_config_json AS plugin_config"+
 				" FROM catalog_item ci LEFT JOIN media_source ms ON ms.id = ci.media_source_id"+
 				" WHERE ci.tenant_id = ? AND ci.id IN ("+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+")",
@@ -303,6 +319,10 @@ func buildEPGView(ctx context.Context, db storage.DB, entries []domain.EpgEntry,
 				clip.ExternalID = strPtr(b.ExternalID)
 				clip.Title = strPtr(b.Title)
 				clip.DurationMs = i64Ptr(b.DurationMs)
+				clip.Width = b.Width
+				clip.Height = b.Height
+				clip.VideoCodec = b.VideoCodec
+				clip.Container = b.Container
 				clip.Requires = requirementFor(b)
 			}
 			if group == nil {
@@ -334,6 +354,10 @@ func buildEPGView(ctx context.Context, db storage.DB, entries []domain.EpgEntry,
 			item.ImageBackdropTag = b.ImageBackdropTag
 			item.ImageThumbTag = b.ImageThumbTag
 			item.SeriesImagePrimaryTag = b.SeriesImagePrimaryTag
+			item.Width = b.Width
+			item.Height = b.Height
+			item.VideoCodec = b.VideoCodec
+			item.Container = b.Container
 			item.Requires = requirementFor(b)
 		}
 		out = append(out, item)

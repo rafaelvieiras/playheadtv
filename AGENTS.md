@@ -1260,6 +1260,42 @@ device, driven by scripts that end in a file an agent or a human can read.
   (`lib/widgets/update_overlay.dart`) never takes focus and never rebuilds a page,
   and the release body it shows is untrusted: plain text only, never markup or
   links.
+- **Leveling: the lift follows the item, and a remembered value is a
+  measurement.** `AudioPreamp` is a `LoudnessEnhancer` on the output mix (session
+  0) and the player's volume stops at 1, so a *fixed* pre-amp put a hard ceiling
+  on the whole app: nothing quieter than `target - preamp` could ever reach the
+  target (measured on one box: 7 of 13 items stuck at 0.0 dB, the quietest at
+  -30.4 LUFS against an -18 target — which is why the television volume is raised
+  for this app and every other app is then too loud). Now the boost is
+  `target - LUFS` of the quietest item alive, capped by `loudness_max_boost_db`
+  (15), and each player's volume is the attenuation left over — so during a
+  crossfade both sides take one boost and each volume keeps its own item on the
+  target. `LoudnessService` therefore stores `LUFS|peak` per item, never a volume
+  (a volume means nothing without the boost it was computed against), under the
+  prefix `loudness_level_item_`; the old `loudness_gain_*` keys and the config
+  key `loudness_preamp_db` are deliberately not read. Measuring every bumper
+  stays affordable via `loudnessMeasureWindow` (half of what is left of the item,
+  2 s floor) and `PROBE_SPEED` (the sink sees the PCM before the speed applies,
+  so `blocks=47` for a 5 s window is what proves it on a device).
+- **A program this device cannot decode is not played, and it is not retried.**
+  `GET /epg` carries `video_codec`/`container`/`width`/`height` (optional, per
+  entry and per tail clip) and `lib/video/playback_capability.dart` asks the
+  device before any player is built (`CodecProbe.kt`, a `MediaCodecList` lookup:
+  no codec instance, nothing to clean up). `CodecSupport.unsupported` means no
+  player at all; an open that fails with `MediaCodecVideoRenderer error` /
+  `Decoder init failed` means the same thing (`isUnsupportedMediaError`) and the
+  unit is remembered for the session. Then `_enterUnplayableWait` shows
+  `PlayerUnplayableNotice` and reloads the channel when the next program starts.
+  Three things built this: don't try, don't retry, don't leave the viewer
+  guessing. Measured cost of getting it wrong: one 320x240 MPEG-4 Part 2 AVI
+  (`OMX.amlogic.mpeg4.decoder.awesome`, `-12`, and Media3 has no decoder fallback
+  through `video_player`) became 49 players in 15 minutes, a full 160 MB Java
+  heap and `SIGABRT` on the raster thread. So `retryOpen` takes `shouldRetry`,
+  `_runPreload` stops at `preloadMaxAttempts`, and the picture watchdog's reopen
+  budget is cleared only by `playbackHealthyBeforeReset` of playback that is
+  really advancing - not by a controller that merely opened (that reset is how it
+  reopened the same dead item seven times in eight minutes). A transcode is not
+  the answer: the client asks the media server for the file as it is.
 - **A schedule item has two targets, and every surface has to know both.** An
   item airs a block (`block_id`) or a collection as the rule it is
   (`collection_id` + `playback_order`, what the 24/7 loop shortcut and the MCP

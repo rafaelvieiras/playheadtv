@@ -103,15 +103,15 @@ class _SettingsPageState extends State<SettingsPage> {
     unawaited(LoudnessService.create().then((s) => s.clearItems()));
   }
 
-  void _cycleLoudnessPreamp() {
+  void _cycleLoudnessMaxBoost() {
     final settings = _settings;
     if (settings == null) return;
-    final next = nextLoudnessPreampChoice(settings.loudnessPreampDb ?? AppConfig.loudnessPreampDb);
-    unawaited(settings.setLoudnessPreampDb(next).then((_) {
+    final next = nextLoudnessMaxBoostChoice(settings.loudnessMaxBoostDb ?? AppConfig.loudnessMaxBoostDb);
+    unawaited(settings.setLoudnessMaxBoostDb(next).then((_) {
       if (mounted) setState(() {});
     }));
-    // Unlike the target, this one can be heard immediately.
-    unawaited(const AudioPreamp().set(next));
+    // The remembered levels stay valid (they are measurements, not volumes), but
+    // nothing is trusted from a ceiling the viewer just changed.
     unawaited(LoudnessService.create().then((s) => s.clearItems()));
   }
 
@@ -394,12 +394,12 @@ class _SettingsPageState extends State<SettingsPage> {
                   ListTile(
                     key: const Key('settings-loudness-preamp-tile'),
                     leading: const Icon(AppIcons.volume),
-                    title: const Text('Pre-amp (boost)'),
+                    title: const Text('Max boost'),
                     subtitle: Text(
-                      loudnessPreampLabel(_settings!.loudnessPreampDb ?? AppConfig.loudnessPreampDb),
+                      loudnessMaxBoostLabel(_settings!.loudnessMaxBoostDb ?? AppConfig.loudnessMaxBoostDb),
                       key: const Key('settings-loudness-preamp-value'),
                     ),
-                    onTap: _cycleLoudnessPreamp,
+                    onTap: _cycleLoudnessMaxBoost,
                   ),
                 if (_settings != null && Platform.isAndroid)
                   ListTile(

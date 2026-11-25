@@ -92,6 +92,16 @@ const Duration playbackPictureLostBound = Duration(seconds: 45);
 /// reported instead.
 const int playbackPictureLostReopensBeforeGivingUp = 2;
 
+/// How long the picture has to be genuinely advancing before the reopen budget
+/// (this one and [playbackStallResyncsBeforeGivingUp]) is cleared again.
+///
+/// A controller that merely opened is not playback: an item whose engine died
+/// three seconds in was reported healthy, the budget went back to zero on every
+/// pass, and the channel reopened itself seven times in eight minutes. Each
+/// reopening builds a player; the box ran out of heap and the process was
+/// aborted. Thirty seconds is well past the moment a broken item fails.
+const Duration playbackHealthyBeforeReset = Duration(seconds: 30);
+
 /// Watches for a channel that claims to be on air but has no live picture.
 class PictureLostWatcher {
   PictureLostWatcher({this.bound = playbackPictureLostBound});

@@ -142,7 +142,11 @@ class SettingsService implements UpdateNoticeStore {
   /// config file / dart-define decides (the same precedence the other rows use).
   static const _loudnessEnabledKey = 'loudness_on';
   static const _loudnessTargetKey = 'loudness_target';
-  static const _loudnessPreampKey = 'loudness_preamp';
+  // Named for what it is now: the ceiling of the automatic lift, not a fixed
+  // pre-amp. A stored `loudness_preamp` (a fixed lift under the old model) is
+  // deliberately not read: as a ceiling it would cap a quiet item short of the
+  // target, which is the problem the ceiling replaced.
+  static const _loudnessMaxBoostKey = 'loudness_max_boost';
 
   bool? get loudnessEnabled => _prefs.getBool(_loudnessEnabledKey);
   Future<void> setLoudnessEnabled(bool value) => _prefs.setBool(_loudnessEnabledKey, value);
@@ -150,8 +154,9 @@ class SettingsService implements UpdateNoticeStore {
   double? get loudnessTargetLufs => _prefs.getDouble(_loudnessTargetKey);
   Future<void> setLoudnessTargetLufs(double value) => _prefs.setDouble(_loudnessTargetKey, value);
 
-  double? get loudnessPreampDb => _prefs.getDouble(_loudnessPreampKey);
-  Future<void> setLoudnessPreampDb(double value) => _prefs.setDouble(_loudnessPreampKey, value);
+  double? get loudnessMaxBoostDb => _prefs.getDouble(_loudnessMaxBoostKey);
+  Future<void> setLoudnessMaxBoostDb(double value) =>
+      _prefs.setDouble(_loudnessMaxBoostKey, value);
 
   /// Whether the on-screen log is drawn, for a build that carries the log at
   /// all (`--dart-define=PLAYHEADTV_LOG_PEEK=true`). Null until the viewer

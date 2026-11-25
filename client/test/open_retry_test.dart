@@ -4,6 +4,41 @@ import 'package:client/util/open_retry.dart';
 void main() {
   Future<void> noSleep(Duration _) async {}
 
+  test('a failure that cannot change is not retried', () async {
+    // What a decoder that does not exist answers: retrying only builds and
+    // tears down another player for the same refusal (measured on a TV box: 49
+    // players in fifteen minutes, then the process was killed for heap).
+    var calls = 0;
+    await expectLater(
+      retryOpen<int>(
+        attempt: (_) async {
+          calls++;
+          throw const FormatException('no decoder for mpeg4');
+        },
+        shouldRetry: (e) => e is! FormatException,
+        sleep: noSleep,
+      ),
+      throwsA(isA<FormatException>()),
+    );
+    expect(calls, 1);
+  });
+
+  test('a retryable failure still retries', () async {
+    var calls = 0;
+    final r = await retryOpen<int>(
+      maxAttempts: 3,
+      attempt: (n) async {
+        calls++;
+        if (n < 3) throw StateError('slow');
+        return n;
+      },
+      shouldRetry: (e) => e is StateError,
+      sleep: noSleep,
+    );
+    expect(r, 3);
+    expect(calls, 3);
+  });
+
   test('returns the first result without retrying', () async {
     var calls = 0;
     final r = await retryOpen<int>(attempt: (_) async => ++calls, sleep: noSleep);

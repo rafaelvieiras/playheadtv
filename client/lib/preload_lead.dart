@@ -82,8 +82,21 @@ Duration preloadDelay({required Duration remaining, required Duration lead}) {
 }
 
 /// Failed preload attempts before the player reports an error (it keeps
-/// retrying afterwards, see [preloadRetryDelay]).
+/// retrying until [preloadMaxAttempts], see [preloadRetryDelay]).
 const preloadAttemptsBeforeError = 4;
+
+/// The last attempt for one item. Past this the preload stops trying it, the
+/// channel keeps playing what is on air, and the item is skipped at its turn
+/// (the transition's own "cannot start" path).
+///
+/// It used to retry forever, on the reasoning that a channel must never stay
+/// stopped on a late source. Measured against a real failure, "forever" means a
+/// new player (and a new MediaCodec) every sixteen seconds for as long as the
+/// item is due: with the picture watchdog's own reopening on top, a TV box
+/// created 49 players in fifteen minutes, filled its 160 MB Java heap and had
+/// the process aborted by the runtime. An item that has failed four times in a
+/// row is not late, it is broken.
+const preloadMaxAttempts = 8;
 
 /// The pause before retry number [failures] (1 = after the first failure):
 /// [base], doubling each time, capped at [preloadRetryCapFactor] times [base].

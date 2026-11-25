@@ -2113,54 +2113,89 @@ compressor): nothing is re-encoded and the audio path is untouched.
   index with range requests, which is how a tune-in mid-programme already works.
   `MediaExtractor` cannot seek over HTTP on the same box (its sample time stays
   at 0), so a probe built on it can only read a file's head.
-- **The gain**: `min(10^((target - LUFS - preamp)/20), 10^((-1 - peak - preamp)/20))`,
-  where `preamp` is the global gain above unity described below. Two terms, both
-  attenuations, the smaller wins: one brings the average level to the target, the
-  other keeps the peak under -1 dBFS.
-- **The pre-amp** (`AudioPreamp.kt`): a `LoudnessEnhancer` on the output mix
-  (audio session 0), which is the only gain above unity the app can get — a
-  player volume stops at 1. Measured before it was written: it applies the
-  requested gain exactly (+6 -> +6.00 dB, +40 -> +39.90 dB) and has a limiter, so
-  peaks pushed past full scale compress instead of clipping. Attaching it to the
+- **Two numbers, and the lift follows the item.** The mix carries a *boost*
+  (`AudioPreamp.kt`, a `LoudnessEnhancer` on audio session 0) and the player
+  carries a *volume* (`min(10^((target - LUFS - boost)/20), 10^((-1 - peak -
+  boost)/20))`, both terms attenuations, the smaller wins: the average level and
+  the peak ceiling). The boost is `target - LUFS` of the quietest item alive, 0
+  when everything is loud enough, and capped by
+  `loudness_max_boost_db` (15 by default).
+- **Why the boost had to stop being a constant.** It used to be a fixed +12 dB
+  (this installation ran +9). A player volume stops at 1, so the loudest the app
+  could ever deliver was `item + pre-amp`: every item quieter than
+  `target - 9` played below the target with nothing left to lift it. Measured on
+  the device over 13 consecutive transitions: **7 reported gain 0.0 dB** — the
+  ceiling — and the quietest item of the session (-39.4 LUFS) played at -30.4
+  against a -18 target. That is what "the app is quieter than everything else, so
+  the television volume gets raised, so every other app is too loud" was.
+- **One boost, many volumes.** The effect sits on the output mix, so
+  overlapping items share one number: the quietest of the set decides and
+  re-computes every live player's volume. During a crossfade both sides take the
+  same boost and each one's volume keeps its own item on the target, so a quiet
+  bumper does not fight the film it is fading into. Attaching the effect to the
   mix instead of a player session is what keeps `video_player_android`
   unpatched. Where the platform refuses it, `hasControl()` is false and leveling
   degrades to attenuation only.
-- **Defaults**: `loudness_target_lufs` -18, `loudness_preamp_db` 12. Over a
-  measured sample of 47 items (loudest of two windows each) that lifts the
-  library 4.1 dB on average, 36 of 47 items louder, and takes the final spread
-  from 28 dB to 1.3 dB.
+- **The cap is audible, the level is physics.** Past +15 dB the limiter is doing
+  most of the work on a quiet item, which is heard as pumping; and an item with a
+  16.7 dB crest cannot reach a -14 target without clipping whatever the cap says.
+  Both cases end 3-10 dB under the target, on purpose, instead of pumping or
+  clipping.
+- **Defaults**: `loudness_target_lufs` -14 (the level the streaming services sit
+  at, so the app needs the same television volume as everything else) and
+  `loudness_max_boost_db` 15.
+- **What is remembered is the measurement, never a volume.** A volume only means
+  anything next to the boost it was computed against, and the boost moves with
+  every item, so the device stores `LUFS|peak` per item (and per channel, for the
+  boot case). The prefix changed with the meaning
+  (`loudness_level_item_`), so an installation that measured under the old model
+  simply measures again instead of trusting a number that now means something
+  else.
 - **How it is applied**:
   - during the preload the item is measured at its start and remembered, so the
-    800 ms crossfade into it carries the right gain instead of a correction
+    800 ms crossfade into it carries the right level instead of a correction
     heard seconds later;
-  - on a channel change the new channel starts from its own prior (the level it
-    was last leveled to), never from the level of the item that was on air: that
-    inheritance played a loud item at a quiet item's volume until the correction
-    landed, which is heard as the channel arriving several dB too loud. With no
-    prior either (a channel never watched), it enters at the level of the loudest
-    material the library holds and the correction goes up, so the error is always
-    on the quiet side. The point being watched is then measured (5 s of audio,
-    about 3 s of wall clock) and the correction ramps in — over 2 s when it goes
-    up, over 4 s when it comes down;
-  - an item measured before enters at its own gain and nothing is decoded;
+  - an item measured before enters at its own level, its boost and volume applied
+    together, and nothing is decoded;
+  - a channel change enters from the channel's own prior — its last level — when
+    nothing is playing yet (a boot), and from the volume in force when something
+    is, so the change does not jump. With nothing known at all it enters at the
+    level of the loudest material the library holds: the correction can then only
+    go up, so the error is always on the quiet side. The point being watched is
+    measured (5 s of audio) and the correction ramps in — over 2 s up, over 4 s
+    down;
   - a window with too little signal (under 4 blocks) keeps the current level;
   - a mid-programme window levels that playback only; it is not stored as the
     item's level, so an unlucky quiet scene cannot become the item's gain;
-  - before an item's gain is remembered, a second window is measured at 40 % of
+  - before an item's level is remembered, a second window is measured at 40 % of
     the item. Two windows of the same item differ by 2.6 dB typically and 9.8 dB
     at p90; past 6 dB they are not describing the same audio (a malformed file
     measured 14 dB apart at two offsets), and the item is then left unleveled
-    rather than remembered with a guess;
+    rather than remembered with a guess. When they agree, the remembered level
+    takes the louder average and the higher peak: a level is trusted forever, so
+    each half takes the side that needs less help;
   - a different audio track is a different master — one film carries a 2.0 dub at
     -6.2 LUFS and a 5.1 track at -26.9 — so choosing another track forgets the
-    item's gain and levels again at the current position.
-- **Config**: `loudness_enabled` (default true), `loudness_target_lufs` (-18) and
-  `loudness_preamp_db` (12). All three are also settable in Settings, since
-  Android has no config file to edit.
+    item's level and levels again at the current position.
+- **Config**: `loudness_enabled` (default true), `loudness_target_lufs` (-14) and
+  `loudness_max_boost_db` (15). All three are also settable in Settings, since
+  Android has no config file to edit. `loudness_preamp_db` (the old fixed lift)
+  is not read at all: as a ceiling, a stored 9 would cap a quiet item 6 dB under
+  the target, which is the bug this replaced.
 
 Cost on the box (Amlogic S905X over 5 GHz): 5 s of audio takes 2.6-4.6 s of wall
 clock, 10 s takes 5-10 s, and a probe running while a channel plays drops no
 frame. The preload measures two windows, which fits in the 20 s preload lead.
+
+Two things keep that affordable, because a channel of bumpers is measured a lot:
+
+- **the window follows the item** (`loudnessMeasureWindow`): half of what is left
+  of the item, never more than 5 s and never less than 2 s. A 5 s bumper is
+  measured on 2.5 s instead of decoding past its end for a full window;
+- **the probe decodes faster than real time** (`PROBE_SPEED`, 4x). Only the wall
+  clock changes: the metering sink reads the decoded buffers *before* the sink
+  applies the speed, so the content is the same. What proves it on a device is
+  the block count in the log line (`blocks=47` for a 5 s window).
 
 ## Client preload lead
 
@@ -2201,6 +2236,63 @@ holds the pure policy:
   one controller is audible. The next transition is timed from the moment the
   incoming item started (minus the point it joined at after a resync), so
   transitions do not drift by the length of the ramp.
+
+## Cannot play it here: the media, not the channel
+
+A self-hosted library is not one format. The measured case is a 320x240 MPEG-4
+Part 2 file in an AVI (954 of them in one library): ordinary on a desktop, and on
+one set-top box the platform decoder `OMX.amlogic.mpeg4.decoder.awesome` refuses
+to instantiate (`OMX_ErrorInsufficientResources`, `-12`) while Media3 reports
+`format_supported=YES` and then fails the renderer. Media3 has no decoder
+fallback unless the player asks for one, and the `video_player` plugin does not,
+so the item can never start.
+
+**The channel says so and does not play it.** Opening an entry the device cannot
+decode is not a source failure to be retried - it is a permanent answer, and
+retrying it is what turned one bad episode into 49 players in fifteen minutes, a
+full 160 MB Java heap and a process aborted by the ART.
+
+- **Ask before opening.** `lib/video/playback_capability.dart` is the seam;
+  `CodecProbe.kt` answers it from `MediaCodecList.findDecoderForFormat` - a
+  registry lookup, so no codec instance is created and nothing has to be cleaned
+  up. The codec name comes from the guide: `GET /epg` carries `video_codec`,
+  `container`, `width` and `height` per entry and per tail clip (all optional;
+  an older backend sends none, and "no answer" always means "try it").
+- **`unsupported` means no player at all.** `_createControllerOnce` throws
+  `UnsupportedMediaException` before any engine object exists, and `retryOpen` is
+  told not to retry it.
+- **A decoder that refuses is the same answer.** `isUnsupportedMediaError`
+  recognises `MediaCodecVideoRenderer error`, `Decoder init failed` and the
+  libmdk equivalents in an open failure: that unit is added to the player's
+  session set of unplayable ids and takes the same path.
+- **The waiting state.** `_enterUnplayableWait` tears down both slots and any
+  parked preload (the reason a decoder refuses is often that none is free),
+  clears `_onAir` so the picture watchdog cannot reopen, and draws
+  `PlayerUnplayableNotice` where the picture would be: what cannot play, why, and
+  when the channel is back. A timer at the end of that program reloads the
+  channel, so the viewer does nothing.
+- **Nothing else may spin on it.** The preload stops trying an unplayable unit,
+  the transition puts the channel into the waiting state instead of fading into
+  it, and the hard-cut path (`_resumeAt`) does the same. The preload also has a
+  bounded budget ([`preloadMaxAttempts`]) now: "never gives up" meant a new
+  player and a new MediaCodec every sixteen seconds for as long as the item was
+  due, and `_awaitPreload` had to be taught to give up with it instead of
+  spinning on a completed future.
+
+The reopen budget follows the same rule. `PictureLostWatcher` gets
+`playbackPictureLostReopensBeforeGivingUp` reopenings, but the counter used to be
+cleared by a controller that merely *opened*: an item whose engine died three
+seconds in reported healthy, zeroed the budget and reopened the channel seven
+times in eight minutes. It is now cleared only after
+`playbackHealthyBeforeReset` of a position that is really advancing.
+
+`android:largeHeap="true"` is the safety net, not the fix: on the measured box
+`dalvik.vm.heapgrowthlimit` is 160 MB, and a churn bug that reaches the ceiling
+ends with `SIGABRT` on the raster thread.
+
+A transcode is deliberately not the answer here: the client asks the media server
+for the file as it is, and a program it cannot decode is reported, not
+transcoded.
 
 ## Client video engine
 
