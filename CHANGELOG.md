@@ -17,6 +17,8 @@ and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
   entry and every tail clip. All four are optional: an older backend sends none,
   and "no answer" means "try to play it" (backend).
 
+## [0.8.3] - 2026-11-25 (client)
+
 ### Fixed
 
 - A program this device cannot decode is no longer played, and no longer
