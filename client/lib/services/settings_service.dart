@@ -6,6 +6,7 @@ import '../dimmer.dart';
 import '../preload_lead.dart';
 import '../update/semver.dart';
 import '../update/update_notices.dart';
+import 'loudness_service.dart';
 
 /// The degraded behavior of a channel whose cached schedule ran out.
 enum ExhaustedBehavior {
@@ -151,7 +152,24 @@ class SettingsService implements UpdateNoticeStore {
   bool? get loudnessEnabled => _prefs.getBool(_loudnessEnabledKey);
   Future<void> setLoudnessEnabled(bool value) => _prefs.setBool(_loudnessEnabledKey, value);
 
-  double? get loudnessTargetLufs => _prefs.getDouble(_loudnessTargetKey);
+  // The old default (-18) was chosen next to a fixed +12 dB pre-amp: that pair
+  // was the whole loudness policy, so a stored -18 on an install that has never
+  // used the new model is the old policy, not a choice. Adopt the new default
+  // once (the first write under the new key is the viewer's own choice from then
+  // on), otherwise an updating install keeps playing 4 dB under the target it was
+  // supposed to have.
+  static const _legacyLoudnessTargetLufs = -18.0;
+
+  double? get loudnessTargetLufs {
+    final stored = _prefs.getDouble(_loudnessTargetKey);
+    if (stored == null) return null;
+    final neverChoseUnderTheNewModel = _prefs.getDouble(_loudnessMaxBoostKey) == null;
+    if (neverChoseUnderTheNewModel && stored == _legacyLoudnessTargetLufs) {
+      return loudnessTargetLufsDefault;
+    }
+    return stored;
+  }
+
   Future<void> setLoudnessTargetLufs(double value) => _prefs.setDouble(_loudnessTargetKey, value);
 
   double? get loudnessMaxBoostDb => _prefs.getDouble(_loudnessMaxBoostKey);

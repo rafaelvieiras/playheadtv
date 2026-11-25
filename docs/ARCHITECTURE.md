@@ -2143,7 +2143,16 @@ compressor): nothing is re-encoded and the audio path is untouched.
   clipping.
 - **Defaults**: `loudness_target_lufs` -14 (the level the streaming services sit
   at, so the app needs the same television volume as everything else) and
-  `loudness_max_boost_db` 15.
+  `loudness_max_boost_db` 15. An install that updated from the fixed pre-amp
+  model carries `-18`, which was chosen *next to* a +12 dB lift and is therefore
+  the old policy rather than a choice: it is replaced by the new default once
+  (`SettingsService.loudnessTargetLufs`, and only while `loudness_max_boost` has
+  never been written), otherwise the update would keep playing 4 dB under its own
+  target.
+- **Nothing known is not nothing needed.** An empty set of levels — a channel
+  change before its first measurement — keeps the boost in force instead of
+  dropping it to zero. Measured on a device before this rule: +11.9 dB fell to 0
+  and rose to +15 within 2.7 s of the switch, a 27 dB step in the middle of it.
 - **What is remembered is the measurement, never a volume.** A volume only means
   anything next to the boost it was computed against, and the boost moves with
   every item, so the device stores `LUFS|peak` per item (and per channel, for the
@@ -2187,15 +2196,23 @@ Cost on the box (Amlogic S905X over 5 GHz): 5 s of audio takes 2.6-4.6 s of wall
 clock, 10 s takes 5-10 s, and a probe running while a channel plays drops no
 frame. The preload measures two windows, which fits in the 20 s preload lead.
 
-Two things keep that affordable, because a channel of bumpers is measured a lot:
+Three things keep that affordable, because a channel of bumpers is measured a lot:
 
 - **the window follows the item** (`loudnessMeasureWindow`): half of what is left
   of the item, never more than 5 s and never less than 2 s. A 5 s bumper is
   measured on 2.5 s instead of decoding past its end for a full window;
 - **the probe decodes faster than real time** (`PROBE_SPEED`, 4x). Only the wall
   clock changes: the metering sink reads the decoded buffers *before* the sink
-  applies the speed, so the content is the same. What proves it on a device is
-  the block count in the log line (`blocks=47` for a 5 s window).
+  applies the speed, so the content is the same;
+- **the player lives on its own thread** (`playheadtv-probe`), because the speed
+  is wasted if the stop is late. Measured on the device with the player on the
+  main thread: the "enough audio" signal was posted there, the stop waited for
+  the app to come back, and the probe decoded **27.8 s of a 5 s window in 7.5 s
+  of wall clock** — the faster it decoded, the further it ran ahead. On its own
+  thread the same measurement is `decoded=5.02s, blocks=47` in 2.2-3.8 s,
+  including connecting to the server, and a measurement never competes with the
+  frame the viewer is watching. The sink also stops counting at the window, so
+  the meter's number is the window that was asked for.
 
 ## Client preload lead
 

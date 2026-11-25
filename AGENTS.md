@@ -1276,7 +1276,13 @@ device, driven by scripts that end in a file an agent or a human can read.
   key `loudness_preamp_db` are deliberately not read. Measuring every bumper
   stays affordable via `loudnessMeasureWindow` (half of what is left of the item,
   2 s floor) and `PROBE_SPEED` (the sink sees the PCM before the speed applies,
-  so `blocks=47` for a 5 s window is what proves it on a device).
+  so `blocks=47` for a 5 s window is what proves it on a device). The probe's
+  player runs on its own `HandlerThread`: on the main thread the stop waited for
+  the app and the probe decoded 27.8 s of a 5 s window (7.5 s of wall clock) —
+  the faster it decodes the further it runs ahead, so the speed only pays with a
+  stop that lands immediately. And an empty set of levels (a channel change
+  before its first measurement) keeps the boost in force; zeroing it made a
+  measured +11.9 dB fall to 0 and jump back to +15 within 2.7 s.
 - **A program this device cannot decode is not played, and it is not retried.**
   `GET /epg` carries `video_codec`/`container`/`width`/`height` (optional, per
   entry and per tail clip) and `lib/video/playback_capability.dart` asks the

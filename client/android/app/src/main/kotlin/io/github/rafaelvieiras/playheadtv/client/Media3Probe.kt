@@ -20,6 +20,7 @@ package io.github.rafaelvieiras.playheadtv.client
 
 import android.content.Context
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
@@ -45,6 +46,13 @@ object Media3Probe {
     /**
      * Decodes [seconds] of the audio of [url] starting at [startSeconds] and
      * calls [onResult] once, on the main thread, with null on failure.
+     *
+     * The player lives on its own thread, not the app's main thread. Measured on
+     * a device: with the player on the main thread, the "enough audio" signal was
+     * posted there and the stop waited for the app to come back, so the probe
+     * decoded 27.8 s of a 5 s window (7.5 s of wall clock) while boot was busy on
+     * the main thread. On its own thread the stop lands within a buffer, and the
+     * measurement never competes with the frame the viewer is watching.
      */
     fun measure(
         context: Context,
@@ -54,7 +62,9 @@ object Media3Probe {
         timeoutMs: Long,
         onResult: (LoudnessMeter.Measurement?) -> Unit,
     ) {
-        val main = Handler(Looper.getMainLooper())
+        val appMain = Handler(Looper.getMainLooper())
+        val thread = HandlerThread("playheadtv-probe").apply { start() }
+        val probe = Handler(thread.looper)
         val started = SystemClock.elapsedRealtime()
         val sink = MeteringSink(
             DefaultAudioSink.Builder(context).build(),
@@ -68,18 +78,34 @@ object Media3Probe {
         finish = { result ->
             if (!finished) {
                 finished = true
-                main.removeCallbacksAndMessages(null)
+                probe.removeCallbacksAndMessages(null)
                 runCatching {
                     player?.stop()
                     player?.release()
                 }
                 player = null
-                onResult(result)
+                thread.quitSafely()
+                // One line per measurement, always on: it is the only evidence a
+                // device gives of how much was decoded and how long it took, and
+                // it is what shows the probe speed is really in effect (a 5 s
+                // window at 4x decodes 5 s of audio in well under 5 s of wall
+                // time; blocks = decodedSeconds * 2.5).
+                if (result == null) {
+                    Log.w(TAG, "MEASURED|none|${SystemClock.elapsedRealtime() - started}ms")
+                } else {
+                    Log.i(
+                        TAG,
+                        "MEASURED|${fmt(result.lufs)}|${fmt(result.samplePeakDb)}|" +
+                            "${result.wallMs}ms|decoded=${fmt(result.decodedSeconds)}s|" +
+                            "blocks=${result.blocks}|${result.sampleRate}Hz|${result.channels}ch",
+                    )
+                }
+                appMain.post { onResult(result) }
             }
         }
 
         sink.onEnough = {
-            main.post {
+            probe.post {
                 val meter = sink.meter
                 if (meter == null || meter.completedBlocks == 0) {
                     finish(null)
@@ -115,9 +141,9 @@ object Media3Probe {
             )
         }
 
-        main.post {
+        probe.post {
             try {
-                val exo = ExoPlayer.Builder(context, renderers).build()
+                val exo = ExoPlayer.Builder(context, renderers).setLooper(thread.looper).build()
                 player = exo
                 exo.volume = 0f
                 exo.addListener(object : Player.Listener {
@@ -145,7 +171,7 @@ object Media3Probe {
                 // bumper affordable.
                 exo.setPlaybackSpeed(PROBE_SPEED)
                 exo.play()
-                main.postDelayed({ finish(null) }, timeoutMs)
+                probe.postDelayed({ finish(null) }, timeoutMs)
             } catch (e: Exception) {
                 Log.w(TAG, "media3 setup failed: ${e.javaClass.simpleName}: ${e.message}", e)
                 finish(null)
@@ -242,12 +268,14 @@ object Media3Probe {
             encodedAccessUnitCount: Int,
         ): Boolean {
             val current = meter
-            if (current != null && buffer.remaining() > 0) {
+            if (current != null && !enoughSent && buffer.remaining() > 0) {
                 // The duplicate consumes nothing: the delegate still gets the
                 // whole buffer, in the same position.
                 current.feed(buffer.duplicate(), encoding)
-                if (!enoughSent && current.decodedSeconds >= targetSeconds) {
-                    // Never touch the player from the playback thread.
+                if (current.decodedSeconds >= targetSeconds) {
+                    // Stop counting at the window that was asked for: the sink
+                    // keeps being fed until the player is actually stopped, and
+                    // whatever arrives after this is not part of the measurement.
                     enoughSent = true
                     onEnough?.invoke()
                 }

@@ -2827,6 +2827,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   Future<double> _applyBoost(Iterable<LoudnessLevel> levels) async {
     final inForce = _activeBoostDb;
     if (!_loudnessOn) return inForce;
+    // Nothing known is not the same as nothing needed. An empty set is a channel
+    // change before its first measurement (measured on a device: the boost fell
+    // from +11.9 dB to 0 and back to +15 within 2.7 s, which is a 27 dB step in
+    // the middle of the switch), so keep what is in force until a level arrives.
+    if (levels.isEmpty) return inForce;
     final wanted = loudnessBoostDb(
       levels.map((level) => loudnessNeedDb(lufs: level.lufs, targetLufs: _loudnessTarget)),
       maxBoostDb: _loudnessMaxBoost,
