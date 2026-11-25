@@ -11,11 +11,16 @@ and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
 
 ## [Unreleased]
 
+## [0.5.3] - 2026-11-25 (backend)
+
 ### Added
 
 - `GET /epg` carries `video_codec`, `container`, `width` and `height` for every
   entry and every tail clip. All four are optional: an older backend sends none,
-  and "no answer" means "try to play it" (backend).
+  and "no answer" means "try to play it". They come from the catalog row the
+  materializer already references, so no query was added, and the change is
+  additive: `APIVersion` does not move and a client that ignores the fields keeps
+  working.
 
 ## [0.8.3] - 2026-11-25 (client)
 
