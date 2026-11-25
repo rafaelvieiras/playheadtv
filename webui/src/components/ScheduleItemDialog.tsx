@@ -12,10 +12,11 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
-import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
+import { Field, FieldDescription, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field'
 import { Input } from '@/components/ui/input'
 import type { BlockPlaybackDraft } from '@/components/BlockPlaybackFields'
 import { DynamicCollectionFields, validateCollectionChoice, type CollectionChoice } from '@/components/DynamicCollectionFields'
+import { CollectionPicker } from '@/components/CollectionPicker'
 import { blockPlaybackPayload, DEFAULT_INTERLEAVE, validateInterleave } from '@/lib/interleave'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
@@ -29,7 +30,13 @@ import {
   WEEKDAY_SHORTCUTS,
 } from '@/lib/schedule'
 import { api, ApiError } from '@/lib/http'
-import type { Block, RecurrenceType, ScheduleItem, ScheduleItemInput } from '@/lib/types'
+import type { Block, CriteriaOrder, RecurrenceType, ScheduleItem, ScheduleItemInput } from '@/lib/types'
+import { CRITERIA_ORDER_LABELS } from '@/lib/types'
+
+// The orders a collection item may air in (issue #100). Interleaved is left out
+// on purpose: it needs an interleave spec the item row has no room for, so a
+// schedule item offers the same four orders the 24/7 loop shortcut does.
+const COLLECTION_ITEM_ORDERS: CriteriaOrder[] = ['shuffle', 'random', 'title', 'release_date']
 
 interface ScheduleItemDialogProps {
   open: boolean
@@ -51,7 +58,12 @@ interface ScheduleItemDialogProps {
 // so the toggle doesn't lose what the user typed, and only one branch is
 // sent to the API on submit (see buildPayload).
 interface FormState {
+  // Which of the two targets the item has: a block (an authored list) or a
+  // collection aired as the rule it is. Exactly one is ever sent.
+  target: 'block' | 'collection'
   block_id: string
+  collection_id: string
+  playback_order: CriteriaOrder
   recurrence_type: RecurrenceType
   days_of_week: number[]
   start_time_local: string
@@ -61,7 +73,10 @@ interface FormState {
 }
 
 const emptyForm: FormState = {
+  target: 'block',
   block_id: '',
+  collection_id: '',
+  playback_order: 'shuffle',
   recurrence_type: 'weekly',
   days_of_week: [],
   start_time_local: '',
@@ -71,7 +86,13 @@ const emptyForm: FormState = {
 
 function itemToForm(item: ScheduleItem, timeZone?: string): FormState {
   return {
+    // An item created by the 24/7 loop shortcut (or by MCP) carries no block at
+    // all: it airs a collection. Reading it as "a block the list does not have"
+    // is what left this dialog with an empty select and no way to save.
+    target: item.collection_id ? 'collection' : 'block',
     block_id: item.block_id ?? '',
+    collection_id: item.collection_id ?? '',
+    playback_order: item.playback_order ?? 'shuffle',
     recurrence_type: item.recurrence_type,
     days_of_week: item.days_of_week,
     start_time_local: item.start_time_local ?? '',
@@ -83,7 +104,7 @@ function itemToForm(item: ScheduleItem, timeZone?: string): FormState {
 // Mirrors validateScheduleItemRequest in backend/internal/api/schedules.go —
 // keep in sync so the client rejects the same invalid combinations before a
 // round trip to the API.
-type Errors = Partial<Record<'block' | 'newBlockName' | 'recurrence' | 'days' | 'start_time' | 'start_at', string>>
+type Errors = Partial<Record<'block' | 'collection' | 'newBlockName' | 'recurrence' | 'days' | 'start_time' | 'start_at', string>>
 
 // Every problem at once, keyed by the field it belongs to. The old version
 // answered one at a time and only in the footer, while the browser's own
@@ -106,9 +127,14 @@ function validate(form: FormState, hasOtherContinuous: boolean): Errors {
 }
 
 function buildPayload(form: FormState, timeZone?: string): ScheduleItemInput {
+  // Exactly one target travels: the API refuses a body carrying both.
+  const target: Pick<ScheduleItemInput, 'block_id' | 'collection_id' | 'playback_order'> =
+    form.target === 'collection'
+      ? { collection_id: form.collection_id, playback_order: form.playback_order }
+      : { block_id: form.block_id }
   if (form.recurrence_type === 'continuous') {
     return {
-      block_id: form.block_id,
+      ...target,
       recurrence_type: 'continuous',
       days_of_week: [],
       start_time_local: null,
@@ -118,7 +144,7 @@ function buildPayload(form: FormState, timeZone?: string): ScheduleItemInput {
   }
   if (form.recurrence_type === 'weekly') {
     return {
-      block_id: form.block_id,
+      ...target,
       recurrence_type: 'weekly',
       days_of_week: [...form.days_of_week].sort((a, b) => a - b),
       start_time_local: form.start_time_local,
@@ -127,7 +153,7 @@ function buildPayload(form: FormState, timeZone?: string): ScheduleItemInput {
     }
   }
   return {
-    block_id: form.block_id,
+    ...target,
     recurrence_type: 'once',
     days_of_week: [],
     start_time_local: null,
@@ -218,17 +244,22 @@ export function ScheduleItemDialog({
 
   function submit(openEditor: boolean) {
     const found: Errors = validate(form, hasOtherContinuous)
-    // The block is the field this dialog most often loses, and the one the
+    // The target is the field this dialog most often loses, and the one the
     // browser's bubble used to hide.
     const blockProblem = newBlock
       ? newBlockName.trim() === ''
         ? 'Enter a name for the new block.'
         : undefined
-      : form.block_id
-        ? undefined
-        : 'Select a block.'
+      : form.target === 'collection'
+        ? form.collection_id
+          ? undefined
+          : 'Choose a collection.'
+        : form.block_id
+          ? undefined
+          : 'Select a block.'
     if (blockProblem) {
       if (newBlock) found.newBlockName = blockProblem
+      else if (form.target === 'collection') found.collection = blockProblem
       else found.block = blockProblem
     }
     const collectionProblem = newBlock
@@ -255,12 +286,63 @@ export function ScheduleItemDialog({
           <DialogHeader>
             <DialogTitle>{isEditing ? 'Edit schedule item' : 'New schedule item'}</DialogTitle>
             <DialogDescription>
-              {isEditing ? 'Update this recurrence rule. ' : 'Add a block airing at a given time to this schedule. '}
+              {isEditing
+                ? 'Update this recurrence rule. '
+                : 'Add a block, or a collection played as it is, airing at a given time to this schedule. '}
               {tzLabel(timeZone)}
             </DialogDescription>
           </DialogHeader>
           <FieldGroup className="py-4">
-            {!newBlock ? (
+            {form.target === 'collection' ? (
+              <>
+                <Field data-invalid={!!errors.collection}>
+                  <FieldLabel>
+                    Collection <span className="text-destructive">*</span>
+                  </FieldLabel>
+                  <CollectionPicker
+                    value={form.collection_id}
+                    onChange={(id) => {
+                      setForm((f) => ({ ...f, collection_id: id }))
+                      setErrors((current) => ({ ...current, collection: undefined }))
+                    }}
+                    idPrefix="schedule-item-collection"
+                  />
+                  <FieldError id="schedule-item-collection-error">{errors.collection}</FieldError>
+                  <FieldDescription>
+                    No block in between: the catalog items the collection matches air here directly, and follow the
+                    catalog as it syncs.
+                  </FieldDescription>
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="schedule-item-order">Order</FieldLabel>
+                  <Select
+                    value={form.playback_order}
+                    onValueChange={(v) => setForm((f) => ({ ...f, playback_order: v as CriteriaOrder }))}
+                  >
+                    <SelectTrigger id="schedule-item-order" className="w-full" data-testid="schedule-item-order">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {COLLECTION_ITEM_ORDERS.map((order) => (
+                        <SelectItem key={order} value={order}>
+                          {CRITERIA_ORDER_LABELS[order]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Button
+                  type="button"
+                  variant="link"
+                  size="sm"
+                  className="self-start px-0"
+                  data-testid="target-block-toggle"
+                  onClick={() => setForm((f) => ({ ...f, target: 'block' }))}
+                >
+                  Use a block instead
+                </Button>
+              </>
+            ) : !newBlock ? (
               <Field data-invalid={!!errors.block}>
                 <FieldLabel htmlFor="schedule-item-block">
                   Block <span className="text-destructive">*</span>
@@ -289,6 +371,16 @@ export function ScheduleItemDialog({
                   </SelectContent>
                 </Select>
                 <FieldError id="schedule-item-block-error">{errors.block}</FieldError>
+                <Button
+                  type="button"
+                  variant="link"
+                  size="sm"
+                  className="self-start px-0"
+                  data-testid="target-collection-toggle"
+                  onClick={() => setForm((f) => ({ ...f, target: 'collection' }))}
+                >
+                  Fill it from a collection instead
+                </Button>
                 {!isEditing && (
                   <Button
                     type="button"
@@ -334,6 +426,19 @@ export function ScheduleItemDialog({
                   onClick={() => setNewBlock(false)}
                 >
                   Use an existing block instead
+                </Button>
+                <Button
+                  type="button"
+                  variant="link"
+                  size="sm"
+                  className="self-start px-0"
+                  data-testid="target-collection-toggle"
+                  onClick={() => {
+                    setNewBlock(false)
+                    setForm((f) => ({ ...f, target: 'collection' }))
+                  }}
+                >
+                  Fill it from a collection instead
                 </Button>
               </div>
             )}

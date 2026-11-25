@@ -280,11 +280,20 @@ export function ChannelProgramming({
                                 {block.name}
                               </Link>
                             ) : item.collection_id ? (
+                              // A collection item has no block to link to, so the
+                              // name links to the collection itself: the row used
+                              // to print a bare uuid nobody could open.
                               <span data-testid="item-collection">
                                 <Badge variant="default">Collection</Badge>{' '}
-                                <span className="text-muted-foreground">
-                                  {item.collection_name ?? item.collection_id} ({item.playback_order})
-                                </span>
+                                <Link
+                                  to={`/collections/${item.collection_id}`}
+                                  className="hover:underline"
+                                  title={item.collection_name ?? item.collection_id}
+                                  data-testid="item-collection-link"
+                                >
+                                  {item.collection_name ?? 'a collection that no longer exists'}
+                                </Link>{' '}
+                                <span className="text-muted-foreground">({item.playback_order})</span>
                               </span>
                             ) : (
                               <span className="text-muted-foreground">{item.block_id}</span>

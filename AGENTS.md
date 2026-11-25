@@ -1260,3 +1260,15 @@ device, driven by scripts that end in a file an agent or a human can read.
   (`lib/widgets/update_overlay.dart`) never takes focus and never rebuilds a page,
   and the release body it shows is untrusted: plain text only, never markup or
   links.
+- **A schedule item has two targets, and every surface has to know both.** An
+  item airs a block (`block_id`) or a collection as the rule it is
+  (`collection_id` + `playback_order`, what the 24/7 loop shortcut and the MCP
+  tool create) — and a collection item has no block at all. Two things missed
+  it: `ScheduleItemDialog` only knew blocks, so opening a collection item showed
+  an empty "Select a block" with no way to save (and Save would have replaced the
+  rule with a block), and `api.scheduleItemColumns` had no `collection_name`, so
+  the programming table printed the raw collection uuid. It now carries the name
+  through the same correlated subquery `blockColumns` uses (an item with no block
+  has nothing to join through) and the dialog switches between the two targets.
+  `POST /schedules/{id}/items` answers with the row a `GET` would, so a client
+  never has to re-read to label what it just created.

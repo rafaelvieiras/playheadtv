@@ -32,8 +32,10 @@ const scheduleColumns = "id, tenant_id, name, description, created_at, updated_a
 
 // scheduleItemColumns aliases recurrence_type to Recurrence, the struct field
 // name domain.ScheduleItem actually has — same pattern as fillerRuleColumns
-// in filler.go.
-const scheduleItemColumns = "id, tenant_id, schedule_id, COALESCE(block_id, '') AS block_id, COALESCE(collection_id, '') AS collection_id, COALESCE(playback_order, '') AS playback_order, recurrence_type AS recurrence, days_of_week, start_time_local, start_at, active, created_at, updated_at"
+// in filler.go. collection_name is a correlated subquery, like blockColumns':
+// an item that airs a collection as the rule it is (issue #100) has no block to
+// join through, and without it the UI could only print the raw collection id.
+const scheduleItemColumns = "id, tenant_id, schedule_id, COALESCE(block_id, '') AS block_id, COALESCE(collection_id, '') AS collection_id, (SELECT c.name FROM collection c WHERE c.tenant_id = schedule_item.tenant_id AND c.id = schedule_item.collection_id) AS collection_name, COALESCE(playback_order, '') AS playback_order, recurrence_type AS recurrence, days_of_week, start_time_local, start_at, active, created_at, updated_at"
 
 type scheduleRequest struct {
 	Name        string  `json:"name"`
@@ -337,7 +339,14 @@ func createScheduleItem(db storage.DB, mat *materializer.Materializer) http.Hand
 			return
 		}
 		mat.ResetAfterScheduleEdit(r.Context(), DefaultTenantID, scheduleID)
-		writeJSON(w, http.StatusCreated, si)
+		// Answer with what a GET would: the row it just wrote, collection_name
+		// included, so a client never has to re-read to label the item.
+		created, err := fetchScheduleItem(db, r, si.ID)
+		if err != nil {
+			handleDBError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusCreated, created)
 	}
 }
 

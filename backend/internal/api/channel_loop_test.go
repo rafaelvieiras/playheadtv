@@ -99,6 +99,19 @@ func TestScheduleItemCollectionTarget(t *testing.T) {
 	if si.CollectionID != col || si.PlaybackOrder != "shuffle" || si.BlockID != "" {
 		t.Fatalf("item = %+v", si)
 	}
+	// The rule is served with the collection's name, not just its id: an item
+	// with no block has nothing to join through, so the row reached the UI as a
+	// bare uuid the operator could not recognise or open.
+	if si.CollectionName == nil || *si.CollectionName == "" {
+		t.Fatalf("item carries no collection name: %+v", si)
+	}
+	list := doRequest(t, mux, "GET", "/schedules/"+schedID+"/items", "")
+	if list.Code != http.StatusOK {
+		t.Fatalf("list: %d %s", list.Code, list.Body.String())
+	}
+	if !strings.Contains(list.Body.String(), *si.CollectionName) {
+		t.Errorf("the list route drops the collection name: %s", list.Body.String())
+	}
 	// It is served with the target it has, never with a stray block id.
 	if strings.Contains(rec.Body.String(), `"block_id"`) {
 		t.Errorf("a collection item leaked a block_id: %s", rec.Body.String())

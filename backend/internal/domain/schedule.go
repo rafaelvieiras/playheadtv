@@ -138,6 +138,11 @@ type ScheduleItem struct {
 	// is. Exactly one is set.
 	BlockID      string `json:"block_id,omitempty"`
 	CollectionID string `json:"collection_id,omitempty"`
+	// CollectionName is the collection's current name, filled on read (a
+	// correlated subquery, see api.scheduleItemColumns) so a client can label
+	// the item without a second lookup. Nil when the item has no collection
+	// target.
+	CollectionName *string `json:"collection_name,omitempty"`
 	// PlaybackOrder is how a collection item walks its matches (the orders a
 	// criteria block item accepts: title, release_date, random, shuffle,
 	// interleaved). Set iff CollectionID is set.
