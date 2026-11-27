@@ -103,6 +103,15 @@ void main() {
     // A request for the stream of one of channel `number`'s items.
     bool requestedChannel(int number) => video.videoRequests.any((path) => path.contains('delay-$number-'));
 
+    /// Like [requestedChannel], but only for requests made since [from].
+    ///
+    /// The fixture is one per file, so its request log carries every earlier
+    /// test: asking whether channel 5 was ever opened answers yes for the test
+    /// that ended on it.
+    bool requestedSince(int from, int number) => video.videoRequests
+        .skip(from)
+        .any((path) => path.contains('delay-$number-'));
+
     Future<void> boot(WidgetTester tester, {int delaySeconds = 3}) async {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt('channel_switch_delay_seconds', delaySeconds);
@@ -137,6 +146,7 @@ void main() {
       // `pump(400ms)` cost more or less real time than it says — with 10 s there
       // is no way for the presses to straddle the window's end.
       await boot(tester, delaySeconds: 10);
+      final since = video.videoRequests.length;
       await pressKey(tester, LogicalKeyboardKey.arrowUp);
       await tester.pump(const Duration(milliseconds: 300));
       await pressKey(tester, LogicalKeyboardKey.arrowUp);
@@ -145,9 +155,9 @@ void main() {
       // Two presses inside one window: the banner walked to channel 9 and only
       // it may be opened.
       expect(bannerNumber(tester), '9');
-      await pumpUntil(tester, () => requestedChannel(9), timeout: const Duration(seconds: 40),
+      await pumpUntil(tester, () => requestedSince(since, 9), timeout: const Duration(seconds: 40),
           failMessage: 'channel 9 never opened');
-      expect(requestedChannel(5), isFalse, reason: 'a channel passed through must not be opened');
+      expect(requestedSince(since, 5), isFalse, reason: 'a channel passed through must not be opened');
     });
 
     testWidgets('with the delay off the picture changes at once', (tester) async {

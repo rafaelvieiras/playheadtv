@@ -2014,6 +2014,15 @@ is on screen. The always-on clock keeps it there with the OSD closed: a setting
 
 ## Channel change: the banner and the delay
 
+The delay commits through `_switchToChannelIndex(..., immediate: true)`: arming a
+second time from the commit restarted the delay against itself, so the switch looped
+for ever and the guide never advanced (found by tracing `_armPendingSwitch`, which
+re-armed its own target in a tight loop). The announcement (`_pendingChannel`) is
+published through `_announceNotifier`, not a plain field: nothing rebuilt the OSD
+when it changed, so a press that armed a switch left the OSD showing the old channel
+until something else happened to rebuild the page.
+
+
 A channel change used to be immediate in the worst possible way: the picture
 went black, a spinner appeared, and the only thing on screen said
 `1001 · Dizzy Channel`. It now takes three steps, and each one exists for a

@@ -1233,6 +1233,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // announced but has no controller yet (that is what makes the OSD usable over
   // the spinner — it reads the guide, not the stream).
   final ValueNotifier<ChannelBannerData?> _bannerNotifier = ValueNotifier<ChannelBannerData?>(null);
+
+  // Bumped whenever what the OSD describes changes without a page rebuild: the
+  // announcement of a channel change (`_pendingChannel`/`_pendingSubject`).
+  final ValueNotifier<int> _announceNotifier = ValueNotifier<int>(0);
   OsdSubject? _pendingSubject;
   Timer? _bannerHideTimer;
   Timer? _bannerHardTimer;
@@ -1435,13 +1439,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // With `load: false` it only tears down (the app went to the background): no
   // watched-record, no schedule fetch, and the page is left idle until
   // `_resumePlayback` switches back to `targetIndex`.
-  Future<void> _switchToChannelIndex(int targetIndex, {bool load = true}) async {
+  Future<void> _switchToChannelIndex(int targetIndex, {bool load = true, bool immediate = false}) async {
     final target = _channels[targetIndex];
     // A channel change with a delay: announce it now, move the picture later.
     // Nothing is torn down and nothing is fetched while the delay runs — that is
     // the debounce, and it is why surfing five channels costs the media server
     // nothing (lib/channel_switch.dart, docs/ARCHITECTURE.md "Channel change").
-    if (load && _switchDelay > Duration.zero && _currentIndex >= 0 && _activePlayback != null) {
+    // [immediate] is the commit of a delay that has already run: arming again
+    // from there would restart the delay for ever (measured: the commit re-armed
+    // its own target in an endless loop and the channel never changed).
+    if (load && !immediate && _switchDelay > Duration.zero && _currentIndex >= 0 && _activePlayback != null) {
       _armPendingSwitch(targetIndex);
       return;
     }
@@ -1713,6 +1720,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _pendingChannel = target;
     _pendingSubject = subject;
     _showBanner(_bannerData(target, subject));
+    // The OSD describes the target from here on (it is what Select shows over
+    // the spinner), and nothing else in the page rebuilds it.
+    _announceNotifier.value++;
     final at = channelSwitchLoadAt(_switchDelay);
     Log.info('player',
         'channel ${target.number} announced; the picture changes in ${_switchDelay.inMilliseconds}ms (load starts in ${at.inMilliseconds}ms)');
@@ -1737,7 +1747,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _switchTimer = null;
     if (!mounted || _pendingSwitchIndex != targetIndex) return;
     _pendingSwitchIndex = null;
-    await _switchToChannelIndex(targetIndex);
+    await _switchToChannelIndex(targetIndex, immediate: true);
   }
 
   void _showBanner(ChannelBannerData data) {
@@ -1816,7 +1826,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         return;
       }
 
-      _currentChannelRules = await channelRulesFuture;
+    _currentChannelRules = await channelRulesFuture;
       if (generation != _loadGeneration) return;
 
       _known = upcoming;
@@ -2029,7 +2039,14 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
   Future<VideoPlayback> _prepareController(VideoPlayback controller, ChannelEntry entry, Duration? seekTo,
       {bool alreadyPositioned = false}) async {
-    await controller.open();
+    // A native open that never resolves leaves the channel on its spinner for
+    // ever — the engine's threads can wedge (fvp/libmdk's raster thread, see
+    // AGENTS.md). Bound it: a stuck open becomes a failed unit, and the load
+    // tries the next one instead of showing a spinner nobody can fix.
+    await controller.open().timeout(channelOpenBound, onTimeout: () {
+      Log.error('player', 'the video engine did not open in ${channelOpenBound.inSeconds}s; abandoning this unit');
+      throw TimeoutException('video open timed out after ${channelOpenBound.inSeconds}s');
+    });
     // `seekTo` is a position within the entry (the "TV turned on" in the
     // middle of a program); the entry itself starts at its item offset, so the
     // later segment of a split item (same file, resumed after the break) is
@@ -4247,6 +4264,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       // key must not repeat any of these actions; the EPG's long-press is
       // measured by a Timer inside the overlay itself, not by KeyRepeatEvent.
       onKeyEvent: (event) {
+
         // Holding a key repeats nothing, except an arrow in the open EPG: there it
         // keeps moving the focus along the grid (see `_epgHoldRepeat`).
         if (event is KeyRepeatEvent && !(_epgOpenNotifier.value && _isEpgArrow(event.logicalKey))) return;
@@ -4559,7 +4577,14 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                   // "the channel is announced while it loads" stays one contract.
                   child: KeyedSubtree(
                     key: hasContent ? null : const Key('loading-osd'),
-                    child: ChannelOsd(
+                    // The announcement (which channel a change targets) is a
+                    // plain field, so nothing rebuilt this subtree when it
+                    // changed: a press that armed a switch left the OSD showing
+                    // the old channel for good. Its own notifier — never a
+                    // setState on the player page.
+                    child: ValueListenableBuilder<int>(
+                      valueListenable: _announceNotifier,
+                      builder: (context, _, _) => ChannelOsd(
                     key: _osdKey,
                     channelNumber: announced?.number ?? 0,
                     channelName: announced?.name ?? '',
@@ -4595,6 +4620,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                       }
                     },
                   ),
+                      ),
                   ),
                 ),
               ),

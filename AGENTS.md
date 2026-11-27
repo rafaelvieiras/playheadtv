@@ -1338,3 +1338,16 @@ device, driven by scripts that end in a file an agent or a human can read.
   has nothing to join through) and the dialog switches between the two targets.
   `POST /schedules/{id}/items` answers with the row a `GET` would, so a client
   never has to re-read to label what it just created.
+
+## Known-flaky suites (read before blaming a change)
+
+- `track_selector_persistence_test` hangs after its live track change: the switch
+  that follows it wedges inside `VideoPlayback.open()` and never returns, and the
+  isolate is busy enough that even a `Future.timeout` cannot fire (measured
+  2026-11-27: `TRACE ctrl open begin` for the target channel, nothing after it;
+  `chapterOpenBound` never fired). The same suite failed on the untouched `HEAD`
+  code minutes later, in the same step, so it is the engine's raster-thread class
+  of AGENTS.md — not the change under test. Re-run on an idle machine before
+  treating it as a regression; the app itself bounds the wait now
+  (`channelOpenBound`, `lib/preload_lead.dart`) so a user sees a failed unit
+  rather than a spinner that never resolves.

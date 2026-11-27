@@ -4,6 +4,15 @@
 // (test/preload_lead_test.dart); main.dart only wires it to the player.
 import 'dart:math' as math;
 
+/// How long a native `open()` may take before the unit is abandoned.
+///
+/// The engine creates its GL resources on a thread of its own, and that thread
+/// can wedge (fvp/libmdk; AGENTS.md has the repro). Without a bound the channel
+/// stays on its spinner for ever, with nothing logged and nothing to press: a
+/// stuck open is turned into a failed unit instead, and the load moves to the
+/// next one.
+const channelOpenBound = Duration(seconds: 20);
+
 /// The configured lead when the user never chose one.
 const defaultPreloadLeadSeconds = 20;
 
