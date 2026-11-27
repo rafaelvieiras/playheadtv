@@ -42,6 +42,8 @@ and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
   behind.
 - Closing the track picker closes the OSD it was opened from and gives the arrow
   keys back to the player.
+- Holding Select no longer opens the guide after it was already opened and closed:
+  the pending hold timer is cancelled the moment the guide or a picker takes over.
 - A video engine that never finishes opening is abandoned after 20 s
   (`channelOpenBound`) and the load moves on, instead of leaving the channel on a
   spinner for ever.

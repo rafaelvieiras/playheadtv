@@ -115,6 +115,11 @@ class AppConfig {
   static Duration? _preloadLead;
   static Duration? _preloadRetryBase;
   static Duration? _channelLoadStallBound;
+  // The delay a channel change waits for when the user never chose one. The app
+  // ships with `defaultChannelSwitchDelaySeconds`; a test boot starts with none,
+  // because every suite written before the delay expects the picture to change
+  // on the key press (`overrideForTest` resets it).
+  static Duration _channelSwitchDelayDefault = Duration(seconds: defaultChannelSwitchDelaySeconds);
   // The config file's settings (lib/config/config_file.dart), read once at
   // boot by loadConfigFile. A packaged install configures itself here; each
   // getter below falls back to it when neither a test override nor a
@@ -288,6 +293,9 @@ class AppConfig {
   /// Only used by `integration_test/` — never called in the real app (`main()`
   /// doesn't call this, so production never sees anything but the
   /// --dart-define values).
+  /// The delay a channel change waits for when the user never chose one.
+  static Duration get channelSwitchDelayDefault => _channelSwitchDelayDefault;
+
   static void overrideForTest({
     required String jellyfinUrl,
     required String jellyfinApiKey,
@@ -303,6 +311,7 @@ class AppConfig {
     Duration? preloadLead,
     Duration? preloadRetryBase,
     Duration? channelLoadStallBound,
+    Duration channelSwitchDelay = Duration.zero,
   }) {
     // Not part of the app's config: the guide's tail cap, shrunk by tests so a
     // tail goes past it within seconds. Every override resets it.
@@ -324,6 +333,7 @@ class AppConfig {
     _preloadLead = preloadLead;
     _preloadRetryBase = preloadRetryBase;
     _channelLoadStallBound = channelLoadStallBound;
+    _channelSwitchDelayDefault = channelSwitchDelay;
     _cacheDir = cacheDir ?? Directory.systemTemp.createTempSync('playheadtv_cache_').path;
   }
 }
@@ -1312,8 +1322,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _settings = await SettingsService.create();
       // Channel change policy (Settings -> Playback): the delay before the picture
       // changes, how long the banner stays once it does, and the corner.
-      _switchDelay = Duration(
-          seconds: _settings.channelSwitchDelaySeconds ?? defaultChannelSwitchDelaySeconds);
+      _switchDelay = _settings.channelSwitchDelaySeconds == null
+          ? AppConfig.channelSwitchDelayDefault
+          : Duration(seconds: _settings.channelSwitchDelaySeconds!);
       _bannerDuration = Duration(seconds: _settings.channelBannerSeconds ?? defaultChannelBannerSeconds);
       _bannerCorner = BannerCorner.fromName(_settings.channelBannerCorner);
       _loudnessOn = _settings.loudnessEnabled ?? _loudnessOn;
@@ -4032,6 +4043,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   }
 
   void _openEpgFromTouch() {
+    // Select is no longer being held: a timer still waiting to open the guide
+    // would open it again right after the viewer closed one.
+    _selectHoldTimer?.cancel();
+    _selectHoldTimer = null;
     _osdHideTimer?.cancel();
     _osdVisibleNotifier.value = false;
     _hideBanner();
@@ -4039,6 +4054,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   }
 
   void _openEpgFromOsd() {
+    // Select is no longer being held: a timer still waiting to open the guide
+    // would open it again right after the viewer closed one.
+    _selectHoldTimer?.cancel();
+    _selectHoldTimer = null;
     _osdHideTimer?.cancel();
     _osdVisibleNotifier.value = false;
     _suppressNextEpgSelectUp = true;
@@ -4272,6 +4291,8 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
         if (_epgOpenNotifier.value) {
           if (action == InputAction.back) {
+            _selectHoldTimer?.cancel();
+            _selectHoldTimer = null;
             if (event is KeyDownEvent) _epgOpenNotifier.value = false;
             return;
           }
@@ -4358,6 +4379,14 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
             _selectHoldTimer?.cancel();
             _selectHoldTimer = Timer(selectHoldToGuide, () {
               if (!mounted) return;
+              // Only if Select still means "open the guide": the overlay may have
+              // come and gone in the meantime (a second Select opened the guide and
+              // Back closed it), and re-opening it here left the guide on screen
+              // after the viewer had dismissed it.
+              if (_osdVisibleNotifier.value || _epgOpenNotifier.value || _trackPickerOpenNotifier.value) {
+                _selectHoldTimer = null;
+                return;
+              }
               _osdHideTimer?.cancel();
               _osdVisibleNotifier.value = false;
               _openEpgFromOsd();

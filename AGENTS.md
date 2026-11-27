@@ -1341,6 +1341,8 @@ device, driven by scripts that end in a file an agent or a human can read.
 
 ## Known-flaky suites (read before blaming a change)
 
+- A test boot has **no channel-switch delay** unless it opts in: `AppConfig.overrideForTest` resets the default to zero and every suite clears the preferences. Suites written before the delay rely on that; the delay suite writes `channel_switch_delay_seconds` itself.
+
 - `track_selector_persistence_test` hangs after its live track change: the switch
   that follows it wedges inside `VideoPlayback.open()` and never returns, and the
   isolate is busy enough that even a `Future.timeout` cannot fire (measured
