@@ -4256,7 +4256,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // is still opening) the OSD describes the *target*, the same thing the
     // banner says; once the picture is up it follows what is really on screen.
     final announced = _pendingChannel ?? (hasContent ? _channels[_channelIndex] : null);
-    final osd = (_pendingChannel != null ? _pendingSubject : null) ?? (hasContent ? _osdSubjectAt(_currentIndex) : null);
+    // What is on screen wins: a load also fills `_pendingChannel` (the target it
+    // is opening), and preferring it here described the channel from the bare
+    // program lookup instead of the guide's attribution — a filler then lost the
+    // program it belongs to and the OSD fell back to the engine's own progress.
+    final osd = hasContent ? _osdSubjectAt(_currentIndex) : _pendingSubject;
     final hasSubject = hasContent || osd != null;
     final showErrorBanner = hasContent && _status.startsWith('ERROR');
     return KeyboardListener(
