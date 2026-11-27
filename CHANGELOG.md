@@ -36,6 +36,15 @@ and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
 - The OSD is usable while a channel loads: it describes the program from the
   guide, so Select over the spinner opens the real OSD instead of a bare
   "number · name" line.
+- A change armed by the delay no longer re-arms itself when it starts loading,
+  which left the banner on the right channel and the picture on the previous one.
+  The OSD also follows the announcement instead of showing the channel left
+  behind.
+- Closing the track picker closes the OSD it was opened from and gives the arrow
+  keys back to the player.
+- A video engine that never finishes opening is abandoned after 20 s
+  (`channelOpenBound`) and the load moves on, instead of leaving the channel on a
+  spinner for ever.
 
 ## [0.5.4] - 2026-11-27 (backend)
 
