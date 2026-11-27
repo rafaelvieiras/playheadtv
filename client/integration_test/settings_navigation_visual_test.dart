@@ -47,6 +47,12 @@ const _settingsRows = [
   'settings-fullscreen-tile',
   'settings-ui-scale-tile',
   'settings-preload-lead-tile',
+  // Channel change: the delay before the picture moves, the banner's lifetime
+  // and its corner (all three are on by default, and this suite clears the
+  // preferences).
+  'settings-switch-delay-tile',
+  'settings-banner-time-tile',
+  'settings-banner-corner-tile',
   'settings-dim-level-tile',
   // The always-on clock's own row is always there; its opacity and size rows
   // only appear once the clock is on, and this suite clears the preferences.
@@ -420,7 +426,15 @@ void main() {
 
       // ---- Debug overlay (player) ------------------------------------------
       await tap(tester, LogicalKeyboardKey.enter); // the featured tile
-      await pumpUntil(tester, () => find.byKey(const Key('mosaic-page')).evaluate().isEmpty && osdVisible(tester), failMessage: 'Select on the featured tile did not enter the player');
+      // The player announces the channel with its banner now; either surface
+      // means "the picture is up".
+      await pumpUntil(
+        tester,
+        () =>
+            find.byKey(const Key('mosaic-page')).evaluate().isEmpty &&
+            (osdVisible(tester) || find.byKey(const Key('channel-banner')).evaluate().isNotEmpty),
+        failMessage: 'Select on the featured tile did not enter the player',
+      );
       await tap(tester, LogicalKeyboardKey.keyD);
       await pumpUntil(tester, () => find.byKey(const Key('debug-overlay')).evaluate().isNotEmpty, failMessage: 'D did not open the debug overlay');
       await tester.pump(const Duration(seconds: 1));

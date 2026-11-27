@@ -126,7 +126,7 @@ void main() {
 
     String detailsTitle(WidgetTester tester) {
       final panel = find.byKey(const Key('epg-details-panel'));
-      return tester.widget<Text>(find.descendant(of: panel, matching: find.byType(Text)).first).data ?? '';
+      return tester.widget<Text>(find.descendant(of: panel, matching: find.byKey(const Key('epg-details-title')))).data ?? '';
     }
 
     testWidgets('shows the time header, the now marker, the playing channel and follows the focused row vertically', (tester) async {

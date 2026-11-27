@@ -426,6 +426,30 @@ are what keeps the claim honest (`docs/ARCHITECTURE.md` "Admin shell").
   changes, cleared on the gap slate and on a channel switch), never `setState`.
   The backend resolves it per entry; the client draws `program.watermark` and
   never decides inherit/disable (`docs/ARCHITECTURE.md` "Watermark").
+- **A channel change is announced by the banner, not by the OSD**
+  (`lib/widgets/channel_banner.dart`, corner and lifetime in Settings): a compact
+  card drawn from the offline cache, so it is right before anything is opened.
+  The OSD stays what Select opens — and it works while a channel loads, because
+  it is described from the guide (`_pendingSubject`), not from a controller. The
+  change itself waits `Channel switch delay` (3 s by default) with the previous
+  picture still on screen; the load starts when the delay ends. Do not try to open
+  the next channel *behind* the old picture: keeping two controllers alive across
+  the switch wedged fvp/libmdk's frame pipeline right after a live
+  `setAudioTracks` (`track_selector_persistence_test` hangs in its own `pump`),
+  paused/unrendered/third-layer alike — see ARCHITECTURE "Channel change". A second press
+  inside the window only moves the target: that is the debounce, and it is why
+  surfing costs the media server nothing.
+- The guide's channel column leads with the logo (fixed 96x48 slot), the number
+  small above the name, and the channel on air carries a tint plus a 4 px accent
+  edge; opening the guide centres it (`_centerRow`, clamped at the ends). The
+  details panel draws the backdrop behind a dark gradient, both logos, and the
+  chips (year, rating, codec, `AAC Stereo`, length, score) over the synopsis,
+  whose box keeps a fixed height on purpose (the panel must not resize as the
+  focus moves).
+- The OSD's progress bar draws `PlaybackState.bufferedUntil` as the segment
+  behind the playhead: a freeze with a full buffer is a decode problem, one at
+  the edge of the buffer is the network. An engine that cannot report a buffer
+  keeps the plain bar.
 - The OSD never describes a filler: for a hidden-kind entry on air it shows the
   program the guide attributes it to, over that program's displayed span
   (`lib/osd_subject.dart`, same `buildGuideCells` rule as the EPG).

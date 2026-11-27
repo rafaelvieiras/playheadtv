@@ -51,6 +51,9 @@ client/lib/widgets/epg_overlay.dart	epg_overlay_test epg_layout_test epg_live_na
 client/lib/epg_thumbnail.dart	epg_thumbnail_setting_test epg_layout_test
 client/lib/widgets/art_image.dart	epg_thumbnail_setting_test channel_logo_clock_test mosaic_test
 client/lib/widgets/channel_logo.dart	channel_logo_clock_test channel_navigation_test mosaic_test
+client/lib/channel_switch.dart	channel_switch_delay_test channel_navigation_test loading_navigation_test settings_navigation_visual_test
+client/lib/widgets/channel_banner.dart	channel_switch_delay_test channel_navigation_test osd_test
+client/lib/widgets/osd_overlay.dart	osd_test osd_elapsed_test osd_filler_test tail_cap_test channel_switch_delay_test dimmer_test
 client/lib/plugin/channel_filter.dart	channel_navigation_test
 
 # --- the screen over the picture ---------------------------------------------

@@ -34,8 +34,10 @@ func newEPGSeed(t *testing.T, db *storage.SQLite) *epgSeed {
 		VALUES ('ms', ?, 'jellyfin', 'ms', 'pull', ?, ?)`, DefaultTenantID, now, now))
 	must(db.Exec(ctx, `INSERT INTO catalog_item (id, tenant_id, media_source_id, external_id, kind, title, series_title, series_external_id,
 		season_number, episode_number, duration_ms, synced_at, image_primary_tag, image_backdrop_tag, image_thumb_tag, series_image_primary_tag,
-		width, height, video_codec, container)
-		VALUES ('ep', ?, 'ms', 'jf-ep', 'episode', 'Pilot', 'Show', 'jf-show', 1, 2, 1800000, ?, 'pt', 'bt', 'tt', 'spt', 320, 240, 'mpeg4', 'avi')`, DefaultTenantID, now))
+		width, height, video_codec, container, audio_codec, audio_channels, bitrate,
+		overview, content_rating, community_rating, genres, production_year)
+		VALUES ('ep', ?, 'ms', 'jf-ep', 'episode', 'Pilot', 'Show', 'jf-show', 1, 2, 1800000, ?, 'pt', 'bt', 'tt', 'spt', 320, 240, 'mpeg4', 'avi',
+		'aac', 2, 128000, 'A pilot episode.', 'PG-13', 7.4, 'Drama,Comedy', 2015)`, DefaultTenantID, now))
 	must(db.Exec(ctx, `INSERT INTO catalog_item (id, tenant_id, media_source_id, external_id, kind, title, duration_ms, synced_at)
 		VALUES ('mov', ?, 'ms', 'jf-mov', 'movie', 'A Movie', 5400000, ?)`, DefaultTenantID, now))
 	for i := 0; i < 3; i++ {
@@ -109,6 +111,17 @@ func TestEPGEnrichedIsAdditive(t *testing.T) {
 	// this?" from.
 	for k, want := range map[string]any{
 		"width": 320.0, "height": 240.0, "video_codec": "mpeg4", "container": "avi",
+		"audio_codec": "aac", "audio_channels": 2.0, "bitrate": 128000.0,
+	} {
+		if e[k] != want {
+			t.Errorf("%s = %v, want %v", k, e[k], want)
+		}
+	}
+	// What the guide needs to write a program's details panel with no second
+	// request: the synopsis, the rating, the item's own year and genres.
+	for k, want := range map[string]any{
+		"overview": "A pilot episode.", "content_rating": "PG-13", "community_rating": 7.4,
+		"genres": "Drama,Comedy", "production_year": 2015.0,
 	} {
 		if e[k] != want {
 			t.Errorf("%s = %v, want %v", k, e[k], want)
@@ -116,7 +129,8 @@ func TestEPGEnrichedIsAdditive(t *testing.T) {
 	}
 	// A movie has no series/art fields at all (omitted, not null).
 	for _, k := range []string{"series_title", "season_number", "image_primary_tag", "series_image_primary_tag",
-		"width", "height", "video_codec", "container"} {
+		"width", "height", "video_codec", "container", "audio_codec", "audio_channels", "bitrate",
+		"overview", "content_rating", "community_rating", "genres", "production_year"} {
 		if _, ok := got[1][k]; ok {
 			t.Errorf("movie entry unexpectedly has %s", k)
 		}

@@ -70,6 +70,12 @@ type CatalogMetadata struct {
 	Container  *string `json:"container"`
 	Bitrate    *int64  `json:"bitrate"` // bits per second
 
+	// The audio side of the same file: the codec's short name and how many
+	// channels it carries. A client shows them as "AAC Stereo"/"AC3 5.1" next to
+	// the video codec; null means the source did not say.
+	AudioCodec    *string `json:"audio_codec"`
+	AudioChannels *int64  `json:"audio_channels"`
+
 	// Image references (Jellyfin image tags). The backend never serves art.
 	ImagePrimaryTag       *string `json:"image_primary_tag"`
 	ImageBackdropTag      *string `json:"image_backdrop_tag"`

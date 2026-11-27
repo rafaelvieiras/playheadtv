@@ -92,8 +92,11 @@ void main() {
       await prefs.setString('last_watched_channel_id', 'nonexistent-channel-fixture-dimmer');
       await configure();
       await tester.pumpWidget(const PlayheadSpikeApp());
-      await pumpUntil(tester, () => osdVisible(tester), failMessage: 'OSD never auto-showed at boot');
-      await pumpUntil(tester, () => !osdVisible(tester), failMessage: 'OSD never auto-hid');
+      // A channel change is announced by the corner banner now, not by the OSD:
+      // wait for the banner (the picture is up) so the next Select is
+      // unambiguously "with the OSD hidden".
+      await pumpUntil(tester, () => find.byKey(const Key('channel-banner')).evaluate().isNotEmpty,
+          failMessage: 'the channel banner never appeared at boot');
       // The audio track button depends on media info loading.
     }
 

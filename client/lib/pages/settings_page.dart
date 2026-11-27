@@ -10,6 +10,7 @@ import 'dart:io' show Platform;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../channel_switch.dart';
 import '../input/input_action.dart';
 import '../main.dart' show AppConfig;
 import '../services/app_window.dart';
@@ -17,6 +18,7 @@ import '../clock.dart';
 import '../dimmer.dart';
 import '../epg_thumbnail.dart';
 import '../preload_lead.dart';
+import '../widgets/channel_banner.dart';
 import '../services/audio_preamp.dart';
 import '../services/loudness_service.dart';
 import '../services/settings_service.dart';
@@ -121,6 +123,36 @@ class _SettingsPageState extends State<SettingsPage> {
     if (settings == null) return;
     final current = settings.preloadLeadSeconds ?? AppConfig.preloadLeadDefaultSeconds;
     unawaited(settings.setPreloadLeadSeconds(nextPreloadLeadChoice(current)).then((_) {
+      if (mounted) setState(() {});
+    }));
+  }
+
+  // Channel change: the delay before the picture changes, how long the banner
+  // stays once it does, and the corner it sits in.
+  void _cycleChannelSwitchDelay() {
+    final settings = _settings;
+    if (settings == null) return;
+    final current = settings.channelSwitchDelaySeconds ?? defaultChannelSwitchDelaySeconds;
+    unawaited(settings.setChannelSwitchDelaySeconds(nextChannelSwitchDelayChoice(current)).then((_) {
+      if (mounted) setState(() {});
+    }));
+  }
+
+  void _cycleChannelBannerSeconds() {
+    final settings = _settings;
+    if (settings == null) return;
+    final current = settings.channelBannerSeconds ?? defaultChannelBannerSeconds;
+    unawaited(settings.setChannelBannerSeconds(nextChannelBannerChoice(current)).then((_) {
+      if (mounted) setState(() {});
+    }));
+  }
+
+  void _cycleChannelBannerCorner() {
+    final settings = _settings;
+    if (settings == null) return;
+    final current = BannerCorner.fromName(settings.channelBannerCorner);
+    final next = BannerCorner.values[(current.index + 1) % BannerCorner.values.length];
+    unawaited(settings.setChannelBannerCorner(next.name).then((_) {
       if (mounted) setState(() {});
     }));
   }
@@ -309,6 +341,39 @@ class _SettingsPageState extends State<SettingsPage> {
                       key: const Key('settings-preload-lead-value'),
                     ),
                     onTap: _cyclePreloadLead,
+                  ),
+                if (_settings != null)
+                  ListTile(
+                    key: const Key('settings-switch-delay-tile'),
+                    leading: const Icon(AppIcons.switchDelay),
+                    title: const Text('Channel switch delay'),
+                    subtitle: Text(
+                      channelSwitchDelayLabel(_settings!.channelSwitchDelaySeconds ?? defaultChannelSwitchDelaySeconds),
+                      key: const Key('settings-switch-delay-value'),
+                    ),
+                    onTap: _cycleChannelSwitchDelay,
+                  ),
+                if (_settings != null)
+                  ListTile(
+                    key: const Key('settings-banner-time-tile'),
+                    leading: const Icon(AppIcons.bannerTime),
+                    title: const Text('Channel banner time'),
+                    subtitle: Text(
+                      channelBannerLabel(_settings!.channelBannerSeconds ?? defaultChannelBannerSeconds),
+                      key: const Key('settings-banner-time-value'),
+                    ),
+                    onTap: _cycleChannelBannerSeconds,
+                  ),
+                if (_settings != null)
+                  ListTile(
+                    key: const Key('settings-banner-corner-tile'),
+                    leading: const Icon(AppIcons.bannerCorner),
+                    title: const Text('Channel banner corner'),
+                    subtitle: Text(
+                      BannerCorner.fromName(_settings!.channelBannerCorner).label,
+                      key: const Key('settings-banner-corner-value'),
+                    ),
+                    onTap: _cycleChannelBannerCorner,
                   ),
                 if (_settings != null)
                   ListTile(

@@ -85,15 +85,15 @@ void main() {
       return tester.widget<AnimatedOpacity>(finder).opacity == 1;
     }
 
+    // A channel change is announced by the corner banner now, not by the OSD:
+    // booting leaves the OSD hidden, and this waits until the picture is up (the
+    // banner appeared) so the tests that follow start from a playing channel.
     Future<void> bootAndHideOsd(WidgetTester tester) async {
       await tester.pumpWidget(const PlayheadSpikeApp());
-      await pumpUntil(tester, () => osdVisible(tester), failMessage: 'OSD never auto-showed at boot');
-      await pumpUntil(
-        tester,
-        () => !osdVisible(tester),
-        timeout: const Duration(seconds: 8),
-        failMessage: 'OSD never hid on its own after the boot auto-show',
-      );
+      await pumpUntil(tester, () => find.byKey(const Key('channel-banner')).evaluate().isNotEmpty,
+          failMessage: 'the channel banner never appeared at boot');
+      await pumpUntil(tester, () => !osdVisible(tester), timeout: const Duration(seconds: 8),
+          failMessage: 'the OSD was up before Select');
     }
 
     testWidgets('OSD shows title, channel line, clock, end time, disabled transport controls and the audio button', (tester) async {

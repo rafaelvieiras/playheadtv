@@ -11,6 +11,44 @@ and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-11-27 (client)
+
+### Added
+
+- A channel change is announced by a compact banner in a corner (channel logo,
+  number, program, synopsis and its span) instead of the full-width OSD, and the
+  change itself waits a configurable delay (3 s by default) with the previous
+  channel still playing, so rapid surf costs the media server nothing and only
+  the channel the viewer stops on is opened. Settings gained `Channel switch
+  delay`, `Channel banner time` and `Channel banner corner`.
+- Holding Select opens the guide directly; a short press still opens the OSD.
+- The guide's channel column leads with the logo, with the number small above
+  the name and the channel on air highlighted, and opening the guide centres the
+  channel on air instead of leaving the list at the top.
+- The guide's details panel shows the item's backdrop, the series and channel
+  logos, the year, the age rating, both codecs, the length, the community score
+  and the synopsis (all of it served by `/epg`, no per-entry request).
+- The OSD's progress bar shows how much of the program is buffered ahead of the
+  playhead.
+
+### Fixed
+
+- The OSD is usable while a channel loads: it describes the program from the
+  guide, so Select over the spinner opens the real OSD instead of a bare
+  "number · name" line.
+
+## [0.5.4] - 2026-11-27 (backend)
+
+### Added
+
+- `GET /epg` carries what a guide needs to describe a program without a second
+  request: `overview`, `content_rating`, `community_rating`, `production_year`,
+  `genres`, `audio_codec`, `audio_channels` and `bitrate`, next to the video
+  shape it already sent. The audio columns are new (migration `0030`) and are
+  filled by the pull sync from the media file's first audio stream; a row synced
+  before this release keeps nulls until its source is synced again. Additive:
+  `APIVersion` does not move and a client that ignores the fields keeps working.
+
 ## [0.5.3] - 2026-11-25 (backend)
 
 ### Added

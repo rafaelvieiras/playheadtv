@@ -31,11 +31,22 @@ class GuideMetrics {
   /// The header above the grid (date label and the time ticks).
   final double headerHeight;
 
+  /// How many lines of synopsis the details panel shows in its compact form.
+  /// The panel sits above the grid, so every line it keeps costs a row of
+  /// programs: a phone has far less height to spare than a television.
+  final int detailsSynopsisLines;
+
+  /// A multiplier for the details panel's own type and padding (a phone draws it
+  /// smaller, for the same reason).
+  final double detailsScale;
+
   const GuideMetrics({
     required this.visibleSpan,
     required this.channelColumnWidth,
     required this.rowHeight,
     required this.headerHeight,
+    this.detailsSynopsisLines = 3,
+    this.detailsScale = 1,
     this.channelName = true,
   });
 
@@ -55,6 +66,8 @@ class GuideMetrics {
     channelColumnWidth: 72,
     rowHeight: 84,
     headerHeight: 44,
+    detailsSynopsisLines: 2,
+    detailsScale: 0.82,
     channelName: false,
   );
 

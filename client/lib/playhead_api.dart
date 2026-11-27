@@ -253,6 +253,22 @@ class EpgEntry {
   final int? width;
   final int? height;
 
+  /// The audio side of the same file: the codec's short name and how many
+  /// channels it carries. Optional like every other enriched field; null means
+  /// the source did not say.
+  final String? audioCodec;
+  final int? audioChannels;
+
+  /// What the guide writes in a program's details panel besides the title: the
+  /// source's own synopsis, its age rating, its year and genres (comma
+  /// separated, as the source wrote them) and the file's bitrate.
+  final String? overview;
+  final String? contentRating;
+  final double? communityRating;
+  final int? productionYear;
+  final String? genres;
+  final int? bitrate;
+
   /// Where in the media item this entry starts playing, in milliseconds (0 for
   /// every entry but the later segments of a split item); it plays for
   /// [endAt] - [startAt] from there. See [splitGroup].
@@ -300,6 +316,14 @@ class EpgEntry {
     this.container,
     this.width,
     this.height,
+    this.audioCodec,
+    this.audioChannels,
+    this.overview,
+    this.contentRating,
+    this.communityRating,
+    this.productionYear,
+    this.genres,
+    this.bitrate,
     this.itemOffsetMs = 0,
     this.splitGroup,
     this.watermark,
@@ -334,6 +358,14 @@ class EpgEntry {
       container: json['container'] as String?,
       width: json['width'] as int?,
       height: json['height'] as int?,
+      audioCodec: json['audio_codec'] as String?,
+      audioChannels: json['audio_channels'] as int?,
+      overview: json['overview'] as String?,
+      contentRating: json['content_rating'] as String?,
+      communityRating: (json['community_rating'] as num?)?.toDouble(),
+      productionYear: json['production_year'] as int?,
+      genres: json['genres'] as String?,
+      bitrate: json['bitrate'] as int?,
       itemOffsetMs: (json['item_offset_ms'] as int?) ?? 0,
       splitGroup: json['split_group'] as String?,
       watermark: EpgWatermark.tryParse(json['watermark']),
@@ -367,6 +399,14 @@ class EpgEntry {
         if (container != null) 'container': container,
         if (width != null) 'width': width,
         if (height != null) 'height': height,
+        if (audioCodec != null) 'audio_codec': audioCodec,
+        if (audioChannels != null) 'audio_channels': audioChannels,
+        if (overview != null) 'overview': overview,
+        if (contentRating != null) 'content_rating': contentRating,
+        if (communityRating != null) 'community_rating': communityRating,
+        if (productionYear != null) 'production_year': productionYear,
+        if (genres != null) 'genres': genres,
+        if (bitrate != null) 'bitrate': bitrate,
         if (itemOffsetMs != 0) 'item_offset_ms': itemOffsetMs,
         if (splitGroup != null) 'split_group': splitGroup,
         if (watermark != null) 'watermark': watermark!.toJson(),
@@ -387,6 +427,30 @@ class EpgEntry {
     final seriesTag = seriesImagePrimaryTag;
     if (series != null && seriesTag != null) return (itemId: series, tag: seriesTag);
     return null;
+  }
+
+  /// The backdrop to draw behind this program's details: the item's own
+  /// backdrop, else (an episode) its series'. Null when the source has none, and
+  /// the panel then keeps the plain dark background.
+  ({String itemId, String tag})? get backdropArt {
+    final ext = externalId;
+    final own = imageBackdropTag;
+    if (ext != null && own != null) return (itemId: ext, tag: own);
+    final series = seriesExternalId;
+    final seriesTag = seriesImagePrimaryTag;
+    if (series != null && seriesTag != null) return (itemId: series, tag: seriesTag);
+    return null;
+  }
+
+  /// The series' logo, when the art the source gave for the series is a logo
+  /// rather than a poster: an episode's own primary art is a still, so the
+  /// details panel shows the series' one. Null for a movie or an item with no
+  /// series art.
+  ({String itemId, String tag})? get seriesArt {
+    final series = seriesExternalId;
+    final tag = seriesImagePrimaryTag;
+    if (series == null || tag == null) return null;
+    return (itemId: series, tag: tag);
   }
 
   /// True once everything needed to play and label this entry is known
@@ -430,6 +494,18 @@ class EpgEntry {
         imageBackdropTag: imageBackdropTag,
         imageThumbTag: imageThumbTag,
         seriesImagePrimaryTag: seriesImagePrimaryTag,
+        videoCodec: videoCodec,
+        container: container,
+        width: width,
+        height: height,
+        audioCodec: audioCodec,
+        audioChannels: audioChannels,
+        overview: overview,
+        contentRating: contentRating,
+        communityRating: communityRating,
+        productionYear: productionYear,
+        genres: genres,
+        bitrate: bitrate,
         itemOffsetMs: itemOffsetMs,
         splitGroup: splitGroup,
         watermark: watermark,
@@ -457,6 +533,18 @@ class EpgEntry {
         imageBackdropTag: imageBackdropTag,
         imageThumbTag: imageThumbTag,
         seriesImagePrimaryTag: seriesImagePrimaryTag,
+        videoCodec: videoCodec,
+        container: container,
+        width: width,
+        height: height,
+        audioCodec: audioCodec,
+        audioChannels: audioChannels,
+        overview: overview,
+        contentRating: contentRating,
+        communityRating: communityRating,
+        productionYear: productionYear,
+        genres: genres,
+        bitrate: bitrate,
         itemOffsetMs: itemOffsetMs,
         splitGroup: splitGroup == null ? null : '$idPrefix$splitGroup',
         watermark: watermark,

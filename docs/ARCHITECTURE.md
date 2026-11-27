@@ -2012,6 +2012,96 @@ is on screen. The always-on clock keeps it there with the OSD closed: a setting
   own clock) and the color is the player's white: the feature exists to keep the
   time visible, not to become a widget editor.
 
+## Channel change: the banner and the delay
+
+A channel change used to be immediate in the worst possible way: the picture
+went black, a spinner appeared, and the only thing on screen said
+`1001 · Dizzy Channel`. It now takes three steps, and each one exists for a
+reason a viewer can feel.
+
+**1. The banner** (`lib/widgets/channel_banner.dart`). Selecting another channel
+puts a compact card in a corner — channel logo, number and name, the program on
+air with its synopsis and its `start–end` span — instead of the full-width OSD.
+It is drawn from the offline cache, so it is right before anything is opened: the
+guide already knows what is on the channel, and the stream is only how it is
+watched. Corner and lifetime are Settings (`Channel banner corner`, `Channel
+banner time`); the default is top-left and 6 s counted from the moment the new
+picture is up, not from the key press, so a slow source does not eat the
+announcement. A hard cap (`bannerHardLifetime`) still removes the card when a
+channel never comes up at all, and the spinner says the rest.
+
+**2. The delay** (`lib/channel_switch.dart`, Settings -> `Channel switch delay`,
+3 s by default, `Off` available). Between the key press and the picture there is
+a window in which the previous channel keeps playing. Nothing is opened, nothing
+is torn down, and a second press simply restarts the window with a new target:
+a viewer surfing five channels in three seconds contacts the media server zero
+times, and the banner walks through the channels while the picture stays on the
+one they were watching.
+
+**3. No head start, and that is deliberate.** The delay hides the *decision*, not
+the load: the real load starts when the delay ends, and the picture of the channel
+being left gives way to the spinner then (the banner keeps announcing the target,
+so what is on screen still says which channel is coming). The obvious improvement
+— open the next channel behind the old picture and swap when it is ready, so the
+change looks instant — was implemented and removed: it kept two controllers alive
+across the switch, and on fvp/libmdk that wedged the frame pipeline in the one
+suite that guards a channel switch right after a live `setAudioTracks` (the test's
+own `pump` never returned). Pausing the outgoing controller, not drawing it, and
+drawing it as a third video layer all stalled the same way. A slow switch is a
+slow switch; a frozen player is a bug. Anyone who wants the head start back has to
+find a way to keep the outgoing controller on its own surface and element (its
+own Stack slot, no detach, no second `VideoSurface`) — and prove it with that
+suite.
+
+**The OSD works while a channel loads.** It used to be a reduced line because
+the OSD needs a program to describe, and `channel` only exists once the load
+finished. It now reads the *guide*: `_pendingSubject` is resolved with the same
+`buildGuideCells`/`osdSubjectFor` pair the guide uses, so Select over the
+spinner shows the real OSD (progress bar on the wall clock, CC/audio buttons
+skipped because there are no tracks yet). Select's own behaviour also changed:
+with the OSD out of the way a short press opens it and a hold (>500 ms) opens the
+guide directly, which is the 6-button path to the guide from a playing channel.
+
+**The banner is not the OSD.** The OSD is what Select opens: it still carries the
+transport row, the CC/audio buttons, the dimmer and the recent channels, and it
+is still what an internal program transition announces (`_showOsd` on a
+crossfade). Only the *automatic* announcement of a channel change moved to the
+corner.
+
+## The guide's channel column and details panel
+
+The channel column identifies a row the way the reference guides do: the logo
+leads (a fixed 96x48 slot, so the text starts at the same x on every row), the
+number sits small above the name, and the channel on air gets a tint plus a
+4 px accent edge on its left. The number never leaves, so the guide stays
+navigable by number, and a channel without a logo simply starts its text where
+the logo would end.
+
+The details panel describes the focused program with what the backend already
+sends on `/epg` (`overview`, `content_rating`, `community_rating`,
+`production_year`, `genres`, `video_codec`, `audio_codec`, `audio_channels`,
+`bitrate`, plus the art tags): the item's backdrop (else its series') behind a
+dark gradient, the series logo on the left and the channel's own logo on the
+right, the title, `start–end · number name · how much is left`, then a row of
+bordered chips (year, rating, `HEVC 720p`, `AAC Stereo`, the length, the
+community score) and the synopsis. The synopsis box reserves a fixed height for
+its three (or six, expanded) lines, so the panel does not resize as the focus
+moves along the guide — and the progress slot is reserved the same way.
+
+Opening the guide centres the channel on air in the list instead of leaving it
+wherever it happens to be: `_centerRow` clamps to the list's own ends, so a
+channel near the top or the bottom shows no empty space.
+
+## The OSD's buffer indicator
+
+`PlaybackState.bufferedUntil` already existed (both engines report it); the OSD's
+progress bar now draws it. The bar is the playhead, the segment behind the played
+part is "already here", and the gap between them is what the network still owes.
+It answers the question a viewer actually asks when a picture stops: a freeze
+with a healthy buffer ahead is a decode/render problem, a freeze at the edge of
+the buffer is the network. An engine that cannot report a buffer draws the old
+plain bar, and a buffer that only covers what has played promises nothing extra.
+
 ## Client boot: what runs before the first frame
 
 The boot is measured, not estimated: `BootTrace` marks each phase and logs

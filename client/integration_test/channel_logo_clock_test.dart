@@ -225,7 +225,10 @@ void main() {
       await tester.pumpWidget(const PlayheadSpikeApp());
       await waitForChannelNumber(tester, withLogo);
 
-      // The boot OSD is up: the OSD's own clock is the one on screen.
+      // Boot announces the channel with the banner; the OSD is opened the way a
+      // viewer opens it (Select).
+      await pressKey(tester, LogicalKeyboardKey.enter);
+      await pumpUntil(tester, () => osdVisible(tester), failMessage: 'Select did not open the OSD');
       expect(osdVisible(tester), isTrue);
       expect(find.byKey(clock), findsNothing, reason: 'two clocks in one corner while the OSD is open');
 

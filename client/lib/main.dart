@@ -41,6 +41,9 @@ import 'log/log.dart';
 import 'log/log_setup.dart';
 import 'update/app_update.dart';
 import 'update/compat.dart';
+import 'channel_switch.dart';
+import 'widgets/channel_banner.dart';
+import 'widgets/channel_logo.dart';
 import 'widgets/unplayable_notice.dart';
 import 'widgets/update_overlay.dart';
 import 'mosaic_layout.dart' show defaultMosaicSafeMargin;
@@ -67,7 +70,7 @@ import 'services/pairing_boot.dart' show BootRoute, ServerUrlResolver, decideBoo
 import 'util/controller_lifecycle.dart';
 import 'util/open_retry.dart';
 import 'epg_guide.dart' as guide show defaultTailAttributionCap, tailAttributionCap;
-import 'epg_guide.dart' show guideContextLookback, isHiddenGuideKind;
+import 'epg_guide.dart' show buildGuideCells, guideContextLookback, isHiddenGuideKind;
 import 'osd_subject.dart';
 import 'playback_promotion.dart';
 import 'playback_stall.dart';
@@ -1207,6 +1210,36 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // already in flight — resolved by _runChannelLoad right after that load
   // finishes (or self-aborts via _loadGeneration). See _switchToChannelIndex.
   int? _pendingChannelSwitchTarget;
+  // ---- Channel change: the banner and the delay -----------------------------
+  //
+  // A channel change does not tear the picture down immediately. The banner
+  // announces the target at once, the stream that was playing keeps playing, and
+  // the real switch happens `_switchDelay` later (Settings; 3 s by default). Its
+  // last seconds are spent loading, and the picture of the channel being left
+  // stays on screen through them (`_holdPlayback`), so the change looks instant
+  // instead of a spinner. A viewer surfing five channels in three seconds
+  // contacts the media server zero times. See docs/ARCHITECTURE.md "Channel
+  // change" and lib/channel_switch.dart for the policy.
+  Duration _switchDelay = const Duration(seconds: defaultChannelSwitchDelaySeconds);
+  Duration _bannerDuration = const Duration(seconds: defaultChannelBannerSeconds);
+  BannerCorner _bannerCorner = BannerCorner.topLeft;
+  // The switch waiting for its delay to elapse (null: none pending).
+  int? _pendingSwitchIndex;
+  // The channel the banner announces (and the OSD describes) while the picture
+  // still belongs to the one being left.
+  PlayheadChannel? _pendingChannel;
+  Timer? _switchTimer;
+  // What the banner says, and the subject the OSD describes while a channel is
+  // announced but has no controller yet (that is what makes the OSD usable over
+  // the spinner — it reads the guide, not the stream).
+  final ValueNotifier<ChannelBannerData?> _bannerNotifier = ValueNotifier<ChannelBannerData?>(null);
+  OsdSubject? _pendingSubject;
+  Timer? _bannerHideTimer;
+  Timer? _bannerHardTimer;
+  // Select's hold (opens the guide directly); a short press keeps opening the
+  // OSD.
+  Timer? _selectHoldTimer;
+
   // The generation of the most recent real load and when it started. A load
   // that outlives AppConfig.channelLoadStallBound is stalled (a source that is
   // slow or stuck opening): a newer switch stops waiting for it, see
@@ -1273,6 +1306,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     BootTrace.mark('player_init');
     try {
       _settings = await SettingsService.create();
+      // Channel change policy (Settings -> Playback): the delay before the picture
+      // changes, how long the banner stays once it does, and the corner.
+      _switchDelay = Duration(
+          seconds: _settings.channelSwitchDelaySeconds ?? defaultChannelSwitchDelaySeconds);
+      _bannerDuration = Duration(seconds: _settings.channelBannerSeconds ?? defaultChannelBannerSeconds);
+      _bannerCorner = BannerCorner.fromName(_settings.channelBannerCorner);
       _loudnessOn = _settings.loudnessEnabled ?? _loudnessOn;
       _loudnessTarget = _settings.loudnessTargetLufs ?? _loudnessTarget;
       _loudnessMaxBoost = _settings.loudnessMaxBoostDb ?? _loudnessMaxBoost;
@@ -1377,7 +1416,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // jump by typed number, see `_switchToChannelIndex`.
   Future<void> _switchChannel(int delta) async {
     if (_channels.length < 2) return;
-    final next = (_channelIndex + delta) % _channels.length;
+    // While a change is announced but its delay has not run out, the next press
+    // walks from the channel the viewer asked for, not from the one still on
+    // screen: five quick presses cross five channels instead of landing on the
+    // same neighbour again.
+    final next = ((_pendingSwitchIndex ?? _channelIndex) + delta) % _channels.length;
     final normalized = next < 0 ? next + _channels.length : next;
     await _switchToChannelIndex(normalized);
   }
@@ -1394,6 +1437,17 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // `_resumePlayback` switches back to `targetIndex`.
   Future<void> _switchToChannelIndex(int targetIndex, {bool load = true}) async {
     final target = _channels[targetIndex];
+    // A channel change with a delay: announce it now, move the picture later.
+    // Nothing is torn down and nothing is fetched while the delay runs — that is
+    // the debounce, and it is why surfing five channels costs the media server
+    // nothing (lib/channel_switch.dart, docs/ARCHITECTURE.md "Channel change").
+    if (load && _switchDelay > Duration.zero && _currentIndex >= 0 && _activePlayback != null) {
+      _armPendingSwitch(targetIndex);
+      return;
+    }
+    _switchTimer?.cancel();
+    _switchTimer = null;
+    _pendingSwitchIndex = null;
     if (load) unawaited(_settings.recordWatched(target.id));
 
     final generation = ++_loadGeneration;
@@ -1442,10 +1496,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // brand new controller before it's done — without the shared queue,
     // that create() could run on fvp/libmdk's raster thread while this
     // dispose() is still freeing GL resources on its dispose thread.
-    final staleA = _controllerA;
-    final staleB = _controllerB;
-    if (staleA != null) unawaited(disposeController(staleA));
-    if (staleB != null) unawaited(disposeController(staleB));
+    final activeSlot = _activePlayback;
+    final otherSlot = _aIsActive ? _controllerB : _controllerA;
+    if (activeSlot != null) unawaited(disposeController(activeSlot));
+    if (otherSlot != null) unawaited(disposeController(otherSlot));
     _osdVisibleNotifier.value = false;
     _watermarkNotifier.value = null;
     setState(() {
@@ -1470,6 +1524,10 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
 
     if (!load) {
       _pendingChannelSwitchTarget = null;
+      _pendingSwitchIndex = null;
+      _switchTimer?.cancel();
+      _switchTimer = null;
+      _hideBanner();
       return;
     }
 
@@ -1611,6 +1669,110 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // AGENTS.md); with the backend down this is the whole flow. `generation`
   // is checked before every `setState` that follows an `await`, so it
   // doesn't trample a channel that was switched again in the meantime.
+  // ---------------------------------------------------------------------------
+  // Channel change: the delay and the banner.
+  // ---------------------------------------------------------------------------
+
+  /// The picture the viewer is watching right now, if any (the active slot).
+  VideoPlayback? get _activePlayback => _aIsActive ? _controllerA : _controllerB;
+
+  /// What the guide says is on air on [channelId] at [now], read from the
+  /// offline cache: enough to announce a channel before its stream is open.
+  OsdSubject? _programOnAir(String channelId, DateTime now) {
+    final raw = _cache.entries(channelId, now.subtract(guideContextLookback), now.add(const Duration(hours: 6)));
+    if (raw.isEmpty) return null;
+    for (final cell in buildGuideCells(raw)) {
+      if (!cell.displayStart.isAfter(now) && cell.displayEnd.isAfter(now)) {
+        return osdSubjectFor(raw, cell.entry, now: now);
+      }
+    }
+    return null;
+  }
+
+  String? _bannerLogoUrl(PlayheadChannel channel) => channelLogoUrl(channel) ?? channel.guideArtUrl;
+
+  /// The banner's contents for [channel], described by [subject] when the guide
+  /// knows what is on air.
+  ChannelBannerData _bannerData(PlayheadChannel channel, OsdSubject? subject) => ChannelBannerData(
+        number: channel.number,
+        name: channel.name,
+        logoUrl: _bannerLogoUrl(channel),
+        programTitle: subject?.program.displayTitle,
+        description: subject?.program.overview,
+        startAt: subject?.start,
+        endAt: subject?.end,
+      );
+
+  /// Announces [targetIndex] and arms the switch that actually changes the
+  /// picture, [Duration]s from now.
+  void _armPendingSwitch(int targetIndex) {
+    final target = _channels[targetIndex];
+    final subject = _programOnAir(target.id, DateTime.now().toUtc());
+    _switchTimer?.cancel();
+    _pendingSwitchIndex = targetIndex;
+    _pendingChannel = target;
+    _pendingSubject = subject;
+    _showBanner(_bannerData(target, subject));
+    final at = channelSwitchLoadAt(_switchDelay);
+    Log.info('player',
+        'channel ${target.number} announced; the picture changes in ${_switchDelay.inMilliseconds}ms (load starts in ${at.inMilliseconds}ms)');
+    if (at <= Duration.zero) {
+      unawaited(_commitPendingSwitch(targetIndex));
+      return;
+    }
+    _switchTimer = Timer(at, () => unawaited(_commitPendingSwitch(targetIndex)));
+  }
+
+  /// The delay is over: the load starts now, and the picture of the channel being
+  /// left gives way to the spinner (the banner keeps announcing the target).
+  ///
+  /// Loading *behind* the old picture — the obvious next step, and the one that
+  /// would make the change look instant — was implemented and removed: keeping
+  /// the outgoing controller alive while the incoming one initialized wedged the
+  /// frame pipeline of fvp/libmdk in the one suite that guards a switch right
+  /// after a live `setAudioTracks` (its own `pump` never returned; paused,
+  /// unrendered or drawn as a third layer, all three variants stalled). A slow
+  /// switch is a slow switch; a frozen player is a bug.
+  Future<void> _commitPendingSwitch(int targetIndex) async {
+    _switchTimer = null;
+    if (!mounted || _pendingSwitchIndex != targetIndex) return;
+    _pendingSwitchIndex = null;
+    await _switchToChannelIndex(targetIndex);
+  }
+
+  void _showBanner(ChannelBannerData data) {
+    _bannerHideTimer?.cancel();
+    _bannerHardTimer?.cancel();
+    _bannerNotifier.value = data;
+    // A channel that never comes up still loses the banner, and the spinner says
+    // the rest; without this a stuck source would leave the card up forever.
+    _bannerHardTimer = Timer(bannerHardLifetime(_switchDelay, _bannerDuration), _hideBanner);
+  }
+
+  /// The picture is up: the banner goes away [Duration] from now (Settings ->
+  /// Channel banner time), instead of staying until the hard cap.
+  void _armBannerHide() {
+    _bannerHideTimer?.cancel();
+    _bannerHideTimer = Timer(_bannerDuration, _hideBanner);
+  }
+
+  void _hideBanner() {
+    _bannerHideTimer?.cancel();
+    _bannerHideTimer = null;
+    _bannerHardTimer?.cancel();
+    _bannerHardTimer = null;
+    if (_bannerNotifier.value != null) _bannerNotifier.value = null;
+  }
+
+  /// The new channel is on screen: clean up what only existed for the change.
+  void _announceChannel() {
+    _pendingSubject = null;
+    _pendingChannel = null;
+    final channelOnAir = _channels[_channelIndex];
+    _showBanner(_bannerData(channelOnAir, _osdSubjectAt(_currentIndex)));
+    _armBannerHide();
+  }
+
   Future<void> _loadAndPlayChannel(PlayheadChannel target, {required int generation}) async {
     _loadClock
       ..reset()
@@ -1618,6 +1780,12 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     Log.info('player', 'channel load started: channel ${target.number} (generation $generation)');
     try {
       final now = DateTime.now().toUtc();
+      // What the OSD describes while this channel's stream is still opening, and
+      // what the banner already announced: the guide's program, resolved before
+      // any network work, so Select over the spinner opens the real OSD. Cleared
+      // by _announceChannel once the picture is up.
+      _pendingChannel = target;
+      _pendingSubject = _programOnAir(target.id, now);
       // Kicked off in parallel with the work below (never awaited until just
       // before it's needed) so resolving tier 3 (channel admin) rules never
       // adds latency to the channel-load path. _createController itself never
@@ -1999,7 +2167,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _status = 'playing: ${entry.label}';
     });
     _syncWatermark();
-    _showOsd();
+    // A channel change is announced by the corner banner, not by the full-width
+    // OSD: the OSD is what Select opens (and it works while the channel loads).
+    _announceChannel();
     // If we joined in the middle of the program (initialSeek > 0), only
     // clipDuration - initialSeek of real playback remains — scheduling by the
     // full clipDuration would leave the video parked on the last frame for
@@ -3638,7 +3808,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       return;
     }
     setState(() => _channelInputBuffer = null);
-    if (index == _channelIndex) return;
+    if (index == (_pendingSwitchIndex ?? _channelIndex)) return;
     unawaited(_switchToChannelIndex(index));
   }
 
@@ -3820,6 +3990,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
       _osdHideTimer?.cancel();
       _osdVisibleNotifier.value = false;
     } else {
+      // The banner is the announcement of the change; the OSD replaces it on the
+      // screen, the same way Select does.
+      _hideBanner();
       _showOsd();
     }
   }
@@ -3830,6 +4003,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   void _openEpgFromTouch() {
     _osdHideTimer?.cancel();
     _osdVisibleNotifier.value = false;
+    _hideBanner();
     _epgOpenNotifier.value = true;
   }
 
@@ -3952,6 +4126,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _preloadTimer?.cancel();
     _channelInputCommitTimer?.cancel();
     _stallReleaseTimer?.cancel();
+    _switchTimer?.cancel();
+    _bannerHideTimer?.cancel();
+    _bannerHardTimer?.cancel();
+    _selectHoldTimer?.cancel();
+    _bannerNotifier.dispose();
     unawaited(_cacheSub?.cancel());
     if (_streamPrefsReady) _streamPrefs.dispose();
     // State.dispose() itself can't await, but still routes through the
@@ -4019,7 +4198,16 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     // switching channel) the only visible feedback is the plain debug text —
     // the real OSD needs a valid `channel`/`_currentIndex`.
     final hasContent = channel.isNotEmpty && _currentIndex >= 0 && _currentIndex < channel.length;
-    final osd = hasContent ? _osdSubjectAt(_currentIndex) : null;
+    // A channel that is announced but not playing yet (the delay is running, or
+    // its stream is still opening) is described from the guide: that is what
+    // makes the real OSD usable over the spinner instead of the "number · name"
+    // line it used to show.
+    // While a change is announced (the delay is running, or the target's stream
+    // is still opening) the OSD describes the *target*, the same thing the
+    // banner says; once the picture is up it follows what is really on screen.
+    final announced = _pendingChannel ?? (hasContent ? _channels[_channelIndex] : null);
+    final osd = (_pendingChannel != null ? _pendingSubject : null) ?? (hasContent ? _osdSubjectAt(_currentIndex) : null);
+    final hasSubject = hasContent || osd != null;
     final showErrorBanner = hasContent && _status.startsWith('ERROR');
     return KeyboardListener(
       focusNode: _focusNode,
@@ -4118,6 +4306,37 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                 ? _dimSelectDown
                 : _osdVisibleNotifier.value && _osdFocusNotifier.value && (_osdKey.currentState?.dimmerFocused ?? false))) {
           _onDimmerSelect(event);
+          return;
+        }
+        // Select with the OSD out of the way: the press opens it, as it always
+        // did, and holding it (>[selectHoldToGuide]) opens the guide instead —
+        // the 6-button path to the guide from a playing channel. The OSD is shown
+        // on the press and not on the release on purpose: a release that never
+        // arrives (a lost key event, a remote that only sends the down) must not
+        // make Select do nothing.
+        if (action == InputAction.select &&
+            !_osdFocusNotifier.value &&
+            !_osdVisibleNotifier.value &&
+            !_epgOpenNotifier.value &&
+            !_trackPickerOpenNotifier.value) {
+          if (event is KeyDownEvent) {
+            _hideBanner();
+            _showOsd();
+            _osdArmed = true;
+            _selectHoldTimer?.cancel();
+            _selectHoldTimer = Timer(selectHoldToGuide, () {
+              if (!mounted) return;
+              _osdHideTimer?.cancel();
+              _osdVisibleNotifier.value = false;
+              _openEpgFromOsd();
+            });
+            return;
+          }
+          if (event is KeyUpEvent) {
+            _selectHoldTimer?.cancel();
+            _selectHoldTimer = null;
+            return;
+          }
           return;
         }
         if (event is! KeyDownEvent) return;
@@ -4281,37 +4500,6 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                   ),
                 ),
               ),
-            // The OSD over the spinner: Select shows it, another Select opens the
-            // EPG, so a channel that is slow to load never blocks navigation.
-            // Same ValueNotifier pattern as the real OSD (no setState).
-            if (!hasContent && !_status.startsWith('ERROR') && !_status.startsWith('HOLD'))
-              Positioned.fill(
-                child: ValueListenableBuilder<bool>(
-                  valueListenable: _osdVisibleNotifier,
-                  builder: (context, visible, _) {
-                    if (!visible || _channels.isEmpty) return const SizedBox.shrink();
-                    final c = _channels[_channelIndex];
-                    return IgnorePointer(
-                      child: Align(
-                        alignment: Alignment.bottomLeft,
-                        child: Container(
-                          key: const Key('loading-osd'),
-                          margin: EdgeInsets.all(context.ui(48)),
-                          padding: EdgeInsets.symmetric(horizontal: context.ui(24), vertical: context.ui(14)),
-                          decoration: BoxDecoration(
-                            color: Colors.black.withValues(alpha: 0.78),
-                            borderRadius: BorderRadius.circular(context.ui(8)),
-                          ),
-                          child: Text(
-                            '${c.number} · ${c.name}',
-                            style: TextStyle(color: Colors.white, fontSize: context.ui(28), fontWeight: FontWeight.bold),
-                          ),
-                        ),
-                      ),
-                    );
-                  },
-                ),
-              ),
             if (!hasContent && (_status.startsWith('ERROR') || _status.startsWith('HOLD')))
               Positioned(
                 left: 16,
@@ -4331,7 +4519,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                   ),
                 ),
               ),
-            if (hasContent)
+            if (hasSubject)
               // Full-screen so the clock (top-right) and the bar (bottom) share
               // one fade. ValueListenableBuilder (not an AnimatedOpacity
               // reading a State bool directly): showing/hiding the OSD must
@@ -4352,21 +4540,29 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                       child: child,
                     ),
                   ),
-                  child: ChannelOsd(
+                  // While the channel has no picture the OSD is the one drawn
+                  // over the spinner: it keeps the `loading-osd` key it had, so
+                  // "the channel is announced while it loads" stays one contract.
+                  child: KeyedSubtree(
+                    key: hasContent ? null : const Key('loading-osd'),
+                    child: ChannelOsd(
                     key: _osdKey,
-                    channelNumber: _channels[_channelIndex].number,
-                    channelName: _channels[_channelIndex].name,
-                    channelArtUrl: _channels[_channelIndex].guideArtUrl,
-                    channelLogoImageId: _channels[_channelIndex].logoImageId,
-                    itemLabel: osd?.program.displayTitle ?? channel[_currentIndex].programLabel,
+                    channelNumber: announced?.number ?? 0,
+                    channelName: announced?.name ?? '',
+                    channelArtUrl: announced?.guideArtUrl,
+                    channelLogoImageId: announced?.logoImageId,
+                    itemLabel: osd?.program.displayTitle ??
+                        (hasContent ? channel[_currentIndex].programLabel : ''),
                     nextItemLabel: osd?.next?.displayTitle,
-                    startAt: osd?.start ?? channel[_currentIndex].programStartAt,
-                    endAt: osd?.end ?? channel[_currentIndex].programEndAt,
+                    startAt: osd?.start ?? (hasContent ? channel[_currentIndex].programStartAt : DateTime.now()),
+                    endAt: osd?.end ?? (hasContent ? channel[_currentIndex].programEndAt : DateTime.now()),
                     progressByClock: osd != null,
-                    resolveSubject: () => _osdSubjectAt(_currentIndex),
+                    resolveSubject: hasContent ? () => _osdSubjectAt(_currentIndex) : () => _pendingSubject,
                     playhead: _picturePlayhead,
                     positionOffset: () => _playbackOffset,
-                    controller: _aIsActive ? _controllerA : _controllerB,
+                    // No controller while the channel has no picture: the OSD
+                    // still draws (the track buttons are skipped, `MediaTracks.none`).
+                    controller: hasContent ? (_aIsActive ? _controllerA : _controllerB) : null,
                     focusMode: _osdFocusNotifier,
                     onOpenSubtitles: () => _openTrackPicker(TrackSelectorPanel.subtitle, singlePanel: true),
                     onOpenAudio: () => _openTrackPicker(TrackSelectorPanel.audio, singlePanel: true),
@@ -4385,8 +4581,25 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                       }
                     },
                   ),
+                  ),
                 ),
               ),
+            // The channel banner: the automatic announcement of a channel change
+            // (and of a channel whose stream is still opening), in a corner, in
+            // place of the full-width OSD. Pointer-transparent and never
+            // focusable; shown/hidden through its own notifier, never setState.
+            Positioned.fill(
+              child: ValueListenableBuilder<ChannelBannerData?>(
+                valueListenable: _bannerNotifier,
+                builder: (context, data, _) => data == null
+                    ? const SizedBox.shrink()
+                    : ChannelBanner(
+                        key: const Key('channel-banner'),
+                        data: data,
+                        corner: _bannerCorner,
+                      ),
+              ),
+            ),
             if (showErrorBanner)
               Positioned(
                 left: 16,

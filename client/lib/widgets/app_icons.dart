@@ -33,4 +33,7 @@ abstract final class AppIcons {
   static const IconData plugin = Symbols.extension;
   static const IconData pluginOff = Symbols.extension_off;
   static const IconData pluginMissing = Symbols.extension_off;
+  static const IconData switchDelay = Symbols.timer;
+  static const IconData bannerCorner = Symbols.label;
+  static const IconData bannerTime = Symbols.schedule;
 }

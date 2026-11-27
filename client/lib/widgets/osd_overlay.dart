@@ -475,6 +475,21 @@ class ChannelOsdState extends State<ChannelOsd> {
     }
     final progress =
         duration.inMilliseconds > 0 ? (position.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0) : 0.0;
+    // How much of the program is already on disk/in the engine's buffer, drawn
+    // from the playhead to the furthest buffered instant: a picture that stops
+    // with a healthy buffer is a decode/render problem, one that stops at the
+    // edge of the buffer is the network — that is the difference the bar makes
+    // visible. `bufferedUntil` is on the engine's own timeline; what matters is
+    // how far ahead of the playhead it is, which needs no offset.
+    final engineState = widget.controller?.state;
+    final enginePosition = engineState?.position ?? Duration.zero;
+    final engineBuffered = engineState?.bufferedUntil;
+    final bufferedAhead =
+        (engineBuffered != null && engineBuffered > enginePosition) ? engineBuffered - enginePosition : Duration.zero;
+    final bufferedUntil = position + bufferedAhead;
+    final bufferedFraction = duration.inMilliseconds > 0
+        ? (bufferedUntil.inMilliseconds / duration.inMilliseconds).clamp(0.0, 1.0)
+        : 0.0;
     final rows = _rows();
     bool has(String i) => rows.any((r) => r.contains(i));
 
@@ -599,12 +614,36 @@ class ChannelOsdState extends State<ChannelOsd> {
                     Expanded(
                       child: ClipRRect(
                         borderRadius: BorderRadius.circular(_u(_m.progressRadius)),
-                        child: LinearProgressIndicator(
-                          key: const Key('osd-progress'),
-                          value: progress,
-                          minHeight: _u(_m.progressHeight),
-                          backgroundColor: Colors.white24,
-                          valueColor: const AlwaysStoppedAnimation<Color>(Colors.lightBlueAccent),
+                        child: SizedBox(
+                          height: _u(_m.progressHeight),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              const ColoredBox(color: Colors.white24),
+                              // What is buffered: the track from the start of the
+                              // program up to the buffer's edge, under the played
+                              // portion, so the gap between the two reads as "this
+                              // much is ready ahead".
+                              Align(
+                                alignment: Alignment.centerLeft,
+                                child: FractionallySizedBox(
+                                  widthFactor: bufferedFraction,
+                                  heightFactor: 1,
+                                  child: const ColoredBox(
+                                    key: Key('osd-buffered'),
+                                    color: Colors.white30,
+                                  ),
+                                ),
+                              ),
+                              LinearProgressIndicator(
+                                key: const Key('osd-progress'),
+                                value: progress,
+                                minHeight: _u(_m.progressHeight),
+                                backgroundColor: Colors.transparent,
+                                valueColor: const AlwaysStoppedAnimation<Color>(Colors.lightBlueAccent),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),

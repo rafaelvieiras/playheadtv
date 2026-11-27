@@ -57,6 +57,19 @@ type epgItem struct {
 	Height     *int64  `json:"height,omitempty"`
 	VideoCodec *string `json:"video_codec,omitempty"` // ffprobe's name: h264, hevc, mpeg4, ...
 	Container  *string `json:"container,omitempty"`
+	// What the guide shows about the item itself, so a client needs no second
+	// request to write a program's details panel: the synopsis the source
+	// stored, its age rating, its own year and genres, and the audio side of
+	// the same file ("AAC Stereo"). All optional, all omitted when the source
+	// did not provide them.
+	Overview        *string  `json:"overview,omitempty"`
+	ContentRating   *string  `json:"content_rating,omitempty"`
+	CommunityRating *float64 `json:"community_rating,omitempty"`
+	ProductionYear  *int64   `json:"production_year,omitempty"`
+	Genres          *string  `json:"genres,omitempty"` // comma-separated, as the source wrote them
+	AudioCodec      *string  `json:"audio_codec,omitempty"`
+	AudioChannels   *int64   `json:"audio_channels,omitempty"`
+	Bitrate         *int64   `json:"bitrate,omitempty"` // bits per second
 	// Watermark is the resolved watermark of the entry (see
 	// watermark_resolve.go); omitted when none applies, which is also all an
 	// older backend sends.
@@ -83,6 +96,7 @@ type epgTailClip struct {
 	Height     *int64  `json:"height,omitempty"`
 	VideoCodec *string `json:"video_codec,omitempty"`
 	Container  *string `json:"container,omitempty"`
+	AudioCodec *string `json:"audio_codec,omitempty"`
 	// Requires lists the plugins this clip needs, same meaning as on epgItem.
 	Requires []pluginRequirement `json:"requires,omitempty"`
 }
@@ -113,13 +127,15 @@ type epgTailGroup struct {
 }
 
 type catalogBrief struct {
-	ID            string
-	MediaSourceID string
-	ExternalID    string
-	ItemKind      string
-	Title         string
-	SeriesTitle   *string
-	DurationMs    int64
+	ID             string
+	MediaSourceID  string
+	ExternalID     string
+	ItemKind       string
+	Title          string
+	SeriesTitle    *string
+	DurationMs     int64
+	Genres         *string
+	ProductionYear *int64
 	// Set only when the item's source is a plugin-backed one: what a client
 	// needs to know before it can play the entry (docs/PLUGINS.md
 	// "Requirements in the guide").
@@ -144,6 +160,16 @@ type pluginRequirement struct {
 	Config json.RawMessage `json:"config,omitempty"`
 }
 
+// blankToNil drops an empty string from an optional field: the columns behind
+// these are NOT NULL with an empty default, and "" means "the source did not
+// say" just as a null does, so it must not reach the payload as a value.
+func blankToNil(s *string) *string {
+	if s == nil || *s == "" {
+		return nil
+	}
+	return s
+}
+
 // catalogLookupChunk bounds the number of ids in one IN (...) list.
 const catalogLookupChunk = 400
 
@@ -163,6 +189,8 @@ func loadCatalogBriefs(ctx context.Context, db storage.DB, ids []string) (map[st
 				" ci.duration_ms, ci.season_number, ci.episode_number, ci.episode_number_end, ci.series_external_id,"+
 				" ci.image_primary_tag, ci.image_backdrop_tag, ci.image_thumb_tag, ci.series_image_primary_tag,"+
 				" ci.width, ci.height, ci.video_codec, ci.container,"+
+				" ci.audio_codec, ci.audio_channels, ci.bitrate,"+
+				" ci.overview, ci.content_rating, ci.community_rating, ci.genres, ci.production_year,"+
 				" ms.plugin_id, ms.plugin_min_version, ms.plugin_config_json AS plugin_config"+
 				" FROM catalog_item ci LEFT JOIN media_source ms ON ms.id = ci.media_source_id"+
 				" WHERE ci.tenant_id = ? AND ci.id IN ("+strings.TrimSuffix(strings.Repeat("?,", len(chunk)), ",")+")",
@@ -323,6 +351,7 @@ func buildEPGView(ctx context.Context, db storage.DB, entries []domain.EpgEntry,
 				clip.Height = b.Height
 				clip.VideoCodec = b.VideoCodec
 				clip.Container = b.Container
+				clip.AudioCodec = blankToNil(b.AudioCodec)
 				clip.Requires = requirementFor(b)
 			}
 			if group == nil {
@@ -358,6 +387,14 @@ func buildEPGView(ctx context.Context, db storage.DB, entries []domain.EpgEntry,
 			item.Height = b.Height
 			item.VideoCodec = b.VideoCodec
 			item.Container = b.Container
+			item.AudioCodec = blankToNil(b.AudioCodec)
+			item.AudioChannels = b.AudioChannels
+			item.Bitrate = b.Bitrate
+			item.Overview = blankToNil(b.Overview)
+			item.ContentRating = blankToNil(b.ContentRating)
+			item.CommunityRating = b.CommunityRating
+			item.ProductionYear = b.ProductionYear
+			item.Genres = blankToNil(b.Genres)
 			item.Requires = requirementFor(b)
 		}
 		out = append(out, item)

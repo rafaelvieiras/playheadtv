@@ -52,7 +52,6 @@ import '../services/perf_trace.dart';
 import '../ui/form_factor.dart';
 import '../ui/guide_metrics.dart';
 import '../ui/ui_scale.dart';
-import 'app_icons.dart';
 import 'art_image.dart';
 import 'channel_logo.dart';
 
@@ -367,7 +366,11 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
         _settleHorizontally();
       });
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        _ensureRowVisible(animate: false);
+        // Opening the guide scrolls the channel on air to the middle of the
+        // list, so a viewer lands on what they were watching instead of at the
+        // top of fifty channels. Near either end the target is clamped: the list
+        // ends where it ends, and centring there would only show empty space.
+        _centerRow(animate: false);
         PerfTrace.end();
         _growTitles();
       });
@@ -443,6 +446,22 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
     _hOffsetMinutes = h.clamp(0.0, maxOffset);
     final visibleLeft = _windowStart.add(Duration(milliseconds: (_hOffsetMinutes * 60000).round()));
     _anchor = entry.displayStart.isAfter(visibleLeft) ? entry.displayStart : visibleLeft;
+  }
+
+  // Puts the focused (at open, the playing) row in the middle of the viewport,
+  // clamped to the list's own ends. Called once per open, not on every move.
+  void _centerRow({bool animate = false}) {
+    if (!_verticalController.hasClients || _rowsViewportHeight <= 0) return;
+    final rowH = _u(_m.rowHeight);
+    final target = (_focusedRow * rowH + rowH / 2 - _rowsViewportHeight / 2)
+        .clamp(0.0, _verticalController.position.maxScrollExtent);
+    final offset = _verticalController.offset;
+    if ((target - offset).abs() < 0.5) return;
+    if (animate) {
+      unawaited(_verticalController.animateTo(target, duration: _scrollAnimation, curve: Curves.easeOut));
+    } else {
+      _verticalController.jumpTo(target);
+    }
   }
 
   void _ensureRowVisible({bool animate = true}) {
@@ -702,27 +721,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
           children: [
             SizedBox(
               width: _u(_m.channelColumnWidth),
-              child: Padding(
-                padding: EdgeInsets.only(right: _u(8)),
-                child: Row(
-                  children: [
-                    SizedBox(
-                      width: _u(28),
-                      child: playing
-                          ? Icon(
-                              AppIcons.play,
-                              key: Key('epg-playing-${channelObj.id}'),
-                              color: Colors.white,
-                              size: _u(22),
-                            )
-                          : null,
-                    ),
-                    Expanded(
-                      child: _channelLabel(channelObj, highlighted: focusedRow || playing),
-                    ),
-                  ],
-                ),
-              ),
+              child: _channelCell(channelObj, focused: focusedRow, playing: playing),
             ),
             Expanded(child: canvas!),
           ],
@@ -731,18 +730,47 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
     );
   }
 
-  /// The channel column label: a small number, then the logo when the channel
-  /// has one, then the name clipped to whatever room is left (`number [logo]
-  /// name`, see docs/ARCHITECTURE.md "Channel logo"). The number stays either
-  /// way, so the guide is still navigable by number and the row keeps reading as
-  /// the same channel. The number is deliberately smaller than the name: it is
-  /// the row's address, not its identity, and shrinking it buys the logo the
-  /// height it needs to be recognisable.
+  /// One channel's cell in the pinned column: the logo on the left, the number
+  /// small above the name on the right, and a tint plus an accent edge when it
+  /// is the channel on air. The layout is the guide's own (see
+  /// docs/ARCHITECTURE.md "Guide display"): the logo is what identifies a
+  /// channel at a glance, so it leads, and the number stays visible above the
+  /// name for a viewer who navigates by number.
+  Widget _channelCell(PlayheadChannel channel, {required bool focused, required bool playing}) {
+    final tint = playing
+        ? Colors.white.withValues(alpha: 0.10)
+        : focused
+            ? Colors.white.withValues(alpha: 0.06)
+            : Colors.transparent;
+    return Container(
+      // Keyed only on the channel on air: a test (and a reader of the tree)
+      // asks "which row is playing?", and an absent key is the answer "not this
+      // one".
+      key: playing ? Key('epg-playing-${channel.id}') : null,
+      decoration: BoxDecoration(
+        color: tint,
+        border: Border(
+          left: BorderSide(color: playing ? _accent : Colors.transparent, width: _u(4)),
+        ),
+      ),
+      padding: EdgeInsets.only(left: _u(8), right: _u(8)),
+      alignment: Alignment.centerLeft,
+      child: _channelLabel(channel, highlighted: focused || playing),
+    );
+  }
+
+  static const _accent = Color(0xFF4FC3F7);
+
+  /// The channel's identity: `[logo] number/name`, or the number alone when the
+  /// family's column has no room for a name (a phone). The number never moves
+  /// and the logo never replaces it, so the guide stays navigable by number and
+  /// a row keeps reading as the same channel with or without an upload.
   Widget _channelLabel(PlayheadChannel channel, {required bool highlighted}) {
     final numberStyle = TextStyle(
-      color: highlighted ? Colors.white70 : Colors.white38,
-      fontSize: _u(13),
-      fontWeight: FontWeight.w600,
+      color: highlighted ? Colors.white : Colors.white38,
+      fontSize: _u(_m.channelName ? 13 : 16),
+      fontWeight: FontWeight.w700,
+      letterSpacing: 0.5,
       fontFeatures: const [FontFeature.tabularFigures()],
     );
     final style = TextStyle(
@@ -750,7 +778,6 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
       fontSize: _u(15),
       fontWeight: FontWeight.bold,
     );
-    final name = Text(channel.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: style);
     final number = Text(
       '${channel.number}',
       key: Key('epg-channel-number-${channel.id}'),
@@ -759,13 +786,13 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
     );
     final logoUrl = channelLogoUrl(channel);
     if (!_m.channelName) {
-      // A phone's column is 72 px: the number identifies the row, and the logo
+      // A phone's column is 72 px: the number identifies the row and the logo
       // stands where the name would be. A clipped two-letter name reads worse
       // than no name at all.
       return Row(
         key: Key('epg-channel-name-${channel.id}'),
         children: [
-          Text('${channel.number}', style: style),
+          number,
           if (logoUrl != null) ...[
             SizedBox(width: _u(6)),
             Flexible(
@@ -784,39 +811,35 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
         ],
       );
     }
-    if (logoUrl == null) {
-      return Row(
-        key: Key('epg-channel-name-${channel.id}'),
-        children: [
-          SizedBox(width: _u(30), child: number),
-          SizedBox(width: _u(6)),
-          Expanded(child: name),
-        ],
-      );
-    }
+    final name = Text(channel.name, maxLines: 2, overflow: TextOverflow.ellipsis, style: style);
     return Row(
       key: Key('epg-channel-name-${channel.id}'),
       children: [
-        SizedBox(width: _u(30), child: number),
-        SizedBox(width: _u(6)),
-        // A fixed slot, not a box that shrinks to the image: a square logo and
-        // a wide one then take the same room, so the name starts at the same x
-        // on every row and the column reads as a column. The logo is centred
-        // inside the slot and keeps its own aspect ratio (`BoxFit.contain`).
-        SizedBox(
-          width: _u(92),
-          height: _u(44),
-          child: Center(
-            child: ChannelLogo(
-              logoUrl,
-              height: _u(44),
-              imageKey: Key('epg-channel-logo-${channel.id}'),
-              fallback: (_) => const SizedBox.shrink(),
+        if (logoUrl != null) ...[
+          // A fixed slot, not a box that shrinks to the image: a square logo and
+          // a wide one then take the same room, so the number and the name start
+          // at the same x on every row and the column reads as a column.
+          SizedBox(
+            width: _u(96),
+            height: _u(48),
+            child: Center(
+              child: ChannelLogo(
+                logoUrl,
+                height: _u(44),
+                imageKey: Key('epg-channel-logo-${channel.id}'),
+                fallback: (_) => const SizedBox.shrink(),
+              ),
             ),
           ),
+          SizedBox(width: _u(10)),
+        ],
+        Expanded(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [number, name],
+          ),
         ),
-        SizedBox(width: _u(8)),
-        Expanded(child: name),
       ],
     );
   }
@@ -889,94 +912,217 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
 
   String _minutesLabel(Duration d) => '${(d.inSeconds / 60).ceil()} min';
 
+  /// "1 hr 52 min", "45 min", "2 hr": a length a viewer can read, not a count of
+  /// seconds.
+  static String humanDuration(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60);
+    if (h > 0 && m > 0) return '$h hr $m min';
+    if (h > 0) return '$h hr';
+    final secs = d.inSeconds.remainder(60);
+    if (m == 0 && h == 0 && secs > 0) return '$secs s';
+    return '$m min';
+  }
+
+  /// How the file's audio is described: the codec's short name next to its
+  /// channel layout ("AAC Stereo", "AC3 5.1"), which is what a viewer compares
+  /// between sources. Null when the source did not say.
+  static String? audioLabel(String? codec, int? channels) {
+    if (codec == null && channels == null) return null;
+    final name = switch ((codec ?? '').toLowerCase()) {
+      'aac' => 'AAC',
+      'ac3' => 'AC3',
+      'eac3' => 'EAC3',
+      'dts' => 'DTS',
+      'truehd' => 'TrueHD',
+      'mp3' => 'MP3',
+      'mp2' => 'MP2',
+      'flac' => 'FLAC',
+      'opus' => 'Opus',
+      'wmav2' => 'WMA',
+      final other => other.isEmpty ? null : other.toUpperCase(),
+    };
+    final layout = switch (channels) {
+      1 => 'Mono',
+      2 => 'Stereo',
+      6 => '5.1',
+      8 => '7.1',
+      final n when n != null && n > 0 => '$n ch',
+      _ => null,
+    };
+    return [name, layout].whereType<String>().join(' ').trim().isEmpty
+        ? null
+        : [name, layout].whereType<String>().join(' ');
+  }
+
+  /// The picture's shape in a viewer's terms ("HEVC 720p", "1080p"), or null
+  /// when the source did not say.
+  static String? videoLabel(String? codec, int? height) {
+    final name = switch ((codec ?? '').toLowerCase()) {
+      'h264' || 'avc' => 'H.264',
+      'hevc' || 'h265' => 'HEVC',
+      'mpeg4' => 'MPEG-4',
+      'mpeg2video' => 'MPEG-2',
+      'vc1' => 'VC-1',
+      'av1' => 'AV1',
+      'vp9' => 'VP9',
+      final other => other.isEmpty ? null : other.toUpperCase(),
+    };
+    final res = height == null || height <= 0 ? null : '${height}p';
+    final parts = [name, res].whereType<String>();
+    return parts.isEmpty ? null : parts.join(' ');
+  }
+
+  /// One bordered label in the details panel (`2015`, `PG-13`, `AAC Stereo`):
+  /// the reference guides put a program's facts in a row of these.
+  Widget _detailChip(String text, {double fontSize = 13, Key? key}) => Container(
+        key: key,
+        margin: EdgeInsets.only(right: _u(8)),
+        padding: EdgeInsets.symmetric(horizontal: _u(8), vertical: _u(3)),
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.35),
+          border: Border.all(color: Colors.white38),
+          borderRadius: BorderRadius.circular(_u(3)),
+        ),
+        child: Text(text, style: TextStyle(color: Colors.white, fontSize: _u(fontSize), fontWeight: FontWeight.w500)),
+      );
+
   Widget _buildDetailsPanel() {
     final cell = _focusedEntry;
     if (cell == null) return const SizedBox.shrink();
     final entry = cell.entry;
-    final title = entry.displayTitle;
-    final channelName = widget.channels[_focusedRow].name;
-    // The cell's displayed span (the program plus the filler attributed to
-    // it), the same one the grid draws.
-    final timeRange = '${_fmtHHmm(cell.displayStart)}–${_fmtHHmm(cell.displayEnd)}';
+    final channel = widget.channels[_focusedRow];
+    final expanded = _detailsExpanded;
     final nowUtc = _now.toUtc();
     final total = cell.displayEnd.difference(cell.displayStart);
     final live = _isLive(cell, nowUtc);
     final ended = !nowUtc.isBefore(cell.displayEnd);
-    final String durationText;
+    final String stateText;
     if (live) {
-      durationText = '${_minutesLabel(cell.displayEnd.difference(nowUtc))} left of ${_minutesLabel(total)}';
+      stateText = '${_minutesLabel(cell.displayEnd.difference(nowUtc))} left of ${humanDuration(total)}';
     } else if (ended) {
-      durationText = 'Ended · ${_minutesLabel(total)}';
+      stateText = 'Ended \u00b7 ${humanDuration(total)}';
     } else {
-      durationText = _minutesLabel(total);
+      stateText = humanDuration(total);
     }
     final progress = live ? nowUtc.difference(cell.displayStart).inMilliseconds / total.inMilliseconds : 0.0;
 
-    final expanded = _detailsExpanded;
-    final art = entry.primaryArt;
-    final details = Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
+    // The panel's own scale, on top of the app-wide UI scale: a phone draws it
+    // smaller and gives the synopsis one line less (see GuideMetrics).
+    final ds = _m.detailsScale;
+    final titleSize = (expanded ? 36.0 : 24.0) * ds;
+    final metaSize = (expanded ? 19.0 : 15.0) * ds;
+    final chipSize = (expanded ? 16.0 : 13.0) * ds;
+    final synopsisSize = (expanded ? 20.0 : 15.0) * ds;
+    final synopsisLines = expanded ? 6 : _m.detailsSynopsisLines;
+    final synopsisHeight = _u(synopsisSize * 1.35 * synopsisLines);
+    final logoHeight = _u((expanded ? 64 : 40) * ds);
+
+    final chips = <Widget>[
+      if (entry.productionYear != null) _detailChip('${entry.productionYear}', fontSize: chipSize, key: const Key('epg-details-year')),
+      if (entry.contentRating != null && entry.contentRating!.isNotEmpty)
+        _detailChip(entry.contentRating!, fontSize: chipSize, key: const Key('epg-details-rating')),
+      if (videoLabel(entry.videoCodec, entry.height) != null)
+        _detailChip(videoLabel(entry.videoCodec, entry.height)!, fontSize: chipSize, key: const Key('epg-details-video')),
+      if (audioLabel(entry.audioCodec, entry.audioChannels) != null)
+        _detailChip(audioLabel(entry.audioCodec, entry.audioChannels)!, fontSize: chipSize, key: const Key('epg-details-audio')),
+      _detailChip(humanDuration(total), fontSize: chipSize, key: const Key('epg-details-duration')),
+      if (entry.communityRating != null && entry.communityRating! > 0)
+        _detailChip('\u2605 ${entry.communityRating!.toStringAsFixed(1)}', fontSize: chipSize, key: const Key('epg-details-score')),
+    ];
+
+    // The series logo leads (it is the identity of a series episode); the
+    // channel identifies itself on the right, and falls back to its name, never
+    // to an empty corner.
+    final seriesArt = entry.seriesArt;
+    final channelLogo = channelLogoUrl(channel);
+    final topRow = Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
-        Text(
-          title,
-          style: TextStyle(color: Colors.white, fontSize: _u(expanded ? 38 : 26), fontWeight: FontWeight.bold),
-        ),
-        SizedBox(height: _u(expanded ? 12 : 6)),
-        Text(
-          expanded ? channelName : '$channelName · $timeRange · $durationText',
-          style: TextStyle(color: Colors.white70, fontSize: _u(expanded ? 26 : 19)),
-        ),
-        if (expanded) ...[
-          SizedBox(height: _u(8)),
-          Text(
-            timeRange,
-            style: TextStyle(color: Colors.white54, fontSize: _u(24)),
+        if (seriesArt != null)
+          Flexible(
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: LogoBox(
+                maxHeight: logoHeight,
+                child: ArtImage(
+                  jellyfinImageUrl(seriesArt.itemId, seriesArt.tag),
+                  imageKey: Key('epg-details-series-logo-${entry.id}'),
+                  fit: BoxFit.contain,
+                  fallback: (_) => const SizedBox.shrink(),
+                ),
+              ),
+            ),
           ),
-          SizedBox(height: _u(8)),
+        const Spacer(),
+        if (channelLogo != null)
+          LogoBox(
+            maxHeight: logoHeight,
+            child: ChannelLogo(
+              channelLogo,
+              height: logoHeight,
+              imageKey: Key('epg-details-channel-logo-${channel.id}'),
+              fallback: (_) => Text(
+                channel.name.toUpperCase(),
+                style: TextStyle(color: Colors.white70, fontSize: _u(metaSize), letterSpacing: 1),
+              ),
+            ),
+          )
+        else
           Text(
-            durationText,
-            style: TextStyle(color: Colors.white54, fontSize: _u(24)),
+            channel.name.toUpperCase(),
+            key: const Key('epg-details-channel-name'),
+            style: TextStyle(color: Colors.white70, fontSize: _u(metaSize), letterSpacing: 1),
           ),
-        ],
       ],
     );
-    return Container(
-      key: Key(expanded ? 'epg-details-panel-expanded' : 'epg-details-panel'),
-      width: double.infinity,
-      padding: expanded ? EdgeInsets.all(_u(32)) : EdgeInsets.symmetric(horizontal: _u(24), vertical: _u(16)),
+
+    final content = Padding(
+      padding: EdgeInsets.symmetric(horizontal: _u((expanded ? 32 : 22) * ds), vertical: _u((expanded ? 20 : 14) * ds)),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          // The poster (built from the art reference the backend sent, never
-          // fetched through it) only shows in the expanded panel, so the
-          // compact one keeps its height.
-          if (expanded && art != null)
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Padding(
-                  padding: EdgeInsets.only(right: _u(28)),
-                  child: SizedBox(
-                    width: _u(160),
-                    height: _u(240),
-                    child: ArtImage(
-                      jellyfinImageUrl(art.itemId, art.tag),
-                      imageKey: Key('epg-details-art-${entry.id}'),
-                      fit: BoxFit.cover,
-                      fallback: (context) => const ColoredBox(color: Colors.white12),
-                    ),
-                  ),
-                ),
-                Expanded(child: details),
-              ],
-            )
-          else
-            details,
-          // The slot is always reserved so the panel keeps its height; only
-          // the bar itself comes and goes.
-          SizedBox(height: _u(expanded ? 16 : 10)),
+          topRow,
+          SizedBox(height: _u(expanded ? 12 : 8)),
+          Text(
+            entry.displayTitle,
+            key: const Key('epg-details-title'),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: Colors.white, fontSize: _u(titleSize), fontWeight: FontWeight.bold),
+          ),
+          SizedBox(height: _u(expanded ? 10 : 5)),
+          Text(
+            '${_fmtHHmm(cell.displayStart)}\u2013${_fmtHHmm(cell.displayEnd)}  \u00b7  ${channel.number} ${channel.name}  \u00b7  $stateText',
+            key: const Key('epg-details-meta'),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(color: Colors.white70, fontSize: _u(metaSize)),
+          ),
+          if (chips.isNotEmpty) ...[
+            SizedBox(height: _u(expanded ? 12 : 8)),
+            Wrap(spacing: _u(8), runSpacing: _u(6), children: chips),
+          ],
+          SizedBox(height: _u(expanded ? 14 : 9)),
+          // The synopsis box holds its height whether or not this program has
+          // one: the panel must not resize as the focus moves along the guide.
+          SizedBox(
+            height: synopsisHeight,
+            width: double.infinity,
+            child: Text(
+              (entry.overview == null || entry.overview!.isEmpty)
+                  ? (entry.genres ?? '')
+                  : entry.overview!,
+              key: const Key('epg-details-overview'),
+              maxLines: synopsisLines,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(color: Colors.white70, fontSize: _u(synopsisSize), height: 1.35),
+            ),
+          ),
+          SizedBox(height: _u(expanded ? 14 : 9)),
+          // The slot is always reserved so the panel keeps its height; only the
+          // bar itself comes and goes.
           SizedBox(
             height: _u(6),
             child: live
@@ -989,6 +1135,39 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
                   )
                 : null,
           ),
+        ],
+      ),
+    );
+
+    final backdrop = entry.backdropArt;
+    return Container(
+      key: Key(expanded ? 'epg-details-panel-expanded' : 'epg-details-panel'),
+      width: double.infinity,
+      decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.45)),
+      child: Stack(
+        children: [
+          if (backdrop != null)
+            Positioned.fill(
+              child: ArtImage(
+                jellyfinImageUrl(backdrop.itemId, backdrop.tag),
+                imageKey: Key('epg-details-art-${entry.id}'),
+                fit: BoxFit.cover,
+                fallback: (_) => const SizedBox.shrink(),
+              ),
+            ),
+          if (backdrop != null)
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                    colors: [Colors.black.withValues(alpha: 0.93), Colors.black.withValues(alpha: 0.62)],
+                  ),
+                ),
+              ),
+            ),
+          content,
         ],
       ),
     );

@@ -195,6 +195,10 @@ void main() {
       // and track_selector_test.dart's doc comments) explicitly confirmed
       // does NOT happen for a real user; only repeated fresh *app* boots in
       // one test process do.
+      // Up is "next channel" only with the OSD out of the way: open, it moves the
+      // focus instead (and the picker interaction above leaves it open).
+      await pumpUntil(tester, () => !osdVisible(tester), timeout: const Duration(seconds: 10),
+          failMessage: 'the OSD never hid before the channel switch');
       await pressKey(tester, LogicalKeyboardKey.arrowUp);
       await tester.pump();
       await waitForChannelNumber(tester, 11, timeout: const Duration(seconds: 20));

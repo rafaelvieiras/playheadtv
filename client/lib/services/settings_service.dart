@@ -1,5 +1,6 @@
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../channel_switch.dart';
 import '../clock.dart';
 import '../config/connection_settings.dart';
 import '../dimmer.dart';
@@ -159,6 +160,34 @@ class SettingsService implements UpdateNoticeStore {
   // on), otherwise an updating install keeps playing 4 dB under the target it was
   // supposed to have.
   static const _legacyLoudnessTargetLufs = -18.0;
+
+  // Channel change: the delay before the picture changes, how long the banner
+  // that announces the change stays after the picture is up, and the corner it
+  // sits in. Null means "not chosen here" (the installation default applies).
+  static const _channelSwitchDelayKey = 'channel_switch_delay_seconds';
+  static const _channelBannerSecondsKey = 'channel_banner_seconds';
+  static const _channelBannerCornerKey = 'channel_banner_corner';
+
+  int? get channelSwitchDelaySeconds {
+    final v = _prefs.getInt(_channelSwitchDelayKey);
+    return v == null ? null : sanitizeChannelSwitchDelaySeconds(v);
+  }
+
+  Future<void> setChannelSwitchDelaySeconds(int seconds) =>
+      _prefs.setInt(_channelSwitchDelayKey, seconds);
+
+  int? get channelBannerSeconds {
+    final v = _prefs.getInt(_channelBannerSecondsKey);
+    return v == null ? null : sanitizeChannelBannerSeconds(v);
+  }
+
+  Future<void> setChannelBannerSeconds(int seconds) => _prefs.setInt(_channelBannerSecondsKey, seconds);
+
+  /// The saved corner of the channel banner, or null when never chosen.
+  String? get channelBannerCorner => _prefs.getString(_channelBannerCornerKey);
+
+  Future<void> setChannelBannerCorner(String corner) =>
+      _prefs.setString(_channelBannerCornerKey, corner);
 
   double? get loudnessTargetLufs {
     final stored = _prefs.getDouble(_loudnessTargetKey);

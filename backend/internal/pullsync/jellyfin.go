@@ -135,6 +135,7 @@ type jellyfinStream struct {
 	Width    *int64 `json:"Width"`
 	Height   *int64 `json:"Height"`
 	BitRate  *int64 `json:"BitRate"`
+	Channels *int64 `json:"Channels"` // audio only
 }
 
 type jellyfinSource struct {
@@ -329,6 +330,7 @@ func mapMetadata(item *catalogsync.Item, ri, parent jellyfinItem, kind domain.Ca
 	// Technical info: item-level values first, then the first video stream
 	// and first media source.
 	var video *jellyfinStream
+	var audio *jellyfinStream
 	for i := range ri.MediaStreams {
 		st := &ri.MediaStreams[i]
 		switch strings.ToLower(st.Type) {
@@ -337,6 +339,11 @@ func mapMetadata(item *catalogsync.Item, ri, parent jellyfinItem, kind domain.Ca
 				video = st
 			}
 		case "audio":
+			// The first audio stream is the default track: the one a viewer
+			// hears, and the one the guide labels.
+			if audio == nil {
+				audio = st
+			}
 			item.AudioLanguages = append(item.AudioLanguages, st.Language)
 		case "subtitle":
 			item.SubtitleLanguages = append(item.SubtitleLanguages, st.Language)
@@ -356,6 +363,10 @@ func mapMetadata(item *catalogsync.Item, ri, parent jellyfinItem, kind domain.Ca
 			item.Height = video.Height
 		}
 		item.VideoCodec = nonEmpty(&video.Codec)
+	}
+	if audio != nil {
+		item.AudioCodec = nonEmpty(&audio.Codec)
+		item.AudioChannels = audio.Channels
 	}
 	if src != nil {
 		if item.Container == nil {
