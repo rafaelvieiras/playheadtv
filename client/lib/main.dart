@@ -4000,6 +4000,20 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // Touch: a swipe up opens the guide. The same two notifier writes the OSD's
   // own path does, minus `_suppressNextEpgSelectUp` (that flag exists for a
   // Select whose release lands after the guide opened; a swipe has no Select).
+  // Closing the track picker — picked, cancelled or Back — also ends the OSD that
+  // opened it and hands the keys back to the player. Leaving the OSD up meant the
+  // next Up/Down moved its focus instead of switching channel, which is not what
+  // a viewer expects right after choosing a track (measured on the suite that
+  // guards a switch after a live track change: Up did nothing at all).
+  void _closeTrackPicker() {
+    _trackPickerOpenNotifier.value = false;
+    _osdHideTimer?.cancel();
+    _osdVisibleNotifier.value = false;
+    _osdFocusNotifier.value = false;
+    _osdArmed = false;
+    _focusNode.requestFocus();
+  }
+
   void _openEpgFromTouch() {
     _osdHideTimer?.cancel();
     _osdVisibleNotifier.value = false;
@@ -4282,7 +4296,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
         // closes without applying anything.
         if (_trackPickerOpenNotifier.value) {
           if (action == InputAction.back) {
-            if (event is KeyDownEvent) _trackPickerOpenNotifier.value = false;
+            if (event is KeyDownEvent) _closeTrackPicker();
             return;
           }
           if (event is! KeyDownEvent) return;
@@ -4745,9 +4759,9 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                       } else {
                         _applySubtitleTrack(activeController, channelId, option.index, option.label);
                       }
-                      _trackPickerOpenNotifier.value = false;
+                      _closeTrackPicker();
                     },
-                    onClose: () => _trackPickerOpenNotifier.value = false,
+                    onClose: _closeTrackPicker,
                   ),
                 );
               },
