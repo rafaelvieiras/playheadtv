@@ -174,8 +174,15 @@ void main() {
       // "Now" is inside the 5-minute preroll, which belongs to program A: it
       // is the live cell, focused first, and spans preroll + A + midroll.
       expect(detailsTitle('PROG A'), findsOneWidget);
-      final range = '${hhmm(scheduleStart)}–${hhmm(scheduleStart.add(const Duration(minutes: 40)))}';
-      expect(find.descendant(of: find.byKey(const Key('epg-details-panel')), matching: find.textContaining(range)), findsOneWidget);
+      // The panel draws the program's displayed span as start, the progress bar
+      // between them, then end (the dash it used to be is that bar now).
+      final metaRow = find.byKey(const Key('epg-details-meta-row'));
+      expect(find.descendant(of: metaRow, matching: find.text(hhmm(scheduleStart))), findsOneWidget);
+      expect(
+        find.descendant(of: metaRow, matching: find.text(hhmm(scheduleStart.add(const Duration(minutes: 40))))),
+        findsOneWidget,
+      );
+      expect(find.byKey(const Key('epg-details-time-bar')), findsOneWidget);
       expect(find.byKey(const Key('epg-details-progress')), findsOneWidget, reason: 'a live filler counts as its program being on air');
 
       // Right/Left step over programs only: A, B, C and back.

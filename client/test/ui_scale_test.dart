@@ -37,20 +37,29 @@ void main() {
       expect(resolveUiScale(const Size(3840, 2160)), 2.0);
     });
 
-    test('a fixed override replaces the automatic factor when it fits', () {
-      expect(resolveUiScale(const Size(3840, 2160), override: 1.0), 1.0);
-      expect(resolveUiScale(const Size(1920, 1080), override: 2.0), 2.0);
-      expect(resolveUiScale(const Size(1280, 720), override: 1.5), 1.5);
+    test('a fixed choice multiplies the automatic factor, never replaces it', () {
+      // The whole point of the relative model: 100% means "what this screen asks
+      // for", so the same choice reads the same on a 4K set (2.0) and on a 1080p
+      // desktop window (1.0) instead of pinning 150% of a 1080p layout to both.
+      expect(resolveUiScale(const Size(3840, 2160), override: 1.0), 2.0);
+      expect(resolveUiScale(const Size(1920, 1080), override: 1.0), 1.0);
+      expect(resolveUiScale(const Size(1280, 720), override: 1.0), closeTo(720 / uiScaleReferenceSide, 1e-9));
+      expect(resolveUiScale(const Size(3840, 2160), override: 0.85), closeTo(2.0 * 0.85, 1e-9));
+      expect(resolveUiScale(const Size(1920, 1080), override: 1.3), closeTo(1.3, 1e-9));
     });
 
-    test('a fixed override is capped by what fits the window', () {
-      // 720p: the OSD needs 440 design px of height, so 2.0 cannot be honoured.
-      expect(resolveUiScale(const Size(1280, 720), override: 2.0), closeTo(720 / uiScaleFitHeight, 1e-9));
+    test('the result is capped by what fits the window', () {
+      // 720p: the OSD needs 440 design px of height, so a 130% choice (0.87) is
+      // under the cap and survives; a wild one is not.
+      expect(
+        resolveUiScale(const Size(1280, 720), override: 1.3),
+        closeTo((720 / uiScaleReferenceSide) * 1.3, 1e-9),
+      );
+      expect(resolveUiScale(const Size(1280, 720), override: 2.5), closeTo(720 / uiScaleFitHeight, 1e-9));
       // A narrow window is capped by its width.
-      expect(resolveUiScale(const Size(800, 2000), override: 2.0), closeTo(800 / uiScaleFitWidth, 1e-9));
-      // Never below the floor, and a smaller choice is left alone.
-      expect(resolveUiScale(const Size(200, 100), override: 2.0), uiScaleMin);
-      expect(resolveUiScale(const Size(800, 600), override: 0.75), 0.75);
+      expect(resolveUiScale(const Size(800, 2000), override: 2.5), closeTo(800 / uiScaleFitWidth, 1e-9));
+      // Never below the floor.
+      expect(resolveUiScale(const Size(200, 100), override: 2.5), uiScaleMin);
     });
 
     test('ignores a non-positive or non-finite override', () {
@@ -61,10 +70,17 @@ void main() {
   });
 
   group('maxFitUiScale', () {
-    test('every fixed step but the largest fits 1080p, and every step fits 4K', () {
+    test('every fixed step fits a 1080p window and a 4K one', () {
       expect(maxFitUiScale(const Size(1920, 1080)), greaterThanOrEqualTo(2.0));
-      for (final step in uiScaleSteps) {
-        expect(resolveUiScale(const Size(3840, 2160), override: step), step);
+      for (final size in const [Size(1920, 1080), Size(3840, 2160), Size(1280, 720)]) {
+        final auto = autoUiScale(size);
+        for (final step in uiScaleSteps) {
+          expect(
+            resolveUiScale(size, override: step),
+            closeTo((auto * step).clamp(uiScaleMin, uiScaleMax), 1e-9),
+            reason: '$size x $step',
+          );
+        }
       }
     });
 
@@ -90,20 +106,17 @@ void main() {
       expect(autoUiScale(Size.zero, formFactor: ClientFormFactor.phone), 1.0);
     });
 
-    test('a fixed choice on a phone is never worse than the automatic one', () {
-      // The television fit budget (440x640) would cap a 100% choice on a
-      // 360x780 screen to 0.818 — BELOW the automatic 0.857, i.e. the cap made
-      // it smaller. The phone budget is the compact panel, so every step that
-      // the automatic factor allows also survives the cap.
+    test('a fixed choice on a phone multiplies its own automatic factor', () {
+      // The cap must never make a choice *smaller* than the automatic factor:
+      // that was the television fit budget's failure on a 360 dp screen.
       for (final size in const [Size(360, 780), Size(430, 932), Size(780, 360), Size(932, 430)]) {
         final auto = autoUiScale(size, formFactor: ClientFormFactor.phone);
         expect(maxFitUiScale(size, formFactor: ClientFormFactor.phone), greaterThanOrEqualTo(auto), reason: '$size');
-        expect(resolveUiScale(size, override: 1.0, formFactor: ClientFormFactor.phone), 1.0, reason: '$size');
+        expect(resolveUiScale(size, override: 1.0, formFactor: ClientFormFactor.phone), closeTo(auto, 1e-9), reason: '$size');
       }
-      // A larger fixed step is still capped: by the phone ceiling on a wide
+      // A larger choice is still capped: by the phone ceiling on a wide
       // landscape screen, by the panel's own width on a narrow one.
-      expect(resolveUiScale(const Size(932, 430), override: 2.0, formFactor: ClientFormFactor.phone), phoneUiScaleMax);
-      expect(resolveUiScale(const Size(360, 780), override: 2.0, formFactor: ClientFormFactor.phone), 1.0);
+      expect(resolveUiScale(const Size(932, 430), override: 2.5, formFactor: ClientFormFactor.phone), phoneUiScaleMax);
     });
 
     test('the television branch is unchanged by the new argument', () {
@@ -126,7 +139,7 @@ void main() {
         c = nextUiScaleChoice(c);
         seen.add(uiScaleLabel(c));
       }
-      expect(seen, ['Automatic', '75%', '100%', '125%', '150%', '200%', 'Automatic']);
+      expect(seen, ['Automatic', '85%', '100%', '115%', '130%', 'Automatic']);
     });
 
     test('an unknown stored value returns to Automatic', () {

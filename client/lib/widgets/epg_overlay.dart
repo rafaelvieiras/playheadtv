@@ -1,14 +1,14 @@
-// Full-screen EPG: schedule grid of all channels, with a thumbnail of the
-// video that is already playing reserved in a corner (see
-// `_videoThumbnailRect`/`videoThumbnailRect` in main.dart — this widget NEVER
-// draws anything on top of that rectangle, it only reserves the "hole" in the
-// darkened background; the thumbnail itself is another widget, the real video,
-// drawn underneath).
+// Full-screen EPG: schedule grid of all channels, with a live thumbnail of the
+// channel on air inside the details panel (the slot this widget reserves in its
+// own layout, `previewRect`). This widget never draws on top of that slot: the
+// preview is the real video surface, drawn underneath by the player page, and
+// the guide only keeps a rectangular hole in its bands. The page reads the same
+// rectangle to shrink the video into it, so the slot and the hole cannot drift
+// apart (the geometry is measured from the slot, not recomputed from constants).
 //
-// Background: 4 semi-opaque black rectangular bands around the thumbnail's
-// rectangle (top, bottom — where the whole grid/details panel lives —, left
-// and right), instead of a ClipPath — simpler and enough since the rectangle
-// is always axis-aligned.
+// Background: 4 semi-opaque black rectangular bands around that rectangle (top,
+// bottom — where the whole grid/details panel lives —, left and right), instead
+// of a ClipPath — simpler and enough since the rectangle is always axis-aligned.
 //
 // Layout: details panel, then a TV-guide grid — a sticky time header (date at
 // its left, a tick every 30 min), one fixed-height row per channel (channel
@@ -46,7 +46,7 @@ import 'package:flutter/services.dart';
 
 import '../epg_guide.dart';
 import '../cache/schedule_cache.dart';
-import '../main.dart' show jellyfinImageUrl;
+import '../main.dart' show jellyfinBackdropUrl;
 import '../playhead_api.dart';
 import '../services/perf_trace.dart';
 import '../ui/form_factor.dart';
@@ -81,7 +81,12 @@ class EpgOverlay extends StatefulWidget {
   final List<PlayheadChannel> channels;
   final ScheduleCache cache;
   final String currentChannelId;
-  final Rect? videoThumbnailRect; // SAME rectangle as _videoThumbnailRect — never draw anything opaque on top of it; null = no thumbnail (an opaque layer over the whole screen)
+
+  /// Where the live preview belongs, written by this widget on every layout:
+  /// the panel's preview slot, in the player Stack's coordinates. The page owns
+  /// the notifier and shrinks the video into the rectangle it reads back. Null
+  /// means "no preview" (the guide is then opaque over the whole screen).
+  final ValueNotifier<Rect?>? previewRect;
   final void Function(String channelId) onSelectLiveChannel;
   final VoidCallback onClose;
 
@@ -93,7 +98,7 @@ class EpgOverlay extends StatefulWidget {
     required this.channels,
     required this.cache,
     required this.currentChannelId,
-    this.videoThumbnailRect,
+    this.previewRect,
     required this.onSelectLiveChannel,
     required this.onClose,
     this.clock = DateTime.now,
@@ -270,6 +275,7 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
     _hController.dispose();
     _focus.dispose();
     _detailsExpandedNotifier.dispose();
+    _hole.dispose();
     _titleRows.dispose();
     _nowNotifier.dispose();
     super.dispose();
@@ -609,7 +615,20 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
     widget.onSelectLiveChannel(widget.channels[_focusedRow].id);
   }
 
-  Widget _darkBand({Widget? child}) => Container(color: Colors.black.withValues(alpha: 0.9), child: child);
+  /// [child] with a translucent black wash over it: what "this is not the one you
+  /// are looking at" costs in this guide. A wash and not `Opacity` on purpose —
+  /// it paints a rectangle instead of forcing a saveLayer for a whole row of
+  /// cells, which is the difference the guide can afford on a modest device.
+  Widget _dimmed(Widget child, double alpha, {Key? dimKey}) => Stack(
+        children: [
+          child,
+          Positioned.fill(
+            child: IgnorePointer(
+              child: ColoredBox(key: dimKey, color: Colors.black.withValues(alpha: alpha)),
+            ),
+          ),
+        ],
+      );
 
   // A program cell, positioned in minutes from the window start: it does not
   // depend on the horizontal scroll (the row moves as one transform) nor on the
@@ -623,6 +642,9 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
     final left = startMin * ppm + margin;
     final width = ((endMin - startMin) * ppm - 2 * margin).clamp(4.0, double.infinity);
     final live = _isLive(cell, _now.toUtc());
+    // A program that has aired already (the guide is rebuilt whenever a cell
+    // starts or ends, see _nextBoundary).
+    final ended = !_now.toUtc().isBefore(cell.displayEnd);
     final content = Stack(
       children: [
         if (live)
@@ -672,7 +694,10 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
         child: _FocusSelector<bool>(
         focus: _focus,
         select: (p) => p.row == rowIndex && p.col == col,
-        child: content,
+        // A program that already aired sits a step back from the ones still to
+        // come, so the live column reads first at a glance. Painted as a dim
+        // wash rather than `Opacity`, which would cost a saveLayer per cell.
+        child: ended ? _dimmed(content, 0.10, dimKey: Key('epg-cell-dim-${entry.id}')) : content,
         builder: (context, focused, child) => Container(
           key: Key('epg-cell-${channelObj.id}-${entry.id}'),
           decoration: BoxDecoration(
@@ -713,20 +738,26 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
       focus: _focus,
       select: (p) => p.row == rowIndex,
       child: canvas,
-      builder: (context, focusedRow, canvas) => Container(
-        key: Key('epg-row-${channelObj.id}'),
-        height: _u(_m.rowHeight),
-        color: focusedRow ? Colors.white.withValues(alpha: 0.08) : null,
-        child: Row(
-          children: [
-            SizedBox(
-              width: _u(_m.channelColumnWidth),
-              child: _channelCell(channelObj, focused: focusedRow, playing: playing),
-            ),
-            Expanded(child: canvas!),
-          ],
-        ),
-      ),
+      builder: (context, focusedRow, canvas) {
+        final row = Container(
+          key: Key('epg-row-${channelObj.id}'),
+          height: _u(_m.rowHeight),
+          color: focusedRow ? Colors.white.withValues(alpha: 0.08) : null,
+          child: Row(
+            children: [
+              SizedBox(
+                width: _u(_m.channelColumnWidth),
+                child: _channelCell(channelObj, focused: focusedRow, playing: playing),
+              ),
+              Expanded(child: canvas!),
+            ],
+          ),
+        );
+        // Every row but the one whose details are on screen sits a step back
+        // (20%), channel column and programs alike, so the focused channel reads
+        // as the subject of the panel above instead of one row among many.
+        return focusedRow ? row : _dimmed(row, 0.20, dimKey: Key('epg-row-dim-${channelObj.id}'));
+      },
     );
   }
 
@@ -987,6 +1018,66 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
         child: Text(text, style: TextStyle(color: Colors.white, fontSize: _u(fontSize), fontWeight: FontWeight.w500)),
       );
 
+  /// The program's own progress, drawn where the dash between its two times
+  /// used to be: an empty track for a program that has not started yet, filled
+  /// to [progress] while it is on air. Its width is a little more than the dash
+  /// it replaces, so it reads as punctuation between the times and not as a
+  /// bar of its own.
+  Widget _detailTimeBar({
+    Key? key,
+    required bool live,
+    required double progress,
+    required double width,
+    required double height,
+  }) {
+    final w = _u(width);
+    final h = _u(height);
+    return ClipRRect(
+      key: key,
+      borderRadius: BorderRadius.circular(h),
+      child: SizedBox(
+        width: w,
+        height: h,
+        child: Stack(
+          children: [
+            const Positioned.fill(child: ColoredBox(color: Colors.white24)),
+            if (live)
+              Positioned(
+                // The filled part exists only while the program is on air: the
+                // track itself is always there (the times always have something
+                // between them), and `epg-details-progress` is the answer to
+                // "is this program on air right now?".
+                key: const Key('epg-details-progress'),
+                left: 0,
+                top: 0,
+                bottom: 0,
+                width: w * progress.clamp(0.0, 1.0),
+                child: const ColoredBox(color: Colors.white),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// The slot the live preview occupies: the picture itself is the player's own
+  /// video surface, drawn underneath this overlay (never a second decoder, see
+  /// the GL-texture note in AGENTS.md), so this box only reserves and measures
+  /// the space. `_measurePreview` reports it to the page, which shrinks the
+  /// video into exactly this rectangle.
+  Widget _previewSlot({required double width, required double height}) => KeyedSubtree(
+        key: _previewKey,
+        child: Container(
+          key: const Key('epg-details-preview'),
+          width: _u(width),
+          height: _u(height),
+          foregroundDecoration: BoxDecoration(
+            border: Border.all(color: Colors.white24),
+            borderRadius: BorderRadius.circular(_u(6)),
+          ),
+        ),
+      );
+
   Widget _buildDetailsPanel() {
     final cell = _focusedEntry;
     if (cell == null) return const SizedBox.shrink();
@@ -1031,145 +1122,193 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
         _detailChip('\u2605 ${entry.communityRating!.toStringAsFixed(1)}', fontSize: chipSize, key: const Key('epg-details-score')),
     ];
 
-    // The series logo leads (it is the identity of a series episode); the
-    // channel identifies itself on the right, and falls back to its name, never
-    // to an empty corner.
-    final seriesArt = entry.seriesArt;
+    // The channel's logo leads the panel: the program's own cover is not shown
+    // here (a poster above the title reads as a second title, and the panel
+    // already names the program). The slot keeps its height even when the
+    // channel has no logo, so moving the focus cannot make the panel jump.
     final channelLogo = channelLogoUrl(channel);
-    final topRow = Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        if (seriesArt != null)
-          Flexible(
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: LogoBox(
+    final logoSlot = SizedBox(
+      height: logoHeight,
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: channelLogo == null
+            ? Text(
+                channel.name.toUpperCase(),
+                key: const Key('epg-details-channel-name'),
+                style: TextStyle(color: Colors.white70, fontSize: _u(metaSize), letterSpacing: 1),
+              )
+            : LogoBox(
                 maxHeight: logoHeight,
-                child: ArtImage(
-                  jellyfinImageUrl(seriesArt.itemId, seriesArt.tag),
-                  imageKey: Key('epg-details-series-logo-${entry.id}'),
-                  fit: BoxFit.contain,
-                  fallback: (_) => const SizedBox.shrink(),
+                child: ChannelLogo(
+                  channelLogo,
+                  height: logoHeight,
+                  imageKey: Key('epg-details-channel-logo-${channel.id}'),
+                  fallback: (_) => Text(
+                    channel.name.toUpperCase(),
+                    key: const Key('epg-details-channel-name'),
+                    style: TextStyle(color: Colors.white70, fontSize: _u(metaSize), letterSpacing: 1),
+                  ),
                 ),
               ),
-            ),
-          ),
-        const Spacer(),
-        if (channelLogo != null)
-          LogoBox(
-            maxHeight: logoHeight,
-            child: ChannelLogo(
-              channelLogo,
-              height: logoHeight,
-              imageKey: Key('epg-details-channel-logo-${channel.id}'),
-              fallback: (_) => Text(
-                channel.name.toUpperCase(),
-                style: TextStyle(color: Colors.white70, fontSize: _u(metaSize), letterSpacing: 1),
-              ),
-            ),
-          )
-        else
-          Text(
-            channel.name.toUpperCase(),
-            key: const Key('epg-details-channel-name'),
-            style: TextStyle(color: Colors.white70, fontSize: _u(metaSize), letterSpacing: 1),
-          ),
-      ],
+      ),
     );
 
+    final metaStyle = TextStyle(color: Colors.white70, fontSize: _u(metaSize));
+    // The panel's own padding comes from the layout family, so the preview slot
+    // (measured from here) and the video the page shrinks into it cannot drift
+    // apart; the expanded panel just adds a margin around the same numbers.
+    final padH = _m.detailsPaddingH * (expanded ? 1.45 : 1) * ds;
+    final padV = _m.detailsPaddingV * (expanded ? 1.45 : 1) * ds;
+    // No slot when the preview is off (the page passes no notifier): the guide
+    // then reserves nothing, paints no hole and covers the whole screen.
+    final previewHeight =
+        widget.previewRect != null && _m.detailsPreviewHeight > 0 ? _m.detailsPreviewHeight * ds : 0.0;
+    final previewWidth = previewHeight * 16 / 9;
+
     final content = Padding(
-      padding: EdgeInsets.symmetric(horizontal: _u((expanded ? 32 : 22) * ds), vertical: _u((expanded ? 20 : 14) * ds)),
-      child: Column(
+      padding: EdgeInsets.symmetric(horizontal: _u(padH), vertical: _u(padV)),
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
         children: [
-          topRow,
-          SizedBox(height: _u(expanded ? 12 : 8)),
-          Text(
-            entry.displayTitle,
-            key: const Key('epg-details-title'),
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: Colors.white, fontSize: _u(titleSize), fontWeight: FontWeight.bold),
-          ),
-          SizedBox(height: _u(expanded ? 10 : 5)),
-          Text(
-            '${_fmtHHmm(cell.displayStart)}\u2013${_fmtHHmm(cell.displayEnd)}  \u00b7  ${channel.number} ${channel.name}  \u00b7  $stateText',
-            key: const Key('epg-details-meta'),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(color: Colors.white70, fontSize: _u(metaSize)),
-          ),
-          if (chips.isNotEmpty) ...[
-            SizedBox(height: _u(expanded ? 12 : 8)),
-            Wrap(spacing: _u(8), runSpacing: _u(6), children: chips),
-          ],
-          SizedBox(height: _u(expanded ? 14 : 9)),
-          // The synopsis box holds its height whether or not this program has
-          // one: the panel must not resize as the focus moves along the guide.
-          SizedBox(
-            height: synopsisHeight,
-            width: double.infinity,
-            child: Text(
-              (entry.overview == null || entry.overview!.isEmpty)
-                  ? (entry.genres ?? '')
-                  : entry.overview!,
-              key: const Key('epg-details-overview'),
-              maxLines: synopsisLines,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(color: Colors.white70, fontSize: _u(synopsisSize), height: 1.35),
+          Expanded(
+            child: ConstrainedBox(
+              constraints: BoxConstraints(minHeight: _u(previewHeight)),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.max,
+                children: [
+                  logoSlot,
+                  SizedBox(height: _u(expanded ? 12 : 8)),
+                  Text(
+                    entry.displayTitle,
+                    key: const Key('epg-details-title'),
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: Colors.white, fontSize: _u(titleSize), fontWeight: FontWeight.bold),
+                  ),
+                  SizedBox(height: _u(expanded ? 10 : 5)),
+                  // The times, the program's own progress where the dash between
+                  // them used to be (the guide has no room for a full-width bar,
+                  // and a bar between the two times is what those times describe),
+                  // then who and how long.
+                  Row(
+                    key: const Key('epg-details-meta-row'),
+                    children: [
+                      Text(_fmtHHmm(cell.displayStart), style: metaStyle),
+                      SizedBox(width: _u(6)),
+                      _detailTimeBar(
+                        key: const Key('epg-details-time-bar'),
+                        live: live,
+                        progress: progress,
+                        width: metaSize * 0.6,
+                        height: metaSize * 0.3 < 3 ? 3.0 : metaSize * 0.3,
+                      ),
+                      SizedBox(width: _u(6)),
+                      Text(_fmtHHmm(cell.displayEnd), style: metaStyle),
+                      SizedBox(width: _u(10)),
+                      Expanded(
+                        child: Text(
+                          '\u00b7  ${channel.number} ${channel.name}  \u00b7  $stateText',
+                          key: const Key('epg-details-meta'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: metaStyle,
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (chips.isNotEmpty) ...[
+                    SizedBox(height: _u(expanded ? 12 : 8)),
+                    Wrap(spacing: _u(8), runSpacing: _u(6), children: chips),
+                  ],
+                  SizedBox(height: _u(expanded ? 14 : 9)),
+                  // The synopsis box holds its height whether or not this
+                  // program has one: the panel must not resize as the focus
+                  // moves along the guide.
+                  SizedBox(
+                    height: synopsisHeight,
+                    width: double.infinity,
+                    child: Text(
+                      (entry.overview == null || entry.overview!.isEmpty)
+                          ? (entry.genres ?? '')
+                          : entry.overview!,
+                      key: const Key('epg-details-overview'),
+                      maxLines: synopsisLines,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(color: Colors.white70, fontSize: _u(synopsisSize), height: 1.35),
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-          SizedBox(height: _u(expanded ? 14 : 9)),
-          // The slot is always reserved so the panel keeps its height; only the
-          // bar itself comes and goes.
-          SizedBox(
-            height: _u(6),
-            child: live
-                ? LinearProgressIndicator(
-                    key: const Key('epg-details-progress'),
-                    value: progress.clamp(0.0, 1.0),
-                    minHeight: _u(6),
-                    color: Colors.white,
-                    backgroundColor: Colors.white24,
-                  )
-                : null,
-          ),
+          if (previewHeight > 0) ...[
+            SizedBox(width: _u(_m.detailsPreviewGap)),
+            _previewSlot(width: previewWidth, height: previewHeight),
+          ],
         ],
       ),
     );
 
     final backdrop = entry.backdropArt;
-    return Container(
-      key: Key(expanded ? 'epg-details-panel-expanded' : 'epg-details-panel'),
-      width: double.infinity,
-      decoration: BoxDecoration(color: Colors.black.withValues(alpha: 0.45)),
-      child: Stack(
-        children: [
-          if (backdrop != null)
-            Positioned.fill(
-              child: ArtImage(
-                jellyfinImageUrl(backdrop.itemId, backdrop.tag),
-                imageKey: Key('epg-details-art-${entry.id}'),
-                fit: BoxFit.cover,
-                fallback: (_) => const SizedBox.shrink(),
-              ),
-            ),
-          if (backdrop != null)
-            Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.centerLeft,
-                    end: Alignment.centerRight,
-                    colors: [Colors.black.withValues(alpha: 0.93), Colors.black.withValues(alpha: 0.62)],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // The preview is a window in the panel's own backdrop: the picture is
+        // painted by the player underneath, and the panel simply leaves this
+        // rectangle unpainted. Computed from the panel's own layout (never from
+        // the measured rectangle), so painting cannot depend on measuring.
+        final hole = previewHeight > 0
+            ? Rect.fromLTWH(
+                constraints.maxWidth - _u(padH) - _u(previewWidth),
+                _u(padV),
+                _u(previewWidth),
+                _u(previewHeight),
+              ).inflate(1)
+            : null;
+        return SizedBox(
+          key: Key(expanded ? 'epg-details-panel-expanded' : 'epg-details-panel'),
+          width: double.infinity,
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: ClipPath(
+                  clipper: HoleClipper(hole),
+                  child: Stack(
+                    children: [
+                      const Positioned.fill(child: ColoredBox(color: Color(0x73000000))),
+                      if (backdrop != null)
+                        Positioned.fill(
+                          child: ArtImage(
+                            jellyfinBackdropUrl(backdrop.itemId, tag: backdrop.tag),
+                            imageKey: Key('epg-details-art-${entry.id}'),
+                            fit: BoxFit.cover,
+                            fallback: (_) => const SizedBox.shrink(),
+                          ),
+                        ),
+                      if (backdrop != null)
+                        Positioned.fill(
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              gradient: LinearGradient(
+                                begin: Alignment.centerLeft,
+                                end: Alignment.centerRight,
+                                colors: [
+                                  Colors.black.withValues(alpha: 0.93),
+                                  Colors.black.withValues(alpha: 0.62),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
               ),
-            ),
-          content,
-        ],
-      ),
+              content,
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -1272,9 +1411,35 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
     );
   }
 
+  // The preview slot's box, measured after every frame. The page shrinks the
+  // video into the rectangle this widget reports (through `previewRect`), so the
+  // hole in the guide and the picture are one measurement, never two copies of
+  // the same arithmetic drifting apart.
+  final GlobalKey _previewKey = GlobalKey();
+
+  // The preview's window, as measured from the slot the panel reserved. Used
+  // only for painting the hole in the overlay's own backdrop — the panel's
+  // layout never reads it, so measuring and painting cannot chase each other.
+  final ValueNotifier<Rect?> _hole = ValueNotifier<Rect?>(null);
+
+  void _measurePreview() {
+    if (!mounted) return;
+    final target = widget.previewRect;
+    final slot = _previewKey.currentContext?.findRenderObject();
+    final overlay = context.findRenderObject();
+    if (slot is! RenderBox || overlay is! RenderBox || !slot.hasSize || !overlay.hasSize) {
+      if (_hole.value != null) _hole.value = null;
+      if (target != null && target.value != null) target.value = null;
+      return;
+    }
+    final origin = overlay.localToGlobal(Offset.zero);
+    final rect = (slot.localToGlobal(Offset.zero) - origin) & slot.size;
+    if (_hole.value != rect) _hole.value = rect;
+    if (target != null && target.value != rect) target.value = rect;
+  }
+
   @override
   Widget build(BuildContext context) {
-    final rect = widget.videoThumbnailRect;
     // A cutout or a system bar over the guide's header would eat its first row.
     // `viewPadding` and not `padding`: the player is immersive, so the bars are
     // hidden (`padding` reads zero) while the notch is still there.
@@ -1283,8 +1448,11 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
       padding: EdgeInsets.only(top: insets.top, left: insets.left, right: insets.right),
       child: _buildBody(),
     );
-    if (rect == null) {
-      // No thumbnail: one opaque layer, the grid gets the whole screen.
+    // Every frame, because the slot moves with the panel (it grows when the
+    // details expand) and nothing else would notice.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _measurePreview());
+    if (widget.previewRect == null) {
+      // No preview asked for: one opaque layer, the grid gets the whole screen.
       return Stack(key: const Key('epg-overlay'), children: [
         Positioned.fill(child: Container(color: Colors.black, child: body)),
       ]);
@@ -1292,24 +1460,45 @@ class EpgOverlayState extends State<EpgOverlay> with SingleTickerProviderStateMi
     return Stack(
       key: const Key('epg-overlay'),
       children: [
-        // Band above the thumbnail.
-        Positioned(left: 0, right: 0, top: 0, height: rect.top, child: _darkBand()),
-        // Band below the thumbnail — covers the rest of the screen downward,
-        // this is where the whole grid + details panel lives.
-        Positioned(
-          left: 0,
-          right: 0,
-          top: rect.bottom,
-          bottom: 0,
-          child: _darkBand(child: body),
+        // The darkened backdrop, with the preview's window cut out of it: the
+        // player's video is underneath and shows through exactly there. The body
+        // is laid out independently of it, so nothing here can move the slot it
+        // is measuring.
+        Positioned.fill(
+          child: ValueListenableBuilder<Rect?>(
+            valueListenable: _hole,
+            builder: (context, hole, _) => ClipPath(
+              clipper: HoleClipper(hole),
+              child: const ColoredBox(color: Color(0xE6000000)),
+            ),
+          ),
         ),
-        // Band to the left of the thumbnail (only its height).
-        Positioned(left: 0, top: rect.top, width: rect.left, height: rect.height, child: _darkBand()),
-        // Band to the right of the thumbnail (only its height).
-        Positioned(left: rect.right, top: rect.top, right: 0, height: rect.height, child: _darkBand()),
+        Positioned.fill(child: body),
       ],
     );
   }
+}
+
+/// A rectangle with a window cut out of it (`PathOperation.difference`): how the
+/// guide lets the picture through instead of covering it.
+class HoleClipper extends CustomClipper<Path> {
+  final Rect? hole;
+  const HoleClipper(this.hole);
+
+  @override
+  Path getClip(Size size) {
+    final all = Path()..addRect(Offset.zero & size);
+    final cut = hole;
+    if (cut == null) return all;
+    return Path.combine(
+      PathOperation.difference,
+      all,
+      Path()..addRRect(RRect.fromRectAndRadius(cut, const Radius.circular(6))),
+    );
+  }
+
+  @override
+  bool shouldReclip(HoleClipper oldClipper) => oldClipper.hole != hole;
 }
 
 

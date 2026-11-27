@@ -7,7 +7,7 @@
 import 'dart:io';
 
 import 'package:client/cache/schedule_cache.dart';
-import 'package:client/main.dart' show AppConfig, epgThumbnailHeight, epgThumbnailMargin, epgThumbnailWidth;
+import 'package:client/main.dart' show AppConfig;
 import 'package:client/cache/offline_runtime.dart';
 import 'package:client/pages/controls_mapping_page.dart';
 import 'package:client/pages/offline_cache_page.dart';
@@ -92,13 +92,10 @@ void main() {
         await useSize(tester, size);
         final cache = buildCache();
         addTearDown(cache.close);
-        final k = resolveUiScale(size);
-        final rect = Rect.fromLTWH(
-          size.width - (epgThumbnailMargin + epgThumbnailWidth) * k,
-          epgThumbnailMargin * k,
-          epgThumbnailWidth * k,
-          epgThumbnailHeight * k,
-        );
+        // The overlay measures its own preview slot and reports it here; the
+        // golden then shows the hole the player's video fills in the app.
+        final preview = ValueNotifier<Rect?>(null);
+        addTearDown(preview.dispose);
         await tester.pumpWidget(
           app(
             Scaffold(
@@ -108,7 +105,7 @@ void main() {
                 channels: channels,
                 cache: cache,
                 currentChannelId: 'c2',
-                videoThumbnailRect: rect,
+                previewRect: preview,
                 onSelectLiveChannel: (_) {},
                 onClose: () {},
                 clock: () => now,
@@ -134,6 +131,8 @@ void main() {
         await useSize(tester, size);
         final cache = buildCache();
         addTearDown(cache.close);
+        final preview = ValueNotifier<Rect?>(null);
+        addTearDown(preview.dispose);
         await tester.pumpWidget(
           app(
             Scaffold(
@@ -142,7 +141,7 @@ void main() {
                 channels: channels,
                 cache: cache,
                 currentChannelId: 'c2',
-                videoThumbnailRect: Rect.fromLTWH(size.width - 100, 10, 90, 50),
+                previewRect: preview,
                 onSelectLiveChannel: (_) {},
                 onClose: () {},
                 clock: () => now,
@@ -383,7 +382,9 @@ void main() {
           await tester.pump();
           expect(tester.takeException(), isNull, reason: 'step $step at $label');
           final context = tester.element(find.byKey(const Key('osd')));
-          expect(UiScale.of(context), lessThanOrEqualTo(step));
+          // A step multiplies the automatic factor, so it is never an absolute
+          // ceiling: what must hold is that the factor still fits the window.
+          expect(UiScale.of(context), lessThanOrEqualTo(maxFitUiScale(size)));
           expect(UiScale.of(context), resolveUiScale(size, override: step));
           // The whole panel stays on screen.
           final top = tester.getTopLeft(find.byKey(const Key('osd-channel-logo'))).dy;

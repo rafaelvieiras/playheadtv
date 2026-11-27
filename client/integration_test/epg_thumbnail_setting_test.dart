@@ -176,19 +176,28 @@ void main() {
     // top of the screen when there is none.
     double detailsTop(WidgetTester tester) => tester.getTopLeft(find.byKey(const Key('epg-details-panel'))).dy;
 
-    testWidgets('on (the default) the guide keeps the thumbnail; off, the grid uses the whole screen', (tester) async {
+    testWidgets('on (the default) the guide keeps the preview in the panel; off, no slot at all', (tester) async {
       await tester.pumpWidget(const PlayheadSpikeApp());
       await waitForChannelNumber(tester, 3);
       await openEpg(tester);
-      final withThumbnail = detailsTop(tester);
-      expect(withThumbnail, greaterThan(100), reason: 'the details panel starts under the thumbnail');
+      // The preview is a slot inside the details panel, so the panel starts at
+      // the top of the screen either way; what the setting changes is whether
+      // the guide reserves a window for the picture.
+      expect(detailsTop(tester), lessThan(100), reason: 'the panel is the first thing on screen');
+      final withPreview = tester.getSize(find.byKey(const Key('epg-details-panel'))).height;
+      expect(find.byKey(const Key('epg-details-preview')), findsOneWidget);
       await pressKey(tester, LogicalKeyboardKey.escape);
       await pumpUntil(tester, () => find.byKey(const Key('epg-overlay')).evaluate().isEmpty, failMessage: 'Escape did not close the guide');
 
       // Turn it off the way Settings does, and open the guide again.
       EpgThumbnailSetting.enabled.value = false;
       await openEpg(tester);
-      expect(detailsTop(tester), lessThan(withThumbnail / 2), reason: 'without the thumbnail the panel moves to the top');
+      expect(find.byKey(const Key('epg-details-preview')), findsNothing, reason: 'no slot, so no hole either');
+      // The panel's height is set by its own words (logo, title, chips,
+      // synopsis), which are taller than the 16:9 slot: dropping the slot cannot
+      // shrink the panel, and that is the point — the setting never makes the
+      // guide jump.
+      expect(tester.getSize(find.byKey(const Key('epg-details-panel'))).height, lessThanOrEqualTo(withPreview));
       // Still fully navigable.
       await pressKey(tester, LogicalKeyboardKey.arrowDown);
       await tester.pump(const Duration(milliseconds: 300));
@@ -206,6 +215,7 @@ void main() {
       expect(EpgThumbnailSetting.enabled.value, isFalse);
       await openEpg(tester);
       expect(detailsTop(tester), lessThan(100));
+      expect(find.byKey(const Key('epg-details-preview')), findsNothing);
       EpgThumbnailSetting.enabled.value = true;
     });
   });

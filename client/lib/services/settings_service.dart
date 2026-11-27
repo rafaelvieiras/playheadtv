@@ -42,7 +42,11 @@ class SettingsService implements UpdateNoticeStore {
   static const _cacheWindowLimitKey = 'cache_window_limit_hours';
   static const _startFullScreenKey = 'start_fullscreen';
   static const _videoEngineKey = 'video_engine';
-  static const _uiScaleKey = 'ui_scale_override';
+  static const _uiScaleKey = 'ui_scale_multiplier';
+  /// The key the interface size used before 0.9.1, when the choice was an
+  /// absolute factor instead of a multiplier of the automatic one. Read only to
+  /// be deleted: keeping it would pin a 4K-sized choice onto a smaller screen.
+  static const _legacyUiScaleKey = 'ui_scale_override';
   static const _preloadLeadKey = 'preload_lead_seconds';
   static const _dimLevelKey = 'dim_level_percent';
   static const _dimActiveKey = 'dim_active';
@@ -128,8 +132,9 @@ class SettingsService implements UpdateNoticeStore {
 
   Future<void> setVideoEngine(String value) => _prefs.setString(_videoEngineKey, value);
 
-  /// The user's fixed interface size (a factor, see ui/ui_scale.dart), or null
-  /// for Automatic.
+  /// The user's interface-size multiplier (see ui/ui_scale.dart), or null for
+  /// Automatic. Relative to the automatic factor, so one choice reads the same
+  /// on a television and on a desktop window.
   double? get uiScaleOverride {
     final v = _prefs.getDouble(_uiScaleKey);
     return v != null && v > 0 ? v : null;
@@ -137,6 +142,13 @@ class SettingsService implements UpdateNoticeStore {
 
   Future<void> setUiScaleOverride(double? value) =>
       value == null ? _prefs.remove(_uiScaleKey) : _prefs.setDouble(_uiScaleKey, value);
+
+  /// Drops the absolute interface-size choice of an older install: the value
+  /// means something else now (a factor of its own, not a multiplier), so
+  /// carrying it over would draw this screen at that factor's size.
+  Future<void> dropLegacyUiScale() async {
+    if (_prefs.containsKey(_legacyUiScaleKey)) await _prefs.remove(_legacyUiScaleKey);
+  }
 
   /// The user's saved preload lead in seconds (see preload_lead.dart), or null
   /// when never chosen (the installation default applies).
@@ -260,7 +272,13 @@ class SettingsService implements UpdateNoticeStore {
     }
   }
 
-  static Future<SettingsService> create() async => SettingsService(await SharedPreferences.getInstance());
+  static Future<SettingsService> create() async {
+    final settings = SettingsService(await SharedPreferences.getInstance());
+    // Cheap, idempotent, and the only way an install upgraded across 0.9.1 does
+    // not carry an absolute interface size into the relative model.
+    await settings.dropLegacyUiScale();
+    return settings;
+  }
 
   String? get lastWatchedChannelId => _prefs.getString(_lastWatchedKey);
 

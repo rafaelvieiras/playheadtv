@@ -429,28 +429,20 @@ class EpgEntry {
     return null;
   }
 
-  /// The backdrop to draw behind this program's details: the item's own
-  /// backdrop, else (an episode) its series'. Null when the source has none, and
-  /// the panel then keeps the plain dark background.
-  ({String itemId, String tag})? get backdropArt {
+  /// The art to draw behind this program's details: the item's own backdrop,
+  /// else its series' backdrop — fetched by the series id, because a source
+  /// serves `Images/Backdrop` for an item without the caller knowing the tag.
+  /// `tag` is null when the URL is built from the id alone.
+  ///
+  /// A poster is never used here: stretched behind text it reads as a mistake.
+  /// A series without fanart gets the plain dark panel instead.
+  ({String itemId, String? tag})? get backdropArt {
     final ext = externalId;
     final own = imageBackdropTag;
     if (ext != null && own != null) return (itemId: ext, tag: own);
     final series = seriesExternalId;
-    final seriesTag = seriesImagePrimaryTag;
-    if (series != null && seriesTag != null) return (itemId: series, tag: seriesTag);
+    if (series != null && series.isNotEmpty) return (itemId: series, tag: null);
     return null;
-  }
-
-  /// The series' logo, when the art the source gave for the series is a logo
-  /// rather than a poster: an episode's own primary art is a still, so the
-  /// details panel shows the series' one. Null for a movie or an item with no
-  /// series art.
-  ({String itemId, String tag})? get seriesArt {
-    final series = seriesExternalId;
-    final tag = seriesImagePrimaryTag;
-    if (series == null || tag == null) return null;
-    return (itemId: series, tag: tag);
   }
 
   /// True once everything needed to play and label this entry is known

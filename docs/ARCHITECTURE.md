@@ -2729,20 +2729,29 @@ client and takes the screen back when it ends), so leaving is part of the app.
   lies that way, else the focus stays. The opposite arrow of the last move
   returns to its origin. The raw arrows stay outside `InputAction`.
 - **UI scale.** `UiScale` (`lib/ui/ui_scale.dart`), provided once above the
-  Navigator, is the shortest window side over 1080 (clamped 0.6 to 3), or a fixed
-  step chosen in Settings ("Interface size"). Sizes are written as pixels at 1080p
-  and read with `context.ui(px)`; stock Material pages and dialogs use
-  `UiScaled`. Applied to every client screen: the mosaic, the OSD, the EPG
-  overlay (rows, channel column, header and details panel; the 3h span still
-  fills the width, so only the pixels-per-minute follow the width), the track
-  picker, the update banner and changelog, Settings, Remap controls, Offline
-  cache and the dialogs. The EPG's corner video thumbnail is scaled too
-  (`_videoThumbnailRect`, computed from the same factor without subscribing the
-  player page to it).
-  A fixed Settings choice is capped by what fits the window
-  (`maxFitUiScale`: the OSD needs `uiScaleFitHeight`/`uiScaleFitWidth` design
-  pixels), so a large choice on a small window cannot overflow it; the
-  automatic factor needs no cap.
+  Navigator, is the shortest window side over 1080 (clamped 0.6 to 3). A Settings
+  choice ("Interface size") **multiplies** that factor — 85/100/115/130% — and
+  never replaces it: the same choice then reads the same on a 4K television, on a
+  1080p desktop window and on a phone. It used to be an absolute factor, which is
+  exactly how it went wrong: a 150% chosen on a 4K set drew everything at 150% of
+  a 1080p layout on a 1080p desktop, where the automatic factor is 1.0. The old
+  key (`ui_scale_override`) is deleted at startup (`SettingsService.create`), so
+  an upgraded install starts from Automatic instead of carrying the wrong
+  number. Sizes are written as pixels at 1080p and read with `context.ui(px)`;
+  stock Material pages and dialogs use `UiScaled`. Applied to every client
+  screen: the mosaic, the OSD, the EPG overlay (rows, channel column, header and
+  details panel, including the preview slot, which is measured rather than
+  recomputed — see "Guide display"), the track picker, the update banner and
+  changelog, Settings, Remap controls, Offline cache and the dialogs.
+  A choice is capped by what fits the window (`maxFitUiScale`: the OSD needs
+  `uiScaleFitHeight`/`uiScaleFitWidth` design pixels), so a large choice on a
+  small window cannot overflow it; the automatic factor needs no cap.
+- **The window opens at most of the screen it is on**, not at a fixed size
+  (`linux/runner/my_application.cc`: 85% of the monitor's work area, clamped to
+  1280x720 - 2560x1440, centred). A fixed 1280x720 window on a 4K set is a
+  postage stamp, and on a 1080p desktop it left the layout at a size nobody
+  chose. The UI scale derives from the window, so this is the other half of the
+  same rule: the layout reads the same on any display, at that display's size.
 
 ### First-run screens on a phone
 
@@ -2983,11 +2992,35 @@ rebuilt every visible row and every cell.
   row or cell deferred the same way was tried and was worse (more frames, a longer build). The
   worst opening frame is now ~80 ms on the TV box. Tests that read titles wait a few frames after
   the guide loads.
-- **The thumbnail is a setting** ("Show channel thumbnail in the guide", Settings, on by
-  default; `EpgThumbnailSetting`, `lib/epg_thumbnail.dart`). Off: the video is not moved into the
-  corner, the guide covers the whole screen with an opaque layer and the grid gets the height the
-  thumbnail used. The video widgets are neither moved nor rebuilt either way (the GL texture
-  gotcha). It made no difference to the slow opening frame, which is build time, not video.
+- **The preview lives inside the details panel, and it is a setting** ("Show channel thumbnail in
+  the guide", Settings, on by default; `EpgThumbnailSetting`, `lib/epg_thumbnail.dart`). The panel
+  reserves a 16:9 slot at its right (`GuideMetrics.detailsPreviewHeight`; zero on a phone, whose
+  panel is 360 dp wide), and the video is shrunk into exactly that rectangle — measured from the
+  slot (`EpgOverlay.previewRect`) and read back by the player page
+  (`_epgPreviewRect`), never recomputed from constants on both sides. The guide paints its
+  backdrop as one clipped layer with that rectangle cut out (`HoleClipper`,
+  `PathOperation.difference`), and the panel clips its own backdrop the same way: the picture
+  shows through a real window instead of sitting in a black hole above the panel, which is what
+  the old corner placement looked like — a band of nothing across the top of the screen, with the
+  grid pushed down for it. Painting never feeds back into layout: the panel's hole is computed
+  from the panel's own constraints, so measuring and painting cannot chase each other. Off: no
+  slot, no hole, the guide covers the whole screen with an opaque layer. The video widgets are
+  neither moved nor rebuilt either way (the GL texture gotcha). It made no difference to the slow
+  opening frame, which is build time, not video.
+- **The details panel carries the channel, not a program cover.** The channel's logo (or its name
+  when it has none) occupies a slot whose height is reserved either way, so moving the focus
+  cannot make the panel jump. The program's backdrop is the item's own fanart, else its **series'
+  fanart fetched by id** (`Images/Backdrop/0` — the tag is not on an episode's metadata; measured
+  against a real library: 200, `image/jpeg`), and **never its poster**: a cover stretched behind
+  the synopsis reads as a mistake, and a series without fanart is better served by the plain dark
+  panel. The program's progress is a bar the size of punctuation, between the two times it
+  describes; the panel's full-width bar is gone, because the guide needs that height for programs
+  and the times already say what the bar means.
+- **Focus hierarchy in the grid.** Every row but the one whose details are on screen carries a 20%
+  black wash, and a program that already aired carries another 10%, so the focused channel and the
+  live column read first at a glance. It is a wash and not `Opacity`: a translucent rectangle
+  paints, an `Opacity` costs a `saveLayer` for a whole row of cells on a device that cannot afford
+  it (`_dimmed` in `epg_overlay.dart`).
 - **Boot phases.** `BootTrace` (`lib/services/perf_trace.dart`) marks the phases of the
   start (`main`, `player_init`, `runtime_open`, `sync_done`/`warm_start`,
   `channel_on_air`) and logs them as one `boot` line. `PerfTrace` (opt-in, built with

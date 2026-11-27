@@ -37,8 +37,15 @@ const double phoneUiScaleMax = 1.3;
 const double uiScaleMin = 0.6;
 const double uiScaleMax = 3.0;
 
-/// Fixed choices offered in Settings besides "Automatic" (null).
-const List<double> uiScaleSteps = [0.75, 1.0, 1.25, 1.5, 2.0];
+/// Fixed multipliers offered in Settings besides "Automatic" (null).
+///
+/// They multiply the automatic factor instead of replacing it, which is what
+/// makes one choice portable: a viewer who wants larger text on a television
+/// gets the same relationship on a desktop window or a phone, instead of an
+/// absolute factor that is right on the display it was chosen on and wrong
+/// everywhere else (a 1.5 chosen on a 4K set drew everything at 150% of a
+/// 1080p layout on a 1080p desktop, where the automatic factor is 1.0).
+const List<double> uiScaleSteps = [0.85, 1.0, 1.15, 1.3];
 
 /// The automatic factor for a window of [size] on [formFactor].
 ///
@@ -83,21 +90,27 @@ double maxFitUiScale(Size size, {ClientFormFactor formFactor = ClientFormFactor.
   return fit.clamp(min, max).toDouble();
 }
 
-/// The factor in force: the user's fixed [override] when it is a positive
-/// number, capped by what fits [size] (`maxFitUiScale`), otherwise the
-/// automatic one for [size] on [formFactor].
+/// The factor in force: the automatic one for [size] on [formFactor], scaled by
+/// the user's fixed [multiplier] when it is a positive number, then capped by
+/// what fits [size] (`maxFitUiScale`).
+///
+/// The multiplier is relative on purpose: 1.15 means "a little larger than this
+/// screen asks for", so the same choice reads the same on a television and on a
+/// desktop window.
 double resolveUiScale(
   Size size, {
   double? override,
   ClientFormFactor formFactor = ClientFormFactor.tv,
 }) {
-  if (override != null && override.isFinite && override > 0) {
-    return math.min(override, maxFitUiScale(size, formFactor: formFactor));
-  }
-  return autoUiScale(size, formFactor: formFactor);
+  final base = autoUiScale(size, formFactor: formFactor);
+  if (override == null || !override.isFinite || override <= 0) return base;
+  final min = formFactor == ClientFormFactor.phone ? phoneUiScaleMin : uiScaleMin;
+  final max = formFactor == ClientFormFactor.phone ? phoneUiScaleMax : uiScaleMax;
+  final scaled = (base * override).clamp(min, max).toDouble();
+  return math.min(scaled, maxFitUiScale(size, formFactor: formFactor));
 }
 
-/// Label of a Settings choice.
+/// Label of a Settings choice: the automatic factor is the reference.
 String uiScaleLabel(double? choice) => choice == null ? 'Automatic' : '${(choice * 100).round()}%';
 
 /// The next Settings choice when Select is pressed: Automatic, then each fixed
@@ -109,7 +122,7 @@ double? nextUiScaleChoice(double? current) {
   return uiScaleSteps[i + 1];
 }
 
-/// The user's fixed choice (null = Automatic), shared by the host and the
+/// The user's fixed multiplier (null = Automatic), shared by the host and the
 /// Settings row. Static on purpose: there is one window per process.
 class UiScaleOverride {
   static final ValueNotifier<double?> notifier = ValueNotifier<double?>(null);

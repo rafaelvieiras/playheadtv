@@ -612,12 +612,10 @@ const slateAssetPath = 'assets/slate/gap_slate.mp4';
 
 // Video thumbnail inside the EPG — the same instance of
 // _controllerA/_controllerB, just repositioned/resized into a corner (see
-// _videoThumbnailRect and the long comment about the fvp/libmdk GL texture bug
-// above _osdVisibleNotifier).
-// Pixels at 1080p; `_videoThumbnailRect` applies the UI scale.
-const epgThumbnailMargin = 24.0;
-const epgThumbnailWidth = 320.0;
-const epgThumbnailHeight = 180.0;
+// The guide's live preview: the rectangle is measured by the overlay from its
+// details panel (EpgOverlay.previewRect) — the page only reads it back, so there
+// are no duplicated constants to keep in step. See the long comment about the
+// fvp/libmdk GL texture bug above _osdVisibleNotifier).
 
 // Fallback for the backend's EPG freeze margin (GET /epg/meta
 // `freeze_margin_ms`): how far ahead the guide of a continuous-schedule channel
@@ -646,6 +644,15 @@ String streamUrl(String itemId) =>
 // holds and the image tag the backend sent (the backend never serves art).
 String jellyfinImageUrl(String itemId, String tag, {int maxWidth = 400}) =>
     '${AppConfig.jellyfinUrl}/Items/$itemId/Images/Primary?tag=$tag&maxWidth=$maxWidth&ApiKey=${AppConfig.jellyfinApiKey}';
+
+/// Backdrop (fanart) URL for the guide's details panel. Without a [tag] the
+/// server is asked for `Images/Backdrop/0` by id alone: a series' backdrop is
+/// what an episode shows, and its tag is not on the episode's own metadata
+/// (tried against a real library: 200, image/jpeg). A 404 means the source has
+/// no fanart for it, and the panel then keeps its plain dark background.
+String jellyfinBackdropUrl(String itemId, {String? tag, int maxWidth = 1920}) => tag == null
+    ? '${AppConfig.jellyfinUrl}/Items/$itemId/Images/Backdrop/0?maxWidth=$maxWidth&ApiKey=${AppConfig.jellyfinApiKey}'
+    : '${AppConfig.jellyfinUrl}/Items/$itemId/Images/Backdrop?tag=$tag&maxWidth=$maxWidth&ApiKey=${AppConfig.jellyfinApiKey}';
 
 /// Puts the window in (or out of) full screen per the saved choice, else the
 /// installation's default. Runs before `runApp`, so there is no visible resize:
@@ -1075,6 +1082,11 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
   // `_osdVisibleNotifier` above: never a State `bool`/setState, only
   // ValueNotifier + ValueListenableBuilder, for the same GL texture artifact
   // reason.
+  // Rectangle (in Stack/full-screen coordinates) the guide reports for its
+  // preview slot when it is open (EpgOverlay.previewRect, measured from the
+  // widget itself). Null while the guide is closed or has not laid out yet.
+  final ValueNotifier<Rect?> _epgPreviewRect = ValueNotifier<Rect?>(null);
+
   final ValueNotifier<bool> _epgOpenNotifier = ValueNotifier(false);
   final GlobalKey<EpgOverlayState> _epgOverlayKey = GlobalKey<EpgOverlayState>();
 
@@ -4167,6 +4179,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
     _osdVisibleNotifier.dispose();
     _osdFocusNotifier.dispose();
     _epgOpenNotifier.dispose();
+    _epgPreviewRect.dispose();
     _debugOverlayVisibleNotifier.dispose();
     _debugLogVisibleNotifier.dispose();
     _trackPickerOpenNotifier.dispose();
@@ -4214,28 +4227,6 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
           child: VideoSurface(controller),
         ),
       ),
-    );
-  }
-
-  // Rectangle (in Stack/full-screen coordinates) that the video thumbnail
-  // occupies when the EPG is open — the SAME rectangle used by `EpgOverlay` to
-  // reserve the "hole" in the darkened background (see
-  // EpgOverlay.videoThumbnailRect) and never draw anything on top of the
-  // thumbnail. Single source of truth, so the two places never go out of sync.
-  Rect _videoThumbnailRect(Size screenSize) {
-    // The same factor the EPG overlay reads from UiScale (the host resolves it
-    // the same way); computed here so the page does not subscribe to it.
-    final k = resolveUiScale(
-      screenSize,
-      override: UiScaleOverride.notifier.value,
-      // Read once, never subscribed: the host resolved the same value.
-      formFactor: ClientFormFactorState.notifier.value,
-    );
-    return Rect.fromLTWH(
-      screenSize.width - (epgThumbnailMargin + epgThumbnailWidth) * k,
-      epgThumbnailMargin * k,
-      epgThumbnailWidth * k,
-      epgThumbnailHeight * k,
     );
   }
 
@@ -4504,21 +4495,29 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
             // (_osdVisibleNotifier).
             ValueListenableBuilder<bool>(
               valueListenable: _epgOpenNotifier,
-              builder: (context, epgOpen, child) {
-                final screenSize = MediaQuery.sizeOf(context);
-                final rect = epgOpen && EpgThumbnailSetting.enabled.value
-                    ? _videoThumbnailRect(screenSize)
-                    : Offset.zero & screenSize;
-                return AnimatedPositioned(
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeInOut,
-                  left: rect.left,
-                  top: rect.top,
-                  width: rect.width,
-                  height: rect.height,
-                  child: child!,
-                );
-              },
+              builder: (context, epgOpen, child) => ValueListenableBuilder<Rect?>(
+                valueListenable: _epgPreviewRect,
+                builder: (context, previewRect, _) {
+                  // The guide owns the geometry: it measures the slot it reserved
+                  // in its details panel, and the video shrinks into exactly that
+                  // rectangle. Full screen whenever there is nothing to shrink
+                  // into (the guide is closed, or it is still laying out).
+                  final rect = epgOpen && previewRect != null
+                      ? previewRect
+                      : Offset.zero & MediaQuery.sizeOf(context);
+                  return AnimatedPositioned(
+                    duration: const Duration(milliseconds: 300),
+                    curve: Curves.easeInOut,
+                    left: rect.left,
+                    top: rect.top,
+                    width: rect.width,
+                    height: rect.height,
+                    // `child` comes from the outer builder and `child!` is the
+                    // video Stack it was given: never rebuilt here.
+                    child: child!,
+                  );
+                },
+              ),
               child: Stack(
                 fit: StackFit.expand,
                 children: [
@@ -4750,8 +4749,7 @@ class _ChannelPlayerPageState extends State<ChannelPlayerPage> with WidgetsBindi
                     channels: _channels,
                     cache: _cache,
                     currentChannelId: _channels[_channelIndex].id,
-                    videoThumbnailRect:
-                        EpgThumbnailSetting.enabled.value ? _videoThumbnailRect(MediaQuery.sizeOf(context)) : null,
+                    previewRect: EpgThumbnailSetting.enabled.value ? _epgPreviewRect : null,
                     onSelectLiveChannel: (channelId) {
                       _epgOpenNotifier.value = false;
                       final targetIndex = _channels.indexWhere((c) => c.id == channelId);

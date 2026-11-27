@@ -329,6 +329,9 @@ class _SettingsPageState extends State<SettingsPage> {
                       uiScaleLabel(_settings!.uiScaleOverride),
                       key: const Key('settings-ui-scale-value'),
                     ),
+                    // A multiplier of what this screen asks for, never an
+                    // absolute factor: the same choice then reads the same on a
+                    // television, a desktop window and a phone.
                     onTap: _cycleUiScale,
                   ),
                 if (_settings != null)

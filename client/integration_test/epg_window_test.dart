@@ -107,6 +107,12 @@ void main() {
       }
     }
 
+    // The OSD now also describes a program while its channel is still loading
+    // (the banner's subject), so "a title is on screen" no longer means "the
+    // working set is loaded". This reads the set itself.
+    Future<void> waitForChannel(WidgetTester tester) =>
+        pumpUntil(tester, () => channel.isNotEmpty, failMessage: 'the working set never loaded');
+
     String? osdTitle(WidgetTester tester) {
       final finder = find.byKey(const Key('osd-item-title'));
       if (finder.evaluate().isEmpty) return null;
@@ -177,6 +183,7 @@ void main() {
       await backend.waitForEpgEntries(channelId, 400);
 
       await boot(tester, channelId: channelId, legacy: false, workingSetSize: 1);
+      await waitForChannel(tester);
       await pumpUntil(tester, () => osdTitle(tester) != null, failMessage: 'never started playing');
       final p = proxy!;
 
@@ -253,6 +260,7 @@ void main() {
         return int.parse(t.substring(5));
       }
 
+      await waitForChannel(tester);
       await pumpUntil(tester, () => currentProgram() != null, failMessage: 'never started playing');
       final p = proxy!;
 
@@ -323,6 +331,7 @@ void main() {
       // same wait took over 20 s for a channel that was loading correctly.
       final legacyStart = DateTime.now();
       try {
+        await waitForChannel(tester);
         await pumpUntil(tester, () => osdTitle(tester) != null, timeout: const Duration(seconds: 60));
       } on TestFailure {
         // Say what the app did, not only that the screen stayed empty: the

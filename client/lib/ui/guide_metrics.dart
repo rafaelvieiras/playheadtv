@@ -40,6 +40,20 @@ class GuideMetrics {
   /// smaller, for the same reason).
   final double detailsScale;
 
+  /// The details panel's padding, in the panel's own design units (multiplied by
+  /// [detailsScale] and the app's UI scale). The preview slot is measured
+  /// against it, so it lives here rather than as a literal in the panel.
+  final double detailsPaddingH;
+  final double detailsPaddingV;
+
+  /// Height of the live preview inside the details panel (16:9 is derived). Zero
+  /// on a phone: the panel is 360 dp wide, and a 16:9 box would leave the text
+  /// barely 150 dp, which reads worse than no preview at all.
+  final double detailsPreviewHeight;
+
+  /// Gap between the panel's text and the preview.
+  final double detailsPreviewGap;
+
   const GuideMetrics({
     required this.visibleSpan,
     required this.channelColumnWidth,
@@ -48,6 +62,10 @@ class GuideMetrics {
     this.detailsSynopsisLines = 3,
     this.detailsScale = 1,
     this.channelName = true,
+    this.detailsPaddingH = 22,
+    this.detailsPaddingV = 14,
+    this.detailsPreviewHeight = 170,
+    this.detailsPreviewGap = 18,
   });
 
   /// What the overlay used before the phone existed.
@@ -69,6 +87,7 @@ class GuideMetrics {
     detailsSynopsisLines: 2,
     detailsScale: 0.82,
     channelName: false,
+    detailsPreviewHeight: 0,
   );
 
   static GuideMetrics of(ClientFormFactor formFactor) =>

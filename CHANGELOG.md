@@ -11,6 +11,33 @@ and a client tag is `client-vX.Y.Z`. Releases before 0.3.15 (backend) and
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-11-27 (client)
+
+### Changed
+
+- The guide's details panel keeps the live preview inside it, as a window in its
+  own backdrop, instead of shrinking the picture into a corner above the panel.
+  The black band that used to sit across the top of the screen is gone and the
+  grid gets that height back.
+- The channel's logo (or its name) leads the details panel, and the program's
+  cover is no longer drawn above the title. The slot keeps its height whether or
+  not the channel has a logo, so moving the focus cannot resize the panel.
+- The panel's backdrop is the item's own fanart, else its series' fanart, and
+  never its poster.
+- The panel's full-width progress bar is replaced by a small bar between the two
+  times it describes.
+- Programs on every row but the focused one are 20% dimmer, and a program that
+  already aired is another 10% dimmer: the focused channel and the live column
+  read first.
+- "Interface size" multiplies the automatic scale (85/100/115/130%) instead of
+  replacing it, and the desktop window opens at 85% of its monitor's work area
+  instead of a fixed 1280x720.
+
+### Fixed
+
+- An interface size chosen on a large display no longer draws a smaller one at
+  that factor: the old absolute value is dropped at startup.
+
 ## [0.9.0] - 2026-11-27 (client)
 
 ### Added

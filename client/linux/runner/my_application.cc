@@ -83,7 +83,28 @@ static void my_application_activate(GApplication* application) {
     gtk_window_set_title(window, "client");
   }
 
-  gtk_window_set_default_size(window, 1280, 720);
+  // The window opens at most of the screen it is on, not at a fixed size: a
+  // 4K television and a 1080p desktop then show the same layout at their own
+  // size, and the UI scale (lib/ui/ui_scale.dart) derives from the window's
+  // shortest side. Capped so a huge monitor does not open a window wider than
+  // the layout was designed for; 1280x720 is the fallback when the display
+  // reports no geometry.
+  gint window_width = 1280;
+  gint window_height = 720;
+  GdkDisplay* display = gtk_widget_get_display(GTK_WIDGET(window));
+  GdkMonitor* monitor = display != nullptr
+                            ? gdk_display_get_monitor(display, 0)
+                            : nullptr;
+  if (monitor != nullptr) {
+    GdkRectangle workarea = {0};
+    gdk_monitor_get_workarea(monitor, &workarea);
+    if (workarea.width > 0 && workarea.height > 0) {
+      window_width = CLAMP((gint)(workarea.width * 0.85), 1280, 2560);
+      window_height = CLAMP((gint)(workarea.height * 0.85), 720, 1440);
+    }
+  }
+  gtk_window_set_default_size(window, window_width, window_height);
+  gtk_window_set_position(window, GTK_WIN_POS_CENTER);
 
   g_autoptr(FlDartProject) project = fl_dart_project_new();
   fl_dart_project_set_dart_entrypoint_arguments(

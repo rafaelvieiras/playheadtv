@@ -332,10 +332,15 @@ are what keeps the claim honest (`docs/ARCHITECTURE.md` "Admin shell").
   are written as pixels at 1080p and scaled with the app-wide `UiScale`
   (`lib/ui/ui_scale.dart`, `context.ui(px)`, Settings override); a new screen
   uses it instead of fixed sizes (the EPG, track picker and update banner too;
-  the EPG's thumbnail rect is scaled with the same factor). A fixed Settings
-  choice is capped by `maxFitUiScale` so it cannot overflow the OSD; keep
-  `uiScaleFitHeight`/`uiScaleFitWidth` in step if the OSD grows. Never drive it
-  through `setState` on the player page. A phone is a different **layout family**
+  the EPG's preview slot is measured, not recomputed). A Settings choice
+  ("Interface size") **multiplies** the automatic factor (85/100/115/130%) and
+  never replaces it — an absolute factor is what made a 150% chosen on a 4K set
+  draw a 1080p desktop at 150% of a 1080p layout. The old `ui_scale_override` key
+  is deleted at startup. A choice is capped by `maxFitUiScale` so it cannot
+  overflow the OSD; keep `uiScaleFitHeight`/`uiScaleFitWidth` in step if the OSD
+  grows. The desktop window opens at 85% of its monitor's work area
+  (`linux/runner/my_application.cc`), so the scale and the window size come from
+  the same display. Never drive the scale through `setState` on the player page. A phone is a different **layout family**
   (`ClientFormFactor`, `lib/ui/form_factor.dart`): one factor per process,
   resolved at boot before the first page builds (bounded platform-channel call,
   falls back to `tv`) and never re-derived from a window resize; a desktop
@@ -566,6 +571,16 @@ are what keeps the claim honest (`docs/ARCHITECTURE.md` "Admin shell").
   playing (just resized into a corner via `AnimatedPositioned`), instead of
   creating a second video surface — see the GL-texture gotcha below for why
   that distinction is load-bearing, not just tidiness.
+  The live preview is a window **inside the details panel**, not a hole in a
+  corner: the panel reserves a 16:9 slot at its right
+  (`GuideMetrics.detailsPreviewHeight`, zero on a phone), the overlay measures it
+  (`EpgOverlay.previewRect`) and the page shrinks the video into the same
+  rectangle (`_epgPreviewRect`), so the geometry has one source. Both the guide's
+  backdrop and the panel's are clipped with that rectangle cut out
+  (`HoleClipper`), and the panel computes its hole from its own constraints so
+  painting never feeds back into layout — a hole placed by the body's position
+  would move the body, which moves the hole (`docs/ARCHITECTURE.md` "Guide
+  display"). Do not put the preview back in a corner.
   The grid inside it is responsive: a fixed 3h visible span
   (`_visibleSpan`) with pixels-per-minute derived from the available width on
   every build, a sticky time header (tick every 30 min), a "now" line
@@ -1342,6 +1357,23 @@ device, driven by scripts that end in a file an agent or a human can read.
 ## Known-flaky suites (read before blaming a change)
 
 - A test boot has **no channel-switch delay** unless it opts in: `AppConfig.overrideForTest` resets the default to zero and every suite clears the preferences. Suites written before the delay rely on that; the delay suite writes `channel_switch_delay_seconds` itself.
+
+- `segment_playback_test`'s "tuning in inside the second segment" case fails on
+  an idle-but-loaded machine with `(playing: true, position: 4.133)` where about
+  17.7s was expected — the tune-in seek into the item's offset was dropped, so the
+  file plays from its own zero. Measured 2026-11-27 on the **untouched HEAD**
+  (stashed working tree, `-j 1`, no other suite running), so it is not the change
+  under test: a seek issued while the source is still opening is lost, and this
+  machine now opens sources slowly enough to hit it. Treat it as its own issue
+  (the guard would be "seek again once the first position is known"); do not
+  dismiss a *different* failure in this suite on its account.
+
+- Both track-selector suites report "Select on the OSD audio button did not open
+  the track selector" when the machine is loaded (two of them at `-j 3`, one at
+  `-j 1`): the keys never reach the app. They pass when re-run alone, the same
+  focus-steal class as the section above. `screen_awake_test` loses its
+  `enable` call for the same reason (playback never started, so the wakelock was
+  never taken).
 
 - `track_selector_persistence_test` hangs after its live track change: the switch
   that follows it wedges inside `VideoPlayback.open()` and never returns, and the

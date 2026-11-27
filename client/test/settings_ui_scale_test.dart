@@ -28,13 +28,13 @@ void main() {
 
     await tester.tap(find.byKey(const Key('settings-ui-scale-tile')));
     await tester.pumpAndSettle();
-    expect(value(), '75%');
-    expect(UiScaleOverride.notifier.value, 0.75);
-    expect((await SettingsService.create()).uiScaleOverride, 0.75);
+    expect(value(), '85%');
+    expect(UiScaleOverride.notifier.value, 0.85);
+    expect((await SettingsService.create()).uiScaleOverride, 0.85);
 
-    // The factor in force follows the choice (1080p would be 1.0 on its own).
+    // The factor in force follows the choice: 85% of what 1080p asks for (1.0).
     final context = tester.element(find.byType(SettingsPage));
-    expect(UiScale.of(context), 0.75);
+    expect(UiScale.of(context), closeTo(0.85, 1e-9));
 
     for (var i = 0; i < uiScaleSteps.length; i++) {
       await tester.tap(find.byKey(const Key('settings-ui-scale-tile')));
@@ -60,6 +60,6 @@ void main() {
     }
     await tester.sendKeyEvent(LogicalKeyboardKey.enter);
     await tester.pumpAndSettle();
-    expect(tester.widget<Text>(find.byKey(const Key('settings-ui-scale-value'))).data, '75%');
+    expect(tester.widget<Text>(find.byKey(const Key('settings-ui-scale-value'))).data, '85%');
   });
 }

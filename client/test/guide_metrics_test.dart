@@ -42,6 +42,11 @@ void main() {
       expect(m.rowHeight, 84);
       expect(m.headerHeight, 44);
       expect(m.channelName, isTrue, reason: 'a television has room for the name');
+      // The details panel's own geometry: the preview slot is measured from
+      // these, so they are part of the family's numbers, not literals in the panel.
+      expect(m.detailsPaddingH, 22);
+      expect(m.detailsPaddingV, 14);
+      expect(m.detailsPreviewHeight, greaterThan(0), reason: 'a television shows the live preview in the panel');
       // And it is what the overlay gets by default.
       expect(GuideMetrics.of(ClientFormFactor.tv), same(GuideMetrics.tv));
     });
@@ -51,6 +56,7 @@ void main() {
       expect(m.visibleSpan, const Duration(minutes: 90));
       expect(m.channelColumnWidth, 72);
       expect(m.channelName, isFalse, reason: '72 px cannot hold a number and a name');
+      expect(m.detailsPreviewHeight, 0, reason: 'a 360 dp panel cannot spare a 16:9 box');
       expect(GuideMetrics.of(ClientFormFactor.phone), same(GuideMetrics.phone));
     });
 
@@ -109,7 +115,6 @@ void main() {
               channels: channels,
               cache: cache,
               currentChannelId: 'c0',
-              videoThumbnailRect: null,
               onSelectLiveChannel: (id) => tuned.add(id),
               onClose: () {},
               clock: () => now,

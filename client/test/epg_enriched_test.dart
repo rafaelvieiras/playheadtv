@@ -81,6 +81,25 @@ void main() {
     expect(e.primaryArt, (itemId: 'jf-show', tag: 'spt'));
   });
 
+  test('the details backdrop is fanart: the item\'s own, else the series by id, never a poster', () {
+    // Its own backdrop wins, tag included.
+    final own = EpgEntry.fromJson({..._enriched('a', 0, 1000), 'image_backdrop_tag': 'bt'});
+    expect(own.backdropArt, (itemId: 'jf-a', tag: 'bt'));
+
+    // An episode has no backdrop of its own: the series' one is fetched by id
+    // alone (no tag), because the tag is not on the episode's metadata.
+    final episode = EpgEntry.fromJson({..._enriched('a', 0, 1000)}..remove('image_backdrop_tag'));
+    expect(episode.backdropArt, (itemId: 'jf-show', tag: null));
+
+    // Never the poster, even though the series has one: a cover stretched
+    // behind the synopsis reads as a mistake.
+    expect(episode.backdropArt!.tag, isNot('spt'));
+
+    // Nothing at all for an item with neither.
+    final bare = EpgEntry.fromJson({..._plain('b', 0, 1000)}..remove('series_external_id'));
+    expect(bare.backdropArt, isNull);
+  });
+
   test('getEpg asks for tail grouping only when told to, and one request returns everything', () async {
     final seen = <Uri>[];
     final client = MockClient((request) async {
